@@ -664,15 +664,21 @@ impl HandoverDoor {
             return Reply::RejectedConflict { operation };
         }
         let mut mesh_expected = None;
+        let mut mesh_named = false;
         let mut fabric_named = false;
         for e in &seats {
             match &e.seat {
-                WireSeat::MeshPrimary { mesh } if *mesh == self.me.mesh => mesh_expected = Some(e.expected_revision),
+                WireSeat::MeshPrimary { mesh } if *mesh == self.me.mesh => {
+                    mesh_named = true;
+                    mesh_expected = (e.expected_revision != 0).then_some(e.expected_revision);
+                }
                 WireSeat::FabricPrimary => {
                     fabric_named = true;
-                    if let Some(h) = self.membership.seats().fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation) && h.revision != e.expected_revision) {
-                        refused("holder", "stale-seat", &format!("{me_name}: the fabric-primary seat is at revision {}", h.revision), &of, None);
-                        return Reply::RejectedStaleSeat { seat: e.seat.clone(), expected: e.expected_revision, current: h.revision };
+                    if e.expected_revision != 0 {
+                        if let Some(h) = self.membership.seats().fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation) && h.revision != e.expected_revision) {
+                            refused("holder", "stale-seat", &format!("{me_name}: the fabric-primary seat is at revision {}", h.revision), &of, None);
+                            return Reply::RejectedStaleSeat { seat: e.seat.clone(), expected: e.expected_revision, current: h.revision };
+                        }
                     }
                 }
                 WireSeat::MeshPrimary { mesh } => {
@@ -693,16 +699,36 @@ impl HandoverDoor {
                         refused("holder", "not-authority", &reason, &of, None);
                         return Reply::not_authority(&reason);
                     };
-                    return match self.update_cohort_primary(&holder, Some(e.expected_revision), &build_id, attempt, &operation).await {
+                    let expected = (e.expected_revision != 0).then_some(e.expected_revision);
+                    return match self.update_cohort_primary(&holder, expected, &build_id, attempt, &operation).await {
                         Ok(revisions) => Reply::PrimaryUpdated { revisions },
                         Err(refusal) => refusal,
                     };
                 }
             }
         }
-        let moving = match (mesh_expected.is_some(), fabric_named) {
+        // lifecycles/node-primary-update.md ("Node primary vs. fabric primary", C1 & C2):
+        // - A node.primary.update on a mesh-primary that also holds the fabric-primary seat moves both seats
+        //   together to the same-mesh successor in one row.
+        // - A node.fabric-primary.update checks the holder's own mesh first (C2 search step 1: both seats move
+        //   together to the same-mesh secondary admin when one is ReadyForTraffic and the operation is not
+        //   retiring the mesh), and otherwise moves the fabric seat alone to another mesh's primary (C2 step 2).
+        let book = self.membership.seats();
+        let holds_fabric = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation)).is_some();
+        let holds_mesh = book.mesh(&self.me.mesh).filter(|h| h.is_birth(&self.node_id, &self.incarnation)).is_some();
+        let retiring_mesh = operation.contains("mesh.delete:");
+        let has_same_mesh_admin_successor = !retiring_mesh
+            && self
+                .topology
+                .read()
+                .await
+                .members()
+                .any(|n| n.mesh == self.me.mesh && n.kind == crate::model::NodeKind::NodeAdmin && n.node_id != self.node_id && n.status == crate::model::NodeStatus::ReadyForTraffic);
+        let moving = match (mesh_named, fabric_named) {
             (true, true) => Moving::BothSeats,
+            (true, false) if holds_fabric => Moving::BothSeats,
             (true, false) => Moving::MeshSeat,
+            (false, true) if holds_mesh && has_same_mesh_admin_successor => Moving::BothSeats,
             (false, true) => Moving::FabricSeatOutside,
             (false, false) => {
                 let reason = format!("{me_name}: the command names no seat to move");

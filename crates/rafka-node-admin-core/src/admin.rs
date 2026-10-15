@@ -667,6 +667,7 @@ impl Records {
         let store = self.status.get().map(|f| f.storage().clone()).ok_or_else(|| format!("no status store is held to record the exit of {} ({}) at {}", node.name, node.node_id, incarnation_id.as_str()))?;
         let row = crate::status_storage::NodeExitRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id, exit_code, proof: proof.to_string(), observed_at_ms: local_now_ms() };
         store.put_node_exit_of(&node.mesh, &row).await.map_err(|e| format!("status.storage put of {} ({}) exit-proof row among {}'s status rows: {e}", node.name, node.node_id, node.mesh))?;
+        self.wake.poke();
         Ok(row)
     }
 
@@ -5637,7 +5638,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             (Some((_, provider)), row) => exit_proof_of(provider.as_ref(), &None, row.as_ref()).await.is_ok(),
                             (None, _) => false,
                         };
-                        if !gone {
+                        if gone {
+                            membership.book.seats.mark_gone(r.incarnation_id);
+                        } else {
                             contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None });
                         }
                     }
@@ -5690,6 +5693,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // committed node.primary.update moved, its own included (proposal Part C1 failure contract:
                 // a holder that died after its write cut-off reads here whether its row committed).
                 crate::fabric_handover::enter_seats(&*fabric_storage, &membership, &backbone, &name, &node_id).await?;
+                if let Some(own) = &inherited {
+                    membership.book.seats.mark_gone(own.incarnation_id.clone());
+                }
                 // The current Build: Day 0 accepts the first Build itself; every other admin hydrates it from
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));
@@ -5699,10 +5705,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // file store reads the committed fabric seat record, as the Build gate does.
                 fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
                 {
-                    if sole_node_root && inherited.is_some() {
-                        // Nothing-Alive recovery on an inherited root (fabric-recovery.md "Nothing alive"): every
-                        // node the store names is confirmed gone by the provider, so no primary lives elsewhere; load
-                        // the existing Build journal once before locking `journal` to `membership.book.seats`.
+                    if inherited.is_some() {
+                        // Recovery on an inherited root (fabric-recovery.md): load the existing Build journal once
+                        // before locking `journal` to `membership.book.seats`, so `builds_dyn.current()` during boot
+                        // (before the hierarchy loop seats this birth) holds the accepted Build and preserves stored MeshIds.
                         let _ = journal.current_build().await;
                     }
                     let seat = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
@@ -5743,6 +5749,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // the mesh's seat holder, folded into what this admin applied when it takes the seat.
                 let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).await.map_err(storage_err)?);
                 let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
+                if let Some(own) = &inherited {
+                    let _ = status_storage
+                        .put_node_exit(&crate::status_storage::NodeExitRow {
+                            node_id: own.node_id.clone(),
+                            name: own.name.clone(),
+                            incarnation_id: own.incarnation_id.clone(),
+                            exit_code: None,
+                            proof: "inherited-root-provider-exit-proof".into(),
+                            observed_at_ms: 0,
+                        })
+                        .await;
+                }
                 records.set_status(status_storage.clone(), own_mesh.clone(), name.clone(), node_id.clone());
                 // The ready-for-traffic event's row among this mesh's status rows is the durable fact that the fabric
                 // first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"): an
@@ -7116,6 +7134,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 }
                                                 if fabric_primary {
                                                     records.set_published_degraded(false);
+                                                    crate::investigate::restore_peer_recovery(&me, &records, &t);
                                                 } else {
                                                     // The seat is released in one place and one order: the published `degraded` is
                                                     // held before the authority records it replaces are cleared, so no projection
@@ -7194,12 +7213,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                     tokio::select! {
                                                         _ = &mut round_wake => break,
                                                         _ = fabric_rounds.climb_due() => break,
+                                                        _ = records.wake.report_notify.notified() => break,
                                                         _ = records.view_changed.notified() => {
                                                             let now = topology.read().await.clone();
                                                             let live = membership.authorizes();
                                                             let (mp, fp) = (live && now.holds_mesh_seat(&mesh, &seat_node_id), live && now.holds_fabric_seat(&seat_node_id));
                                                             let status = now.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
-                                                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status {
+                                                            if (mp, fp) != (mesh_primary, fabric_primary) || status != mesh_status || announced.mesh_awaiting_round || announced.fabric_awaiting_round || records.peer_recovering() {
                                                                 break;
                                                             }
                                                         }
@@ -7328,7 +7348,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 // starts a reconciliation Build for proven drift.
                                                 if cut_off_view.authorizes() {
                                                     let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &exit_verdicts, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &records).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &exit_verdicts, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| (book.backbone_meshes().contains(mesh) || now.members().any(|n| n.mesh == mesh)) && !ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().recovery_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &records).await;
                                                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                                                     // proven exited is not live there, and holds no seat.
                                                     if opened.is_some() {

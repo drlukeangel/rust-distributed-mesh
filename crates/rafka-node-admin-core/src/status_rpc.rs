@@ -672,6 +672,7 @@ impl StatusAuthority {
             let reporter = sender.as_ref().and_then(|from| from.incarnation_id.clone()).map(Reporter::Birth).or_else(|| peer.map(|k| Reporter::Endpoint(k.to_string())));
             if let (Some(mesh), Some(reporter)) = (mesh, reporter) {
                 self.declared.lock().unwrap().record_report(&mesh, reporter, std::time::Instant::now());
+                self.wake.report_notify.notify_waiters();
             }
         }
         tracing::info_span!(

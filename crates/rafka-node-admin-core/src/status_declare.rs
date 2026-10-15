@@ -46,6 +46,8 @@ use tracing::Instrument;
 #[derive(Debug, Default)]
 pub struct DeclareWake {
     notify: tokio::sync::Notify,
+    /// Wakes the hierarchy and peer-mesh investigation loops when a Mesh's round-complete report arrives.
+    pub(crate) report_notify: tokio::sync::Notify,
     addressed: Mutex<BTreeSet<NodeId>>,
     /// The same down ops, counted for a `hydrate_before_ready` hook blocked on its authority's word.
     pub(crate) hydration: Arc<crate::app_hydration::Addressed>,

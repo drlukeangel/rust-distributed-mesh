@@ -453,4 +453,63 @@ impl<'a> NodeRpc<'a> {
         }
         Ok(frames)
     }
+
+    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at
+    /// `holder` to move its mesh-primary seat (and the fabric-primary seat with it in the same row when
+    /// it holds both) to its same-mesh successor.
+    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rafka_node_rpc_contract::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateRequest, Seat, SeatRevision};
+        let mesh = holder.mesh.clone();
+        let req = NodePrimaryUpdateRequest::UpdatePrimary {
+            fabric: fabric.to_string(),
+            holder: HandoverBirth {
+                mesh: mesh.clone(),
+                node_id: NodeId::parse("100000000000").expect("valid syntactic placeholder; receiver judges by its own held seats (R-UC1a)"),
+                incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("primary-update")).expect("valid syntactic placeholder"),
+            },
+            seats: vec![SeatRevision { seat: Seat::MeshPrimary { mesh }, expected_revision: 0 }],
+            build_id: build_id.to_string(),
+            attempt,
+            operation: format!("node.primary.update:{build_id}:{attempt}:{holder}"),
+        };
+        let span = NodeOp::PrimaryUpdate.span();
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(holder.clone()), &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(_) => "ok",
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::PrimaryUpdate.name(), "an object call ended"));
+        r
+    }
+
+    /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` C2): command the
+    /// fabric-primary holder at `holder` to move the fabric-primary seat (searching its own mesh first
+    /// per C2 step 1 so both seats move together when a same-mesh secondary admin is ReadyForTraffic,
+    /// and falling back to another mesh's primary per C2 step 2 when none is).
+    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rafka_node_rpc_contract::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatRevision};
+        let mesh = holder.mesh.clone();
+        let req = NodePrimaryUpdateRequest::UpdatePrimary {
+            fabric: fabric.to_string(),
+            holder: HandoverBirth {
+                mesh,
+                node_id: NodeId::parse("100000000000").expect("valid syntactic placeholder; receiver judges by its own held seats (R-UC1a)"),
+                incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("fabric-primary-update")).expect("valid syntactic placeholder"),
+            },
+            seats: vec![SeatRevision { seat: Seat::FabricPrimary, expected_revision: 0 }],
+            build_id: build_id.to_string(),
+            attempt,
+            operation: format!("node.fabric-primary.update:{build_id}:{attempt}:{holder}"),
+        };
+        let span = NodeOp::FabricPrimaryUpdate.span();
+        let (out, _) = tracing::Instrument::instrument(self.client.call::<NodePrimaryUpdate>(&NodeTarget::CurrentPath(holder.clone()), &req, opts), span.clone()).await;
+        let r: Result<NodePrimaryUpdateReply, CallEnd> = ended(out);
+        span.record("outcome", match &r {
+            Ok(_) => "ok",
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::FabricPrimaryUpdate.name(), "an object call ended"));
+        r
+    }
 }

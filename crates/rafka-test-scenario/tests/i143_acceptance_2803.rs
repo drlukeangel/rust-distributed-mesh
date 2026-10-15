@@ -376,11 +376,11 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
 /// CONTRACT (node-identity-and-state.md 2.5: "a node-admin that holds the fabric seat and finds no
 /// live node in its durable map adopts its own clock"): every runtime of the fabric is lost at once,
 /// the admins and the ordinary members alike, so no node is left that holds rafka-time. A person
-/// starts ONE node-admin on the former fabric primary's data dir with both primary flags. No node in
-/// its durable map answers the recovery pull, so it adopts its own clock at once
-/// (`rdm.mesh.entry.update.via-rafka-time-adopted{source=own-clock, reason=nothing-alive}`). The
-/// births the fabric then recreates adopt rafka-time from it. What must NOT happen: a refusal to
-/// start, a node that adopts from anyone but the holder.
+/// starts ONE node-admin on the former fabric primary's data dir with both primary flags. Every node
+/// in its durable map is confirmed gone by the provider, so it adopts its own clock at once
+/// (`rdm.mesh.entry.update.via-rafka-time-adopted{source=own-clock, reason=nothing-alive}`) without
+/// entering a recovery-pull wait. The births the fabric then recreates adopt rafka-time from it.
+/// What must NOT happen: a refusal to start, a node that adopts from anyone but the holder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     let cell = "fabric_recovery_with_no_running_node_adopts_the_holders_own_clock";
@@ -417,8 +417,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     assert_eq!(own.len(), 1, "the reborn fabric primary adopted its own clock once: {own:?}");
     assert_eq!(attr(own[0], "reason"), "nothing-alive");
     let pulls: Vec<&Value> = named(&spans, "rdm.mesh.entry.resolve.via-recovery-pull").into_iter().filter(|sp| attr(sp, "node") == holder && at(sp) >= t0).collect();
-    assert_eq!(pulls.len(), 1, "one recovery pull sweep found no live node: {pulls:?}");
-    assert_eq!(attr(pulls[0], "outcome"), "no-live-node");
+    assert!(pulls.is_empty(), "provider-confirmed Nothing Alive enters no recovery pull wait: {pulls:?}");
     let others: Vec<String> = named(&spans, "rdm.mesh.entry.update.via-rafka-time-adopted")
         .into_iter()
         .filter(|sp| at(sp) >= t0 && attr(sp, "source") == "pull" && attr(sp, "node") != holder)

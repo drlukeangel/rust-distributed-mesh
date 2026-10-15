@@ -382,12 +382,15 @@ pub async fn run(w: Watch) {
     let w = Arc::new(w);
     let inv = Investigations::new(w.me.to_string(), w.ladder.clone(), w.gate.clone());
     // When this admin took the fabric-primary seat: a peer mesh it has never heard is unheard from then.
-    let mut seat_since: Option<Instant> = None;
+    let mut never_since: BTreeMap<String, Instant> = BTreeMap::new();
+    let mut was_fabric_primary = false;
     let mut wait = w.round;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(wait) => {}
             _ = inv.landed() => {}
+            _ = w.records.wake.report_notify.notified() => {}
+            _ = w.records.view_changed.notified(), if !was_fabric_primary => {}
         }
         wait = w.round;
         // Held here while the admin is parked: its own wait, outside every lock. The turn ends with
@@ -397,29 +400,35 @@ pub async fn run(w: Watch) {
         let me = w.held_name_in(&view);
         inv.set_me(me.to_string());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
-        if !(fabric_primary && w.membership.authorizes()) {
+        was_fabric_primary = fabric_primary && w.membership.authorizes();
+        if !was_fabric_primary {
             w.ladder.lock().unwrap().clear();
-            seat_since = None;
+            never_since.clear();
             continue;
-        }
-        // The clock of a mesh never heard runs while the accepted Build is settled: from the seat, and
-        // from each settling, because a mesh the Build is still birthing has not had its chance to be heard.
-        match (w.settled)().await {
-            Ok(true) => {
-                seat_since.get_or_insert_with(Instant::now);
-            }
-            Ok(false) => seat_since = None,
-            // A store that cannot be read starts no clock: named, and the clock is reset as for a
-            // Build not settled.
-            Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node = %me, error = %e)
-                    .in_scope(|| tracing::info!("the current Build could not be read: the never-heard clock does not run on a read that failed"));
-                seat_since = None;
-            }
         }
         let book = &w.membership.book;
         let heard = book.backbone_meshes();
-        let never = if seat_since.is_some() { never_heard(&view, &me.mesh, &heard) } else { BTreeSet::new() };
+        let current_never = never_heard(&view, &me.mesh, &heard);
+        never_since.retain(|m, _| current_never.contains(m));
+        // The clock of a mesh never heard starts once the accepted Build is settled: from the seat,
+        // and from each settling, because a mesh the Build is still birthing has not had its chance
+        // to be heard; once started for a settled mesh, it runs across a subsequent Build fenced on it.
+        match (w.settled)().await {
+            Ok(true) => {
+                let track = w.ladder.lock().unwrap().rungs.track;
+                let start = Instant::now().checked_sub(track).unwrap_or_else(Instant::now);
+                for m in &current_never {
+                    never_since.entry(m.clone()).or_insert(start);
+                }
+            }
+            Ok(false) => {}
+            // A store that cannot be read starts no new clock: named.
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node = %me, error = %e)
+                    .in_scope(|| tracing::info!("the current Build could not be read: the never-heard clock does not run on a read that failed"));
+            }
+        }
+        let never: BTreeSet<String> = never_since.keys().cloned().collect();
         forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let mut tasks = Vec::new();
         let mut unheard_now = Vec::new();
@@ -428,9 +437,9 @@ pub async fn run(w: Watch) {
             unheard_now.push(mesh.clone());
             tasks.push(investigate(&w, &inv, &view, mesh, unheard));
         }
-        for mesh in never.iter().cloned() {
-            let unheard = seat_since.expect("never is empty without it").elapsed();
-            tasks.push(investigate(&w, &inv, &view, mesh, unheard));
+        for (mesh, since) in &never_since {
+            let unheard = since.elapsed();
+            tasks.push(investigate(&w, &inv, &view, mesh.clone(), unheard));
         }
         futures_util::future::join_all(tasks).await;
         // The next wake: a receipt is looked for every round, and a rung is stepped when it falls
@@ -440,11 +449,9 @@ pub async fn run(w: Watch) {
                 wait = wait.min(due);
             }
         }
-        if let Some(since) = seat_since {
-            for mesh in &never {
-                if let Some(due) = w.ladder.lock().unwrap().next_due(mesh, since.elapsed()) {
-                    wait = wait.min(due);
-                }
+        for (mesh, since) in &never_since {
+            if let Some(due) = w.ladder.lock().unwrap().next_due(mesh, since.elapsed()) {
+                wait = wait.min(due);
             }
         }
         restore_peer_recovery(&me, &w.records, &view);

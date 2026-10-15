@@ -136,12 +136,14 @@ pub fn adopt_pulled_in(parent: &tracing::Span, time: &RafkaTime, puller: Puller,
         return Err(refusal);
     }
     let adopted = time.adopt(served.ms);
+    let reason = if served.via == "join" { "join" } else { "recovery-pull" };
     tracing::info_span!(
         parent: parent,
         "rdm.mesh.entry.update.via-rafka-time-adopted",
         node,
         source = "pull",
         via = served.via,
+        reason,
         served_by = served.served_by,
         seat,
         reference_ms = adopted.reference_ms,
@@ -295,7 +297,7 @@ pub(crate) async fn adopt_from_reachable(
     parent: &tracing::Span,
 ) -> Result<String, String> {
     use rafka_node_rpc::NodeTarget;
-    let span = tracing::info_span!(parent: parent, "rdm.mesh.entry.resolve.via-recovery-pull", node = %me, contacts = contacts.len(), served_by = tracing::field::Empty, attempts = tracing::field::Empty);
+    let span = tracing::info_span!(parent: parent, "rdm.mesh.entry.resolve.via-recovery-pull", node = %me, contacts = contacts.len(), served_by = tracing::field::Empty, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
     let outcome = async {
         let mut tried: std::collections::BTreeMap<String, String> = Default::default();
         let mut attempts = 0u32;
@@ -343,8 +345,14 @@ pub(crate) async fn adopt_from_reachable(
     }
     .instrument(span.clone())
     .await;
-    if let Ok(by) = &outcome {
-        span.record("served_by", by.as_str());
+    match &outcome {
+        Ok(by) => {
+            span.record("served_by", by.as_str());
+            span.record("outcome", "adopted");
+        }
+        Err(_) => {
+            span.record("outcome", "no-live-node");
+        }
     }
     outcome
 }

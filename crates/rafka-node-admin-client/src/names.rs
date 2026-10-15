@@ -35,6 +35,12 @@ pub enum NodeOp {
     Restart,
     /// `node.delete`.
     Delete,
+    /// `node.primary.update`: move a cohort's or mesh-primary's seat (and the fabric-primary seat
+    /// with it when the holder holds both) to its same-mesh successor (`0x21`).
+    PrimaryUpdate,
+    /// `node.fabric-primary.update`: move the fabric-primary seat (`0x21`, C2 step 1 same-mesh first,
+    /// step 2 outside mesh primary when no same-mesh successor is ReadyForTraffic).
+    FabricPrimaryUpdate,
 }
 
 impl NodeOp {
@@ -55,6 +61,8 @@ impl NodeOp {
             Self::Start => "node.start",
             Self::Restart => "node.restart",
             Self::Delete => "node.delete",
+            Self::PrimaryUpdate => "node.primary.update",
+            Self::FabricPrimaryUpdate => "node.fabric-primary.update",
         }
     }
 
@@ -81,6 +89,8 @@ impl NodeOp {
             Self::Start => tracing::info_span!("rdm.node_admin.node.start.via-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Restart => tracing::info_span!("rdm.node_admin.node.restart.via-workflow", op = "node.restart", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Delete => tracing::info_span!("rdm.node_admin.node.delete.via-workflow", op = "node.delete", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
+            Self::PrimaryUpdate => tracing::info_span!("rdm.node_admin.node.primary.update.via-call", op = "node.primary.update", outcome = tracing::field::Empty),
+            Self::FabricPrimaryUpdate => tracing::info_span!("rdm.node_admin.node.fabric-primary.update.via-call", op = "node.fabric-primary.update", outcome = tracing::field::Empty),
         }
     }
 }

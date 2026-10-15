@@ -356,6 +356,20 @@ impl Nodes {
     pub async fn recipe(&self, steps: Vec<rafka_node_rpc_contract::build::RecipeStep>) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Recipe(steps.clone()), BuildChange::Recipe { steps }).await
     }
+
+    /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at
+    /// `holder` to move its mesh-primary seat (and the fabric-primary seat with it when it holds both)
+    /// to its same-mesh successor.
+    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
+        crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
+    }
+
+    /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` C2): command the
+    /// fabric-primary holder at `holder` to move the fabric-primary seat (step 1 same-mesh successor
+    /// first, step 2 outside mesh primary when no same-mesh successor is ReadyForTraffic).
+    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
+        crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
+    }
 }
 
 /// What `mesh.get` selects.
@@ -494,7 +508,7 @@ mod tests {
     fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
         use crate::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
             drop(op.span());
         }
         for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
@@ -506,7 +520,7 @@ mod tests {
         drop(MeshOp::Get.span());
         drop(FabricOp::Get.span());
         let names = spans.lock().unwrap().clone();
-        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
             let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
             let want = format!("rdm.node_admin.{}.{via}", op.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");

@@ -462,11 +462,19 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
-            if let Finding::Exited { code } = &finding {
+            let proven = if let Finding::Exited { code } = &finding {
                 // The verified loss is recorded durably: the holder's exit-proof row is what every
                 // projection reads as its proven loss.
                 let recorded = w.records.put_exit(&node, *code, "provider").await;
                 span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
+                recorded.is_ok()
+            } else {
+                false
+            };
+            if !proven {
+                if let Some(b) = birth(&node) {
+                    said.investigated.remove(&b);
+                }
             }
             span.in_scope(|| tracing::info!("a silent seat holder was looked at"));
         }
