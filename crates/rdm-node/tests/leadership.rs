@@ -2,7 +2,7 @@
 
 use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rdm_client::{NodeStatus, NodeView};
-use rafka_node_base::leadership::{fabric_primary, primary_of};
+use rdm_node::leadership::{fabric_primary, primary_of};
 
 fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
     NodeView {
@@ -71,7 +71,7 @@ fn node_base_holds_no_comparator() {
             }
         }
     }
-    assert!(files.iter().any(|f| f.ends_with("bin/rafka_node.rs")), "the scan reaches the node executable: {files:?}");
+    assert!(files.iter().any(|f| f.ends_with("workflows/node_start.rs")), "the scan reaches the node executable: {files:?}");
     let mut hits = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();

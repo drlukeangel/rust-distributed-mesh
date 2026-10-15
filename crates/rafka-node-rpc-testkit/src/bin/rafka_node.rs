@@ -4,7 +4,7 @@
 
 #[tokio::main]
 async fn main() {
-    if let Err(e) = rafka_node_base::run_launched().await {
+    if let Err(e) = rafka_node_rpc_testkit::run_proof_launched().await {
         eprintln!("rafka-node: {e:#}");
         std::process::exit(3);
     }

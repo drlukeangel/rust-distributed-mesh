@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 const APPROVED: [&str; 9] = [
-    "rafka-node-base",
+    "rdm-node",
     "rafka-node-admin-core",
     "rafka-mesh-transport",
     "rafka-mesh-telemetry",

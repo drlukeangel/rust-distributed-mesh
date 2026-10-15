@@ -130,7 +130,7 @@ pub const ACTIVE_TRANSPORT_SOURCES: &[&str] = &[
     "crates/rafka-node-rpc-contract",
     "crates/rafka-node-rpc",
     "crates/rafka-node-rpc-testkit",
-    "crates/rafka-node-base",
+    "crates/rdm-node",
     "crates/rafka-node-admin-core",
     "crates/rdm-client",
     "crates/rafka-test-scenario",
@@ -163,7 +163,7 @@ pub const RUNTIME_SOURCES: &[&str] = &[
     "crates/rafka-mesh-transport/src",
     "crates/rafka-node-rpc/src",
     "crates/rafka-node-rpc-testkit/src",
-    "crates/rafka-node-base/src",
+    "crates/rdm-node/src",
     "crates/rafka-node-admin-core/src",
     "crates/rdm-client/src",
 ];
@@ -204,7 +204,9 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rafka-node-admin-core/src/fabric_builds.rs",
     "crates/rafka-node-admin-core/src/wire.rs",
     "crates/rafka-node-admin-core/src/join.rs",
-    "crates/rafka-node-admin-core/src/topology_read.rs",
+    "crates/rdm-node/src/topology_read.rs",
+    "crates/rdm-node/src/join.rs",
+    "crates/rdm-node/src/wire.rs",
     "crates/rdm-core/src/wire.rs",
     "crates/rdm-core/src",
     "crates/rafka-node-rpc/src",
@@ -237,7 +239,7 @@ pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "demo/", "tools/"];
 pub const JOIN_SOURCE: &str = "crates/rafka-node-admin-core/src/join.rs";
 pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
-pub const TOPOLOGY_SOURCE: &str = "crates/rafka-node-admin-core/src/topology_read.rs";
+pub const TOPOLOGY_SOURCE: &str = "crates/rdm-node/src/topology_read.rs";
 pub const SEAT_FRAME_CELLS: &str = "crates/rafka-mesh-transport/tests/seat_frames_wire.rs";
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
@@ -664,7 +666,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rafka-mesh-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn seat_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rafka_mesh_transport::wire::encode", "rafka_mesh_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
-            require(root, JOIN_SOURCE, &["WireDigest::from", "crate::wire::answer_to_wire", "crate::wire::answer_from_wire"], ratchet, &mut out);
+            require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
+            require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
             require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "ProjectionEntry::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);

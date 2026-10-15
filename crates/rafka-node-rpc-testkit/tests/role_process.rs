@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rafka_node_base::{compose, Role, LEGACY_ADAPTERS};
+use rafka_node_rpc_testkit::{compose, Role, LEGACY_ADAPTERS};
 use rafka_node_rpc::{Budget, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
 use rdm_core::catalog::{EntryKind, OpOwner};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
@@ -54,7 +54,7 @@ async fn born(name: &str) -> RoleProcess {
     };
     launcher.deployed(&launch, &key);
     let role = Role::of(&launch);
-    let oracles = rafka_node_base::Oracles::open(&launch).unwrap();
+    let oracles = rafka_node_rpc_testkit::Oracles::open(&launch).unwrap();
     let running = node::start_with_seams(&launch, |b, seams| oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver, &seams.name)).await.unwrap();
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     RoleProcess { running, _launcher: launcher, launch, key, _dir: dir }
@@ -150,7 +150,7 @@ mod tempdir {
 /// process) and carries it for others, but serves no handler for it: a call there is unserved, 421.
 #[tokio::test]
 async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute() {
-    use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
+    use rafka_node_rpc_testkit::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
     let broker = born("mesh1.broker.1").await;
     let compute = born("mesh1.compute.1").await;
     let (client, target) = broker.peer().await;
@@ -176,7 +176,7 @@ async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute
 /// budget alone is not death proof: the broker still serves, on the same pooled connection.
 #[tokio::test]
 async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
-    use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest, PROOF_FAULT, PROOF_HANG};
+    use rafka_node_rpc_testkit::families::{BrokerData, BrokerDataReply, BrokerDataRequest, PROOF_FAULT, PROOF_HANG};
     let broker = born("mesh1.broker.1").await;
     let gateway = born("mesh1.gateway.1").await;
     // The gateway's live resolver learns the broker's birth, as membership would feed it.
@@ -232,7 +232,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
 /// is unchanged.
 #[tokio::test]
 async fn a_malformed_traceparent_is_dropped_and_the_call_is_unchanged() {
-    use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
+    use rafka_node_rpc_testkit::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
     use rdm_core::context::CallContext;
     let broker = born("mesh1.broker.1").await;
     let (client, target) = broker.peer().await;

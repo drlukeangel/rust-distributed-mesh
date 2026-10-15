@@ -9,16 +9,15 @@
 //! The control API's routes answer from the same view and the same held connections
 //! (`crate::control_plane`): the fold of what a node holds is written once, here.
 
-use crate::connections_writer::HeldConnections;
 use crate::model::{Node, PathName};
 use crate::topology::Topology;
-use rdm_core::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+use rdm_core::connections::{ConnectionsHeld, NodeConnection};
 use rdm_core::{GossipStats, NodeLoad};
 use crate::storage::NodesStorage;
 use crate::status_storage::StatusStorage;
 use rdm_core::NodeId;
 use rdm_core::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
-use rdm_core::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+use rdm_core::views::{DataDirLost, DataDirUnreadable, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -334,45 +333,7 @@ pub fn held_connections(held: &ConnectionsHeld) -> Vec<NodeConnection> {
     facts
 }
 
-/// One fact as a connection list carries it.
-pub fn connection_view(f: &NodeConnection) -> ConnectionView {
-    ConnectionView {
-        id: f.id.to_string(),
-        source: f.source.name.to_string(),
-        destination: f.destination.name.to_string(),
-        kind: match f.kind {
-            ConnectionKind::Direct => "direct",
-            ConnectionKind::Proxy => "proxy",
-        }
-        .into(),
-        state: match f.state {
-            ConnectionState::Connected => "connected",
-            ConnectionState::Disconnected => "disconnected",
-            ConnectionState::Failed => "failed",
-        }
-        .into(),
-        carrier: f.carrier.as_ref().map(|c| c.name.to_string()),
-        reason: f.reason.clone(),
-        logged_at_ms: f.logged_at_ms,
-    }
-}
-
-/// `node.connections.get` answered from `held`, one read of the node's connections writer: the
-/// connections the node holds (its `connected` latest Directs and its active Proxies, each named by
-/// the minted id `node.connections.delete` names it by), under the name it holds. Its span names the
-/// node, how many it answered and whether its set is complete.
-pub fn connections_answer(held: &HeldConnections) -> StatusReply {
-    let view = ConnectionsView { node: held.name.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).collect() };
-    let (node, count, complete) = (&held.name, view.connections.len(), view.complete);
-    let reply = StatusReply::within_reply_bound(StatusReply::Connections { connections: view }, "node.connections.get");
-    match &reply {
-        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %node, read = "node.connections.get", connections = count, bytes, max, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the held connections encode past the Status reply bound; nothing of them is sent")),
-        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connections-get", node = %node, connections = count, complete, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the connections the node holds answered")),
-    }
-    reply
-}
+pub use rdm_node::node_self::{connection_view, connections_answer};
 
 /// `mesh.get` answered by the node-admin `me` from its `view`; `None` for any other request
 /// (`node.get` reads the nodes store too: [`nodes_answer`]; `fabric.get` its fabric record too:

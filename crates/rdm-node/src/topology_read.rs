@@ -414,7 +414,8 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rafka_mesh_transport::members
 /// [`get_topology`] that installs nothing: each mesh is assembled by a receiver of its own, whole
 /// or not at all, and returned. A recovering admin reads a local node's topology only to know
 /// whom to reach; what it holds as members stays what it hears itself.
-pub(crate) async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
+/// Read the topology from `target`.
+pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
     let mut receiver = rafka_mesh_transport::snapshot::SnapshotReceiver::default();
     read_with(client, target, node, mesh, since, |c| receiver.take_chunk(c)).await
 }

@@ -32,6 +32,7 @@ pub const GENERIC_PACKAGES: &[&str] = &[
     "rafka-node-rpc",
     "rafka-node-admin-core",
     "rdm-client",
+    "rdm-node",
     "rafka-test-scenario",
     "rafka-node-rpc-testkit",
     "rafka-chaos",
@@ -48,6 +49,7 @@ pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rafka-test-scenario", "rafka-
 pub const PUBLIC_INTERFACES: &[&str] = &[
     "rafka-chaos",
     "rdm-client",
+    "rdm-node",
     "rdm-core",
     "rafka-node-rpc-testkit",
     "rafka-test-scenario",

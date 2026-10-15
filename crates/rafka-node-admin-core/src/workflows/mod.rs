@@ -21,7 +21,7 @@ pub mod node_primary_update;
 pub mod node_recovery;
 pub mod node_restart;
 pub mod node_runtime_inspect;
-pub mod node_start;
+pub use rdm_node::workflows::node_start;
 pub mod node_status;
 pub mod node_stop;
 pub mod node_tickle;

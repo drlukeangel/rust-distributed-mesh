@@ -23,7 +23,10 @@
 //! Nothing here waits on an answer for correctness: a lost reply is the commander's indeterminate,
 //! never this node's retry.
 
+use crate::connections_writer::HeldConnections;
 use crate::model::{IncarnationId, NodeId, PathName};
+use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
+use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcClient, NodeRpcServer, NodeTarget};
@@ -260,9 +263,9 @@ pub struct NodeSelf {
     /// `node.connections.delete` are written; filled once the process holds it.
     connections: Mutex<Option<Arc<crate::connections_writer::ConnectionsWriter>>>,
     /// What this birth completes before it checks in to a commit-state or open-traffic round.
-    round_actions: Mutex<Arc<dyn crate::fabric_rounds::RoundActions>>,
+    round_actions: Mutex<Arc<dyn crate::rounds::RoundActions>>,
     /// The rounds this birth took, by round, and how far it took each.
-    rounds_seen: Mutex<std::collections::HashMap<crate::fabric_state::RoundKey, RoundProgress>>,
+    rounds_seen: Mutex<std::collections::HashMap<crate::rounds::RoundKey, RoundProgress>>,
 }
 
 impl NodeSelf {
@@ -281,7 +284,7 @@ impl NodeSelf {
         declare: Option<Declare>,
         connections_delete_deadline: Duration,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -336,7 +339,7 @@ impl NodeSelf {
     pub async fn connections_get(&self) -> StatusReply {
         let writer = self.connections.lock().unwrap().clone();
         match writer {
-            Some(w) => crate::views::connections_answer(&w.held_connections().await),
+            Some(w) => connections_answer(&w.held_connections().await),
             None => StatusReply::NotReady { reason: format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name()) },
         }
     }
@@ -526,13 +529,13 @@ impl NodeSelf {
     }
 
     /// This surface, completing `actions` before it checks in to a round.
-    pub fn with_round_actions(self, actions: Arc<dyn crate::fabric_rounds::RoundActions>) -> Self {
+    pub fn with_round_actions(self, actions: Arc<dyn crate::rounds::RoundActions>) -> Self {
         self.set_round_actions(actions);
         self
     }
 
     /// Complete `actions` before checking in to a round, from the next round this birth takes.
-    pub fn set_round_actions(&self, actions: Arc<dyn crate::fabric_rounds::RoundActions>) {
+    pub fn set_round_actions(&self, actions: Arc<dyn crate::rounds::RoundActions>) {
         *self.round_actions.lock().unwrap() = actions;
     }
 
@@ -543,7 +546,7 @@ impl NodeSelf {
     /// the check-in is made to the commander that sends it, at once when the action is stored and
     /// otherwise once it is. That is how a new primary's checklist rebuilds itself.
     fn serve_round(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> StatusReply {
-        let op = crate::fabric_state::RoundOp::of(req).expect("a round op");
+        let op = crate::rounds::RoundOp::of(req).expect("a round op");
         // Answered by the birth the call reached (R-RX5: no receiver refuses a downward call for the
         // node id it names); the exact birth it names is checked, so a call that reached another
         // birth is refused naming the one held.
@@ -593,12 +596,12 @@ impl NodeSelf {
 
     /// The round of this birth: its action (once per round), then the completion call at its
     /// commander and at every commander that sent the round while the action ran.
-    async fn round(self: Arc<Self>, commander: NodeId, key: crate::fabric_state::RoundKey, parent: tracing::Span) {
+    async fn round(self: Arc<Self>, commander: NodeId, key: crate::rounds::RoundKey, parent: tracing::Span) {
         use tracing::Instrument;
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.held_name(), round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = true, "otel.kind" = "internal");
         async {
             let actions = self.round_actions.lock().unwrap().clone();
-            if let Err(e) = crate::fabric_rounds::run_action(&*actions, &self.held_name(), key.kind).await {
+            if let Err(e) = crate::rounds::run_action(&*actions, &self.held_name(), key.kind).await {
                 tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %self.held_name(), round = key.kind.command(), error = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("this birth's action failed: it owes no check-in"));
                 // Nobody is owed a check-in; the next command of the round runs the action afresh.
@@ -622,17 +625,17 @@ impl NodeSelf {
 
     /// The check-in of a round whose action this birth already stored, made to `commander`: the
     /// action is not run again.
-    async fn check_in_again(self: Arc<Self>, commander: NodeId, key: crate::fabric_state::RoundKey, parent: tracing::Span) {
+    async fn check_in_again(self: Arc<Self>, commander: NodeId, key: crate::rounds::RoundKey, parent: tracing::Span) {
         use tracing::Instrument;
         let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-member-round", node = %self.held_name(), round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, acted = false, "otel.kind" = "internal");
         self.check_in(&commander, &key).instrument(span).await
     }
 
     /// The check-in hook, then the completion call at `commander`, naming `key`'s round.
-    async fn check_in(&self, commander: &NodeId, key: &crate::fabric_state::RoundKey) {
+    async fn check_in(&self, commander: &NodeId, key: &crate::rounds::RoundKey) {
         let req = key.kind.up(key, self.node_id.clone(), self.incarnation.clone());
         // The check-in hook runs in the path of the completion call, before it goes out.
-        let frame = crate::fabric_state::hook_frame(key, true, self.node_id.clone(), self.incarnation.clone(), &self.held_name().to_string(), self.membership.clock().now_rafka_ms());
+        let frame = crate::rounds::hook_frame(key, true, self.node_id.clone(), self.incarnation.clone(), &self.held_name().to_string(), self.membership.clock().now_rafka_ms());
         let channels = if self.backbone.is_some() { "mesh,backbone" } else { "mesh" };
         tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.held_name(), round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the check-in hook is published"));
@@ -675,7 +678,7 @@ impl NodeSelf {
             return Some(self.serve_delete_connections(commander, scope).await);
         }
         if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. }) {
-            return Some(crate::node_commands::refuse_reserved(&self.held_name().to_string(), &named(commander), req));
+            return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
         }
         if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
             if *incarnation != self.incarnation {
@@ -999,7 +1002,7 @@ impl NodeSelf {
                     Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
                     Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return StatusReply::AlreadyApplied,
                     Cycle::Live(_) => {
-                        return StatusReply::RejectedInvalidNodeTransition { current: crate::status_rpc::declared_of_member((self.status)()) };
+                        return StatusReply::RejectedInvalidNodeTransition { current: crate::status::declared_of_member((self.status)()) };
                     }
                 }
             };
@@ -1092,3 +1095,100 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
+
+/// What a receiver of a `NodeLeft` call holds instead of a command it could complete: nothing, by
+/// design (node-rpc-envelope.md, "Node stop command pair").
+pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
+
+/// What a reserved `DrainNode` or `NodeDrained` is refused with: neither is ever a call (R-CR4).
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: DrainNode and NodeDrained are reserved positions, never sent; a node's connections are deleted by node.connections.delete";
+
+/// A reserved `DrainNode` or `NodeDrained` at `receiver` (node-rpc-envelope.md "Node stop command
+/// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
+pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation }) = req else {
+        unreachable!("refuse_reserved is called for the reserved pair only")
+    };
+    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
+    tracing::info_span!(
+        "rdm.node_admin.status.reject.via-reserved-position",
+        node = %receiver, op = req.op(), operation = %operation, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.as_str(),
+        caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
+    )
+    .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
+    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: RETIRED_PAIR_IS_RESERVED.into(), reported }
+}
+
+/// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
+/// "Node stop command pair": "NodeLeft keeps its position and is never sent; a receiver refuses it by
+/// name"). A stop's completion is its `Stopped` reply, so no command is open that a node-left call
+/// completes: it is `RejectedUnmatchedCompletion { field: "command" }`, `expected` what the receiver
+/// holds instead ([`NODE_LEFT_IS_NEVER_A_CALL`]) and `reported` what the call named. Nothing is
+/// completed, whatever command is open for the birth. `name` is the subject's path.name as the
+/// receiver holds it (empty when it holds none) and `caller` who called, both for the reject span
+/// only; nothing checks who is calling (node-rpc.md §14). Never `NotReady`, the readiness gate's
+/// answer (R-NR1).
+pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRequest) -> StatusReply {
+    let StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } = req else { unreachable!("refuse_node_left is called for node-left only") };
+    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
+    tracing::info_span!(
+        "rdm.node_admin.status.reject.via-node-left",
+        node = %receiver,
+        op = req.op(),
+        operation = %operation,
+        build_id = %build_id,
+        attempt = *attempt,
+        subject = %node_id,
+        incarnation_id = %incarnation.as_str(),
+        name = %name,
+        caller = %caller,
+        field = "command",
+        expected = NODE_LEFT_IS_NEVER_A_CALL,
+        reported = %reported,
+        "otel.kind" = "internal"
+    )
+    .in_scope(|| tracing::info!("a node-left call was refused by name: it is never a call, and it completes no command"));
+    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_IS_NEVER_A_CALL.into(), reported }
+}
+
+
+/// One fact as a connection list carries it.
+pub fn connection_view(f: &NodeConnection) -> ConnectionView {
+    ConnectionView {
+        id: f.id.to_string(),
+        source: f.source.name.to_string(),
+        destination: f.destination.name.to_string(),
+        kind: match f.kind {
+            ConnectionKind::Direct => "direct",
+            ConnectionKind::Proxy => "proxy",
+        }
+        .into(),
+        state: match f.state {
+            ConnectionState::Connected => "connected",
+            ConnectionState::Disconnected => "disconnected",
+            ConnectionState::Failed => "failed",
+        }
+        .into(),
+        carrier: f.carrier.as_ref().map(|c| c.name.to_string()),
+        reason: f.reason.clone(),
+        logged_at_ms: f.logged_at_ms,
+    }
+}
+
+/// `node.connections.get` answered from `held`, one read of the node's connections writer: the
+/// connections the node holds (its `connected` latest Directs and its active Proxies, each named by
+/// the minted id `node.connections.delete` names it by), under the name it holds. Its span names the
+/// node, how many it answered and whether its set is complete.
+pub fn connections_answer(held: &HeldConnections) -> StatusReply {
+    let view = ConnectionsView { node: held.name.to_string(), complete: held.complete, connections: held.routes.iter().map(connection_view).collect() };
+    let (node, count, complete) = (&held.name, view.connections.len(), view.complete);
+    let reply = StatusReply::within_reply_bound(StatusReply::Connections { connections: view }, "node.connections.get");
+    match &reply {
+        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.node.reject.via-over-bound", node = %node, read = "node.connections.get", connections = count, bytes, max, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the held connections encode past the Status reply bound; nothing of them is sent")),
+        _ => tracing::info_span!("rdm.node_admin.node.serve.via-connections-get", node = %node, connections = count, complete, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the connections the node holds answered")),
+    }
+    reply
+}
+

@@ -6,14 +6,16 @@
 
 pub use rdm_core::launch;
 pub mod node;
-mod taskdump;
+pub(crate) use rdm_node::taskdump;
 /// The app's `hydrate_before_ready` hook and everything it is handed.
-pub use rafka_node_admin_core::app_hydration;
-pub mod node_rpc;
+pub use rdm_node::app_hydration;
+pub use rdm_node::{executable_name, launch_for, read_launch, Role};
+pub use rdm_node::node_rpc;
 pub mod declare_probe;
 pub mod hydrate_probe;
 pub mod proof_store;
-pub mod held_name;
+pub mod families;
+pub use rdm_node::held_name;
 pub mod resolve_probe;
 pub mod faults;
 pub mod originate;
@@ -115,4 +117,180 @@ mod tests {
         assert_eq!(std::fs::read_to_string(hydrate_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
         let _ = std::fs::remove_dir_all(&root);
     }
+}
+
+// ── Proof-Node Families & Oracles (from former rafka-node-base) ──────────────
+
+/// The product family every role's own tags are ledgered under.
+pub(crate) const PRODUCT: &str = "rdm-roles";
+
+/// One live legacy op a product serves through a transitional adapter until its named cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LegacyAdapter {
+    /// The legacy op's tag byte.
+    pub op: u8,
+    /// The op's catalog name.
+    pub name: &'static str,
+    /// The product the core ledger reserves the op for.
+    pub owner: &'static str,
+    /// The migration unit that retires the adapter.
+    pub migration_unit: &'static str,
+}
+
+/// The proof product's transitional adapters: the ledgered Rafka reservations it stands in for.
+pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter {
+    op: 0x12,
+    name: "data-frame",
+    owner: "rafka",
+    migration_unit: "i142 U6",
+}];
+
+/// Compose this process's catalog beyond the core: the role's own families and the product's
+/// transitional adapters, into the one builder that seals once (i141 PRD §16).
+pub fn compose(
+    role: Role,
+    served_by: &str,
+    b: rafka_node_rpc::ServerBuilder,
+    client: std::sync::Arc<rafka_node_rpc::NodeRpcClient>,
+) -> rafka_node_rpc::ServerBuilder {
+    let b = families::for_kind(role.kind, served_by, b, client);
+    LEGACY_ADAPTERS.iter().fold(b, |b, a| {
+        b.adapter(rdm_core::catalog::CatalogEntry::transitional(
+            a.op,
+            a.name,
+            a.owner,
+            a.migration_unit,
+            64 * 1024,
+        ))
+    })
+}
+
+/// The testkit's oracles the proof estate's probe speaks, served by every role.
+pub struct Oracles {
+    /// The data-dir key-value store the proof store protocol serves.
+    pub store: std::sync::Arc<crate::proof_store::FileProofStore>,
+    /// The declare oracle calls out through the process's one client, set once the node runs.
+    pub declare_client: std::sync::Arc<std::sync::OnceLock<crate::node_rpc::ProcessNodeRpc>>,
+}
+
+impl Oracles {
+    /// Open the oracles under `launch`'s data directory.
+    pub fn open(launch: &rdm_core::launch::Launch) -> anyhow::Result<Self> {
+        let store = crate::proof_store::FileProofStore::open(&launch.data_dir)
+            .map_err(|e| anyhow::anyhow!("the proof store refused to open: {e}"))?;
+        Ok(Self {
+            store: std::sync::Arc::new(store),
+            declare_client: std::sync::Arc::new(std::sync::OnceLock::new()),
+        })
+    }
+
+    /// Add the proof store, resolve probe and declare probe protocols to `b`.
+    pub fn serve(
+        &self,
+        b: rafka_node_rpc::ServerBuilder,
+        launch: &rdm_core::launch::Launch,
+        resolver: std::sync::Arc<rafka_node_rpc::LiveNodeResolver>,
+        name: &crate::held_name::HeldName,
+    ) -> rafka_node_rpc::ServerBuilder {
+        crate::declare_probe::serve(
+            crate::resolve_probe::serve(
+                crate::proof_store::serve(b, self.store.clone(), launch, name),
+                resolver,
+                launch,
+                name,
+            ),
+            self.declare_client.clone(),
+            launch,
+        )
+    }
+}
+
+/// The one proof-node executable's run (`rafka-node`).
+pub async fn run_proof_launched() -> anyhow::Result<()> {
+    run_proof(Role::of(&read_launch()?)).await
+}
+
+/// Run a proof role process to completion with testkit seams and oracles.
+pub async fn run_proof(role: Role) -> anyhow::Result<()> {
+    run_proof_with(role, crate::app_hydration::Hydration::none(), |b| b).await
+}
+
+/// [`run_proof`] for a proof role that hydrates before Ready.
+pub async fn run_proof_with(
+    role: Role,
+    hydration: crate::app_hydration::Hydration,
+    serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder,
+) -> anyhow::Result<()> {
+    crate::node::listen_for_stop();
+    let executable = executable_name()?;
+    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&executable);
+    let launch = launch_for(role)?;
+    let boot = tracing::info_span!(
+        "rdm.mesh.node.create.via-deployment",
+        node = %launch.name,
+        node_id = %launch.node_id,
+        incarnation_id = %launch.incarnation,
+        kind = role.name(),
+        executable = %executable,
+    );
+    if let Ok(tp) = std::env::var("TRACEPARENT") {
+        rafka_mesh_telemetry::set_parent(&boot, &tp);
+    }
+    let oracles = Oracles::open(&launch)?;
+    let running = {
+        use tracing::Instrument;
+        let started = crate::node::start_hydrating(&launch, hydration, |b, seams| {
+            serve_app(oracles.serve(
+                compose(role, &launch.node_id.to_string(), b, seams.client),
+                &launch,
+                seams.resolver,
+                &seams.name,
+            ))
+        })
+        .instrument(tracing::Span::none());
+        let started = tokio::select! {
+            r = started => r,
+            () = crate::node::stop_requested() => {
+                boot.in_scope(|| tracing::info!("stopped by signal before the node booted"));
+                drop(boot);
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = false).in_scope(|| tracing::info!("stopping"));
+                return Ok(());
+            }
+        };
+        started.map_err(|e| {
+            boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
+            e
+        })?
+    };
+    let _ = oracles.declare_client.set(running.node_rpc.clone());
+    let served = running.server.catalog().entries().count();
+    boot.in_scope(|| tracing::info!(served, kind = role.name(), "role process serving on the imported substrate"));
+    drop(boot);
+    println!("RDM_NODE_READY {}", launch.node_id);
+    let ended = tokio::select! {
+        () = crate::node::wait_for_signal(&executable) => None,
+        why = running.hydration_failed() => Some(why),
+    };
+    if let Some(why) = ended {
+        tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("hydrate_before_ready failed; this node ends"));
+        running.stop(std::time::Duration::ZERO).await;
+        return Err(anyhow::anyhow!("{} failed hydrate_before_ready: {why}", launch.name));
+    }
+    if !crate::node::stop_commanded() {
+        let deadline = crate::node::drain_deadline_from_env();
+        let drain = tracing::info_span!("rdm.mesh.node.update.via-drain", node = %launch.name, incarnation_id = %launch.incarnation, deadline_ms = deadline.as_millis() as u64, in_flight_at_deadline = tracing::field::Empty);
+        let left = {
+            use tracing::Instrument;
+            running.drain(deadline).instrument(drain.clone()).await
+        };
+        drain.record("in_flight_at_deadline", left);
+        drop(drain);
+    }
+    tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
+    if crate::node::stop_commanded() {
+        running.stop_commanded().await;
+    } else {
+        running.stop(crate::node::leave_linger_from_env()).await;
+    }
+    Ok(())
 }

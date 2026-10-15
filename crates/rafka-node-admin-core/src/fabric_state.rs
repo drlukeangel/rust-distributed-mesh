@@ -10,11 +10,9 @@
 //! only when it checks in as its planned birth, after the primary received this round's down op.
 //! Nothing leaves a checklist by a timer.
 
-use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeStatus};
+use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
 use crate::status_declare::{eligible, Destination, Sent};
 use crate::topology::Topology;
-use rdm_core::RoundHook;
-use rafka_mesh_transport::membership::Frame;
 use crate::round::Missing;
 use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -142,131 +140,7 @@ pub const READY_ROW_ON_ROOT: &str = "ready-for-traffic-row-on-store-root";
 /// admin's own mesh's row is put.
 pub const READY_ROW_OF_FABRIC_PRIMARY: &str = "ready-for-traffic-row-of-the-fabric-primary-on-store-root";
 
-/// Which of the two rounds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum RoundKind {
-    /// commit-state / state-committed.
-    StateCommit,
-    /// open-traffic / traffic-opened.
-    OpenTraffic,
-}
-
-impl RoundKind {
-    /// The down op's name.
-    pub fn command(self) -> &'static str {
-        match self {
-            Self::StateCommit => "commit-state",
-            Self::OpenTraffic => "open-traffic",
-        }
-    }
-
-    /// The up op's name.
-    pub fn completion(self) -> &'static str {
-        match self {
-            Self::StateCommit => "state-committed",
-            Self::OpenTraffic => "traffic-opened",
-        }
-    }
-
-    /// The round's operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`.
-    pub fn operation(self, fabric_id: &FabricId) -> String {
-        format!("{}:{}", self.command(), fabric_id)
-    }
-
-    /// The down op naming `node_id`/`incarnation` as its subject.
-    pub fn down(self, key: &RoundKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
-        let (fabric_id, build_id, attempt, operation) = (key.fabric_id.clone(), key.build_id.clone(), key.attempt, self.operation(&key.fabric_id));
-        match self {
-            Self::StateCommit => StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation },
-            Self::OpenTraffic => StatusRequest::OpenTraffic { fabric_id, node_id, incarnation, build_id, attempt, operation },
-        }
-    }
-
-    /// The up op reporting `node_id`/`incarnation`.
-    pub fn up(self, key: &RoundKey, node_id: NodeId, incarnation: IncarnationId) -> StatusRequest {
-        let (fabric_id, build_id, attempt, operation) = (key.fabric_id.clone(), key.build_id.clone(), key.attempt, self.operation(&key.fabric_id));
-        match self {
-            Self::StateCommit => StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation },
-            Self::OpenTraffic => StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation },
-        }
-    }
-}
-
-/// The gossip hook frame of a round op (gossip.md, "Fabric round gossip hooks"): `StateCommitting`
-/// or `TrafficOpening` for a command (`up == false`), `StateCommitted` or `TrafficOpened` for a
-/// check-in. The subject is `node_id`/`incarnation`; `publisher` is the author at this hop.
-pub fn hook_frame(key: &RoundKey, up: bool, node_id: NodeId, incarnation: IncarnationId, publisher: &str, event_at_rafka_ms: u64) -> Frame {
-    let hook = RoundHook {
-        fabric_id: key.fabric_id.clone(),
-        node_id,
-        incarnation,
-        build_id: key.build_id.clone(),
-        attempt: key.attempt,
-        operation: key.kind.operation(&key.fabric_id),
-        publisher: publisher.to_string(),
-        event_at_rafka_ms,
-    };
-    let forwarded_by = None;
-    match (key.kind, up) {
-        (RoundKind::StateCommit, false) => Frame::StateCommitting { hook, forwarded_by },
-        (RoundKind::StateCommit, true) => Frame::StateCommitted { hook, forwarded_by },
-        (RoundKind::OpenTraffic, false) => Frame::TrafficOpening { hook, forwarded_by },
-        (RoundKind::OpenTraffic, true) => Frame::TrafficOpened { hook, forwarded_by },
-    }
-}
-
-/// The fields every round op carries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoundOp<'a> {
-    /// Which round.
-    pub kind: RoundKind,
-    /// Down (command) or up (completion).
-    pub is_down: bool,
-    /// The fabric.
-    pub fabric_id: &'a FabricId,
-    /// The subject.
-    pub node_id: &'a NodeId,
-    /// The subject's birth.
-    pub incarnation: &'a IncarnationId,
-    /// The Build.
-    pub build_id: &'a str,
-    /// The attempt.
-    pub attempt: u32,
-    /// The operation.
-    pub operation: &'a str,
-}
-
-impl<'a> RoundOp<'a> {
-    /// The round op `req` is, when it is one.
-    pub fn of(req: &'a StatusRequest) -> Option<Self> {
-        let (kind, is_down, fabric_id, node_id, incarnation, build_id, attempt, operation) = match req {
-            StatusRequest::CommitState { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::StateCommit, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::StateCommitted { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::StateCommit, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::OpenTraffic { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::OpenTraffic, true, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            StatusRequest::TrafficOpened { fabric_id, node_id, incarnation, build_id, attempt, operation } => (RoundKind::OpenTraffic, false, fabric_id, node_id, incarnation, build_id, *attempt, operation),
-            _ => return None,
-        };
-        Some(Self { kind, is_down, fabric_id, node_id, incarnation, build_id, attempt, operation })
-    }
-
-    /// The round this op belongs to.
-    pub fn key(&self) -> RoundKey {
-        RoundKey { kind: self.kind, fabric_id: self.fabric_id.clone(), build_id: self.build_id.to_string(), attempt: self.attempt }
-    }
-}
-
-/// A round: the Build and attempt it belongs to, in one fabric.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RoundKey {
-    /// Which round.
-    pub kind: RoundKind,
-    /// The fabric.
-    pub fabric_id: FabricId,
-    /// The accepted Build.
-    pub build_id: String,
-    /// Its attempt.
-    pub attempt: u32,
-}
+pub use rdm_node::rounds::{hook_frame, RoundKey, RoundKind, RoundOp};
 
 /// A planned birth a checklist names.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -555,6 +429,7 @@ impl RoundBook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::FabricId;
 
     fn key(build: &str, attempt: u32, f: &FabricId) -> RoundKey {
         RoundKey { kind: RoundKind::StateCommit, fabric_id: f.clone(), build_id: build.into(), attempt }

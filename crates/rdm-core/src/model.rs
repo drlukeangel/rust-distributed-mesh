@@ -297,3 +297,12 @@ mod tests {
         assert!(!NodeStatus::PendingReconnect.is_live());
     }
 }
+
+/// A fabric's durable identity: its Crockford ULID and its human-readable name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FabricIdentity {
+    /// The fabric's Crockford ULID.
+    pub fabric_id: FabricId,
+    /// The fabric's name.
+    pub name: String,
+}

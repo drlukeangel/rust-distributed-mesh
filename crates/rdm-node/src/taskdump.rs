@@ -15,12 +15,12 @@ use std::future::Future;
 
 /// `fut`, awaited; with the capture build and `RDM_TASKDUMP_AFTER_MS` set, a hang is dumped.
 #[cfg(not(all(tokio_unstable, tokio_taskdump)))]
-pub(crate) async fn watched<F: Future>(_what: &'static str, fut: F) -> F::Output {
+pub async fn watched<F: Future>(_what: &'static str, fut: F) -> F::Output {
     fut.await
 }
 
 #[cfg(all(tokio_unstable, tokio_taskdump))]
-pub(crate) async fn watched<F: Future>(what: &'static str, fut: F) -> F::Output {
+pub async fn watched<F: Future>(what: &'static str, fut: F) -> F::Output {
     use std::fmt::Write;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};

@@ -35,15 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::Mutex;
 
-/// The Fabric's immutable identity row: written once, by Day 0 or by the admin that first hears it,
-/// and never rewritten.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricIdentity {
-    /// The fabric's minted id.
-    pub fabric_id: FabricId,
-    /// The fabric's name.
-    pub name: String,
-}
+pub use rdm_core::model::FabricIdentity;
 
 /// What a claim of the fabric's name wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,37 @@
+[package]
+autotests = false
+name = "rdm-node"
+version = "0.1.0"
+edition = "2021"
+description = "The product node runtime: role process and member-side handlers composed on the imported Mesh substrate"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+rdm-client = { path = "../rdm-client" }
+rafka-mesh-transport = { path = "../rafka-mesh-transport" }
+rafka-node-rpc = { path = "../rafka-node-rpc" }
+rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
+anyhow = { workspace = true }
+async-trait = "0.1"
+hex = { workspace = true }
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+libc = "0.2"
+rand = { workspace = true }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(tokio_taskdump)"] }

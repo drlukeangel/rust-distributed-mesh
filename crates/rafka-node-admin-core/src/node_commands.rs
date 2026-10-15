@@ -254,60 +254,9 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
     }
 }
 
-/// What a receiver of a `NodeLeft` call holds instead of a command it could complete: nothing, by
-/// design (node-rpc-envelope.md, "Node stop command pair").
-pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
-
-/// What a reserved `DrainNode` or `NodeDrained` is refused with: neither is ever a call (R-CR4).
-pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: DrainNode and NodeDrained are reserved positions, never sent; a node's connections are deleted by node.connections.delete";
-
-/// A reserved `DrainNode` or `NodeDrained` at `receiver` (node-rpc-envelope.md "Node stop command
-/// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
-pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation }) = req else {
-        unreachable!("refuse_reserved is called for the reserved pair only")
-    };
-    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
-    tracing::info_span!(
-        "rdm.node_admin.status.reject.via-reserved-position",
-        node = %receiver, op = req.op(), operation = %operation, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.as_str(),
-        caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
-    )
-    .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
-    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: RETIRED_PAIR_IS_RESERVED.into(), reported }
-}
-
-/// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
-/// "Node stop command pair": "NodeLeft keeps its position and is never sent; a receiver refuses it by
-/// name"). A stop's completion is its `Stopped` reply, so no command is open that a node-left call
-/// completes: it is `RejectedUnmatchedCompletion { field: "command" }`, `expected` what the receiver
-/// holds instead ([`NODE_LEFT_IS_NEVER_A_CALL`]) and `reported` what the call named. Nothing is
-/// completed, whatever command is open for the birth. `name` is the subject's path.name as the
-/// receiver holds it (empty when it holds none) and `caller` who called, both for the reject span
-/// only; nothing checks who is calling (node-rpc.md §14). Never `NotReady`, the readiness gate's
-/// answer (R-NR1).
-pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } = req else { unreachable!("refuse_node_left is called for node-left only") };
-    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
-    tracing::info_span!(
-        "rdm.node_admin.status.reject.via-node-left",
-        node = %receiver,
-        op = req.op(),
-        operation = %operation,
-        build_id = %build_id,
-        attempt = *attempt,
-        subject = %node_id,
-        incarnation_id = %incarnation.as_str(),
-        name = %name,
-        caller = %caller,
-        field = "command",
-        expected = NODE_LEFT_IS_NEVER_A_CALL,
-        reported = %reported,
-        "otel.kind" = "internal"
-    )
-    .in_scope(|| tracing::info!("a node-left call was refused by name: it is never a call, and it completes no command"));
-    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_IS_NEVER_A_CALL.into(), reported }
-}
+pub use rdm_node::node_self::{
+    refuse_node_left, refuse_reserved, NODE_LEFT_IS_NEVER_A_CALL, RETIRED_PAIR_IS_RESERVED,
+};
 
 #[cfg(test)]
 mod tests {

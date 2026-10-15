@@ -1,4 +1,4 @@
-//! The rpc node's one Node RPC client and the live resolver it dials through,
+//! A process's one Node RPC client and the live resolver it dials through,
 //! fed by the process's own membership.
 //!
 //! This is process composition: membership (`rafka-mesh-transport`) and Node
@@ -6,8 +6,6 @@
 //! calls Node RPC (node-admin, the rpc node) builds one [`ProcessNodeRpc`] on
 //! its endpoint when it starts, holds it in its running state and hands it to
 //! every caller by clone; nothing builds a resolver or a client per call.
-//! Node-admin composes the same mapping in `rafka_node_admin_core::node_rpc`;
-//! the rpc node never links node-admin.
 
 use rdm_core::MeshDigest;
 use rafka_mesh_transport::membership::DigestBook;
@@ -33,13 +31,28 @@ impl ProcessNodeRpc {
     /// The same, on a resolver made earlier (a server handler may hold it
     /// before the endpoint is bound).
     pub fn start_with(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
-        let client = Arc::new(NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm"));
-        Self::with_client(resolver, client, book, node)
+        let me = Self::new(resolver, endpoint);
+        let feed = me.feed(book, node);
+        (me, feed)
+    }
+
+    /// The process's one client on `endpoint`, dialling through `resolver`, before any membership
+    /// exists: a node's first call (its `JoinNode`) goes through it, and [`Self::feed`] starts the
+    /// resolver's membership feed once the process holds a book. The client writes nothing to the
+    /// connections log: Node RPC is control plane, no connection (R-CR5).
+    pub fn new(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint) -> Self {
+        let client = NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm");
+        Self { resolver, client: Arc::new(client) }
+    }
+
+    /// Feed this process's resolver from `book` for as long as the returned task runs.
+    pub fn feed(&self, book: &DigestBook, node: &str) -> tokio::task::JoinHandle<()> {
+        spawn_feed(book.clone(), self.resolver.clone(), node.to_string())
     }
 
     /// The same, on a client made earlier (a server that carries for others holds the
     /// process's one client before it seals).
-    pub(crate) fn with_client(resolver: Arc<LiveNodeResolver>, client: Arc<NodeRpcClient>, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
+    pub fn with_client(resolver: Arc<LiveNodeResolver>, client: Arc<NodeRpcClient>, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
         let feed = spawn_feed(book.clone(), resolver.clone(), node.to_string());
         (Self { resolver, client }, feed)
     }
@@ -66,6 +79,14 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
         if applied == Applied::Departed {
             tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
+        }
+    }
+    // A parked birth (its stop published): the book dropped it, and so does the path it held.
+    let parked = book.parked().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
+    for (node_id, incarnation, name) in parked {
+        if resolver.park(&node_id, &incarnation) {
+            tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Parked")
+                .in_scope(|| tracing::info!("the resolver holds the parked birth by its exact id only: its path is given up"));
         }
     }
     for d in book.all() {

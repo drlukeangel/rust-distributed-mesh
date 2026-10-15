@@ -325,7 +325,7 @@ pub(crate) fn package_of(name: &str) -> &'static str {
     match name {
         "rafka-node-admin" => "rafka-node-admin-core",
         "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rafka-node-rpc-testkit",
-        "rafka-node" => "rafka-node-base",
+        "rafka-node" => "rafka-node-rpc-testkit",
         _ => "<the package of this binary>",
     }
 }

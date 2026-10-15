@@ -3106,29 +3106,12 @@ dependencies = [
  "rand 0.8.6",
  "rdm-client",
  "rdm-core",
+ "rdm-node",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rafka-node-base"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "iroh",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-admin-core",
- "rafka-node-rpc",
- "rafka-node-rpc-testkit",
- "rdm-client",
- "rdm-core",
- "serde",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3170,6 +3153,7 @@ dependencies = [
  "rafka-node-rpc-testkit",
  "rdm-client",
  "rdm-core",
+ "rdm-node",
  "serde",
  "serde_json",
  "tokio",
@@ -3321,6 +3305,28 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tracing",
+]
+
+[[package]]
+name = "rdm-node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "libc",
+ "rafka-mesh-telemetry",
+ "rafka-mesh-transport",
+ "rafka-node-rpc",
+ "rand 0.8.6",
+ "rdm-client",
+ "rdm-core",
+ "serde",
+ "serde_json",
+ "tokio",
  "tracing",
 ]
 

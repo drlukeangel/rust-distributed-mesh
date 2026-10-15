@@ -134,7 +134,7 @@ impl StoreRoot {
     }
 
     /// `meshes/<mesh>/`: the mesh's own rows beside its Mesh row (`meshes/<mesh>/claims/`, its
-    /// in-flight attempt: `crate::mesh_claims`; `meshes/<mesh>/builds/`, its Build receipts: R-BI6).
+    /// in-flight attempt: ``mesh_claims``; `meshes/<mesh>/builds/`, its Build receipts: R-BI6).
     pub fn meshes(&self, mesh: &str) -> PathBuf {
         self.dir.join("meshes").join(mesh)
     }
