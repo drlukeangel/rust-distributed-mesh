@@ -5,7 +5,7 @@
 //! unheard birth's runtime and opens the next attempt of the accepted Build on proof),
 //! the fabric-primary's drive (`DriveEnv::run`: the claim on its own log, `accepted::plan`, `executor_for`,
 //! `build.attempt.run` to each executor in turn, hand-off, receipts),
-//! `election::resolve` (the seats), and `fence::fence` before every create — over a world
+//! `election::resolve` (the seats), and `seat_revision::fence` before every create — over a world
 //! fixture: a provider whose runtimes run or have exited, and a probe answering whether a birth
 //! answers. Only the world is a fixture; every decision is the product code's.
 //!
@@ -30,7 +30,7 @@ use rafka_node_admin_core::build_state::{BuildState, BuildStateAdapter as _, Mem
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, OpenGate};
 use rafka_node_admin_core::executor::OperationRunner;
-use rafka_node_admin_core::fence::{fence, FenceOutcome, PathProbe};
+use rafka_node_admin_core::seat_revision::{fence, FenceOutcome, PathProbe};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -623,7 +623,7 @@ impl Estate {
 /// (`node.delete:<path>`), then node.create at the same path.name (`node.create:<path>`); no
 /// node.update follows (proposal node-properties-own-commands.md §5 item 8). The fabric-primary
 /// dispatches nothing and the fabric lane is untouched.
-/// Exactly the lost path has a new node (new node.id), `fence::fence` probes nothing and nothing else is
+/// Exactly the lost path has a new node (new node.id), `seat_revision::fence` probes nothing and nothing else is
 /// created.
 #[tokio::test]
 async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created() {

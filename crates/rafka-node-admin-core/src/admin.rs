@@ -341,9 +341,9 @@ pub struct Records {
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
     /// that no create of it claimed. Set once at start.
     rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
-    /// What the provider holds recorded at a path (`crate::fence::PathProbe`), asked for a node the
+    /// What the provider holds recorded at a path (`crate::seat_revision::PathProbe`), asked for a node the
     /// accepted topology names that no view and no durable runtime row holds a birth of. Set once at start.
-    path_probe: std::sync::OnceLock<Arc<dyn crate::fence::PathProbe>>,
+    path_probe: std::sync::OnceLock<Arc<dyn crate::seat_revision::PathProbe>>,
     /// Where this admin's mesh's status rows live, read when this admin takes its mesh's seat
     /// (`crate::status_rpc::SeatFold`). Set once at start.
     status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
@@ -422,12 +422,12 @@ impl Records {
     }
 
     /// The probe of what the provider holds recorded at a path (set once, at start).
-    pub fn set_path_probe(&self, probe: Arc<dyn crate::fence::PathProbe>) {
+    pub fn set_path_probe(&self, probe: Arc<dyn crate::seat_revision::PathProbe>) {
         let _ = self.path_probe.set(probe);
     }
 
     /// The probe of what the provider holds recorded at a path, once set.
-    pub fn path_probe(&self) -> Option<Arc<dyn crate::fence::PathProbe>> {
+    pub fn path_probe(&self) -> Option<Arc<dyn crate::seat_revision::PathProbe>> {
         self.path_probe.get().cloned()
     }
 
@@ -2538,7 +2538,7 @@ pub async fn nodes_exit_proof(
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
-    probe: Option<&dyn crate::fence::PathProbe>,
+    probe: Option<&dyn crate::seat_revision::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
 ) -> crate::build_drive::ExitProofs {
     read_node_exits(nodes, t, book, durable, probe, provider).await.0
@@ -2551,7 +2551,7 @@ async fn read_node_exits(
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
-    probe: Option<&dyn crate::fence::PathProbe>,
+    probe: Option<&dyn crate::seat_revision::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
 ) -> (crate::build_drive::ExitProofs, Vec<(PathName, Option<crate::drift::ExitedBirth>)>) {
     let (mut proven, mut unproven) = (Vec::new(), Vec::new());
@@ -2581,12 +2581,12 @@ async fn read_node_exits(
 
 /// The provider's proof for a node the accepted topology names that neither the view nor a durable
 /// runtime row holds a birth of: the question the create's own fence asks of a path the view holds
-/// nothing at ([`crate::fence::fence`]), "the world is asked, not assumed", read through
-/// [`crate::fence::PathProbe::recorded`] (node-create.md: "Runtime exit requires independent exact
+/// nothing at ([`crate::seat_revision::fence`]), "the world is asked, not assumed", read through
+/// [`crate::seat_revision::PathProbe::recorded`] (node-create.md: "Runtime exit requires independent exact
 /// provider proof, even for a deployment that never joined"). A runtime recorded at the path that is
 /// not proven exited (it runs, or cannot be told), records that cannot be read, and no probe held,
 /// each hold the mesh by name; nothing recorded that runs proves the path.
-async fn unborn_node_exit(node: &PathName, probe: Option<&dyn crate::fence::PathProbe>) -> Result<(), String> {
+async fn unborn_node_exit(node: &PathName, probe: Option<&dyn crate::seat_revision::PathProbe>) -> Result<(), String> {
     use crate::deployment::provider::DeploymentStatus;
     let Some(probe) = probe else {
         return Err("neither the view nor a durable runtime row holds a birth there, and no provider probe of the runtimes recorded at its path is held here".into());
@@ -2616,7 +2616,7 @@ async fn crashed_peer_mesh(
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
-    probe: Option<&dyn crate::fence::PathProbe>,
+    probe: Option<&dyn crate::seat_revision::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     unreachable: &(dyn Fn(&str) -> bool + Sync),
@@ -3862,7 +3862,7 @@ impl EntryState {
 mod mesh_delete;
 pub use mesh_delete::MeshDeleteDoor;
 
-use crate::fence::FenceOutcome;
+use crate::seat_revision::FenceOutcome;
 
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
@@ -4191,7 +4191,7 @@ impl AdminRunner {
     /// Fence `path` before a new birth (`crate::fence`): this admin answers the fence's questions.
     async fn fence_predecessor(&self, path: &PathName) -> FenceOutcome {
         let prev = self.topology.read().await.node(path).cloned();
-        let out = crate::fence::fence(path, prev, self).await;
+        let out = crate::seat_revision::fence(path, prev, self).await;
         if matches!(out, FenceOutcome::Clear { .. }) {
             self.handles.lock().unwrap().remove(path);
         }
@@ -4656,7 +4656,7 @@ impl AdminRunner {
 }
 
 #[async_trait::async_trait]
-impl crate::fence::PathProbe for AdminRunner {
+impl crate::seat_revision::PathProbe for AdminRunner {
     async fn answers(&self, node: &Node) -> bool {
         AdminRunner::answers(self, node).await
     }
@@ -4666,9 +4666,9 @@ impl crate::fence::PathProbe for AdminRunner {
     }
     async fn recorded(&self, path: &PathName) -> Result<Vec<(String, crate::deployment::provider::DeploymentStatus)>, String> {
         let mut out = Vec::new();
-        for dir in crate::fence::recorded_dirs(&self.template.data_root, path).await? {
+        for dir in crate::seat_revision::recorded_dirs(&self.template.data_root, path).await? {
             // A data dir that holds no runtime record holds no runtime.
-            let Some(fact) = crate::fence::runtime_record(&dir).await? else { continue };
+            let Some(fact) = crate::seat_revision::runtime_record(&dir).await? else { continue };
             // A record of another provider or control domain names no runtime this provider runs.
             let Ok(h) = crate::deployment::provider::adopt(&*self.provider, &fact) else { continue };
             out.push((dir.display().to_string(), self.provider.inspect(&h).await));

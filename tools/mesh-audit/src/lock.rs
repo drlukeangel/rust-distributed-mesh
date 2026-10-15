@@ -229,7 +229,7 @@ pub const JSON_VALUE_EDGE: &str = "crates/rafka-node-admin-core/src/wire.rs";
 /// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
 pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rafka-mesh-transport/src/membership.rs", "crates/rafka-node-admin-core/src/fabric_builds.rs"];
 pub const WIRE_CODEC: &str = "crates/rafka-mesh-transport/src/wire.rs";
-pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs";
+pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/gossip_frames_wire.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
 pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "demo/", "tools/"];
 /// The join (`JoinNode`, 0x1D): its serve and call sites, and the cell that proves its postcard shape.

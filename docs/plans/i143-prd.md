@@ -972,8 +972,8 @@ e12.s80 #3121  open: the builder block `e12.s80` below (python3 scripts/prd.py b
 e12.s81 #3122  open: the builder block `e12.s81` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s81)
 e12.s82 #3123  open: the builder block `e12.s82` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s82)
 e12.s83 (issue to generate)  open: the builder block `e12.s83` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s83)
-e12.s84 (issue to generate)  R-CY1: the canary red read and fixed (Root 1: cohort seat holder restart runs `node.primary.update` under `restart.attempt` ending `handed-off` and executes the restart steps under `reconcile.attempt = restart.attempt + 1`; RED 368d110a; trace `ef78ccae756293f65263737ffab36200`)
-e12.s85 (issue to generate)  open: the builder block `e12.s85` below (layout pre-step the name check forces, before §4 steps 4-9)
+e12.s84 (issue to generate)  R-CY1: the canary red read and fixed (Root 1: cohort seat holder restart runs `node.primary.update` under `restart.attempt` ending `handed-off` and executes the restart steps under `reconcile.attempt = restart.attempt + 1`; RED 368d110a, landed 69752953, gate 39 s; trace `ef78ccae756293f65263737ffab36200`)
+e12.s85 (issue to generate)  layout pre-step: `fence.rs` -> `seat_revision.rs`, `departed_status.rs` -> `deleted_status.rs`, and the 32 `i143_acceptance_*.rs` files renamed into their crates' test binaries with 100% discovery parity and 0 stem violations
 e12.s86 (issue to generate)  open: the builder block `e12.s86` below (R-FM1: a hung runtime holds, then the provider terminates the exact runtime)
 e12.s87 (issue to generate)  open: the builder block `e12.s87` below (R-FM2: a lost data dir is recovered over a fresh dir; a broken one is held and named)
 e12.s49 #3078  mesh.delete ends at mesh.deleted: the fabric-primary's leave completes at the
@@ -2258,14 +2258,14 @@ landed d471da63 (2026-10-14, gate 152 s, `TIMINGS wall=76.9s units=455 max_concu
 
 ### State
 
-done (closed 2026-10-15; RED 368d110a; Root 1 confirmed: `Estate::complete(&mut stream)` in `crates/rafka-test-scenario/src/typed.rs:626-633` returns `stream.accepted()`, which carries the `Started { build_id, attempt }` frame sent when the `node.restart` workflow stream is first admitted (`attempt == 2`). When the restarted `rpc` node holds the `rpc_node-primary` cohort seat, `build_drive.rs::seats_first` (`:1240-1299`) claims `restart.attempt` (`2`), dispatches `move_seats` (`rdm.node_admin.build.update.via-dispatch` -> `rdm.node_admin.seat.update.via-primary-update`), and completes `restart.attempt` with `BuildReply::HandedOff` (`outcome = "handed-off"`). The Build drive then claims `attempt == 3` (`restart.attempt + 1`) and executes `rdm.node_admin.build.update.via-reconcile` (`operations = "node.restart:<node>"`) and all five restart deployment steps (`NodeRestarting`, `StopNode`, `AwaitNodeLeft`, `StartNode`, `WaitForNodeReady`) under that reconcile's attempt. `canary.rs` now selects the `rpc` cohort primary seat holder deterministically (`is_primary == true`, lowest `node_id`), asserts the `restart.attempt` hand-off (`rdm.node_admin.build.update.via-dispatch` with `outcome == "handed-off"` and descending `rdm.node_admin.seat.update.via-primary-update` with `outcome == "updated"`), reads the executing attempt from `reconcile["attributes"]["attempt"]` (`restart.attempt + 1`), and asserts the five restart step spans under that attempt. Live Jaeger trace `ef78ccae756293f65263737ffab36200` on `build_id = 7wsh5fxxa8vt` (`bid_7wsh-5fxx-a8vt`): `rdm.node_admin.build.update.via-node-rpc` `b42fd02886983c02` (`attempt = "2"`), `rdm.node_admin.build.update.via-dispatch` `70e0f9c8179495bf` (`attempt = "2"`, `outcome = "handed-off"`), `rdm.node_admin.seat.update.via-primary-update` `50599e1d8b2c5042` (`attempt = "2"`, `outcome = "updated"`, `holder = "mesh1.rpc.1"`, `seat = "rpc_node-primary"`), `rdm.node_admin.build.update.via-reconcile` `7fb375cd7794c724` (`attempt = "3"`, `outcome = "converged"`, `operations = "node.restart:mesh1.rpc.1"`), `rdm.node_admin.node.update.via-build` `e5927972c77819a0` (`attempt = "3"`), `rdm.node_admin.node.update.via-step` `6541c02bddeb6259` (`attempt = "3"`, `step = "StartNode"`, `outcome = "complete"`), `rdm.node.lifecycle.start.via-rpc` `3042f51a7e6df98b` (`attempt = "3"`, `outcome = "started"`))
+done (closed 2026-10-15; RED 368d110a; landed 69752953, gate 39 s; Root 1 confirmed: `Estate::complete(&mut stream)` in `crates/rafka-test-scenario/src/typed.rs:626-633` returns `stream.accepted()`, which carries the `Started { build_id, attempt }` frame sent when the `node.restart` workflow stream is first admitted (`attempt == 2`). When the restarted `rpc` node holds the `rpc_node-primary` cohort seat, `build_drive.rs::seats_first` (`:1240-1299`) claims `restart.attempt` (`2`), dispatches `move_seats` (`rdm.node_admin.build.update.via-dispatch` -> `rdm.node_admin.seat.update.via-primary-update`), and completes `restart.attempt` with `BuildReply::HandedOff` (`outcome = "handed-off"`). The Build drive then claims `attempt == 3` (`restart.attempt + 1`) and executes `rdm.node_admin.build.update.via-reconcile` (`operations = "node.restart:<node>"`) and all five restart deployment steps (`NodeRestarting`, `StopNode`, `AwaitNodeLeft`, `StartNode`, `WaitForNodeReady`) under that reconcile's attempt. `canary.rs` now selects the `rpc` cohort primary seat holder deterministically (`is_primary == true`, lowest `node_id`), asserts the `restart.attempt` hand-off (`rdm.node_admin.build.update.via-dispatch` with `outcome == "handed-off"` and descending `rdm.node_admin.seat.update.via-primary-update` with `outcome == "updated"`), reads the executing attempt from `reconcile["attributes"]["attempt"]` (`restart.attempt + 1`), and asserts the five restart step spans under that attempt. Live Jaeger trace `ef78ccae756293f65263737ffab36200` on `build_id = 7wsh5fxxa8vt` (`bid_7wsh-5fxx-a8vt`): `rdm.node_admin.build.update.via-node-rpc` `b42fd02886983c02` (`attempt = "2"`), `rdm.node_admin.build.update.via-dispatch` `70e0f9c8179495bf` (`attempt = "2"`, `outcome = "handed-off"`), `rdm.node_admin.seat.update.via-primary-update` `50599e1d8b2c5042` (`attempt = "2"`, `outcome = "updated"`, `holder = "mesh1.rpc.1"`, `seat = "rpc_node-primary"`), `rdm.node_admin.build.update.via-reconcile` `7fb375cd7794c724` (`attempt = "3"`, `outcome = "converged"`, `operations = "node.restart:mesh1.rpc.1"`), `rdm.node_admin.node.update.via-build` `e5927972c77819a0` (`attempt = "3"`), `rdm.node_admin.node.update.via-step` `6541c02bddeb6259` (`attempt = "3"`, `step = "StartNode"`, `outcome = "complete"`), `rdm.node.lifecycle.start.via-rpc` `3042f51a7e6df98b` (`attempt = "3"`, `outcome = "started"`))
 
 ### Remaining
 
 - [x] RED: a cell that gives the restarted rpc node the cohort primary seat deterministically (lowest node id, or the seat taken before the restart) and runs the canary body; it must fail at canary.rs:157 as the two gate reds did (RED 368d110a: `canary.rs` deterministically picks the `rpc` cohort primary holder `mesh1.rpc.1` and panics at `canary.rs:157:32` because `attempt == "2"` ends `handed-off`)
 - [x] flame from a live mesh: the restart call's attempt running `node.primary.update` and ending `handed-off`, the restart's steps under the next attempt (Jaeger trace `ef78ccae756293f65263737ffab36200`: `attempt = "2"` runs `rdm.node_admin.build.update.via-dispatch` `70e0f9c8179495bf` -> `rdm.node_admin.seat.update.via-primary-update` `50599e1d8b2c5042` ending `handed-off`; `attempt = "3"` runs `rdm.node_admin.build.update.via-reconcile` `7fb375cd7794c724` -> `rdm.node_admin.node.update.via-build` `e5927972c77819a0` and the five restart steps)
 - [x] name the root: (1) the cell's assumption (the restart runs under `restart.attempt`) is wrong and the cell reads the attempt from the reconcile that executed the restart; or (2) the restart reply should name the executing attempt, which is a ruling for Luke before code moves (write the packet, stop) — Root (1) confirmed: `stream.accepted()` returns the attempt opened when the stream was admitted (`restart.attempt`), which dispatches `node.primary.update` and ends `handed-off`, while the reconcile and its five restart steps execute under `reconcile.attempt = restart.attempt + 1`
-- [x] the fix lands alone with that sentence in this State; the gate's red story row under e12.s58/s76 points here
+- [x] the fix lands alone with that sentence in this State; the gate's red story row under e12.s58/s76 points here (landed 69752953, gate 39 s)
 
 ### Acceptance criteria
 
@@ -2292,31 +2292,31 @@ done (closed 2026-10-15; RED 368d110a; Root 1 confirmed: `Estate::complete(&mut 
 
 ### State
 
-not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+done (closed 2026-10-15; `crates/rafka-node-admin-core/src/fence.rs` -> `seat_revision.rs`, `crates/rafka-mesh-transport/tests/departed_status.rs` -> `deleted_status.rs`, and all 32 `i143_acceptance_*.rs` test files renamed into their crates' `tests/main.rs` binaries by mechanism (`members_snapshot`, `status_reinforcement`, `refeed_scheduler` in `rafka-mesh-transport`; `status_rpc`, `executor_redecide`, `connections_reconnect`, `gossip_frames_wire` in `rafka-node-admin-core`; `proof_store` in `rafka-node-rpc-testkit`; and 24 `<family>__<case>` modules in `rafka-test-scenario`); 72 cells in `tools/mesh-audit/i143-acceptance-jobs.json`, `WIRE_CELLS` in `tools/mesh-audit/src/lock.rs`, `tools/test-runner/src/lib.rs`, and `/home/admin/lane-queue/i143-lead/rdm-gate-at.sh` repointed in the same commit; 100% `--list` discovery parity across all 21 test targets (`rafka-mesh-transport` main 28 -> 28, `rafka-node-admin-core` main 396 -> 396, `rafka-node-rpc-testkit` main 84 -> 84, `rafka-test-scenario` main 205 -> 205); 0 stem violations across `git ls-tree -r --name-only HEAD -- crates tools`)
 
 ### Remaining
 
-- [ ] `crates/rafka-node-admin-core/src/fence.rs` → `seat_revision.rs` (not `seat_fence.rs`: the name check refuses `fence` in any stem); its `mod` line and citations follow
-- [ ] `crates/rafka-mesh-transport/tests/departed_status.rs` → `deleted_status.rs`
-- [ ] the 32 `i143_acceptance_*.rs` files (4 admin-core, 3 mesh-transport, 1 rpc-testkit, 24 test-scenario) split into their crates' existing test binaries by what each cell proves (`<family>__<case>` names for the scenario crate for now; the `<family>/<module>` mirror is step 8, one crate at a time after it settles); `tools/mesh-audit/i143-acceptance-jobs.json`, `rdm-gate-at.sh` stems and `scripts/i143-acceptance-gate.sh` repointed in the same commit, the old → new map in the commit body
-- [ ] discovery parity: `--list` count per test binary before == after; no cell renamed to a retired word; `python3 name-check.py origin/main HEAD` clean before the gate
+- [x] `crates/rafka-node-admin-core/src/fence.rs` → `seat_revision.rs` (not `seat_fence.rs`: the name check refuses `fence` in any stem); its `mod` line and citations follow
+- [x] `crates/rafka-mesh-transport/tests/departed_status.rs` → `deleted_status.rs`
+- [x] the 32 `i143_acceptance_*.rs` files (4 admin-core, 3 mesh-transport, 1 rpc-testkit, 24 test-scenario) split into their crates' existing test binaries by what each cell proves (`<family>__<case>` names for the scenario crate for now; the `<family>/<module>` mirror is step 8, one crate at a time after it settles); `tools/mesh-audit/i143-acceptance-jobs.json`, `rdm-gate-at.sh` stems and `scripts/i143-acceptance-gate.sh` repointed in the same commit, the old → new map in the commit body
+- [x] discovery parity: `--list` count per test binary before == after; no cell renamed to a retired word; `python3 name-check.py origin/main HEAD` clean before the gate
 - [ ] after this landing, §4 steps 4-9 in the proposal's order; the fold creates the six crates under their `rdm-` names from step 4 (rafka-v2 is not consuming RDM yet: its pins and the demo's are rewritten once, at step 9 or when it starts)
 
 ### Acceptance criteria
 
 <!-- crit:e12.s85.1 -->
-- [ ] `git ls-tree -r --name-only HEAD -- crates tools | python3 name-check-stems` names 0 files the name check would refuse on a directory move
+- [x] `git ls-tree -r --name-only HEAD -- crates tools | python3 name-check-stems` names 0 files the name check would refuse on a directory move
 <!-- /crit:e12.s85.1 -->
 <!-- crit:e12.s85.2 -->
-- [ ] every test binary's discovery count unchanged, recorded in the commit body
+- [x] every test binary's discovery count unchanged, recorded in the commit body
 <!-- /crit:e12.s85.2 -->
 <!-- crit:e12.s85.3 -->
-- [ ] The story bar holds (section story-bar).
+- [x] The story bar holds (section story-bar).
 <!-- /crit:e12.s85.3 -->
 
 ### Done when
 
-- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+- [x] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
 
 **Epic metadata**
 

@@ -25,9 +25,9 @@ pub(crate) fn evidence_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("RDM_EVIDENCE_DIR").expect("main.rs sets RDM_EVIDENCE_DIR before any test runs"))
 }
 
-mod i143_acceptance_2900;
-mod i143_acceptance_2901;
-mod i143_acceptance_2902;
+mod members_snapshot;
+mod status_reinforcement;
+mod refeed_scheduler;
 mod channel_stopped;
 mod peer_location_book;
 mod gossip_stats;
@@ -42,4 +42,4 @@ mod no_acting_publication;
 mod deleted_mesh_aggregate;
 mod stopped_birth;
 mod publisher_handover;
-mod departed_status;
+mod deleted_status;

@@ -260,7 +260,7 @@ impl AdminRunner {
             format!("{}: this fabric-primary holds no declared state for {} ({mesh_id}), so the admin created for it could be handed none; nothing is created under an assumed state", self.held_name(), path.mesh)
         })?;
         match self.fence_predecessor(path).await {
-            crate::fence::FenceOutcome::Clear { gone: None } => {}
+            crate::seat_revision::FenceOutcome::Clear { gone: None } => {}
             other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
         }
         let hand_off = self.mesh_state_hook(path, state)?;

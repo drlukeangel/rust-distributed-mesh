@@ -28,7 +28,7 @@ pub mod deployment;
 pub mod drift;
 pub mod election;
 pub mod executor;
-pub mod fence;
+pub mod seat_revision;
 pub mod fabric_builds;
 pub mod fabric_rounds;
 pub mod fabric_state;

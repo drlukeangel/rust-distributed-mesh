@@ -331,7 +331,7 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
     // Deleting or renaming the proof cell is itself a violation.
     let t = Planted::of_tree();
     t.edit(
-        "crates/rafka-node-admin-core/tests/i143_acceptance_rw1.rs",
+        "crates/rafka-node-admin-core/tests/gossip_frames_wire.rs",
         "fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling",
         "fn every_frame_round_trips",
     );
