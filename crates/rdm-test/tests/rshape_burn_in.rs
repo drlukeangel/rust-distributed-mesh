@@ -3969,6 +3969,14 @@ async fn replacement_run(cell: &str, shape: Shape) {
     assert_eq!(drift_build, add_build, "the fabric names the add's Build before the death");
     let ci = op_to(&f, &mut a, &n2, None, "canary", "before-kill");
     assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{victim2}: the canary was stored before the kill");
+    // Every put is accounted by its handler span (`account`). The gateway is killed next, and a SIGKILL
+    // takes whatever spans its exporter had not written yet (its 200 ms batch schedule), so the cell reads
+    // the canary's handler record off the evidence before it kills the process that holds it.
+    let canary_trace = a.traffic.ops[ci].1.trace_id.clone();
+    wait_for(&format!("{victim2}'s handler span of the canary is in the evidence before the kill"), Duration::from_secs(5), || async {
+        named(&f.estate.spans(), "rdm.node_rpc.proof_store.serve.via-request").into_iter().any(|sp| sp["trace_id"] == canary_trace.as_str() && sp["attributes"]["outcome"] == "stored").then_some(())
+    })
+    .await;
     let rt2 = exact_runtime(&f, &victim2).await;
     let build_before = build_at(&f.estate, &st_new.fp_name(), &drift_build).await.unwrap();
     let attempt_before = build_before["attempt"].as_u64().unwrap();
@@ -4176,6 +4184,14 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
     let after_hold = a.build(f, &build_id).await.unwrap_or(Value::Null);
     let resubmitted = (!completed_while_held && after_hold["state"] == "failed").then(|| json!({"failed_attempt": after_hold["failed_at"], "last_failure": after_hold["last_failure"]}));
     if resubmitted.is_some() {
+        // The fabric-primary refuses a restart of a node its live view does not hold live, by name
+        // (`node-not-live`, control_plane.rs `not_live`): the released runtime is resubmitted once that
+        // view holds it ready again, which its first digests after the release bring (two floors bound it).
+        let fp = st.fp_name();
+        wait_for(&format!("{fp}'s view holds the released {node} ready again"), rdm_core::cadence::staleness_floor() * 2, || async {
+            nodes_at(&f.estate, &fp).await.and_then(|v| v.iter().any(|x| x["name"] == node && x["node_id"] == json!(node_id) && x["status"] == "ready-for-traffic").then_some(()))
+        })
+        .await;
         let again = a.write(f, st, "C17: node.restart resubmitted after the held attempt failed", Write::Restart(node.to_string())).await;
         assert_eq!(again, build_id, "{node}: the resubmitted restart is an attempt of the same accepted Build");
     }
