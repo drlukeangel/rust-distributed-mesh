@@ -116,7 +116,7 @@ async fn proof_canary_restarts_container_preserves_state() {
 /// estate's evidence under this issue's feature.
 async fn seed_cell(cell: &str, provider: &str) {
     require_provider(provider);
-    let mut scenario = Scenario::parse(include_str!("../scenarios/i143-node-rpc-seed.yaml")).expect("seed parses");
+    let mut scenario = Scenario::parse(include_str!("../../scenarios/i143-node-rpc-seed.yaml")).expect("seed parses");
     scenario.feature = FEATURE.into();
     let report = runner::run(&scenario, Some(provider), cell).await;
     assert!(report.failures.is_empty(), "seed failures: {:#?}", report.failures);

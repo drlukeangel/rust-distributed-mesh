@@ -2,9 +2,9 @@
 //! primary is lost mid-leave (R11; mesh-delete.md, "Resume after the primary's loss", step 2: "or,
 //! when none survives, the one node-admin the fabric-primary created for it"): mesh2's only admin is
 //! lost mid-tier, and the fabric-primary creates the one node-admin the leaving mesh may gain. The
-//! run and the shared assertions are `mesh_lifecycle__mesh_delete_resume`'s (form (a)).
+//! run and the shared assertions are `mesh_delete_resume`'s (form (a)).
 
-use crate::mesh_lifecycle__mesh_delete_resume::{assert_resumed, attr_u, primary_lost_mid_leave, s, start_ns, Rpc1};
+use crate::mesh_delete_resume::{assert_resumed, attr_u, primary_lost_mid_leave, s, start_ns, Rpc1};
 use rdm_test::estate::named;
 use serde_json::Value;
 

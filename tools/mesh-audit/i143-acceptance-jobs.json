@@ -7,14 +7,14 @@
       "cells": [
         {
           "name": "source_restart_hydrates_proxy_routes_first_call_without_rediscovery",
-          "source": "crates/rdm-test/tests/node_rpc__proxy_hydration_cutback.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery/estate cargo test -p rdm-test --test main node_rpc__proxy_hydration_cutback::source_restart_hydrates_proxy_routes_first_call_without_rediscovery -- --exact",
+          "source": "crates/rdm-test/tests/rpc/proxy_hydration_cutback.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery/estate cargo test -p rdm-test --test main proxy_hydration_cutback::source_restart_hydrates_proxy_routes_first_call_without_rediscovery -- --exact",
           "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
         },
         {
           "name": "source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback",
-          "source": "crates/rdm-test/tests/node_rpc__proxy_hydration_cutback.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback/estate cargo test -p rdm-test --test main node_rpc__proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback -- --exact",
+          "source": "crates/rdm-test/tests/rpc/proxy_hydration_cutback.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback/estate cargo test -p rdm-test --test main proxy_hydration_cutback::source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback -- --exact",
           "dir": "target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback"
         }
       ]
@@ -37,14 +37,14 @@
       "cells": [
         {
           "name": "restarted_member_pulls_current_admin_within_staleness_window",
-          "source": "crates/rdm-test/tests/node_lifecycle__restarted_member_rejoin.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window/estate cargo test -p rdm-test --test main node_lifecycle__restarted_member_rejoin::restarted_member_pulls_current_admin_within_staleness_window -- --exact",
+          "source": "crates/rdm-test/tests/node/restarted_member_rejoin.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window/estate cargo test -p rdm-test --test main restarted_member_rejoin::restarted_member_pulls_current_admin_within_staleness_window -- --exact",
           "dir": "target/i143-acceptance/2941/process/restarted_member_pulls_current_admin_within_staleness_window"
         },
         {
           "name": "restarted_member_joins_mesh_channel_within_gossip_interval",
-          "source": "crates/rdm-test/tests/node_lifecycle__restarted_member_rejoin.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval/estate cargo test -p rdm-test --test main node_lifecycle__restarted_member_rejoin::restarted_member_joins_mesh_channel_within_gossip_interval -- --exact",
+          "source": "crates/rdm-test/tests/node/restarted_member_rejoin.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval/estate cargo test -p rdm-test --test main restarted_member_rejoin::restarted_member_joins_mesh_channel_within_gossip_interval -- --exact",
           "dir": "target/i143-acceptance/2941/process/restarted_member_joins_mesh_channel_within_gossip_interval"
         }
       ]
@@ -56,24 +56,24 @@
         {
           "name": "run-1",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
-          "source": "crates/rdm-test/tests/mesh_elections__late_authority.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-1/estate cargo test -p rdm-test --test main mesh_elections__late_authority::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "source": "crates/rdm-test/tests/elections/late_authority.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-1/estate cargo test -p rdm-test --test main late_authority::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
           "dir": "target/i143-acceptance/2941/fast/run-1",
           "evidence": "runner"
         },
         {
           "name": "run-2",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
-          "source": "crates/rdm-test/tests/mesh_elections__late_authority.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-2/estate cargo test -p rdm-test --test main mesh_elections__late_authority::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "source": "crates/rdm-test/tests/elections/late_authority.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-2/estate cargo test -p rdm-test --test main late_authority::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
           "dir": "target/i143-acceptance/2941/fast/run-2",
           "evidence": "runner"
         },
         {
           "name": "run-3",
           "test": "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births",
-          "source": "crates/rdm-test/tests/mesh_elections__late_authority.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-3/estate cargo test -p rdm-test --test main mesh_elections__late_authority::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
+          "source": "crates/rdm-test/tests/elections/late_authority.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2941/fast/run-3/estate cargo test -p rdm-test --test main late_authority::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births -- --exact",
           "dir": "target/i143-acceptance/2941/fast/run-3",
           "evidence": "runner"
         }
@@ -85,8 +85,8 @@
       "cells": [
         {
           "name": "a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__stopped_last_admin.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound/estate cargo test -p rdm-test --test main mesh_lifecycle__stopped_last_admin::a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound -- --exact",
+          "source": "crates/rdm-test/tests/mesh/stopped_last_admin.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2942/process/a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound/estate cargo test -p rdm-test --test main stopped_last_admin::a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound -- --exact",
           "dir": "target/i143-acceptance/2942/process/a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit_inside_the_bound"
         }
       ]
@@ -163,20 +163,20 @@
       "cells": [
         {
           "name": "bootstrap_admin_receives_pending_before_own_mesh_attempt",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rdm-test --test main mesh_lifecycle__bootstrap_pending::bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
+          "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt/estate cargo test -p rdm-test --test main bootstrap_pending::bootstrap_admin_receives_pending_before_own_mesh_attempt -- --exact",
           "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
         },
         {
           "name": "sole_peer_admin_restarts_ready_from_its_durable_pending",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending/estate cargo test -p rdm-test --test main mesh_lifecycle__bootstrap_pending::sole_peer_admin_restarts_ready_from_its_durable_pending -- --exact",
+          "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending/estate cargo test -p rdm-test --test main bootstrap_pending::sole_peer_admin_restarts_ready_from_its_durable_pending -- --exact",
           "dir": "target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending"
         },
         {
           "name": "recovery_admin_receives_pending_under_the_existing_mesh_id",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id/estate cargo test -p rdm-test --test main mesh_lifecycle__bootstrap_pending::recovery_admin_receives_pending_under_the_existing_mesh_id -- --exact",
+          "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id/estate cargo test -p rdm-test --test main bootstrap_pending::recovery_admin_receives_pending_under_the_existing_mesh_id -- --exact",
           "dir": "target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id"
         }
       ]
@@ -187,8 +187,8 @@
       "cells": [
         {
           "name": "bootstrap_admin_repeats_status_contract_in_container_domain",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain/estate cargo test -p rdm-test --test main mesh_lifecycle__bootstrap_pending::bootstrap_admin_repeats_status_contract_in_container_domain -- --exact",
+          "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
+          "command": "MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain/estate cargo test -p rdm-test --test main bootstrap_pending::bootstrap_admin_repeats_status_contract_in_container_domain -- --exact",
           "dir": "target/i143-acceptance/2805/container/bootstrap_admin_repeats_status_contract_in_container_domain"
         }
       ]
@@ -211,8 +211,8 @@
       "cells": [
         {
           "name": "surviving_admins_reproduce_primary_loss_with_complete_evidence",
-          "source": "crates/rdm-test/tests/mesh_elections__primary_loss_takeover.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rdm-test --test main mesh_elections__primary_loss_takeover::surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
+          "source": "crates/rdm-test/tests/elections/primary_loss_takeover.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence/estate cargo test -p rdm-test --test main primary_loss_takeover::surviving_admins_reproduce_primary_loss_with_complete_evidence -- --exact",
           "dir": "target/i143-acceptance/2892/chaos-process/surviving_admins_reproduce_primary_loss_with_complete_evidence"
         }
       ]
@@ -235,16 +235,16 @@
       "cells": [
         {
           "name": "operation_ledger_classifies_every_operation_once",
-          "source": "crates/rdm-test/tests/fabric_soak__operation_ledger.rs",
+          "source": "crates/rdm-test/tests/fabric/operation_ledger.rs",
           "evidence": "model",
-          "command": "cargo test -p rdm-test --test main fabric_soak__operation_ledger::operation_ledger_classifies_every_operation_once -- --exact",
+          "command": "cargo test -p rdm-test --test main operation_ledger::operation_ledger_classifies_every_operation_once -- --exact",
           "dir": "target/i143-acceptance/2786/unit/operation_ledger_classifies_every_operation_once"
         },
         {
           "name": "operation_reconciler_detects_lost_applied_mutation",
-          "source": "crates/rdm-test/tests/fabric_soak__operation_ledger.rs",
+          "source": "crates/rdm-test/tests/fabric/operation_ledger.rs",
           "evidence": "model",
-          "command": "cargo test -p rdm-test --test main fabric_soak__operation_ledger::operation_reconciler_detects_lost_applied_mutation -- --exact",
+          "command": "cargo test -p rdm-test --test main operation_ledger::operation_reconciler_detects_lost_applied_mutation -- --exact",
           "dir": "target/i143-acceptance/2786/unit/operation_reconciler_detects_lost_applied_mutation"
         }
       ]
@@ -255,14 +255,14 @@
       "cells": [
         {
           "name": "scenario_manifest_round_trips_owner_seed_and_fault_schedule",
-          "source": "crates/rdm-test/tests/scenario_runner__manifest_replay.rs",
-          "command": "cargo test -p rdm-test --test main scenario_runner__manifest_replay::scenario_manifest_round_trips_owner_seed_and_fault_schedule -- --exact",
+          "source": "crates/rdm-test/tests/runtime/manifest_replay.rs",
+          "command": "cargo test -p rdm-test --test main manifest_replay::scenario_manifest_round_trips_owner_seed_and_fault_schedule -- --exact",
           "dir": "target/i143-acceptance/2776/unit/scenario_manifest_round_trips_owner_seed_and_fault_schedule"
         },
         {
           "name": "acceptance_runner_rejects_invalid_job_execution_receipts",
-          "source": "crates/rdm-test/tests/scenario_runner__manifest_replay.rs",
-          "command": "cargo test -p rdm-test --test main scenario_runner__manifest_replay::acceptance_runner_rejects_invalid_job_execution_receipts -- --exact",
+          "source": "crates/rdm-test/tests/runtime/manifest_replay.rs",
+          "command": "cargo test -p rdm-test --test main manifest_replay::acceptance_runner_rejects_invalid_job_execution_receipts -- --exact",
           "dir": "target/i143-acceptance/2776/unit/acceptance_runner_rejects_invalid_job_execution_receipts"
         }
       ]
@@ -273,14 +273,14 @@
       "cells": [
         {
           "name": "scenario_runner_replays_manifest_preserves_semantic_outcomes",
-          "source": "crates/rdm-test/tests/scenario_runner__manifest_replay.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes/estate cargo test -p rdm-test --test main scenario_runner__manifest_replay::scenario_runner_replays_manifest_preserves_semantic_outcomes -- --exact",
+          "source": "crates/rdm-test/tests/runtime/manifest_replay.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes/estate cargo test -p rdm-test --test main manifest_replay::scenario_runner_replays_manifest_preserves_semantic_outcomes -- --exact",
           "dir": "target/i143-acceptance/2776/process/scenario_runner_replays_manifest_preserves_semantic_outcomes"
         },
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
-          "source": "crates/rdm-test/tests/scenario_runner__manifest_replay.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rdm-test --test main scenario_runner__manifest_replay::scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "source": "crates/rdm-test/tests/runtime/manifest_replay.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rdm-test --test main manifest_replay::scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -291,8 +291,8 @@
       "cells": [
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
-          "source": "crates/rdm-test/tests/scenario_runner__manifest_replay.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rdm-test --test main scenario_runner__manifest_replay::scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "source": "crates/rdm-test/tests/runtime/manifest_replay.rs",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rdm-test --test main manifest_replay::scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -315,14 +315,14 @@
       "cells": [
         {
           "name": "proof_holder_restarts_preserves_same_node_store",
-          "source": "crates/rdm-test/tests/mesh_rpc__proof_holder_lifecycle.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store/estate cargo test -p rdm-test --test main mesh_rpc__proof_holder_lifecycle::proof_holder_restarts_preserves_same_node_store -- --exact",
+          "source": "crates/rdm-test/tests/rpc/proof_holder_lifecycle.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store/estate cargo test -p rdm-test --test main proof_holder_lifecycle::proof_holder_restarts_preserves_same_node_store -- --exact",
           "dir": "target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store"
         },
         {
           "name": "proof_replacement_inherits_the_data_dir_exact_old_never_follows_path",
-          "source": "crates/rdm-test/tests/mesh_rpc__proof_holder_lifecycle.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path/estate cargo test -p rdm-test --test main mesh_rpc__proof_holder_lifecycle::proof_replacement_inherits_the_data_dir_exact_old_never_follows_path -- --exact",
+          "source": "crates/rdm-test/tests/rpc/proof_holder_lifecycle.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path/estate cargo test -p rdm-test --test main proof_holder_lifecycle::proof_replacement_inherits_the_data_dir_exact_old_never_follows_path -- --exact",
           "dir": "target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path"
         }
       ]
@@ -333,15 +333,15 @@
       "cells": [
         {
           "name": "action_generator_replays_seed_preserves_legal_sequence",
-          "source": "crates/rdm-test/tests/chaos_kit__action_generator.rs",
-          "command": "cargo test -p rdm-test --test main chaos_kit__action_generator::action_generator_replays_seed_preserves_legal_sequence -- --exact",
+          "source": "crates/rdm-test/tests/chaos/action_generator.rs",
+          "command": "cargo test -p rdm-test --test main action_generator::action_generator_replays_seed_preserves_legal_sequence -- --exact",
           "dir": "target/i143-acceptance/2779/unit/action_generator_replays_seed_preserves_legal_sequence",
           "evidence": "model"
         },
         {
           "name": "action_shrinker_preserves_failure_returns_minimal_legal_sequence",
-          "source": "crates/rdm-test/tests/chaos_kit__action_generator.rs",
-          "command": "cargo test -p rdm-test --test main chaos_kit__action_generator::action_shrinker_preserves_failure_returns_minimal_legal_sequence -- --exact",
+          "source": "crates/rdm-test/tests/chaos/action_generator.rs",
+          "command": "cargo test -p rdm-test --test main action_generator::action_shrinker_preserves_failure_returns_minimal_legal_sequence -- --exact",
           "dir": "target/i143-acceptance/2779/unit/action_shrinker_preserves_failure_returns_minimal_legal_sequence",
           "evidence": "model"
         }
@@ -353,20 +353,20 @@
       "cells": [
         {
           "name": "network_scheduler_replays_incomplete_send_as_not_sent",
-          "source": "crates/rdm-test/tests/node_rpc__scheduler_replay.rs",
-          "command": "cargo test -p rdm-test --test main node_rpc__scheduler_replay::network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
+          "source": "crates/rdm-test/tests/rpc/scheduler_replay.rs",
+          "command": "cargo test -p rdm-test --test main scheduler_replay::network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
           "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_incomplete_send_as_not_sent"
         },
         {
           "name": "network_scheduler_replays_lost_reply_as_indeterminate",
-          "source": "crates/rdm-test/tests/node_rpc__scheduler_replay.rs",
-          "command": "cargo test -p rdm-test --test main node_rpc__scheduler_replay::network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
+          "source": "crates/rdm-test/tests/rpc/scheduler_replay.rs",
+          "command": "cargo test -p rdm-test --test main scheduler_replay::network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
           "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_lost_reply_as_indeterminate"
         },
         {
           "name": "pool_scheduler_supersedes_birth_preserves_current_sibling",
-          "source": "crates/rdm-test/tests/node_rpc__scheduler_replay.rs",
-          "command": "cargo test -p rdm-test --test main node_rpc__scheduler_replay::pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
+          "source": "crates/rdm-test/tests/rpc/scheduler_replay.rs",
+          "command": "cargo test -p rdm-test --test main scheduler_replay::pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
           "dir": "target/i143-acceptance/2781/unit/pool_scheduler_supersedes_birth_preserves_current_sibling"
         }
       ]
@@ -377,14 +377,14 @@
       "cells": [
         {
           "name": "failpoint_explorer_before_apply_proves_not_sent_or_unapplied",
-          "source": "crates/rdm-test/tests/node_rpc__apply_cuts.rs",
-          "command": "cargo test -p rdm-test --test main node_rpc__apply_cuts::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
+          "source": "crates/rdm-test/tests/rpc/apply_cuts.rs",
+          "command": "cargo test -p rdm-test --test main apply_cuts::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
           "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_before_apply_proves_not_sent_or_unapplied"
         },
         {
           "name": "failpoint_explorer_after_apply_lost_reply_proves_indeterminate",
-          "source": "crates/rdm-test/tests/node_rpc__apply_cuts.rs",
-          "command": "cargo test -p rdm-test --test main node_rpc__apply_cuts::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
+          "source": "crates/rdm-test/tests/rpc/apply_cuts.rs",
+          "command": "cargo test -p rdm-test --test main apply_cuts::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
           "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_after_apply_lost_reply_proves_indeterminate"
         }
       ]
@@ -395,8 +395,8 @@
       "cells": [
         {
           "name": "failpoint_explorer_releases_build_and_hook_stalls_recovers",
-          "source": "crates/rdm-test/tests/chaos_kit__failpoint_explorer.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers/estate cargo test -p rdm-test --test main chaos_kit__failpoint_explorer::failpoint_explorer_releases_build_and_hook_stalls_recovers -- --exact",
+          "source": "crates/rdm-test/tests/chaos/failpoint_explorer.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers/estate cargo test -p rdm-test --test main failpoint_explorer::failpoint_explorer_releases_build_and_hook_stalls_recovers -- --exact",
           "dir": "target/i143-acceptance/2780/process/failpoint_explorer_releases_build_and_hook_stalls_recovers"
         }
       ]
@@ -407,8 +407,8 @@
       "cells": [
         {
           "name": "wedge_detector_rejects_fault_without_progress_consequence",
-          "source": "crates/rdm-test/tests/chaos_kit__wedge_detector.rs",
-          "command": "cargo test -p rdm-test --test main chaos_kit__wedge_detector::wedge_detector_rejects_fault_without_progress_consequence -- --exact",
+          "source": "crates/rdm-test/tests/chaos/wedge_detector.rs",
+          "command": "cargo test -p rdm-test --test main wedge_detector::wedge_detector_rejects_fault_without_progress_consequence -- --exact",
           "dir": "target/i143-acceptance/2782/unit/wedge_detector_rejects_fault_without_progress_consequence"
         }
       ]
@@ -419,8 +419,8 @@
       "cells": [
         {
           "name": "wedge_detector_proves_stall_and_stateful_recovery",
-          "source": "crates/rdm-test/tests/chaos_kit__wedge_detector.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery/estate cargo test -p rdm-test --test main chaos_kit__wedge_detector::wedge_detector_proves_stall_and_stateful_recovery -- --exact",
+          "source": "crates/rdm-test/tests/chaos/wedge_detector.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery/estate cargo test -p rdm-test --test main wedge_detector::wedge_detector_proves_stall_and_stateful_recovery -- --exact",
           "dir": "target/i143-acceptance/2782/chaos-process/wedge_detector_proves_stall_and_stateful_recovery"
         }
       ]
@@ -431,32 +431,32 @@
       "cells": [
         {
           "name": "container_network_partitions_heals_preserves_live_runtimes",
-          "source": "crates/rdm-test/tests/chaos_kit__container_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes/estate cargo test -p rdm-test --test main chaos_kit__container_fault_backend::container_network_partitions_heals_preserves_live_runtimes -- --exact",
+          "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes/estate cargo test -p rdm-test --test main container_fault_backend::container_network_partitions_heals_preserves_live_runtimes -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_network_partitions_heals_preserves_live_runtimes"
         },
         {
           "name": "container_node_unheard_heals_serves_same_birth",
-          "source": "crates/rdm-test/tests/chaos_kit__container_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_node_unheard_heals_serves_same_birth/estate cargo test -p rdm-test --test main chaos_kit__container_fault_backend::container_node_unheard_heals_serves_same_birth -- --exact",
+          "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_node_unheard_heals_serves_same_birth/estate cargo test -p rdm-test --test main container_fault_backend::container_node_unheard_heals_serves_same_birth -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_node_unheard_heals_serves_same_birth"
         },
         {
           "name": "container_peer_mesh_lost_recovers_under_same_mesh_id",
-          "source": "crates/rdm-test/tests/chaos_kit__container_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_peer_mesh_lost_recovers_under_same_mesh_id/estate cargo test -p rdm-test --test main chaos_kit__container_fault_backend::container_peer_mesh_lost_recovers_under_same_mesh_id -- --exact",
+          "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_peer_mesh_lost_recovers_under_same_mesh_id/estate cargo test -p rdm-test --test main container_fault_backend::container_peer_mesh_lost_recovers_under_same_mesh_id -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_peer_mesh_lost_recovers_under_same_mesh_id"
         },
         {
           "name": "container_primary_mesh_retired_hands_off_authority_before_its_containers_end",
-          "source": "crates/rdm-test/tests/chaos_kit__container_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end/estate cargo test -p rdm-test --test main chaos_kit__container_fault_backend::container_primary_mesh_retired_hands_off_authority_before_its_containers_end -- --exact",
+          "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end/estate cargo test -p rdm-test --test main container_fault_backend::container_primary_mesh_retired_hands_off_authority_before_its_containers_end -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_primary_mesh_retired_hands_off_authority_before_its_containers_end"
         },
         {
           "name": "container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth",
-          "source": "crates/rdm-test/tests/chaos_kit__container_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth/estate cargo test -p rdm-test --test main chaos_kit__container_fault_backend::container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth -- --exact",
+          "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth/estate cargo test -p rdm-test --test main container_fault_backend::container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth"
         }
       ]
@@ -467,8 +467,8 @@
       "cells": [
         {
           "name": "process_fault_backend_kills_exact_runtime_recovers_current_birth",
-          "source": "crates/rdm-test/tests/chaos_kit__process_fault_backend.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth/estate cargo test -p rdm-test --test main chaos_kit__process_fault_backend::process_fault_backend_kills_exact_runtime_recovers_current_birth -- --exact",
+          "source": "crates/rdm-test/tests/chaos/process_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth/estate cargo test -p rdm-test --test main process_fault_backend::process_fault_backend_kills_exact_runtime_recovers_current_birth -- --exact",
           "dir": "target/i143-acceptance/2783/chaos-process/process_fault_backend_kills_exact_runtime_recovers_current_birth"
         }
       ]
@@ -479,8 +479,8 @@
       "cells": [
         {
           "name": "partitioned_meshes_rejoin_with_neighbors_preserve_live_births",
-          "source": "crates/rdm-test/tests/mesh_membership__partition_rejoin.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_REQUIRE_NETFAULT=1 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2902/chaos-process/partitioned_meshes_rejoin_with_neighbors_preserve_live_births/estate cargo test -p rdm-test --test main mesh_membership__partition_rejoin::partitioned_meshes_rejoin_with_neighbors_preserve_live_births -- --exact",
+          "source": "crates/rdm-test/tests/gossip/partition_rejoin.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_REQUIRE_NETFAULT=1 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2902/chaos-process/partitioned_meshes_rejoin_with_neighbors_preserve_live_births/estate cargo test -p rdm-test --test main partition_rejoin::partitioned_meshes_rejoin_with_neighbors_preserve_live_births -- --exact",
           "dir": "target/i143-acceptance/2902/chaos-process/partitioned_meshes_rejoin_with_neighbors_preserve_live_births"
         }
       ]
@@ -491,8 +491,8 @@
       "cells": [
         {
           "name": "ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut",
-          "source": "crates/rdm-test/tests/mesh_membership__peer_mesh_topology.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_REQUIRE_NETFAULT=1 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rg2/chaos-process/ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut/estate cargo test -p rdm-test --test main mesh_membership__peer_mesh_topology::ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut -- --exact",
+          "source": "crates/rdm-test/tests/gossip/peer_mesh_topology.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RDM_REQUIRE_NETFAULT=1 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rg2/chaos-process/ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut/estate cargo test -p rdm-test --test main peer_mesh_topology::ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut -- --exact",
           "dir": "target/i143-acceptance/rg2/chaos-process/ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut"
         }
       ]
@@ -515,8 +515,8 @@
       "cells": [
         {
           "name": "late_member_receives_held_status_on_join_without_status_heartbeat",
-          "source": "crates/rdm-test/tests/mesh_membership__held_status_join.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2901/process/late_member_receives_held_status_on_join_without_status_heartbeat/estate cargo test -p rdm-test --test main mesh_membership__held_status_join::late_member_receives_held_status_on_join_without_status_heartbeat -- --exact",
+          "source": "crates/rdm-test/tests/gossip/held_status_join.rs",
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2901/process/late_member_receives_held_status_on_join_without_status_heartbeat/estate cargo test -p rdm-test --test main held_status_join::late_member_receives_held_status_on_join_without_status_heartbeat -- --exact",
           "dir": "target/i143-acceptance/2901/process/late_member_receives_held_status_on_join_without_status_heartbeat"
         }
       ]
@@ -527,8 +527,8 @@
       "cells": [
         {
           "name": "soak_driver_reconciles_fixed_seed_thirty_minute_process_run",
-          "source": "crates/rdm-test/tests/fabric_soak__driver_reconcile.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-process/soak_driver_reconciles_fixed_seed_thirty_minute_process_run/estate RDM_SOAK_SECS=1800 RDM_SOAK_SEED=1432787 cargo test -p rdm-test --test main fabric_soak__driver_reconcile::soak_driver_reconciles_fixed_seed_thirty_minute_process_run -- --exact",
+          "source": "crates/rdm-test/tests/fabric/driver_reconcile.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-process/soak_driver_reconciles_fixed_seed_thirty_minute_process_run/estate RDM_SOAK_SECS=1800 RDM_SOAK_SEED=1432787 cargo test -p rdm-test --test main driver_reconcile::soak_driver_reconciles_fixed_seed_thirty_minute_process_run -- --exact",
           "dir": "target/i143-acceptance/2787/soak-process/soak_driver_reconciles_fixed_seed_thirty_minute_process_run"
         }
       ]
@@ -539,8 +539,8 @@
       "cells": [
         {
           "name": "soak_driver_reconciles_fixed_seed_thirty_minute_container_run",
-          "source": "crates/rdm-test/tests/fabric_soak__driver_reconcile.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-container/soak_driver_reconciles_fixed_seed_thirty_minute_container_run/estate RDM_SOAK_SECS=1800 RDM_SOAK_SEED=1432787 cargo test -p rdm-test --test main fabric_soak__driver_reconcile::soak_driver_reconciles_fixed_seed_thirty_minute_container_run -- --exact",
+          "source": "crates/rdm-test/tests/fabric/driver_reconcile.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2787/soak-container/soak_driver_reconciles_fixed_seed_thirty_minute_container_run/estate RDM_SOAK_SECS=1800 RDM_SOAK_SEED=1432787 cargo test -p rdm-test --test main driver_reconcile::soak_driver_reconciles_fixed_seed_thirty_minute_container_run -- --exact",
           "dir": "target/i143-acceptance/2787/soak-container/soak_driver_reconciles_fixed_seed_thirty_minute_container_run"
         }
       ]
@@ -551,8 +551,8 @@
       "cells": [
         {
           "name": "digest_receiver_orders_same_birth_by_sequence_with_stalled_clock",
-          "source": "crates/rdm-test/tests/mesh_membership__digest_sequence.rs",
-          "command": "cargo test -p rdm-test --test main mesh_membership__digest_sequence::digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
+          "source": "crates/rdm-test/tests/gossip/digest_sequence.rs",
+          "command": "cargo test -p rdm-test --test main digest_sequence::digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
           "dir": "target/i143-acceptance/2899/unit/digest_receiver_orders_same_birth_by_sequence_with_stalled_clock"
         }
       ]
@@ -563,8 +563,8 @@
       "cells": [
         {
           "name": "mesh_composition_uses_supplied_clock_keeps_silence_monotonic",
-          "source": "crates/rdm-test/tests/mesh_runtime__supplied_clock.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2899/process/mesh_composition_uses_supplied_clock_keeps_silence_monotonic/estate cargo test -p rdm-test --test main mesh_runtime__supplied_clock::mesh_composition_uses_supplied_clock_keeps_silence_monotonic -- --exact",
+          "source": "crates/rdm-test/tests/runtime/supplied_clock.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2899/process/mesh_composition_uses_supplied_clock_keeps_silence_monotonic/estate cargo test -p rdm-test --test main supplied_clock::mesh_composition_uses_supplied_clock_keeps_silence_monotonic -- --exact",
           "dir": "target/i143-acceptance/2899/process/mesh_composition_uses_supplied_clock_keeps_silence_monotonic"
         }
       ]
@@ -600,8 +600,8 @@
       "cells": [
         {
           "name": "mesh_member_recovers_delta_gap_from_own_primary",
-          "source": "crates/rdm-test/tests/mesh_membership__delta_gap_recovery.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary/estate cargo test -p rdm-test --test main mesh_membership__delta_gap_recovery::mesh_member_recovers_delta_gap_from_own_primary -- --exact",
+          "source": "crates/rdm-test/tests/gossip/delta_gap_recovery.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary/estate cargo test -p rdm-test --test main delta_gap_recovery::mesh_member_recovers_delta_gap_from_own_primary -- --exact",
           "dir": "target/i143-acceptance/2900/process/mesh_member_recovers_delta_gap_from_own_primary"
         }
       ]
@@ -612,8 +612,8 @@
       "cells": [
         {
           "name": "join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match",
-          "source": "crates/rdm-admin/tests/i143_rj1_join.rs",
-          "command": "cargo test -p rdm-admin --test main i143_rj1_join::join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match -- --exact",
+          "source": "crates/rdm-admin/tests/join_admission.rs",
+          "command": "cargo test -p rdm-admin --test main join_admission::join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match -- --exact",
           "dir": "target/i143-acceptance/rj1/unit/join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_reported_address_on_a_match"
         }
       ]
@@ -624,14 +624,14 @@
       "cells": [
         {
           "name": "recovery_admin_restores_lost_cohort_preserves_mesh_and_build",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__cohort_recovery.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build/estate cargo test -p rdm-test --test main mesh_lifecycle__cohort_recovery::recovery_admin_restores_lost_cohort_preserves_mesh_and_build -- --exact",
+          "source": "crates/rdm-test/tests/mesh/cohort_recovery.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build/estate cargo test -p rdm-test --test main cohort_recovery::recovery_admin_restores_lost_cohort_preserves_mesh_and_build -- --exact",
           "dir": "target/i143-acceptance/2803/chaos-process/recovery_admin_restores_lost_cohort_preserves_mesh_and_build"
         },
         {
           "name": "fabric_recovery_restarts_one_admin_and_restores_every_missing_admin",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__cohort_recovery.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/fabric_recovery_restarts_one_admin_and_restores_every_missing_admin/estate cargo test -p rdm-test --test main mesh_lifecycle__cohort_recovery::fabric_recovery_restarts_one_admin_and_restores_every_missing_admin -- --exact",
+          "source": "crates/rdm-test/tests/mesh/cohort_recovery.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803/chaos-process/fabric_recovery_restarts_one_admin_and_restores_every_missing_admin/estate cargo test -p rdm-test --test main cohort_recovery::fabric_recovery_restarts_one_admin_and_restores_every_missing_admin -- --exact",
           "dir": "target/i143-acceptance/2803/chaos-process/fabric_recovery_restarts_one_admin_and_restores_every_missing_admin"
         }
       ]
@@ -642,26 +642,26 @@
       "cells": [
         {
           "name": "proof_canary_restarts_same_node_preserves_state",
-          "source": "crates/rdm-test/tests/node_lifecycle__restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/proof_canary_restarts_same_node_preserves_state/estate cargo test -p rdm-test --test main node_lifecycle__restart_canary_seed::proof_canary_restarts_same_node_preserves_state -- --exact",
+          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/proof_canary_restarts_same_node_preserves_state/estate cargo test -p rdm-test --test main restart_canary_seed::proof_canary_restarts_same_node_preserves_state -- --exact",
           "dir": "target/i143-acceptance/2777/process/proof_canary_restarts_same_node_preserves_state"
         },
         {
           "name": "seed_runner_completes_every_operation_on_process",
-          "source": "crates/rdm-test/tests/node_lifecycle__restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/seed_runner_completes_every_operation_on_process/estate cargo test -p rdm-test --test main node_lifecycle__restart_canary_seed::seed_runner_completes_every_operation_on_process -- --exact",
+          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/seed_runner_completes_every_operation_on_process/estate cargo test -p rdm-test --test main restart_canary_seed::seed_runner_completes_every_operation_on_process -- --exact",
           "dir": "target/i143-acceptance/2777/process/seed_runner_completes_every_operation_on_process"
         },
         {
           "name": "restart_during_an_inflight_build_is_refused_and_opens_no_attempt",
-          "source": "crates/rdm-test/tests/node_lifecycle__restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt/estate cargo test -p rdm-test --test main node_lifecycle__restart_canary_seed::restart_during_an_inflight_build_is_refused_and_opens_no_attempt -- --exact",
+          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt/estate cargo test -p rdm-test --test main restart_canary_seed::restart_during_an_inflight_build_is_refused_and_opens_no_attempt -- --exact",
           "dir": "target/i143-acceptance/2777/process/restart_during_an_inflight_build_is_refused_and_opens_no_attempt"
         },
         {
           "name": "restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt",
-          "source": "crates/rdm-test/tests/node_lifecycle__restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt/estate cargo test -p rdm-test --test main node_lifecycle__restart_canary_seed::restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt -- --exact",
+          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/process/restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt/estate cargo test -p rdm-test --test main restart_canary_seed::restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt -- --exact",
           "dir": "target/i143-acceptance/2777/process/restart_of_an_unknown_node_is_refused_by_name_and_opens_no_attempt"
         }
       ]
@@ -672,14 +672,14 @@
       "cells": [
         {
           "name": "proof_canary_restarts_container_preserves_state",
-          "source": "crates/rdm-test/tests/node_lifecycle__restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/container/proof_canary_restarts_container_preserves_state/estate cargo test -p rdm-test --test main node_lifecycle__restart_canary_seed::proof_canary_restarts_container_preserves_state -- --exact",
+          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/container/proof_canary_restarts_container_preserves_state/estate cargo test -p rdm-test --test main restart_canary_seed::proof_canary_restarts_container_preserves_state -- --exact",
           "dir": "target/i143-acceptance/2777/container/proof_canary_restarts_container_preserves_state"
         },
         {
           "name": "seed_runner_completes_every_operation_on_container",
-          "source": "crates/rdm-test/tests/node_lifecycle__restart_canary_seed.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/container/seed_runner_completes_every_operation_on_container/estate cargo test -p rdm-test --test main node_lifecycle__restart_canary_seed::seed_runner_completes_every_operation_on_container -- --exact",
+          "source": "crates/rdm-test/tests/node/restart_canary_seed.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 JAEGER_QUERY_URL=http://192.168.68.99:16687 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2777/container/seed_runner_completes_every_operation_on_container/estate cargo test -p rdm-test --test main restart_canary_seed::seed_runner_completes_every_operation_on_container -- --exact",
           "dir": "target/i143-acceptance/2777/container/seed_runner_completes_every_operation_on_container"
         }
       ]
@@ -690,50 +690,50 @@
       "cells": [
         {
           "name": "peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes/estate cargo test -p rdm-test --test main peer_mesh_investigation::peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes"
         },
         {
           "name": "alive_but_unheard_admin_answers_the_probe_and_is_not_reborn",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::alive_but_unheard_admin_answers_the_probe_and_is_not_reborn -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn/estate cargo test -p rdm-test --test main peer_mesh_investigation::alive_but_unheard_admin_answers_the_probe_and_is_not_reborn -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/alive_but_unheard_admin_answers_the_probe_and_is_not_reborn"
         },
         {
           "name": "peer_mesh_heard_again_between_probes_cancels_the_investigation",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::peer_mesh_heard_again_between_probes_cancels_the_investigation -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation/estate cargo test -p rdm-test --test main peer_mesh_investigation::peer_mesh_heard_again_between_probes_cancels_the_investigation -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_heard_again_between_probes_cancels_the_investigation"
         },
         {
           "name": "peer_mesh_whose_members_all_stay_silent_is_held_not_reborn",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::peer_mesh_whose_members_all_stay_silent_is_held_not_reborn -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn/estate cargo test -p rdm-test --test main peer_mesh_investigation::peer_mesh_whose_members_all_stay_silent_is_held_not_reborn -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/peer_mesh_whose_members_all_stay_silent_is_held_not_reborn"
         },
         {
           "name": "an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost/estate cargo test -p rdm-test --test main peer_mesh_investigation::an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost"
         },
         {
           "name": "two_peer_meshes_lost_together_are_investigated_and_reborn_independently",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::two_peer_meshes_lost_together_are_investigated_and_reborn_independently -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently/estate cargo test -p rdm-test --test main peer_mesh_investigation::two_peer_meshes_lost_together_are_investigated_and_reborn_independently -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/two_peer_meshes_lost_together_are_investigated_and_reborn_independently"
         },
         {
           "name": "elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status/estate cargo test -p rdm-test --test main peer_mesh_investigation::elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status"
         },
         {
           "name": "recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does",
-          "source": "crates/rdm-test/tests/mesh_lifecycle__peer_mesh_investigation.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does/estate cargo test -p rdm-test --test main mesh_lifecycle__peer_mesh_investigation::recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does -- --exact",
+          "source": "crates/rdm-test/tests/mesh/peer_mesh_investigation.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2803-detect/process/recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does/estate cargo test -p rdm-test --test main peer_mesh_investigation::recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does -- --exact",
           "dir": "target/i143-acceptance/2803-detect/process/recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does"
         }
       ]
@@ -744,14 +744,14 @@
       "cells": [
         {
           "name": "ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds",
-          "source": "crates/rdm-test/tests/node_rpc__topology_get.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rt6/process/ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds/estate cargo test -p rdm-test --test main node_rpc__topology_get::ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds -- --exact",
+          "source": "crates/rdm-test/tests/rpc/topology_get.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rt6/process/ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds/estate cargo test -p rdm-test --test main topology_get::ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds -- --exact",
           "dir": "target/i143-acceptance/rt6/process/ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds"
         },
         {
           "name": "born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it",
-          "source": "crates/rdm-test/tests/node_rpc__topology_get.rs",
-          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rt6/process/born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it/estate cargo test -p rdm-test --test main node_rpc__topology_get::born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it -- --exact",
+          "source": "crates/rdm-test/tests/rpc/topology_get.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/rt6/process/born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it/estate cargo test -p rdm-test --test main topology_get::born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it -- --exact",
           "dir": "target/i143-acceptance/rt6/process/born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_it"
         }
       ]

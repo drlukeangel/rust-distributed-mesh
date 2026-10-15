@@ -63,37 +63,37 @@ const SCRUBBED: &[&str] = &[
 
 /// Scenario stems the fast gate runs (`SCENARIOS` of `rdm-gate-at.sh`).
 const GATE_SCENARIOS: &[&str] = &[
-    "node_lifecycle__node_delete", "node_lifecycle__node_connections_delete", "node_lifecycle__node_stop", "node_lifecycle__node_replace", "node_lifecycle__node_restart", "node_rpc__routing", "node_rpc__status",
-    "mesh_shapes__shape_reconcile", "mesh_shapes__live_resize", "mesh_shapes__role_build", "mesh_elections__role_cohort", "node_rpc__restart_target",
-    "node_rpc__role_routing", "node_rpc__role_context", "mesh_runtime__role_wedge", "mesh_elections__late_authority", "mesh_elections__sticky_seat",
-    "mesh_lifecycle__mesh_create", "mesh_lifecycle__fabric_primary_handover", "mesh_identity__canonical_ids", "mesh_elections__cohort_election", "mesh_elections__fabric_primary", "mesh_rpc__proof_store",
-    "fabric_build__accepted_topology", "fabric_build__build_op", "mesh_lifecycle__cohort_recovery", "node_rpc__rpc_certainty", "mesh_lifecycle__peer_mesh_investigation", "fabric_build__joiner_build_facts", "mesh_runtime__rafka_time_discipline", "fabric_certs__issuance", "fabric_states__rounds",
-    "mesh_lifecycle__mesh_delete_resume", "mesh_lifecycle__mesh_delete_no_survivor",
-    "node_rpc__apply_cuts", "node_rpc__scheduler_replay", "node_rpc__shared_dial",
+    "node_delete", "node_connections_delete", "node_stop", "node_replace", "node_restart", "routing", "status",
+    "shape_reconcile", "live_resize", "role_build", "role_cohort", "restart_target",
+    "role_routing", "role_context", "role_wedge", "late_authority", "sticky_seat",
+    "mesh_create", "fabric_primary_handover", "canonical_ids", "cohort_election", "fabric_primary", "rpc_proof_store",
+    "accepted_topology", "build_op", "cohort_recovery", "rpc_certainty", "peer_mesh_investigation", "joiner_build_facts", "rafka_time_discipline", "issuance", "rounds",
+    "mesh_delete_resume", "mesh_delete_no_survivor",
+    "apply_cuts", "scheduler_replay", "shared_dial",
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
-    "mesh_elections__cohort_election", "mesh_lifecycle__cohort_recovery", "mesh_lifecycle__peer_mesh_investigation", "node_lifecycle__restart_canary_seed", "chaos_kit__failpoint_explorer",
-    "mesh_lifecycle__mesh_delete_resume", "mesh_lifecycle__mesh_delete_no_survivor",
+    "cohort_election", "cohort_recovery", "peer_mesh_investigation", "restart_canary_seed", "failpoint_explorer",
+    "mesh_delete_resume", "mesh_delete_no_survivor",
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[
     "rafka-mesh-audit", "rdm-core", "rdm-transport", "rdm-admin", "rdm-test", "rdm-node",
 ];
 /// Stems that need a container runtime (the gate's `container-proof` job).
-const CONTAINER_STEMS: &[&str] = &["container_proof", "mesh_runtime__container_kill"];
+const CONTAINER_STEMS: &[&str] = &["container_proof", "container_kill"];
 /// The e11 cells (PRD §13.1): (crate, stem).
 const E11: &[(&str, &str)] = &[
-    ("rdm-test", "node_rpc__restart_target"),
-    ("rdm-test", "node_rpc__role_routing"),
-    ("rdm-test", "node_rpc__role_context"),
-    ("rdm-test", "mesh_runtime__role_wedge"),
-    ("rdm-test", "mesh_shapes__role_build"),
-    ("rdm-test", "mesh_elections__role_cohort"),
+    ("rdm-test", "restart_target"),
+    ("rdm-test", "role_routing"),
+    ("rdm-test", "role_context"),
+    ("rdm-test", "role_wedge"),
+    ("rdm-test", "role_build"),
+    ("rdm-test", "role_cohort"),
     ("rdm-test", "role_process"),
     ("rdm-node", "leadership"),
     ("rdm-transport", "pool"),
-    ("rdm-test", "node_rpc__shared_dial"),
+    ("rdm-test", "shared_dial"),
     ("rafka-mesh-audit", "dependency_rules"),
 ];
 

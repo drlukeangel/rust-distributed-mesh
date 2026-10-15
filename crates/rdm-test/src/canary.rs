@@ -2,7 +2,7 @@
 //! process, under the same incarnation, endpoint key and port (restart is stop then start on the
 //! parked process; nothing is deployed), serves the value written before the restart from its own
 //! data dir, resets an unfinished request with 499, and leaves a Build -> deployment -> node chain
-//! linked by ParentSpanId. `restart_canary` is run by `node_lifecycle__node_restart` and by the
+//! linked by ParentSpanId. `restart_canary` is run by `node_restart` and by the
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
 
 use crate::estate::{descends_from, named, wait_for, Estate, Owner};

@@ -35,7 +35,7 @@ testkit-skew = ["rdm-transport/testkit-skew"]
 [dev-dependencies]
 ctor = "0.2"
 tracing-subscriber = { workspace = true }
-# node_rpc__scheduler_replay switches NAT traversal off on its endpoints (R-I3); `test-knobs` is a dev-dependency
+# scheduler_replay switches NAT traversal off on its endpoints (R-I3); `test-knobs` is a dev-dependency
 # feature only, and `dep-rules` refuses it anywhere else.
 iroh = { workspace = true, features = ["test-knobs"] }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

@@ -1,5 +1,7 @@
-//! The crate's one integration-test executable: every file in this directory is a module
-//! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
+//! The crate's one integration-test executable: every test file in this directory or its family
+//! subdirectories (`build/`, `chaos/`, `elections/`, `fabric/`, `gossip/`, `mesh/`, `node/`,
+//! `rpc/`, `runtime/`) is a flat module here, so the crate links once. A stem runs alone as
+//! `<exe> <stem>::` (with `--skip <other>::` when `<stem>` is a suffix of `<other>`).
 
 #![allow(non_snake_case)]
 
@@ -44,76 +46,144 @@ pub fn node_recovery_due() -> std::time::Duration {
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 mod build_log;
-mod chaos_kit__restored_faults;
+#[path = "chaos/restored_faults.rs"]
+mod restored_faults;
 mod estate_handover;
 mod estate_teardown;
-mod fabric_build__accepted_topology;
-mod fabric_build__await_attempt;
-mod fabric_build__build_op;
-mod fabric_certs__issuance;
-mod fabric_soak__seeded;
-mod fabric_states__rounds;
-mod mesh_rpc__proof_holder_lifecycle;
-mod scenario_runner__manifest_replay;
-mod node_lifecycle__restart_canary_seed;
-mod chaos_kit__action_generator;
-mod chaos_kit__failpoint_explorer;
-mod chaos_kit__wedge_detector;
-mod chaos_kit__process_fault_backend;
-mod chaos_kit__container_fault_backend;
-mod fabric_soak__operation_ledger;
-mod fabric_soak__driver_reconcile;
-mod mesh_lifecycle__cohort_recovery;
-mod mesh_lifecycle__peer_mesh_investigation;
-mod mesh_lifecycle__bootstrap_pending;
-mod mesh_elections__primary_loss_takeover;
-mod mesh_runtime__supplied_clock;
-mod mesh_membership__delta_gap_recovery;
-mod mesh_membership__held_status_join;
-mod mesh_membership__partition_rejoin;
-mod node_rpc__proxy_hydration_cutback;
-mod node_lifecycle__restarted_member_rejoin;
-mod mesh_lifecycle__stopped_last_admin;
-mod mesh_membership__peer_mesh_topology;
-mod fabric_build__joiner_build_facts;
-mod node_rpc__topology_get;
-mod mesh_elections__cohort_election;
-mod mesh_elections__fabric_primary;
-mod mesh_elections__late_authority;
-mod mesh_elections__role_cohort;
-mod mesh_elections__sticky_seat;
-mod mesh_identity__canonical_ids;
-mod mesh_lifecycle__mesh_create;
-mod mesh_lifecycle__mesh_delete_no_survivor;
-mod mesh_lifecycle__mesh_delete_resume;
-mod mesh_lifecycle__mesh_recover;
-mod mesh_lifecycle__fabric_primary_handover;
-mod mesh_membership__backbone;
-mod mesh_membership__digest_sequence;
-mod mesh_rpc__proof_store;
-mod mesh_runtime__boot_trace;
-mod mesh_runtime__container_kill;
-mod mesh_runtime__rafka_time_discipline;
-mod mesh_runtime__role_wedge;
-mod mesh_runtime__successor_adoption;
-mod mesh_shapes__live_resize;
-mod mesh_shapes__role_build;
-mod mesh_shapes__shape_reconcile;
-mod node_lifecycle__admin_restart;
-mod node_lifecycle__node_delete;
-mod node_lifecycle__node_connections_delete;
-mod node_lifecycle__node_replace;
-mod node_lifecycle__node_restart;
-mod node_lifecycle__node_stop;
-mod node_rpc__apply_cuts;
-mod node_rpc__restart_target;
-mod node_rpc__role_context;
-mod node_rpc__role_routing;
-mod node_rpc__routing;
-mod node_rpc__rpc_certainty;
-mod node_rpc__scheduler_replay;
-mod node_rpc__shared_dial;
-mod node_rpc__status;
+#[path = "build/accepted_topology.rs"]
+mod accepted_topology;
+#[path = "build/await_attempt.rs"]
+mod await_attempt;
+#[path = "build/build_op.rs"]
+mod build_op;
+#[path = "fabric/issuance.rs"]
+mod issuance;
+#[path = "fabric/seeded.rs"]
+mod seeded;
+#[path = "fabric/rounds.rs"]
+mod rounds;
+#[path = "rpc/proof_holder_lifecycle.rs"]
+mod proof_holder_lifecycle;
+#[path = "runtime/manifest_replay.rs"]
+mod manifest_replay;
+#[path = "node/restart_canary_seed.rs"]
+mod restart_canary_seed;
+#[path = "chaos/action_generator.rs"]
+mod action_generator;
+#[path = "chaos/failpoint_explorer.rs"]
+mod failpoint_explorer;
+#[path = "chaos/wedge_detector.rs"]
+mod wedge_detector;
+#[path = "chaos/process_fault_backend.rs"]
+mod process_fault_backend;
+#[path = "chaos/container_fault_backend.rs"]
+mod container_fault_backend;
+#[path = "fabric/operation_ledger.rs"]
+mod operation_ledger;
+#[path = "fabric/driver_reconcile.rs"]
+mod driver_reconcile;
+#[path = "mesh/cohort_recovery.rs"]
+mod cohort_recovery;
+#[path = "mesh/peer_mesh_investigation.rs"]
+mod peer_mesh_investigation;
+#[path = "mesh/bootstrap_pending.rs"]
+mod bootstrap_pending;
+#[path = "elections/primary_loss_takeover.rs"]
+mod primary_loss_takeover;
+#[path = "runtime/supplied_clock.rs"]
+mod supplied_clock;
+#[path = "gossip/delta_gap_recovery.rs"]
+mod delta_gap_recovery;
+#[path = "gossip/held_status_join.rs"]
+mod held_status_join;
+#[path = "gossip/partition_rejoin.rs"]
+mod partition_rejoin;
+#[path = "rpc/proxy_hydration_cutback.rs"]
+mod proxy_hydration_cutback;
+#[path = "node/restarted_member_rejoin.rs"]
+mod restarted_member_rejoin;
+#[path = "mesh/stopped_last_admin.rs"]
+mod stopped_last_admin;
+#[path = "gossip/peer_mesh_topology.rs"]
+mod peer_mesh_topology;
+#[path = "build/joiner_build_facts.rs"]
+mod joiner_build_facts;
+#[path = "rpc/topology_get.rs"]
+mod topology_get;
+#[path = "elections/cohort_election.rs"]
+mod cohort_election;
+#[path = "elections/fabric_primary.rs"]
+mod fabric_primary;
+#[path = "elections/late_authority.rs"]
+mod late_authority;
+#[path = "elections/role_cohort.rs"]
+mod role_cohort;
+#[path = "elections/sticky_seat.rs"]
+mod sticky_seat;
+#[path = "mesh/canonical_ids.rs"]
+mod canonical_ids;
+#[path = "mesh/mesh_create.rs"]
+mod mesh_create;
+#[path = "mesh/mesh_delete_no_survivor.rs"]
+mod mesh_delete_no_survivor;
+#[path = "mesh/mesh_delete_resume.rs"]
+mod mesh_delete_resume;
+#[path = "mesh/mesh_recover.rs"]
+mod mesh_recover;
+#[path = "mesh/fabric_primary_handover.rs"]
+mod fabric_primary_handover;
+#[path = "gossip/backbone.rs"]
+mod backbone;
+#[path = "gossip/digest_sequence.rs"]
+mod digest_sequence;
+#[path = "rpc/rpc_proof_store.rs"]
+mod rpc_proof_store;
+#[path = "runtime/boot_trace.rs"]
+mod boot_trace;
+#[path = "runtime/container_kill.rs"]
+mod container_kill;
+#[path = "runtime/rafka_time_discipline.rs"]
+mod rafka_time_discipline;
+#[path = "runtime/role_wedge.rs"]
+mod role_wedge;
+#[path = "runtime/successor_adoption.rs"]
+mod successor_adoption;
+#[path = "build/live_resize.rs"]
+mod live_resize;
+#[path = "build/role_build.rs"]
+mod role_build;
+#[path = "build/shape_reconcile.rs"]
+mod shape_reconcile;
+#[path = "node/admin_restart.rs"]
+mod admin_restart;
+#[path = "node/node_delete.rs"]
+mod node_delete;
+#[path = "node/node_connections_delete.rs"]
+mod node_connections_delete;
+#[path = "node/node_replace.rs"]
+mod node_replace;
+#[path = "node/node_restart.rs"]
+mod node_restart;
+#[path = "node/node_stop.rs"]
+mod node_stop;
+#[path = "rpc/apply_cuts.rs"]
+mod apply_cuts;
+#[path = "rpc/restart_target.rs"]
+mod restart_target;
+#[path = "rpc/role_context.rs"]
+mod role_context;
+#[path = "rpc/role_routing.rs"]
+mod role_routing;
+#[path = "rpc/routing.rs"]
+mod routing;
+#[path = "rpc/rpc_certainty.rs"]
+mod rpc_certainty;
+#[path = "rpc/scheduler_replay.rs"]
+mod scheduler_replay;
+#[path = "rpc/shared_dial.rs"]
+mod shared_dial;
+#[path = "rpc/status.rs"]
+mod status;
 mod poc_chaos_kit;
 mod rshape_burn_in;
 
