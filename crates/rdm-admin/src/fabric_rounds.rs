@@ -716,7 +716,7 @@ impl FabricRounds {
                 }
                 Delivery::Undelivered { why, typed } => {
                     span.record("outcome", why.as_str());
-                    // Addressed while the call was out: due again now; a fabric-level op is sent by the climb's turn.
+                    // Wake the round waiter so the current view is checked against what was sent while the call was out.
                     if book.undelivered(&key, &to, &expected.incarnation, typed) && fabric_level {
                         this.climb_wake.notify_one();
                     }

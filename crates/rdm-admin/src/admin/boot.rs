@@ -1614,13 +1614,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 if blocked.is_empty() {
                                                     let d_ready = {
-                                                        let d = digest.lock().unwrap();
+                                                        let mut d = digest.lock().unwrap();
                                                         if d.status != MemberStatus::Pending {
                                                             break;
                                                         }
-                                                        let mut d_ready = d.clone();
-                                                        d_ready.status = MemberStatus::ReadyForTraffic;
-                                                        d_ready
+                                                        d.status = MemberStatus::ReadyForTraffic;
+                                                        d.clone()
                                                     };
                                                     let _ = membership.publish(&d_ready).await;
                                                     let reads = ViewReads::read(&me, &book, &records, &fabric_id).await;
@@ -1636,13 +1635,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         Ok(c) => c.into_build_id().map(|b| b.to_string()).unwrap_or_default(),
                                                         Err(e) => format!("unreadable: {e}"),
                                                     };
-                                                    {
-                                                        let mut d = digest.lock().unwrap();
-                                                        if d.status != MemberStatus::Pending {
-                                                            break;
-                                                        }
-                                                        d.status = MemberStatus::ReadyForTraffic;
-                                                    }
                                                     records.wake.poke();
                                                     tracing::info_span!(
                                                         parent: &boot,
