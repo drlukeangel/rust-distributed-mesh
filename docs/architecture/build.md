@@ -551,7 +551,7 @@ Held-member repair is a generic membership mechanism owned by [gossip.md §6](go
 
 ## 14. Control endpoint ownership and authority movement
 
-Callers reach the current fabric-primary over Node RPC at the endpoint its [new-fabric-primary announcement](gossip.md#new-fabric-primary-and-contact-addresses) and digest carry. An application contact such as `admin_api_base` is application config on the node record.
+Callers reach the current fabric-primary over Node RPC at the endpoint its digest carries. An application contact such as `admin_api_base` is application config on the node record.
 
 A fabric-primary lost mid-Build and runtime drift after a Build completed both continue the current Build (§4.1).
 

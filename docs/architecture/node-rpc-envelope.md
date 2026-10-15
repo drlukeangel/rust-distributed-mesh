@@ -1414,12 +1414,11 @@ the successor installs it; no row means the update never happened.
 The holder's full digest
 carries `admin_api_base`, the application contact URL including its bound port. Consumers
 resolve the committed successor's application contact from that exact birth's contact record;
-The holder's digest and the backbone
-[new-fabric-primary announcement](gossip.md#new-fabric-primary-and-contact-addresses) carry its contact addresses.
+The holder's digest carries its contact addresses.
 The two contact fields are explicit: `transport_addr` is the bound QUIC UDP ip:port;
 `admin_api_base` is an application-supplied contact URL with its bound port.
 RDM serves Node RPC; the application contact is independent of that endpoint; consumers cannot derive either port from the other. Contact changes
-are learned from the exact birth's digest and its new-fabric-primary announcement.
+are learned from the exact birth's digest.
 
 Spans: the caller emits `rdm.node_rpc.request.update.via-call` with op=0x21; the successor's install and
 every refusal carry the operation, build_id, attempt, both exact births and each seat's revision. A change
