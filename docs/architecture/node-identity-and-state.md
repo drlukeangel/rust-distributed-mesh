@@ -105,7 +105,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 ### 2.0 One id space, four HUMAN-READABLE prefixes — so the DECODER enforces the type, not the renderer
 
 The prefix renders from `node_type` over ONE 12-character id space, human-readable by node type: `brk_` = broker, `adm_` = node admin,
-`gtw_` = gateway, `cmp_` = compute.
+`gtw_` = gateway, `cmp_` = compute. A Build id is the bare 12-character Crockford60 on the wire, in every store row and in every page example, and renders `bid_xxxx-xxxx-xxxx` (`BuildId::log()`) in log lines and span fields only; nothing parses or stores that form.
 
 ### 2.2 The node `path.name` is what placement STORES — the `endpoint_id` is resolved at dial time
 
