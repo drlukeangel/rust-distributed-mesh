@@ -22,7 +22,12 @@ async fn outage_child() {
     if std::env::var(CHILD).is_err() {
         return;
     }
+    // Where the child's wall time goes, for the parent's message: the test entered, the
+    // telemetry was initialised, the exit began.
+    println!("ENTERED_AT_MS={}", unix_ms());
+    let init = Instant::now();
     let telemetry = rdm_transport::init_evidence_telemetry("rdm-outage-child");
+    println!("INIT_MS={}", init.elapsed().as_millis());
     let started = Instant::now();
     for i in 0..SPANS {
         let span = tracing::info_span!("rdm.test.outage.update.via-child", i);
@@ -32,10 +37,15 @@ async fn outage_child() {
     println!("EMIT_MS={}", started.elapsed().as_millis());
     // A second of outage with spans queued, then the exit a node makes.
     tokio::time::sleep(Duration::from_millis(1200)).await;
+    println!("EXITING_AT_MS={}", unix_ms());
     rdm_transport::flush_before_exit();
     drop(telemetry);
     println!("DRAINED_MS={}", started.elapsed().as_millis());
     std::process::exit(0);
+}
+
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
 }
 
 /// Run the child against `endpoint`; its exit time, stdout and stderr. The child writes its spans
@@ -43,6 +53,7 @@ async fn outage_child() {
 fn run_child(endpoint: &str) -> (Duration, String, String) {
     static CHILDREN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let evidence = std::env::temp_dir().join(format!("rdm-outage-evidence-{}-{}", std::process::id(), CHILDREN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let spawned_at = unix_ms();
     let mut child = Command::new(std::env::current_exe().unwrap())
         // The child runs this test alone: its libtest name carries the module path of this file.
         .args(["--exact", &format!("{}::outage_child", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
@@ -80,7 +91,9 @@ fn run_child(endpoint: &str) -> (Duration, String, String) {
         std::thread::sleep(Duration::from_millis(20));
     };
     let took = started.elapsed();
-    let (out, err) = (out_reader.join().unwrap(), err_reader.join().unwrap());
+    let ended_at = unix_ms();
+    let (mut out, err) = (out_reader.join().unwrap(), err_reader.join().unwrap());
+    out.push_str(&format!("SPAWNED_AT_MS={spawned_at}\nENDED_AT_MS={ended_at}\n"));
     let _ = std::fs::remove_dir_all(&evidence);
     assert!(!killed, "the child was still running after {took:?}; it never exited: stdout={out} stderr tail={}", &err[err.len().saturating_sub(600)..]);
     assert!(status.success(), "the child failed: {status:?}\n{out}\n{err}");
@@ -96,7 +109,15 @@ fn number(out: &str, key: &str) -> u128 {
 /// collector, and stderr names the outage once per signal, never once per span or batch.
 fn outage_changes_nothing(endpoint: &str) {
     let (took, out, err) = run_child(endpoint);
-    assert!(took < EXIT_BOUND + Duration::from_secs(3), "the child took {took:?} to end against {endpoint} (stdout: {out})");
+    let at = |k: &str| number(&out, k);
+    assert!(
+        took < EXIT_BOUND + Duration::from_secs(3),
+        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms, test entry to exit begun {} ms, exit begun to process ended {} ms (stdout: {out})",
+        at("ENTERED_AT_MS").saturating_sub(at("SPAWNED_AT_MS")),
+        at("INIT_MS"),
+        at("EXITING_AT_MS").saturating_sub(at("ENTERED_AT_MS")),
+        at("ENDED_AT_MS").saturating_sub(at("EXITING_AT_MS")),
+    );
     let drained = number(&out, "DRAINED_MS");
     assert!(drained < 1200 + EXIT_BOUND.as_millis(), "the drain took until {drained} ms against {endpoint}");
     let emit = number(&out, "EMIT_MS");
