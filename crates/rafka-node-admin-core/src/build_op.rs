@@ -339,7 +339,7 @@ impl BuildDoor {
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-incumbent-facts",
             node = %me,
-            build_id = %id,
+            build_id = %id.log(),
             incumbent = tracing::field::Empty,
             facts = tracing::field::Empty,
             chunks = tracing::field::Empty,
@@ -509,7 +509,7 @@ impl BuildDoor {
                 while let Some(f) = reader.next().await {
                     if !held_at_start && self.holds_fabric_seat() {
                         let me = self.held_name().await;
-                        tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id, attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
+                        tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id.log(), attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
                             .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
                         return Ok(BuildReply::SeatMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
                     }
@@ -541,7 +541,7 @@ async fn stream_frames(mut sink: ReplySink<Build, rafka_node_rpc::stream::Stream
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
             Read::Terminal(t) => return Ok(t),
             Read::SeatLost(loss) => {
-                tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
+                tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id().log(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
                 return Ok(BuildReply::SeatMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
             }
         }
@@ -698,7 +698,7 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
     match env.builds.read_build(&id).await {
         Ok(b) => vec![drives.ensure(env, &b.build_id, b.attempt_to_drive())],
         Err(e) => {
-            tracing::info!(error = %e, build_id = %id, "the current Build is unreadable; nothing driven");
+            tracing::info!(error = %e, build_id = %id.log(), "the current Build is unreadable; nothing driven");
             Vec::new()
         }
     }

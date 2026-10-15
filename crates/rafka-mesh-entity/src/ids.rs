@@ -189,6 +189,28 @@ product_id!(
     /// attempt, claim and receipt of it. Ordered only so a set of Builds has a stable iteration.
     BuildId, "build id", PartialOrd, Ord
 );
+
+/// The log and span rendering of a [`BuildId`] (`R-BI5a`): `bid_xxxx-xxxx-xxxx`. Never stored,
+/// wired or parsed; [`BuildId`]'s own [`fmt::Display`] stays the bare 12 lowercase Crockford
+/// characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildIdLog<'a>(&'a BuildId);
+
+impl BuildId {
+    /// Render this Build id as `bid_xxxx-xxxx-xxxx` for tracing span fields and log lines only
+    /// (`R-BI5a`).
+    pub fn log(&self) -> BuildIdLog<'_> {
+        BuildIdLog(self)
+    }
+}
+
+impl fmt::Display for BuildIdLog<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = self.0.as_str();
+        write!(f, "bid_{}-{}-{}", &s[0..4], &s[4..8], &s[8..12])
+    }
+}
+
 product_id!(
     /// One runtime a node-admin's provider realised for a node birth, local to that node-admin.
     /// Ordered only so a set of deployments has a stable iteration.

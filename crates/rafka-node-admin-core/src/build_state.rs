@@ -540,7 +540,7 @@ pub async fn accept(builds: &dyn BuildStateAdapter, accepted: &BuildAccepted, pr
     let span = tracing::info_span!(
         "rdm.node_admin.build.create.via-accepted",
         node = %node,
-        build_id = %accepted.build_id,
+        build_id = %accepted.build_id.log(),
         previous_build_id = %previous.map(|b| b.as_str()).unwrap_or(""),
         submitted_at_ms = accepted.submitted_at_ms,
         via,

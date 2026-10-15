@@ -1746,7 +1746,7 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
         node = %me,
         mesh = %mesh,
         mesh_id = %mesh_id,
-        build_id = %build_id,
+        build_id = %build_id.log(),
         attempt,
         operation = %operation,
         outcome = tracing::field::Empty,
@@ -2911,7 +2911,7 @@ pub async fn reconcile_drift(
         match create_of(admin) {
             Ok(action) => (vec![admin.to_string()], admin.to_string(), Some(action)),
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-recipe-unplannable", build_id = %current.build_id, node = %me, create = %admin, detail = %e).in_scope(|| tracing::info!("the verdict's node.create is no recipe the planner accepts: no attempt"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-recipe-unplannable", build_id = %current.build_id.log(), node = %me, create = %admin, detail = %e).in_scope(|| tracing::info!("the verdict's node.create is no recipe the planner accepts: no attempt"));
                 return None;
             }
         }
@@ -2927,7 +2927,7 @@ pub async fn reconcile_drift(
                 match create_of(path) {
                     Ok(action) => (vec![path.to_string()], scope, Some(action)),
                     Err(e) => {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-recipe-unplannable", build_id = %current.build_id, node = %me, create = %path, detail = %e).in_scope(|| tracing::info!("the node.create of the exited admin is no recipe the planner accepts: no attempt"));
+                        tracing::info_span!("rdm.node_admin.build.reject.via-recipe-unplannable", build_id = %current.build_id.log(), node = %me, create = %path, detail = %e).in_scope(|| tracing::info!("the node.create of the exited admin is no recipe the planner accepts: no attempt"));
                         return None;
                     }
                 }
@@ -2948,7 +2948,7 @@ pub async fn reconcile_drift(
     if started.contains(&opened_at) {
         let unchanged = (current.build_id.clone(), 0u32, vec!["unchanged".to_string(), ident.clone(), inputs.clone(), current.attempt.to_string()]);
         if started.insert(unchanged) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id, failed_attempt = current.attempt, scope = %scope, inputs = %inputs, exit_proof_rows = %exit_proof_rows.join(", "))
+            tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id.log(), failed_attempt = current.attempt, scope = %scope, inputs = %inputs, exit_proof_rows = %exit_proof_rows.join(", "))
                 .in_scope(|| tracing::info!("the last attempt opened for these inputs ended and none of them moved since: no next attempt until one does"));
         }
         return None;
@@ -2961,12 +2961,12 @@ pub async fn reconcile_drift(
     match builds.current().await {
         Ok(Some(now)) if now.build_id == current.build_id && now.attempt == current.attempt && !matches!(now.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running) => {}
         Ok(other) => {
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route = "proven-drift", build_id = %current.build_id, attempt, scope = %scope, accepted_now = %other.map(|b| format!("{} {:?}", b.build_id, b.state)).unwrap_or_default())
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route = "proven-drift", build_id = %current.build_id.log(), attempt, scope = %scope, accepted_now = %other.map(|b| format!("{} {:?}", b.build_id, b.state)).unwrap_or_default())
                 .in_scope(|| tracing::info!("another Build or attempt was admitted first: no drift attempt"));
             return None;
         }
         Err(e) => {
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "proven-drift", node = %me, build_id = %current.build_id, attempt, scope = %scope, error = %e)
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "proven-drift", node = %me, build_id = %current.build_id.log(), attempt, scope = %scope, error = %e)
                 .in_scope(|| tracing::info!("the current Build could not be read again under the admission: no drift attempt"));
             return None;
         }
@@ -2978,7 +2978,7 @@ pub async fn reconcile_drift(
     let span = match &verdict {
         Some((mesh, admin)) => tracing::info_span!(
             "rdm.node_admin.build.update.via-carrier-edge-lost",
-            build_id = %current.build_id,
+            build_id = %current.build_id.log(),
             attempt,
             mesh = %mesh,
             node = %admin,
@@ -2990,7 +2990,7 @@ pub async fn reconcile_drift(
         ),
         None => tracing::info_span!(
             "rdm.node_admin.build.update.via-proven-drift",
-            build_id = %current.build_id,
+            build_id = %current.build_id.log(),
             attempt,
             scope = %scope,
             authority = %authority.name,
@@ -3031,7 +3031,7 @@ pub async fn reconcile_drift(
         }
         Err(e @ crate::build_state::BuildStateError::AttemptTaken { .. }) => {
             // Another action holds the number: nothing was opened, and there is no attempt to execute.
-            tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route = "proven-drift", build_id = %current.build_id, attempt, scope = %scope, detail = %e)
+            tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route = "proven-drift", build_id = %current.build_id.log(), attempt, scope = %scope, detail = %e)
                 .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"));
             None
         }
@@ -4704,11 +4704,11 @@ impl AdminRunner {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &me.to_string(), build_id, attempt, op).await,
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
-                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
+                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
                 self.create_over(&*builds, build_id, attempt, node, from).instrument(span).await
             }
             BuildOperation::CreateNode { node, over: None } => {
-                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt);
                 async {
                     // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it
                     // has joined its mesh, the fabric primary applies MeshStatus::Pending at that exact
@@ -4724,31 +4724,31 @@ impl AdminRunner {
             BuildOperation::RestartNode { node } => {
                 // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
                 // proven exited is node recovery's (node-recovery.md).
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.restart_in_place(build_id, attempt, node).instrument(span).await
             }
             BuildOperation::StartNode { node, from_incarnation } => {
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.start_parked(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::DeleteConnections { node, from_incarnation } => {
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.standalone(build_id, attempt, node, from_incarnation, false).instrument(span).await
             }
             BuildOperation::StopNode { node, from_incarnation } => {
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.standalone(build_id, attempt, node, from_incarnation, true).instrument(span).await
             }
             BuildOperation::RetireNode { node, exited: Some(from) } => {
-                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
                 self.delete_exited(&*builds, build_id, attempt, node, from).instrument(span).await
             }
             BuildOperation::DeleteNode { node, from_incarnation } => {
-                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.delete_parked(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::RetireNode { node, exited: None } => {
-                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
+                let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id.log(), node = %node, attempt);
                 self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
@@ -4802,7 +4802,7 @@ impl AdminRunner {
             }
             S::Update { node, name } => {
                 use tracing::Instrument;
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), to = %name);
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), to = %name);
                 async {
                     let template = self.template_for(node.kind, &node.mesh).await?;
                     let put = async {
@@ -5147,7 +5147,7 @@ fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book: &DigestBoo
     book.deletions_from_facts(&in_flight.removals_ended, &crate::build_state::forgotten_builds(facts, &builds));
     for u in in_flight.unrecognised {
         if named.insert((u.build_id.to_string(), u.attempt, u.operation.clone(), u.step.clone())) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
+            tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id.log(), attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)
                 .in_scope(|| tracing::warn!("a lifecycle pre-event step this build cannot read opens no overlay"));
         }
     }
@@ -5810,7 +5810,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
                                     // own mesh with one node-admin; it is the current Build once written.
                                     if sole_node_root && inherited.is_some() {
-                                        let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.to_string()).unwrap_or_default();
+                                        let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.log().to_string()).unwrap_or_default();
                                         tracing::info_span!(parent: &boot, "rdm.node_admin.fabric.update.via-inherited-root", node = %name, build_id = %build_id)
                                             .in_scope(|| tracing::info!("the current Build reloaded from the inherited data dir's builds store"));
                                     } else if cfg.fabric_primary || inherited.is_some() {

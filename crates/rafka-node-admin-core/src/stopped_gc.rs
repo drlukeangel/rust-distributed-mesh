@@ -318,7 +318,7 @@ impl crate::control_plane::ControlPlane {
                     first.get_or_insert(c);
                 }
                 Verdict::Young { .. } => {}
-                Verdict::Referenced { node, build_id } => tracing::info_span!("rdm.node_admin.node.reject.via-open-build-reference", node = %node, build_id = %build_id, ttl = ttl_ms)
+                Verdict::Referenced { node, build_id } => tracing::info_span!("rdm.node_admin.node.reject.via-open-build-reference", node = %node, build_id = %build_id.log(), ttl = ttl_ms)
                     .in_scope(|| tracing::info!("the stopped birth is referenced by an open Build: it is not collected")),
                 Verdict::Deleting { node } => tracing::info_span!("rdm.node_admin.node.reject.via-delete-under-way", node = %node, ttl = ttl_ms)
                     .in_scope(|| tracing::info!("the accepted Build no longer names the stopped node: its delete is under way, not submitted again")),

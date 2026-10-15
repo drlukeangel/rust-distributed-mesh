@@ -54,7 +54,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     use rafka_mesh_entity::ids::IdError;
     use rafka_mesh_entity::Seat;
     use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
-    use rafka_node_admin_core::build_state::{BuildStateAdapter, FileJournal};
+    use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
     use rafka_node_admin_core::fabric_handover::update_operation;
     use rafka_node_admin_core::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
     use rafka_node_admin_core::topology::Topology;
@@ -64,24 +64,22 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     let dir = std::env::temp_dir().join(format!("rdm-rbi5a-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-rbi5a").expect("the cell's evidence file can be created");
-    let journal_dir = dir.join("journal");
-    let id = capture.run(2, {
-        let journal_dir = journal_dir.clone();
-        async move {
-            let journal = FileJournal::open(&journal_dir).await.unwrap();
-            let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
-            admin.status = NodeStatus::ReadyForTraffic;
-            admin.incarnation_id = Some(IncarnationId::mint());
-            admin.is_primary = true;
-            admin.is_fabric_primary = true;
-            let observed = Topology {
-                fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-                meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
-                nodes: vec![admin],
-            };
-            AcceptedStore::seeded(&journal, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), "mesh1.admin.1").await.unwrap();
-            journal.current_build().await.unwrap().into_build_id().unwrap()
-        }
+    let (id, facts_json) = capture.run(2, async move {
+        let builds = MemoryBuildStateAdapter::new();
+        let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
+        admin.status = NodeStatus::ReadyForTraffic;
+        admin.incarnation_id = Some(IncarnationId::mint());
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let observed = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            nodes: vec![admin],
+        };
+        AcceptedStore::seeded(&builds, observed.fabric.id.clone(), FabricTopology::of_observed(&observed), "mesh1.admin.1").await.unwrap();
+        let id = builds.current_build().await.unwrap().into_build_id().unwrap();
+        let facts_json = serde_json::to_string(&builds.facts().await.unwrap()).unwrap();
+        (id, facts_json)
     });
 
     let bare = id.to_string();
@@ -90,6 +88,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
     assert_eq!(serde_json::to_string(&id).unwrap(), format!("\"{bare}\""));
 
     let dashed = format!("bid_{}-{}-{}", &bare[0..4], &bare[4..8], &bare[8..12]);
+    assert_eq!(id.log().to_string(), dashed);
     assert_eq!(
         BuildId::parse(&dashed),
         Err(IdError::NonCanonical { kind: "build id", value: dashed.clone(), at: 1, found: 'i' })
@@ -108,12 +107,11 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
         );
     }
 
-    // Row key, journal row and 0x20 Build carrier all carry the bare 12 characters, never `bid_...`.
+    // Row key, stored BuildFact row and 0x20 Build carrier all carry the bare 12 characters, never `bid_...`.
     let row_key = update_operation(Seat::MeshPrimary, &bare, 1, "node.stop:mesh1.admin.1");
     assert_eq!(row_key, format!("node.primary.update:{bare}:1:node.stop:mesh1.admin.1"));
     assert!(!row_key.contains("bid_"), "{row_key}");
-    let journal_text = std::fs::read_to_string(journal_dir.join("build-journal.jsonl")).unwrap();
-    assert!(journal_text.contains(&format!("\"build_id\":\"{bare}\"")) && !journal_text.contains("bid_"), "{journal_text}");
+    assert!(facts_json.contains(&format!("\"build_id\":\"{bare}\"")) && !facts_json.contains("bid_"), "{facts_json}");
     let started = BuildReply::Started { build_id: id.to_string(), attempt: 1, disposition: Disposition::Created };
     let wire = Build::encode_reply(&started).unwrap();
     let decoded = Build::decode_reply(&wire).unwrap();

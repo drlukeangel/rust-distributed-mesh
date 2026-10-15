@@ -196,7 +196,7 @@ impl ControlPlane {
             // A topology Build in progress refuses a second topology change fabric-wide (build.md §1,
             // R-BI7): named by the mesh its claimed attempt acts in and its claimant, when claimed.
             let held = holding(&current, None).unwrap_or_else(|| InProgress { current_build_id: current.build_id.clone(), mesh: None, held_by: None });
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id, state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %current.build_id.log(), state = ?current.state, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("another Build is reconciling: one topology Build in flight"));
             return Err(Refusal::BuildInProgress(held));
         }
@@ -237,7 +237,7 @@ impl ControlPlane {
                 })?;
                 held.held_by = row.filter(|r| r.build_id == held.current_build_id && r.lane.as_deref() == Some(mesh)).map(|r| r.claimant);
             }
-            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %held.current_build_id, mesh, held_by = %held.held_by.as_deref().unwrap_or(""))
+            tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %held.current_build_id.log(), mesh, held_by = %held.held_by.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("an attempt holds the mesh: one attempt in flight per mesh"));
             return Err(Refusal::BuildInProgress(held));
         }
@@ -287,7 +287,7 @@ impl ControlPlane {
             row.proof,
             row.exit_code.map(|c| format!(", exit code {c}")).unwrap_or_default(),
         );
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id, lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, exit_proof = %row.proof, node = %me, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, exit_proof = %row.proof, node = %me, outcome = tracing::field::Empty);
         let verdict = crate::build_state::BuildAttemptReceipt { mesh: Some(mesh.to_string()), build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason } };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
@@ -354,7 +354,7 @@ impl ControlPlane {
             // is refused, naming the Build, the mesh and the mesh-primary holding it (R-BI7 caveat 3).
             if let Some(held) = operations.iter().filter_map(op_mesh).find_map(|mesh| holding(&current, Some(&mesh))) {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id, mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
+                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %held.mesh.as_deref().unwrap_or(""), held_by = %held.held_by.as_deref().unwrap_or(""))
                         .in_scope(|| tracing::info!("a topology operation acts in a mesh its own drift attempt holds: one attempt in flight per mesh"))
                 });
                 return Err(Refusal::BuildInProgress(held));
@@ -419,7 +419,7 @@ impl ControlPlane {
             // write after it, so the door answers the Build it accepted whatever the drive does next.
             let me = self.held_name().await;
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &me.to_string(), "accepted").await.map_err(Refusal::State)?;
-            tracing::info!(build_id = %build_id, "build accepted");
+            tracing::info!(build_id = %build_id.log(), "build accepted");
             // A resize or roll puts the fabric back to pending (states.md, Resize and roll): the climb takes
             // the accepted Build before the door answers it and before the executor is woken.
             if let Some(resize) = self.resize.get() {
@@ -457,7 +457,7 @@ impl ControlPlane {
             return Err(match e {
                 BuildStateError::AttemptTaken { .. } => {
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id, attempt = opened.attempt, node = %node_name, detail = %e)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-attempt-taken", route, build_id = %current.build_id.log(), attempt = opened.attempt, node = %node_name, detail = %e)
                             .in_scope(|| tracing::info!(detail = %e, "attempt refused: another action holds the number"))
                     });
                     Refusal::AttemptTaken(e.to_string())
@@ -465,7 +465,7 @@ impl ControlPlane {
                 e => Refusal::State(e),
             });
         }
-        tracing::info!(build_id = %current.build_id, attempt = opened.attempt, lane = lane.unwrap_or("fabric"), "attempt opened");
+        tracing::info!(build_id = %current.build_id.log(), attempt = opened.attempt, lane = lane.unwrap_or("fabric"), "attempt opened");
         self.build_submitted.notify_waiters();
         Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt, mesh: opened.mesh })
     }
@@ -498,7 +498,7 @@ impl ControlPlane {
                 let node = step.node();
                 if let Some(held) = holding(&current, Some(&node.mesh)) {
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id, mesh = %node.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %node)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %node.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %node)
                             .in_scope(|| tracing::info!("the recipe acts in a mesh held by its own drift attempt: one attempt in flight per mesh"))
                     });
                     return Err(Refusal::BuildInProgress(held));
@@ -565,7 +565,7 @@ impl ControlPlane {
             // holding it (R-BI7 caveat 3).
             if let Some(held) = holding(&current, Some(&path.mesh)) {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id, mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
+                    tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
                         .in_scope(|| tracing::info!("the node's mesh is held by its own drift attempt: one attempt in flight per mesh"))
                 });
                 return Err(Refusal::BuildInProgress(held));
@@ -704,7 +704,7 @@ impl ControlPlane {
             // receipts), and nothing is opened.
             if let Some((build_id, mesh, attempt, operation)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, lane = mesh.as_deref().unwrap_or("fabric"), attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str())
+                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id.log(), lane = mesh.as_deref().unwrap_or("fabric"), attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str())
                         .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt, mesh }));
@@ -759,7 +759,7 @@ impl ControlPlane {
                     _ => None,
                 };
                 if let Some((claimant, n, exit)) = departed {
-                    let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id, lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %exit.incarnation_id.as_str(), exit_proof = %exit.proof, node = %me, outcome = tracing::field::Empty);
+                    let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %exit.incarnation_id.as_str(), exit_proof = %exit.proof, node = %me, outcome = tracing::field::Empty);
                     if let Err(e) = self.claims.release(&path.mesh, held).await {
                         release.record("outcome", "in-flight-unreleased");
                         return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
@@ -774,7 +774,7 @@ impl ControlPlane {
                 Ok(crate::mesh_claims::Taken::Held(held)) => {
                     let held = InProgress { current_build_id: held.build_id, mesh: Some(path.mesh.clone()), held_by: Some(held.claimant) };
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id, mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
                             .in_scope(|| tracing::info!("the mesh's in-flight row names another attempt: one attempt in flight per mesh"))
                     });
                     return Err(Refusal::BuildInProgress(held));

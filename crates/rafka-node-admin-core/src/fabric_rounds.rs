@@ -444,7 +444,7 @@ impl FabricRounds {
                 if !self.may_advance() {
                     return false;
                 }
-                tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-reset", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id, attempt = build.attempt, from = self.env.records.fabric_state().as_str(), reason = "the accepted topology changed", "otel.kind" = "internal")
+                tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-reset", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), attempt = build.attempt, from = self.env.records.fabric_state().as_str(), reason = "the accepted topology changed", "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a resize or roll puts the fabric back to pending"));
                 climb.tracked = None;
                 climb.notified = false;
@@ -552,7 +552,7 @@ impl FabricRounds {
         if !self.may_advance() {
             return;
         }
-        climb.root = Some(tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-climb", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id, adopted = false));
+        climb.root = Some(tracing::info_span!(parent: None, "rdm.node_admin.fabric.update.via-state-climb", node = %me, fabric_id = %self.env.fabric_id, build_id = %build.build_id.log(), adopted = false));
         climb.tracked = Some(build.topology.clone());
         self.enter(climb, FabricState::StateSync, &me);
     }
@@ -589,7 +589,7 @@ impl FabricRounds {
         // worked (a restart opened an attempt), the application is asked again for the current one.
         if climb.sync.as_ref().is_some_and(|run| run.sent.build_id != build.build_id.to_string() || run.sent.attempt != build.attempt) {
             if let Some(run) = climb.sync.take() {
-                tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-reissued", node = %me, was_build_id = %run.sent.build_id, was_attempt = run.sent.attempt, build_id = %build.build_id, attempt = build.attempt, "otel.kind" = "internal")
+                tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-sync-state-reissued", node = %me, was_build_id = %run.sent.build_id, was_attempt = run.sent.attempt, build_id = %build.build_id.log(), attempt = build.attempt, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the accepted attempt moved: sync_state is called again for the current one"));
                 run.task.abort();
             }

@@ -365,7 +365,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
                 pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         };
-        let root = tracing::info_span!("cell.mesh-delete-resume", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-delete-resume", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
 
@@ -512,7 +512,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let root = tracing::info_span!("cell.mesh-deleted-incomplete", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-incomplete", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
@@ -600,7 +600,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let root = tracing::info_span!("cell.mesh-delete-completion", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-delete-completion", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
@@ -831,7 +831,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
                 pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         };
-        let root = tracing::info_span!("cell.mesh-deleted-amended", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-amended", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
 
@@ -996,7 +996,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_published_deleted_by
                 std::future::ready(Ok::<(), String>(()))
             }
         };
-        let root = tracing::info_span!("cell.mesh-deleted-finished-under-lost", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-finished-under-lost", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
 
@@ -1082,7 +1082,7 @@ fn an_unproven_silent_primary_refuses_the_resume_and_no_amendment_is_recorded() 
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
-        let root = tracing::info_span!("cell.mesh-deleted-unproven", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-unproven", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
@@ -1133,7 +1133,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
-        let root = tracing::info_span!("cell.mesh-deleted-repeated-loss", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-repeated-loss", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &first, &runtime(FINAL, 46_000), || live_roster(&records)).await.unwrap();
@@ -1203,7 +1203,7 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
             accepted_roster(b, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
             accepted_roster(b, &key(1), STEP_LEAVING_ROSTER, FINAL, &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
         }
-        let root = tracing::info_span!("cell.mesh-deleted-owner-amendment", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-owner-amendment", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         // The fabric-primary's resume, in its own facts only: gossip has not delivered it.
@@ -1273,7 +1273,7 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
         let outer = operation(&mesh_id);
         let key = |attempt: u32| MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
-        let root = tracing::info_span!("cell.mesh-deleted-fp-resume", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-fp-resume", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let admitted = |steps: &[BuildStepReceipt]| admitted_of(steps, &outer).unwrap().unwrap();
@@ -1349,7 +1349,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
             })
             .await
             .unwrap();
-        let root = tracing::info_span!("cell.mesh-deleted-created-admin", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-created-admin", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         record_predecessor_exit(&owner, &key(2), "mesh1.admin.1", &exited(&lost, &runtime(FINAL))).await.expect("the lost primary's exact exit is recorded first");
@@ -1522,7 +1522,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
             .unwrap();
         let mesh_id = MeshId::mint();
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 2, operation: operation(&mesh_id) };
-        let root = tracing::info_span!("cell.mesh-deleted-roster-birth", build_id = %build_id, operation = %key.operation);
+        let root = tracing::info_span!("cell.mesh-deleted-roster-birth", build_id = %build_id.log(), operation = %key.operation);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         roster_rows_read(Some(&rows), NEW_ADMIN, &key.operation, &roster, &records).await;
@@ -1576,7 +1576,7 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
         owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         accepted_roster(&owner, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &my_runtime, || live_roster(&records)).await.unwrap();
         let owner_facts = owner.facts().await.unwrap();
-        let root = tracing::info_span!("cell.mesh-deleted-unheard-build", build_id = %build_id);
+        let root = tracing::info_span!("cell.mesh-deleted-unheard-build", build_id = %build_id.log());
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let reads = std::sync::atomic::AtomicUsize::new(0);
@@ -1621,7 +1621,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
     let reference = manifest_reference(key.build_id.as_str(), 1, &key.operation, false);
     let cap = capture();
     let (verdict, not_ready, trace_id) = cap.run(async {
-        let root = tracing::info_span!("cell.mesh-deleted-unknown-build-handoff", build_id = %key.build_id);
+        let root = tracing::info_span!("cell.mesh-deleted-unknown-build-handoff", build_id = %key.build_id.log());
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let unknown = rafka_node_admin_core::build_facts_read::FetchFailure::UnknownBuild(format!("the responder holds no fact of {}", key.build_id));
@@ -1816,7 +1816,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
                 pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 2, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         };
-        let root = tracing::info_span!("cell.mesh-deleted-cut-delete", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-deleted-cut-delete", build_id = %build_id.log(), operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
         let mp = accepted_roster(&builds, &key(1), STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();

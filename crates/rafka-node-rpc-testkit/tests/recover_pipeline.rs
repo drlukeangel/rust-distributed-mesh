@@ -234,7 +234,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     // Spans: one pipeline per workflow, and node.deleted published from the exit proof.
     let all = spans.0.lock().unwrap().clone();
     for kind in ["retire", "create"] {
-        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.to_string())), "the {kind} workflow ran as its pipeline");
+        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.log().to_string())), "the {kind} workflow ran as its pipeline");
     }
     assert!(!all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover")), "no recovery pipeline of its own");
     let (_, parent, proof) = all.values().find(|(n, _, _)| n == "rdm.node_admin.node.delete.via-exit-proof").expect("node.deleted is published from the exit proof, spanned");
@@ -326,6 +326,6 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
     let completed: Vec<&str> = view.steps.iter().filter(|r| r.outcome == StepOutcome::Complete).map(|r| r.step.as_str()).collect();
     assert_eq!(completed, vec!["AllocateIdentity"], "nothing after the identity completed: {completed:?}");
     let all = spans.0.lock().unwrap().clone();
-    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("create") && f.get("build_id") == Some(&recover_build.to_string())), "the create ran as its pipeline");
+    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("create") && f.get("build_id") == Some(&recover_build.log().to_string())), "the create ran as its pipeline");
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }

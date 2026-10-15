@@ -149,7 +149,7 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-claim-decision",
         node = %me,
-        build_id = %claim.build_id,
+        build_id = %claim.build_id.log(),
         attempt = claim.attempt,
         executor = %claim.executor,
         mesh,
@@ -255,7 +255,7 @@ impl ClaimDoor {
             },
         };
         if let Some(refusal) = self.not_claimant(lane, Some(&mesh)).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", node = %me, build_id = %build_id, attempt, executor, mesh = %mesh, lane = lane.unwrap_or("fabric"), detail = ?refusal)
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", node = %me, build_id = %build_id.log(), attempt, executor, mesh = %mesh, lane = lane.unwrap_or("fabric"), detail = ?refusal)
                 .in_scope(|| tracing::info!("this admin may not claim in that lane in its view"));
             return refusal;
         }

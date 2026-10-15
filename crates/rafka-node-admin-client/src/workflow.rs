@@ -502,11 +502,11 @@ impl WorkflowStream {
         }
         if !self.started {
             self.started = true;
-            self.span.in_scope(|| tracing::info!(build_id = %self.accepted.build_id, attempt = self.accepted.attempt, "the workflow call was accepted"));
+            self.span.in_scope(|| tracing::info!(build_id = %self.accepted.build_id.log(), attempt = self.accepted.attempt, "the workflow call was accepted"));
             return Some(Ok(Frame::Started { build_id: self.accepted.build_id.clone(), attempt: self.accepted.attempt }));
         }
         if let Some(e) = self.queued.pop_front() {
-            e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id, "a step event was delivered on the reply stream"));
+            e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id.log(), "a step event was delivered on the reply stream"));
             return Some(Ok(Frame::Event(e)));
         }
         let rows = self.kind.rows();
@@ -534,7 +534,7 @@ impl WorkflowStream {
                     let mut events = row.events.iter().copied();
                     let Some(e) = events.next() else { continue };
                     self.queued.extend(events);
-                    e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id, "a step event was delivered on the reply stream"));
+                    e.span().in_scope(|| tracing::info!(build_id = %self.accepted.build_id.log(), "a step event was delivered on the reply stream"));
                     return Some(Ok(Frame::Event(e)));
                 }
                 BuildFrame::Blocked { attempt, operation, step, reason } => {

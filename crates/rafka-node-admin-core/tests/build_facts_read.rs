@@ -338,7 +338,8 @@ impl Spans {
 fn assert_fetch(spans: &Spans, fetch: &Seen, node: &str, id: &BuildId, blocker: &str, target: &str, facts: Option<u32>) {
     let held = (fetch.attr("node"), fetch.attr("build_id"), fetch.attr("blocker"), fetch.attr("target"), fetch.attr("facts"));
     let facts = facts.map_or("<absent>".to_string(), |n| n.to_string());
-    assert_eq!(held, (node, id.as_str(), blocker, target, facts.as_str()), "the fetch span's story;\n{}", spans.render());
+    let logged = id.log().to_string();
+    assert_eq!(held, (node, logged.as_str(), blocker, target, facts.as_str()), "the fetch span's story;\n{}", spans.render());
     let calls = spans.calls_of(fetch);
     assert_eq!(calls.len(), 1, "the fetch made one call, the child of its span;\n{}", spans.render());
 }
@@ -458,7 +459,7 @@ fn an_incomplete_responder_is_passed_over_and_only_full_holdings_count() {
     assert_fetch(&spans, fetches[1], "mesh1.admin.3", &id, "no-current-build-wanted", "mesh1.admin.2", Some(6));
     let incomplete = spans.children(FETCH_INCOMPLETE);
     assert_eq!(incomplete.len(), 1, "one rejection;\n{}", spans.render());
-    assert_eq!((incomplete[0].attr("target"), incomplete[0].attr("build_id")), ("mesh1.admin.1", id.as_str()));
+    assert_eq!((incomplete[0].attr("target"), incomplete[0].attr("build_id")), ("mesh1.admin.1", id.log().to_string().as_str()));
 }
 
 // @feature: node-lifecycle

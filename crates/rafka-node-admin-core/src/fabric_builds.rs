@@ -521,7 +521,7 @@ impl FabricBuildStateAdapter {
                 "rdm.node_admin.build.reject.via-broadcast-refused",
                 sent_by = %self.authority.node,
                 fact = kind,
-                build_id = %fact.build_id(),
+                build_id = %fact.build_id().log(),
                 attempt = attempt.map(u64::from),
                 step = step,
                 detail = %format!("broadcasting a Build fact committed to {}'s own log on the fabric's Build topic: {e}", self.authority.node),

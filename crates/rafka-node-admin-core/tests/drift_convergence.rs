@@ -1386,7 +1386,7 @@ mod one_attempt_number {
         assert_eq!(refused[0]["trace_id"], created["trace_id"], "the refusal and the admitted Build are one story");
         let a = &refused[0]["attributes"];
         assert_eq!(a["route"], "proven-drift", "{a}");
-        assert_eq!(a["build_id"], before.build_id.as_str(), "{a}");
+        assert_eq!(a["build_id"], before.build_id.log().to_string().as_str(), "{a}");
         assert!(a["accepted_now"].as_str().unwrap_or_default().contains(admitted.as_str()), "the refusal names the Build admitted first: {a}");
         println!("trace_id={} admitted={admitted} refused_drift_on={}", refused[0]["trace_id"].as_str().unwrap_or_default(), before.build_id);
     }

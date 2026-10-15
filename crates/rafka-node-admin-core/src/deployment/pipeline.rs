@@ -1087,7 +1087,7 @@ impl DeploymentPipeline<'_> {
                     BuildStateError::UnknownBuild(_) => format!("{executor}: this node holds no fact of Build {build_id}, so {operation} (attempt {attempt}, node {node}) has no log to run from: {e}"),
                     _ => format!("{executor}: Build {build_id} cannot be read for {operation} (attempt {attempt}, node {node}): {e}"),
                 };
-                tracing::info_span!("rdm.node_admin.deployment.reject.via-build-unreadable", build_id = %build_id, attempt, operation = %operation, node = %node, detail = %reason)
+                tracing::info_span!("rdm.node_admin.deployment.reject.via-build-unreadable", build_id = %build_id.log(), attempt, operation = %operation, node = %node, detail = %reason)
                     .in_scope(|| tracing::info!("the Build cannot be read: the run stops before its first step"));
                 return Err(PipelineError { step: "ReadBuild", reason });
             }
@@ -1104,7 +1104,7 @@ impl DeploymentPipeline<'_> {
         tracing::info_span!(
             "rdm.node_admin.deployment.update.via-pipeline",
             pipeline = kind,
-            build_id = %build_id,
+            build_id = %build_id.log(),
             provider = ?self.provider.kind(),
             node = %node,
             attempt,
@@ -1122,7 +1122,7 @@ impl DeploymentPipeline<'_> {
         let span = tracing::info_span!(
             "rdm.node_admin.deployment.update.via-step",
             step,
-            build_id = %run.build_id,
+            build_id = %run.build_id.log(),
             provider = ?self.provider.kind(),
             node = %run.node,
             attempt = run.attempt,
@@ -1202,7 +1202,7 @@ impl DeploymentPipeline<'_> {
             tracing::info_span!(
                 "rdm.node_admin.deployment.reject.via-receipt-refused",
                 step,
-                build_id = %run.build_id,
+                build_id = %run.build_id.log(),
                 attempt = run.attempt,
                 operation = %run.operation,
                 node = %run.node,
@@ -1280,7 +1280,7 @@ impl DeploymentPipeline<'_> {
         let span = tracing::info_span!(
             "rdm.node_admin.deployment.reject.via-lost-executor",
             node = %req.node,
-            build_id = %req.build_id,
+            build_id = %req.build_id.log(),
             attempt = req.attempt,
             step = CreateStep::DeployRuntime.name(),
             deployment_id = %stranded.deployment_id,
@@ -1322,7 +1322,7 @@ impl DeploymentPipeline<'_> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.resolve.via-claimed-allocation",
             node = %req.node,
-            build_id = %req.build_id,
+            build_id = %req.build_id.log(),
             attempt = req.attempt,
             operation = %run.operation,
             node_id = %identity.node_id,
@@ -2043,7 +2043,7 @@ impl DeploymentPipeline<'_> {
                 if let Some(exit) = exit {
                     tracing::info_span!(
                         "rdm.node_admin.node.delete.via-exit-proof",
-                        build_id = %req.build_id,
+                        build_id = %req.build_id.log(),
                         attempt = req.attempt,
                         node = %name,
                         node_id = %exit.node_id,

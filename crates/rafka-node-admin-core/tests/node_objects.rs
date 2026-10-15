@@ -783,7 +783,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
     let spans = cap.spans();
-    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.as_str()).collect();
+    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.log().to_string().as_str()).collect();
     assert_eq!(dispatches.len(), 1, "one build.attempt.run, from the drive that made the calls: {dispatches:?}");
     eprintln!("span rdm.node_admin.build.update.via-dispatch {}", dispatches[0]);
 }

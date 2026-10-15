@@ -30,7 +30,7 @@ pub use digest::{check_config, ConfigOverCap, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS,
 pub use lifecycle::{LifecycleOp, RoundHook, DEPARTED_RETENTION};
 #[doc(hidden)]
 pub use ids::fixture_crockford60;
-pub use ids::{BuildId, ConnectionId, DeploymentId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT};
+pub use ids::{BuildId, BuildIdLog, ConnectionId, DeploymentId, EndpointId, FabricId, IdError, IncarnationId, MeshId, NodeId, CROCKFORD60_LEN, ID_FORMAT};
 pub use publisher::PublisherId;
 pub use path::{NodeKind, PathName, PathNameError};
 pub use seat::{Seat, SeatHolder};

@@ -197,7 +197,7 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey
             (roster, "captured", key.attempt)
         }
     };
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-accepted-roster", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, step, source, accepted_in, roster = roster.len())
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-accepted-roster", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, step, source, accepted_in, roster = roster.len())
         .in_scope(|| tracing::info!("the leave runs over the roster accepted at its admission"));
     Ok(roster)
 }
@@ -322,7 +322,7 @@ pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &MeshDeleteK
         })
         .await
         .map_err(|e| format!("{}: the {STEP_MESH_DELETED} receipt could not be recorded: {e}", key.operation))?;
-    tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-deleted-receipt", node = %executor, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len(), final_primary = %manifest.final_primary.node)
+    tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-deleted-receipt", node = %executor, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len(), final_primary = %manifest.final_primary.node)
         .in_scope(|| tracing::info!("mesh.deleted: every birth but the final primary is proven exited; the mesh.delete ends with its primary alive, whose end is its own node.delete"));
     Ok(())
 }
@@ -439,7 +439,7 @@ pub fn admitted_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Result
 /// The span of a resume refused because the lost final primary `predecessor` is silent but not
 /// proven exited (R-D1: unheard is not dead).
 pub fn span_unproven(key: &MeshDeleteKey, predecessor: &RosterBirth, reason: &str) {
-    tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-primary", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, predecessor = %format!("{} {}", predecessor.node, predecessor.incarnation_id), reason = %reason)
+    tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-primary", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, predecessor = %format!("{} {}", predecessor.node, predecessor.incarnation_id), reason = %reason)
         .in_scope(|| tracing::info!("the lost final primary is not proven exited: the resume is refused and nothing is amended"));
 }
 
@@ -475,7 +475,7 @@ pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &MeshD
         })
         .await
         .map_err(|e| format!("{operation}: the Exited receipt of {} {} could not be recorded: {e}", lost.node, lost.incarnation_id))?;
-    tracing::info_span!("rdm.node_admin.mesh.update.via-predecessor-exit-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %operation, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), exit_code = terminal.exit_code.map(|c| c.to_string()).unwrap_or_default())
+    tracing::info_span!("rdm.node_admin.mesh.update.via-predecessor-exit-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %operation, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), exit_code = terminal.exit_code.map(|c| c.to_string()).unwrap_or_default())
         .in_scope(|| tracing::info!("the lost final primary's exact exit is recorded as its roster receipt"));
     Ok(())
 }
@@ -490,7 +490,7 @@ pub async fn amend_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, e
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
     let (pred, next) = (named(&amendment.predecessor), named(&amendment.final_primary));
     let span = |outcome: &str| {
-        tracing::info_span!("rdm.node_admin.mesh.update.via-roster-amended", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %operation, predecessor = %pred, final_primary = %next, outcome)
+        tracing::info_span!("rdm.node_admin.mesh.update.via-roster-amended", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %operation, predecessor = %pred, final_primary = %next, outcome)
             .in_scope(|| tracing::info!("the roster amendment admits the new final primary"));
     };
     let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
@@ -684,7 +684,7 @@ where
             let facts = fetch_owner().await?;
             local.absorb_facts(&facts).await;
             let own = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the owner's {} Build facts of {build_id} were absorbed for {operation}, but its own log still cannot read the Build: {e}", facts.len()))?.steps;
-            tracing::info_span!("rdm.node_admin.build.update.via-owner-facts-absorbed", build_id = %build_id, operation = %operation, executor = %executor, facts = facts.len(), steps = own.len())
+            tracing::info_span!("rdm.node_admin.build.update.via-owner-facts-absorbed", build_id = %build_id.log(), operation = %operation, executor = %executor, facts = facts.len(), steps = own.len())
                 .in_scope(|| tracing::info!("this admin's own log held no fact of the Build: the owner's Build facts are absorbed into it before the leave is admitted"));
             (own, Owner::Read(facts))
         }
@@ -830,7 +830,7 @@ where
             None => remaining.push(b),
         }
     }
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-retained-receipts", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, roster = roster.len(), retained = receipts.len(), remaining = remaining.len(), retained_births = %receipts.iter().map(|t| t.node.as_str()).collect::<Vec<_>>().join(","), delete_owed = %owed.iter().map(|b| b.node.as_str()).collect::<Vec<_>>().join(","))
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-retained-receipts", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, roster = roster.len(), retained = receipts.len(), remaining = remaining.len(), retained_births = %receipts.iter().map(|t| t.node.as_str()).collect::<Vec<_>>().join(","), delete_owed = %owed.iter().map(|b| b.node.as_str()).collect::<Vec<_>>().join(","))
         .in_scope(|| tracing::info!("members whose delete has every step's receipt keep it; the rest run, a delete that holds only its exit proof from the step it has no receipt for"));
     let is_admin = |b: &RosterBirth| b.node.parse::<crate::model::PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin);
     for (tier, admins) in [("ordinary-nodes", false), ("node-admins", true)] {
@@ -911,7 +911,7 @@ where
         })
         .await
         .map_err(|e| format!("the exit manifest could not be recorded: {e}"))?;
-    tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
+    tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
         .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
     Ok(manifest)
 }
@@ -973,7 +973,7 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, mesh
 /// refused removal ends mesh-left by name.
 async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
     let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to drop {mesh}'s contacts from", key.operation))?;
-    let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, dropped = tracing::field::Empty, error = tracing::field::Empty);
+    let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, dropped = tracing::field::Empty, error = tracing::field::Empty);
     let mut dropped = Vec::new();
     for t in proof {
         let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("{}: the Exited receipt of {} {} names no node id ({:?}): {e}", key.operation, t.node, t.incarnation_id, t.node_id))?;
@@ -999,7 +999,7 @@ async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, execu
 async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str) -> Result<(), String> {
     let dead = rafka_node_rpc_contract::status::MeshState::Dead;
     let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
-    let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
+    let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
     let refused = |e: String| {
         span.record("outcome", "not-committed");
         span.record("error", e.as_str());
@@ -1084,7 +1084,7 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &MeshDeleteKey, admitted: &Admi
         let without_exit: Vec<String> = admitted.roster.iter().filter(|b| **b != admitted.final_primary && !held.contains_key(&(b.node_id.clone(), b.incarnation_id.clone()))).map(|b| format!("{} {}", b.node, b.incarnation_id)).collect();
         let named = if without_exit.is_empty() { "none (every other birth exited, but no exit manifest is recorded)".to_string() } else { without_exit.join(", ") };
         let reason = format!("{operation} (build {}, attempt {attempt}): the member workflows are incomplete: {receipt_manifest} names no Complete {STEP_OTHER_MEMBERS_EXITED} receipt among the {} facts read; roster births without an exact Exited receipt: {named}", key.build_id, facts.len());
-        tracing::info_span!("rdm.node_admin.mesh.reject.via-incomplete-handoff", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt, operation = %operation, roster = admitted.roster.len(), exited = held.len(), without_exit = %named)
+        tracing::info_span!("rdm.node_admin.mesh.reject.via-incomplete-handoff", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt, operation = %operation, roster = admitted.roster.len(), exited = held.len(), without_exit = %named)
             .in_scope(|| tracing::info!("the leaving primary's member workflows are incomplete: the handoff is refused by name as an incomplete manifest and the open leave ends"));
         return HandoffVerdict::Incomplete { reason, without_exit };
     };
@@ -1145,7 +1145,7 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
 /// fields; it is never this admin's own `NotReady` (node-rpc-envelope.md, "Node RPC readiness gate").
 /// Nothing is admitted or accepted.
 pub fn refuse_source_failed(call: &'static str, key: &MeshDeleteKey, source: &str, op: &str, cause: &str) -> StatusReply {
-    tracing::info_span!("rdm.node_admin.mesh.reject.via-source-failed", call, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, source, op, cause)
+    tracing::info_span!("rdm.node_admin.mesh.reject.via-source-failed", call, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, source, op, cause)
         .in_scope(|| tracing::info!("what the call needed to read failed: it is refused by name and nothing is admitted"));
     StatusReply::source_failed(source, op, cause)
 }
@@ -1206,7 +1206,7 @@ pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &MeshDeleteKey, final_n
     } else {
         StatusReply::RejectedUnmatchedCompletion { field: "final_primary".into(), expected: format!("{} {}", last.node_id, last.incarnation_id), reported: format!("{final_node_id} {final_incarnation}") }
     };
-    tracing::info_span!("rdm.node_admin.mesh.resolve.via-handoff-replayed", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", last.node, last.incarnation_id), outcome = reply.name())
+    tracing::info_span!("rdm.node_admin.mesh.resolve.via-handoff-replayed", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", last.node, last.incarnation_id), outcome = reply.name())
         .in_scope(|| tracing::info!("a handoff after mesh.deleted's completion receipt: answered from the receipt, nothing is recorded again"));
     Some(reply)
 }
@@ -1400,7 +1400,7 @@ where
             return outcome.map_err(|reason| crate::executor::RunEnd::Incomplete(format!("{outer}: {primary} reported its member workflows incomplete: {reason}")));
         }
         if let Some(proof) = final_primary_exited().await {
-            tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
+            tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
                 .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-deleted: this attempt ends and the next resumes the leave from its receipts"));
             return Err(crate::executor::RunEnd::Incomplete(format!(
                 "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-deleted; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that exit"
@@ -1621,7 +1621,7 @@ where
     loop {
         let Some((key, owner)) = runs.running(mesh_id) else { return MeshDeleteRunEnd::Forgotten };
         if let Some(earlier) = &ran {
-            tracing::info_span!("rdm.node_admin.mesh.resolve.via-later-delete-mesh", mesh_id = %mesh_id, build_id = %key.build_id, attempt = key.attempt, ran_build_id = %earlier.build_id, ran_attempt = earlier.attempt, operation = %key.operation, owner = %owner)
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-later-delete-mesh", mesh_id = %mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, ran_build_id = %earlier.build_id, ran_attempt = earlier.attempt, operation = %key.operation, owner = %owner)
                 .in_scope(|| tracing::info!("a later delete-mesh joined the run: its manifest is recorded under its own key from the receipts every member's exit already holds"));
         }
         match run(key.clone(), owner).await {
@@ -1851,7 +1851,7 @@ pub async fn complete_fabric_delete(
         })
         .await
         .map_err(|e| format!("{operation}: the Complete receipt could not be recorded: {e}"))?;
-    tracing::info_span!("rdm.node_admin.fabric.delete.via-build", node = %executor, fabric_id = %fabric_id, build_id = %build_id, attempt, operation = %operation, outcome = "fabric-deleted")
+    tracing::info_span!("rdm.node_admin.fabric.delete.via-build", node = %executor, fabric_id = %fabric_id, build_id = %build_id.log(), attempt, operation = %operation, outcome = "fabric-deleted")
         .in_scope(|| tracing::info!("fabric.deleted: the fabric name is released and the fabric-primary awaits its separate node.delete"));
     Ok(())
 }

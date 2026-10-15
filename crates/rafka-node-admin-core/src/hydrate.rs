@@ -279,7 +279,7 @@ impl Hydrator {
                 let span = tracing::info_span!(
                     "rdm.node_admin.build.update.via-fetch-facts",
                     node = %me,
-                    build_id = %id,
+                    build_id = %id.log(),
                     target = %target.name,
                     blocker = kind,
                     facts = tracing::field::Empty,
@@ -299,13 +299,13 @@ impl Hydrator {
                     Ok(f) => {
                         span.record("facts", f.facts.len() as u64);
                         span.record("outcome", "responder-incomplete");
-                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = %id, target = %target.name)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = %id.log(), target = %target.name)
                             .in_scope(|| tracing::info!("the responder says its holdings of the Build are not whole: nothing is absorbed"));
                         End::Failed(target.node_id)
                     }
                     Err(e) => {
                         span.record("outcome", e.reason());
-                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = %id, target = %target.name, reason = e.reason(), detail = %e)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = %id.log(), target = %target.name, reason = e.reason(), detail = %e)
                             .in_scope(|| tracing::info!("the Build-facts read produced nothing to absorb"));
                         End::Failed(target.node_id)
                     }

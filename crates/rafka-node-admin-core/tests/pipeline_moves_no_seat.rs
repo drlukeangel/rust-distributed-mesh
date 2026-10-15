@@ -118,7 +118,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::dep
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
-        let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id, node = HOLDER);
+        let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id.log(), node = HOLDER);
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;

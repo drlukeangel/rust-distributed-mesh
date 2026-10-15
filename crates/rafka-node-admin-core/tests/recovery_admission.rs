@@ -440,7 +440,7 @@ async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_r
     let mine: Vec<_> = claims.iter().filter(|(_, a)| a.get("node").map(String::as_str) == Some("mesh2.admin.1")).collect();
     assert_eq!(mine.len(), 1, "mesh2's mesh-primary decides its recovery's claim itself: {claims:?}");
     let (_, claim) = mine[0];
-    assert_eq!((claim["mesh"].as_str(), claim["outcome"].as_str(), claim["build_id"].as_str()), ("mesh2", "won", create.build_id.as_str()), "claimed on mesh2's rows: {claim:?}");
+    assert_eq!((claim["mesh"].as_str(), claim["outcome"].as_str(), claim["build_id"].as_str()), ("mesh2", "won", create.build_id.log().to_string().as_str()), "claimed on mesh2's rows: {claim:?}");
     for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.update.via-claim-decision"] {
         for (trace_id, attrs) in capture.spans(name) {
             eprintln!("span {name} trace_id={trace_id} {attrs:?}");

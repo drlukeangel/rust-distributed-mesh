@@ -301,9 +301,10 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
 
     // The takeover is one reconcile span on B, and one departure proof span naming A.
     let all = spans.0.lock().unwrap().clone();
+    let logged = build_id.log().to_string();
     let reconciles: Vec<&BTreeMap<String, String>> = all
         .values()
-        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-reconcile" && f.get("build_id").map(String::as_str) == Some(build_id.as_str()))
+        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-reconcile" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
         .map(|(_, f)| f)
         .collect();
     let takeover = reconciles.iter().find(|f| f.get("executor").map(String::as_str) == Some("mesh1.admin.2")).unwrap_or_else(|| panic!("B's reconcile span among {reconciles:?}"));
@@ -315,7 +316,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     assert_eq!(takeover.get("outcome").map(String::as_str), Some("converged"));
     let proven = all
         .values()
-        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-departure-proven" && f.get("build_id").map(String::as_str) == Some(build_id.as_str()))
+        .filter(|(n, f)| n == "rdm.node_admin.build.update.via-departure-proven" && f.get("build_id").map(String::as_str) == Some(logged.as_str()))
         .map(|(_, f)| f)
         .collect::<Vec<_>>();
     assert_eq!(proven.len(), 1, "the departure was proven once: {proven:?}");

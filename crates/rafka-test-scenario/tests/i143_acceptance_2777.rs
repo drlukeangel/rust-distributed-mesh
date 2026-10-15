@@ -48,7 +48,16 @@ fn spans_of(cell: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for e in std::fs::read_dir(estate_dir(cell).join("spans")).into_iter().flatten().flatten() {
         if e.path().to_string_lossy().ends_with(".spans.jsonl") {
-            out.extend(std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
+            out.extend(std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| {
+                let mut v = serde_json::from_str::<Value>(l).ok()?;
+                if let Some(s) = v["attributes"]["build_id"].as_str() {
+                    if s.len() == 18 && s.starts_with("bid_") && s.as_bytes()[8] == b'-' && s.as_bytes()[13] == b'-' {
+                        let bare = format!("{}{}{}", &s[4..8], &s[9..13], &s[14..18]);
+                        v["attributes"]["build_id"] = Value::String(bare);
+                    }
+                }
+                Some(v)
+            }));
         }
     }
     out

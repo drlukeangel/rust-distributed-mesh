@@ -15,11 +15,14 @@
 
 - `BuildClaimReply::NotClaimant { mesh, fabric_primary, mesh_primary }` is the one refusal of a receiver that may not claim in the lane: it names who may, as the receiver sees it. The `RejectedNotAuthority { reason: String }` line that 8fc5be4c added to the 0x1C block without a ruling is struck; the code never had it. No wire change.
 
-# R-BI5a — `bid_xxxx-xxxx-xxxx` is a log rendering only (Luke 2026-10-14)
+# R-BI5a — `bid_xxxx-xxxx-xxxx` is a log rendering only (Luke 2026-10-14, "i agree")
+
+**Docs of record:** `node-identity-and-state.md` §2; `build.md` §3; `i143-prd.md` `e12.s58`.
 
 **Ruling (Luke 2026-10-14: "bid_xxxx-xxxx-xxxx but only in logs otherwise we just use the raw-crockford as its a bigint storage value at 12"; agreed 2026-10-14 to build).**
-- On the wire, in every store row and in every page example a Build id is the bare 12-character Crockford60 (R-BI5): a 60-bit integer at 12 characters.
-- A log line or span renders it `bid_xxxx-xxxx-xxxx` (the same 12 characters in three groups of four, `BuildId::log()`) for the eye. Nothing parses that form (`BuildId::parse("bid_...")` refuses by name), and nothing stores it.
+- On the wire, in every store row and in every page example a Build id is the bare 12-character Crockford60 (R-BI5): a 60-bit integer at 12 characters (`BuildId`'s `Display` in `rafka-mesh-entity/src/ids.rs:151` stays bare).
+- A log line or `build_id` span field renders it `bid_xxxx-xxxx-xxxx` (the same 12 characters in three groups of four, `BuildId::log()` -> `BuildIdLog` in `rafka-mesh-entity/src/ids.rs:193-212`) for the eye. Nothing parses that form (`BuildId::parse("bid_...")` refuses by name with `IdParseReason::WrongWidth`), and nothing stores it.
+- Cell: `ids_crockford::a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans`. Flame (Jaeger 192.168.68.99:16687): trace `a592b745aaea8819ba14a5777842e24b` (`rdm.node_admin.build.create.via-accepted` span `c696c67b348c3a5e` carries `"build_id": "bid_293h-reeg-et79"` while the Build row key `node.primary.update:293hreeget79:1:node.stop:mesh1.admin.1`, stored `BuildFact` JSON and the `0x20` `BuildReply::Started` wire carrier stay bare `293hreeget79`).
 
 # R-RX6 — the four A' attribution items in `e12.s53` stay as landed (Luke 2026-10-14, "i agree")
 

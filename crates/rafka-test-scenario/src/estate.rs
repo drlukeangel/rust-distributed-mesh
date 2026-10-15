@@ -783,12 +783,25 @@ impl Estate {
     }
 
     /// Every span every process of this estate wrote, ordered by start time.
+    ///
+    /// A `build_id` span attribute formatted as `bid_xxxx-xxxx-xxxx` (`R-BI5a`) is stripped to its
+    /// 12-character bare id for scenario comparisons against REST/RPC `build_id` strings; the
+    /// `.spans.jsonl` files on disk keep the raw `bid_xxxx-xxxx-xxxx` rendering.
     pub fn spans(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&self.evidence).into_iter().flatten().flatten() {
             if e.path().to_string_lossy().ends_with(".spans.jsonl") {
                 let text = std::fs::read_to_string(e.path()).unwrap_or_default();
-                out.extend(text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
+                out.extend(text.lines().filter_map(|l| {
+                    let mut v = serde_json::from_str::<Value>(l).ok()?;
+                    if let Some(s) = v["attributes"]["build_id"].as_str() {
+                        if s.len() == 18 && s.starts_with("bid_") && s.as_bytes()[8] == b'-' && s.as_bytes()[13] == b'-' {
+                            let bare = format!("{}{}{}", &s[4..8], &s[9..13], &s[14..18]);
+                            v["attributes"]["build_id"] = Value::String(bare);
+                        }
+                    }
+                    Some(v)
+                }));
             }
         }
         out.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));

@@ -540,7 +540,7 @@ impl RunDoor {
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-attempt-run",
             node = %me,
-            build_id = %build_id,
+            build_id = %build_id.log(),
             lane = lane.unwrap_or("fabric"),
             attempt,
             executor,
@@ -576,7 +576,7 @@ impl RunDoor {
     async fn attach_or_start(&self, under: Option<&crate::stop_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         let me = self.held_name().await;
         if executor != me.to_string() {
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %me, build_id = %build_id, attempt, named = executor)
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %me, build_id = %build_id.log(), attempt, named = executor)
                 .in_scope(|| tracing::info!("the claim names another admin as the executor"));
             return Attached::Refused(BuildReply::NotExecutor { named: executor.to_string(), recipient: me.to_string() });
         }
@@ -607,7 +607,7 @@ impl RunDoor {
             return self.ended(&me, build_id, lane, attempt, &p).await;
         }
         if !(held || next) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-stale-claim", node = %me, build_id = %build_id, attempt, held_attempt = p.attempt, held_executor = p.executor.as_deref().unwrap_or(""))
+            tracing::info_span!("rdm.node_admin.build.reject.via-stale-claim", node = %me, build_id = %build_id.log(), attempt, held_attempt = p.attempt, held_executor = p.executor.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("the claim is not the current folded attempt of this admin's projection"));
             return Attached::Refused(BuildReply::StaleClaim { held_attempt: p.attempt, held_executor: p.executor.clone(), carried_attempt: attempt });
         }
@@ -619,7 +619,7 @@ impl RunDoor {
         let reader = log.reader();
         // The run's turn of the admin's gate: under the drive pass that dispatched it here, begun now;
         // for a served call, begun by the run itself at its wait point, before it runs anything.
-        let gated = tracing::info_span!("rdm.node_admin.build.serve.via-run-turn", node = %me, build_id = %build_id, lane = lane.unwrap_or("fabric"), attempt, turn = tracing::field::Empty);
+        let gated = tracing::info_span!("rdm.node_admin.build.serve.via-run-turn", node = %me, build_id = %build_id.log(), lane = lane.unwrap_or("fabric"), attempt, turn = tracing::field::Empty);
         let held = under.map(|t| t.under("build-run"));
         let gate = self.gate.clone();
         let (exec, runs, build_id, context, plan, lane) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone(), plan.clone(), lane.map(str::to_string));
@@ -777,7 +777,7 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
     };
     let row = crate::mesh_claims::InFlight { build_id: opened.build_id.clone(), lane: opened.mesh.clone(), attempt: opened.attempt, claimant: me.to_string() };
     if let Err(e) = control.claims.release(&mesh, &row).await {
-        tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id, lane = %mesh, attempt = opened.attempt, mesh = %mesh, node = %me, error = %e)
+        tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id.log(), lane = %mesh, attempt = opened.attempt, mesh = %mesh, node = %me, error = %e)
             .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
     }
     Ok(Recovered::Ran { opened, terminal })

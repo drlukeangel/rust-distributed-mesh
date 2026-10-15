@@ -208,7 +208,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     let attrs: std::collections::BTreeMap<String, String> = spans[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
     assert_eq!(attrs.get("step").map(String::as_str), Some("DeleteConnections"), "{attrs:?}");
     assert_eq!(attrs.get("operation").map(String::as_str), Some("node.connections.delete:mesh1.rpc.1"), "{attrs:?}");
-    assert_eq!(attrs.get("build_id"), Some(&build_id.to_string()), "{attrs:?}");
+    assert_eq!(attrs.get("build_id"), Some(&build_id.log().to_string()), "{attrs:?}");
     assert!(attrs.get("detail").is_some_and(|d| d.contains("has no wire shape")), "{attrs:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-receipt-refused trace_id={} {attrs:?}", spans[0].span_context.trace_id());
 }
@@ -241,7 +241,7 @@ async fn a_run_whose_build_cannot_be_read_fails_by_name_before_any_step() {
     assert!(steps.is_empty(), "no step ran and no receipt was written: {steps:?}");
     let spans = capture.spans("rdm.node_admin.deployment.reject.via-build-unreadable");
     assert_eq!(spans.len(), 1, "one rejection span: {spans:?}");
-    assert_eq!(spans[0].1.get("build_id"), Some(&build_id.to_string()), "{spans:?}");
+    assert_eq!(spans[0].1.get("build_id"), Some(&build_id.log().to_string()), "{spans:?}");
     assert_eq!(spans[0].1.get("operation").map(String::as_str), Some("node.connections.delete:mesh1.rpc.1"), "{spans:?}");
     assert!(spans[0].1.get("detail").is_some_and(|d| d.contains("this cell's disk refuses it")), "{spans:?}");
     eprintln!("span rdm.node_admin.deployment.reject.via-build-unreadable trace_id={} {:?}", spans[0].0, spans[0].1);
@@ -422,7 +422,7 @@ async fn a_step_whose_receipt_is_written_locally_completes_when_its_broadcast_fa
     assert!(capture.spans("rdm.node_admin.deployment.reject.via-receipt-refused").is_empty(), "no step was refused for a failed broadcast");
     let refused = capture.spans("rdm.node_admin.build.reject.via-broadcast-refused");
     let refusal = refused.iter().find(|(_, a)| a.get("step").map(String::as_str) == Some("DeleteConnections")).unwrap_or_else(|| panic!("the DeleteConnections receipt's failed broadcast is named: {refused:?}"));
-    assert_eq!(refusal.1.get("build_id"), Some(&build_id.to_string()), "{refusal:?}");
+    assert_eq!(refusal.1.get("build_id"), Some(&build_id.log().to_string()), "{refusal:?}");
     assert_eq!(refusal.1.get("attempt").map(String::as_str), Some("1"), "{refusal:?}");
     assert_eq!(refusal.1.get("fact").map(String::as_str), Some("step"), "{refusal:?}");
     assert!(refusal.1.get("detail").is_some_and(|d| !d.is_empty()), "the send error is carried: {refusal:?}");

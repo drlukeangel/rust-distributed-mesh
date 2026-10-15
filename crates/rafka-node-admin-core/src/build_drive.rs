@@ -186,7 +186,7 @@ pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, nodes: us
     tracing::info_span!(
         "rdm.node_admin.mesh.update.via-crash-proof",
         node = %me,
-        build_id = %build_id,
+        build_id = %build_id.log(),
         mesh = %mesh,
         nodes,
         proven = %proofs.proven.join(","),
@@ -775,7 +775,7 @@ impl DriveEnv {
     pub async fn run(self: &Arc<Self>, drive: &Arc<Drive>) -> DriveEnd {
         let id = drive.build_id.clone();
         let me = self.held_name().await;
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-drive", build_id = %id, node = %me, outcome = tracing::field::Empty, detail = tracing::field::Empty, dispatches = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-drive", build_id = %id.log(), node = %me, outcome = tracing::field::Empty, detail = tracing::field::Empty, dispatches = tracing::field::Empty);
         let mut dispatches = 0u32;
         let mut last_turn = None;
         let end = self.pass(drive, &mut dispatches, &mut last_turn).instrument(span.clone()).await;
@@ -808,7 +808,7 @@ impl DriveEnv {
                     BuildStateError::SeatYielded { to, .. } => to,
                     _ => None,
                 };
-                tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id.log(), node = %me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
                 drive.lose_seat(SeatLoss { why: why.clone(), to });
                 return Some(DriveEnd::SeatLost(why));
             }
@@ -825,14 +825,14 @@ impl DriveEnv {
             let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
             let names = record_holder.as_deref().unwrap_or("none");
             let why = format!("{me} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the committed fabric seat record names {names}", self.door.node_id);
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id.log(), node = %me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
             drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
         }
         if !self.gate.authorizes() {
             let why = format!("{me}: its view is cut off or within one silence window of healing, and authorizes nothing");
             if drive.stall_is_new(&why) {
-                tracing::info_span!("rdm.node_admin.build.reject.via-cut-off", build_id = %drive.build_id, node = %me).in_scope(|| tracing::info!("dispatch refused: a cut-off view authorizes nothing"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-cut-off", build_id = %drive.build_id.log(), node = %me).in_scope(|| tracing::info!("dispatch refused: a cut-off view authorizes nothing"));
             }
             return Some(DriveEnd::Paused(why));
         }
@@ -841,7 +841,7 @@ impl DriveEnv {
 
     fn stalled(&self, me: &PathName, drive: &Arc<Drive>, why: String) -> DriveEnd {
         if drive.stall_is_new(&why) {
-            tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id, node = %me, reason = %why).in_scope(|| tracing::info!("the drive cannot go on until the world changes"));
+            tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id.log(), node = %me, reason = %why).in_scope(|| tracing::info!("the drive cannot go on until the world changes"));
         }
         DriveEnd::Stalled(why)
     }
@@ -854,7 +854,7 @@ impl DriveEnv {
         let me = self.held_name().await;
         let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string() };
         if let Err(e) = self.door.claims.release(&executor.mesh, &row).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id, attempt, mesh = %executor.mesh, node = %me, error = %e)
+            tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), attempt, mesh = %executor.mesh, node = %me, error = %e)
                 .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
         }
     }
@@ -954,7 +954,7 @@ impl DriveEnv {
             mesh = node.mesh,
         );
         if drive.stall_is_new(&format!("unheard-mesh|{}|{}|{decided}", node.mesh, op.key())) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id, attempt, node = %me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, recovery_decided = decided)
+            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id.log(), attempt, node = %me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, recovery_decided = decided)
                 .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
         }
         self.blocked(drive, attempt, &op.key(), "unheard-mesh", &why);
@@ -1109,7 +1109,7 @@ impl DriveEnv {
                 return end;
             }
             *dispatches += 1;
-            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %executor, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
             if let Some(tp) = &context.traceparent {
                 rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
             }
@@ -1196,7 +1196,7 @@ impl DriveEnv {
                     }
                     match self.departure.proven(&executor).await {
                         Ok(()) => {
-                            tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id, attempt, executor = %executor, node = %me)
+                            tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id.log(), attempt, executor = %executor, node = %me)
                                 .in_scope(|| tracing::info!("the executor's exact runtime is proven exited: the next attempt may be claimed"));
                             departed = Some(executor.to_string());
                         }
@@ -1255,7 +1255,7 @@ impl DriveEnv {
             }
         };
         let held = self.dispatcher.hold(me, id, attempt);
-        let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %me, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %me, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
         }
@@ -1372,7 +1372,7 @@ impl DriveEnv {
                 if lead.is_none() {
                     if let Some(op @ crate::build::BuildOperation::ShutdownMesh { mesh, .. }) = ops.first() {
                         if drive.stall_is_new(&format!("no-owner|{}", op.key())) {
-                            tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %id, operation = %op.key(), mesh = %mesh)
+                            tracing::info_span!("rdm.node_admin.build.reject.via-no-owner-outside-mesh", build_id = %id.log(), operation = %op.key(), mesh = %mesh)
                                 .in_scope(|| tracing::info!("no ready admin primary exists outside the leaving mesh: nothing owns its shutdown, and the mesh is not dismantled"));
                         }
                     }
@@ -1427,7 +1427,7 @@ impl DriveEnv {
         };
         let (frames, refused) = crate::fabric_builds::encode_chunks(facts);
         for e in refused {
-            tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id, detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only if the Build topic delivered it"));
+            tracing::info_span!("rdm.node_admin.build.reject.via-oversized-fact", build_id = %id.log(), detail = %e).in_scope(|| tracing::info!("a fact of the Build fits no frame: the executor holds it only if the Build topic delivered it"));
         }
         frames.into_iter().map(|b| b.to_vec()).collect()
     }
@@ -1444,7 +1444,7 @@ impl DriveEnv {
         };
         drive.note_first_attempt(p.attempt);
         let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt = p.attempt, executor = %holder, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let why = match self.run_inner(turn, drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {
                 span.record("outcome", "complete");

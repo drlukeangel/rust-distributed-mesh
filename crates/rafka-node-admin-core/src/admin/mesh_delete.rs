@@ -69,7 +69,7 @@ impl AdminRunner {
     /// The owner's outer workflow `mesh.delete:<mesh_id>`.
     pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), crate::executor::RunEnd> {
         let outer = crate::mesh_delete::operation(mesh_id);
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-shutdown", mesh = %mesh, mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-shutdown", mesh = %mesh, mesh_id = %mesh_id, build_id = %build_id.log(), attempt, operation = %outer, outcome = tracing::field::Empty);
         let result = self.shutdown_mesh_in(build_id, attempt, mesh, mesh_id, &outer).instrument(span.clone()).await;
         span.record("outcome", if result.is_ok() { "complete" } else { "incomplete" });
         result
@@ -238,7 +238,7 @@ impl AdminRunner {
         self.refresh_view().await;
         let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
         let path = crate::mesh_delete::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
-        let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id, attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id.log(), attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
         let created = self.create_leaving_mesh_admin(build_id, attempt, &path, &key.mesh_id).instrument(span.clone()).await;
         span.record("outcome", if created.is_ok() { "created" } else { "failed" });
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
@@ -316,7 +316,7 @@ impl AdminRunner {
             return Ok(());
         }
         let refused = |reason: String| {
-            tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-admin", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, admin = %format!("{} {}", b.node, b.incarnation_id), reason = %reason)
+            tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-admin", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %outer, admin = %format!("{} {}", b.node, b.incarnation_id), reason = %reason)
                 .in_scope(|| tracing::info!("a node-admin of the leaving mesh is silent and not proven exited: it may survive and take the seat, so no admin is created for the mesh"));
             RunEnd::Incomplete(format!(
                 "{outer}: {mesh} holds no live admin in this view, but its node-admin {} {} is silent and not proven exited ({reason}): it may survive and take the mesh's seat, so no admin is created for the mesh; the next attempt hands the workflow to the admin seated or proves this one exited",
@@ -393,7 +393,7 @@ impl AdminRunner {
             return None;
         }
         let unproven = |reason: String| {
-            tracing::info_span!("rdm.node_admin.mesh.resolve.via-final-primary-unproven", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", lost.node, lost.incarnation_id), status = ?status, reason = %reason)
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-final-primary-unproven", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", lost.node, lost.incarnation_id), status = ?status, reason = %reason)
                 .in_scope(|| tracing::info!("the final primary is silent and not proven exited: the owner's wait stays open"));
             None
         };
@@ -446,7 +446,7 @@ impl AdminRunner {
             }
         };
         let (build_id, attempt, operation) = found;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node = %me, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %build_id, attempt, operation = %operation, deleted_by = %op.operation, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node = %me, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %build_id.log(), attempt, operation = %operation, deleted_by = %op.operation, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let result = self.mesh_left_in(op, &build_id, attempt, &operation).instrument(span.clone()).await;
         match &result {
             Ok(outcome) => {
@@ -510,7 +510,7 @@ impl AdminRunner {
             })
             .await
             .map_err(|e| format!("{outer}: the MeshLeft receipt could not be recorded: {e}"))?;
-        tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, receipts = all.receipts.len(), roster = all.roster.len(), manifest = %reference)
+        tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id.log(), attempt, operation = %outer, receipts = all.receipts.len(), roster = all.roster.len(), manifest = %reference)
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
         self.book.depart_mesh_births(mesh, build_id.as_str(), attempt, self.lifecycle_events.now_rafka_ms());
         self.forget_mesh_id(mesh);
@@ -612,7 +612,7 @@ impl AdminRunner {
     /// `(mesh_id, Leaving)` ([`crate::mesh_delete::run_admitted`]): a `delete-mesh` of a later attempt
     /// admitted meanwhile joins it, and the handoff goes under the key admitted last.
     async fn run_leave(self: Arc<Self>, key: MeshDeleteKey, parent: tracing::Span) {
-        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, handoff_attempt = tracing::field::Empty);
+        let span = tracing::info_span!(parent: &parent, "rdm.node_admin.mesh.update.via-leave-members", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, handoff_attempt = tracing::field::Empty);
         async {
             let end = crate::mesh_delete::run_admitted(&self.mesh_delete_runs, &key.mesh_id, |key, owner| {
                 let runner = self.clone();
@@ -682,7 +682,7 @@ impl AdminRunner {
     /// exact birth, under the mesh.delete's Build and attempt, and its exact Exited recorded as the
     /// birth's exit-proof row. The provider's terminal receipt is the member's roster receipt.
     async fn shutdown_one(&self, key: &MeshDeleteKey, n: &Node) -> Result<TerminalReceipt, String> {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node = %n.name, node_id = %n.node_id, operation = %key.operation, build_id = %key.build_id, attempt = key.attempt, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node = %n.name, node_id = %n.node_id, operation = %key.operation, build_id = %key.build_id.log(), attempt = key.attempt, outcome = tracing::field::Empty);
         let result = async {
             let (record, handle) = self.handle_for(n).await?;
             // Whether the birth is stopped is the record's the leave works from (a stopped member's
@@ -718,7 +718,7 @@ impl AdminRunner {
         // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1
         // item 2); a refused write answers no handoff either.
         let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Dead).await;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.held_name(), mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.held_name(), mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
         let mesh_row = match committed {
             StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_delete::mesh_row_dead(&*self.mesh_storage, &me.mesh, &key.mesh_id).await,
             refused => Err(format!("the Dead status row was not committed: {}", refused.name())),

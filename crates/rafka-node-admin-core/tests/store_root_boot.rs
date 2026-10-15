@@ -546,7 +546,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
         assert_eq!(s["trace_id"], opened["trace_id"], "a step of the boot's own story: {s}");
     }
     let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
-    assert_eq!(attr(reloaded, "build_id"), root.build_id.to_string(), "the accepted Build reloaded from the inherited journal: {reloaded}");
+    assert_eq!(attr(reloaded, "build_id"), root.build_id.log().to_string(), "the accepted Build reloaded from the inherited journal: {reloaded}");
     assert_eq!(reloaded["trace_id"], opened["trace_id"], "the Build reload is a step of the boot's own story");
     let day0: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.create.via-accepted").collect();
     assert!(day0.is_empty(), "a recovery accepts no Build of its own: {day0:?}");
