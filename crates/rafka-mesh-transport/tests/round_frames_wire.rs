@@ -36,8 +36,8 @@ const PUBLISHER: &str = "0d 6d657368312e61646d696e2e31  ac02";
 const NONE: &str = "00";
 const SOME: &str = "01 0d 6d657368322e61646d696e2e31";
 
-/// CONTRACT: `StateCommitting` is variant 18, `StateCommitted` 19, `TrafficOpening` 20 and `TrafficOpened`
-/// 21 of the membership frame, appended after `NewFabricPrimary` (17); each is the fabric id, the subject node id,
+/// CONTRACT: `StateCommitting` is variant 15, `StateCommitted` 16, `TrafficOpening` 17 and `TrafficOpened`
+/// 18 of the membership frame, appended after `NewFabricPrimary` (14); each is the fabric id, the subject node id,
 /// its incarnation, the build, the attempt, the operation, the publisher, the Rafka-time instant, then the
 /// forwarding primary. What must NOT happen: a field moved, a variant inserted before the end, or a
 /// self-describing encoding.

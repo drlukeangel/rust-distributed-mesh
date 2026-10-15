@@ -82,8 +82,8 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 13 | **`NodeConnectionsDeleted`** |  |  | Reserved position (R-CR4; gossip.md, node-connections-deleted): never sent on any channel. |
 | 13.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation and the exact birth whose connections were deleted. |
 | 13.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
-| 14 | **`NewFabricPrimary`** |  |  | The committed fabric-primary announces itself and its contact addresses on the backbone |
-| 14.0 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  | The committed holder: mesh, node, incarnation and the seat's new epoch. |
+| 14 | **`NewFabricPrimary`** |  |  | Reserved position (R-G3; gossip.md, reserved lifecycle frame positions): never sent on any |
+| 14.0 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  | The committed holder: mesh, node, incarnation and the seat's revision. |
 | 14.1 | `endpoint_id` | `String` |  | The holder's endpoint key. |
 | 14.2 | `transport_addr` | `std::net::SocketAddr` |  | The holder's bound QUIC UDP address. |
 | 14.3 | `admin_api_base` | `Option<String>` |  | The holder's control API base URL with its bound HTTP port, when it runs one. |

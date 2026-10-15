@@ -149,7 +149,6 @@ local Instant         silence and elapsed time                    (receiver-loca
 
 | frame | channel | author | forwarded by | identity / dedup | retained | use |
 |---|---|---|---|---|---|---|
-| [`NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base }`](#new-fabric-primary-and-contact-addresses), frame `new-fabric-primary` | backbone | committed fabric-primary | no new authority by forwarding | exact holder birth/revision; contacts belong to that holder | held fabric seat record and matching contact information | discover the committed fabric-primary and its Node RPC endpoint and independent application contact |
 | `Digest { node, incarnation, endpoints with freshness, node_state, runtime, digest_seq, emitted_at_rafka_ms }` | own mesh channel | every node, on its heartbeat timer | nobody | same exact birth: higher `digest_seq` is newer, equal or lower is not taken; a new incarnation is taken only along its lineage and only for a NodeId not accepted as `NodeDeleted`; its `digest_seq` starts again at 1 | until silent for the silence window, or until `NodeDeleted` | that node's current identity, endpoints, liveness and runtime fact. `node_state` (Joining / Alive / Overloaded / Degraded, node-identity-and-state.md §4) is liveness only: a heartbeat never carries or moves a status, and a member's status comes only from its mesh-primary |
 | `Members { mesh, publisher (exact identity), forwarded_by, topology_version, published_at_rafka_ms, snapshot_id, chunk_index, chunk_count, digests, in_flight, deleted }` | backbone; and the source Mesh's primary's own mesh channel (its own member projection) | the source Mesh's current primary; after mesh.deleted its last node-admin, still its primary, until it is stopped or deleted; nobody else, ever: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's `Members` projection (the fabric-primary never publishes a mesh as its acting primary, R-RX4) | nobody as is; a receiving primary derives the two frames below from it | `(mesh, publisher, topology_version, snapshot_id)`; a receiving admin installs the snapshot atomically once it holds every chunk, and only then advances the held source version or derives a delta; the version bumps on a material change of the normalized projection below and not on an unchanged republish; the publisher's exact identity is the version's revision | `digests`: as held; `in_flight`: while the operation is claimed and has no completed receipt (derived from Build facts each round, never stored), and NodeStopped until the next lifecycle op on that exact birth; `deleted`: local age since accepted, up to the deleted retention | the complete Mesh with loads: what every node-admin holds of every Mesh for routing and control decisions. In `digests`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive authoritative statuses through the primary's versioned member projection. One mesh has one publisher on the backbone, its mesh-primary, and none while it has no primary (R-RX4), so a receiver takes its Members and MembersDelta as they arrive. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events. |
 | `MembersDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, deleted }` | the forwarding primary's own mesh channel | the local mesh primary, when a source Mesh it holds moved from one version to another; and the source Mesh's primary, for its own Mesh, on its own mesh channel | nobody | `(mesh, source_publisher, base_version, topology_version)`; applied only when the receiver holds exactly `base_version` of that source and publisher | not retained as a frame | transforms the held remote projection from `base_version` into `topology_version`: births added or changed, identities removed, overlay and deleted changes, loads omitted. In `changed`, each member is a projection entry `{ digest, status }`, the status authored by the mesh-primary alone. Own-mesh members receive authoritative statuses through the primary's versioned member projection. A frame received out of order, with an order key earlier than the newest the receiver holds for that mesh, is ignored in the gossip receive path for every frame kind (the receiver rules below). A delta whose base version the receiver does not hold triggers GetTopology repair. Receivers install the complete snapshot atomically; they do not queue unmatched status events. For an own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and status from the projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events. |
@@ -159,6 +158,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | `Seated { seat, holder }` | the holder's mesh channel; backbone | the mesh-primary of the seat's mesh when the ordinary rule fills a seat there with no node.primary.update (its own mesh-primary seat and each other cohort's primary seat, a holder seated again after a failed update included); the fabric-primary for the fabric seat | peer mesh primaries preserve seat, holder and revision and never author a result | the holder record's revision, per seat key (`(mesh, node_type)` for a cohort, `fabric` for the fabric seat); an older record is ignored in the receive path | until the next record of that seat | the ordinary election's holder record with its exact birth ([elections §3](fabric-node-lifecycle-elections.md#3-election-key)), an election input; never sufficient to override a committed seat row |
 | [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `Members` and `MembersDelta` rows above); node.connections.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
+| [`NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base }`](#reserved-lifecycle-frame-positions) (position 14) | reserved position; never published | none: a seat update is announced by `primary updating` and `primary updated`, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection | — | — | — | — |
 | `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the mesh primary's own mesh channel; then each peer mesh channel | the mesh primary only, when its Mesh's status changes | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its holder on a join, heal, refeed or top-up | the Mesh's status projection |
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its holder on a join, heal, refeed or top-up | the Fabric's status projection |
 | `NodeRestarting { op: LifecycleOp, forwarded_by, publisher, topology_version }` | executor's own mesh channel; backbone Members.in_flight | the mesh-primary of the restarting node | peer mesh-primary derives external projection from aggregate | `(kind, build_id, attempt, operation)` | while restart operation is open | keep same logical node known; no Gone from expected silence. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
@@ -226,8 +226,8 @@ Size:
 
 #### Reserved lifecycle frame positions
 
-The frame enum keeps the positions of NodeConnectionsDeleting, NodeLeaving, NodeLeft and NodeConnectionsDeleted. None of
-the four is published. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
+The frame enum keeps the positions of NodeConnectionsDeleting, NodeLeaving, NodeLeft, NodeConnectionsDeleted and
+NewFabricPrimary. None of the five is published. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
 connections-deleted and stopping reach peers as the member's status in its mesh-primary's member
 projection (the `Members` and `MembersDelta` rows of the catalog), and node.connections.deleted is a
 reply on the call, never gossip. The typed node.stop's stopped is a frame on its call stream, not a
@@ -239,6 +239,7 @@ NodeConnectionsDeleting { op: LifecycleOp, forwarded_by: Option<String> }, // re
 NodeLeaving             { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 NodeLeft                { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 NodeConnectionsDeleted  { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
+NewFabricPrimary        { holder: SeatHolder, endpoint_id: String, transport_addr: SocketAddr, admin_api_base: Option<String> }, // reserved (R-G3): never published
 
 LifecycleOp {
     build_id: String,
@@ -251,7 +252,7 @@ LifecycleOp {
 }
 ```
 
-`LifecycleOp` is the body every lifecycle event frame below carries. RDM keeps the four reserved variants in the membership `Frame` enum with byte fixtures.
+`LifecycleOp` is the body every lifecycle event frame below carries. RDM keeps the five reserved variants in the membership `Frame` enum with byte fixtures. `NewFabricPrimary` (position 14) is likewise a reserved position, never published: a seat update is announced by `primary updating` and `primary updated`, and every birth's contact addresses (`endpoint_id`, `transport_addr`) ride its `Digest` and `Members` projection.
 
 #### Node-stopped lifecycle overlay
 
@@ -489,24 +490,6 @@ restart in `in_flight`:
 }
 ```
 
-The backbone `new-fabric-primary` frame published by a successor fabric-primary after the seat
-transfer commits:
-
-```json
-{
-  "frame": "new-fabric-primary",
-  "holder": {
-    "mesh": "mesh2",
-    "node_id": "n3w5b7r9t2qx",
-    "incarnation": "0000000000000001",
-    "revision": 8
-  },
-  "endpoint_id": "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c",
-  "transport_addr": "127.0.0.1:54474",
-  "admin_api_base": "http://127.0.0.1:41778"
-}
-```
-
 The same birth's own `Digest` heartbeat on its mesh channel is
 `{ "frame": "digest", "digest": { … } }`, where the `digest` object is the
 [`MeshDigest`](node-rpc-envelope.md#join-op-0x1d-rdm) shown as the one entry of `digests` above.
@@ -612,41 +595,6 @@ delta carries overlays and deletions, and a top-up or full is what a member that
 was re-fed to the backbone resynchronizes from.
 
 ---
-
-## New-fabric-primary and contact addresses
-
-The `new-fabric-primary` gossip frame announces the committed fabric-primary and
-its contact addresses on the **backbone channel**. The
-[decoded example](#examples)
-shows a complete message.
-
-```rust
-NewFabricPrimary {
-    holder: SeatHolder, // mesh, node_id, incarnation, revision
-    endpoint_id: String,
-    transport_addr: SocketAddr,
-    admin_api_base: Option<String>,
-}
-```
-
-The announcer supplies the exact holder birth's endpoint key, actual bound QUIC UDP
-address and application-supplied contact URL including its actual bound port.
-The contacts are independent; neither port is inferred from the other. These contact fields
-are outside SeatHolder: changing an address does not change a seat's identity or revision.
-An embedding application supplies admin_api_base when it exposes a contact surface. RDM serves Node RPC.
-
-A receiver applies the seat's revision/birth acceptance rules and associates the contacts
-only with that exact holder. A delayed announcement must not overwrite newer contact
-information learned from that birth's digest. Contact changes continue through the
-birth's ordered digest updates. An announcement grants no authority independently
-of committed leadership, completes no handover and proves no runtime exit. Its
-contact fields do not refresh liveness.
-
-RDM implements the contact-bearing frame with byte fixtures. The internal SeatHolder identifies the holder; the frame carries its
-contacts explicitly. Acceptance
-must prove both contact addresses belong to the committed holder, preserve digest
-ordering for subsequent contact changes and reject stale-holder announcements.
-
 
 ## 4. Topic identity
 
