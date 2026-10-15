@@ -8,7 +8,7 @@
 //! itself, or a silent member that leaves the view with no span.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::Membership;
 use serde_json::Value;
 use std::time::Duration;

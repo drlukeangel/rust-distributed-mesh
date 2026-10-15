@@ -15,8 +15,8 @@
 #![deny(missing_docs)]
 
 
-pub use rafka_mesh_entity::launch::Launch;
-pub use rafka_mesh_entity::NodeKind;
+pub use rdm_core::launch::Launch;
+pub use rdm_core::NodeKind;
 pub use rafka_node_rpc::{NodeRpcClient, ServerBuilder};
 pub use rafka_node_rpc_testkit::node::{drain_deadline_from_env, leave_linger_from_env, RunningNode};
 
@@ -24,7 +24,7 @@ pub mod families;
 pub mod leadership;
 
 use anyhow::{anyhow, Result};
-use rafka_node_rpc_contract::catalog::CatalogEntry;
+use rdm_core::catalog::CatalogEntry;
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -83,7 +83,7 @@ impl Caller {
         let mut streams = Vec::new();
         let mut at = None;
         while let Some(named) = seat {
-            let to: rafka_mesh_entity::PathName = named.ok_or_else(|| format!("a stream ended SeatMoved naming no fabric-primary: {first:?} {streams:?}"))?.parse().map_err(|e| format!("SeatMoved names {e:?}, which is not a path.name"))?;
+            let to: rdm_core::PathName = named.ok_or_else(|| format!("a stream ended SeatMoved naming no fabric-primary: {first:?} {streams:?}"))?.parse().map_err(|e| format!("SeatMoved names {e:?}, which is not a path.name"))?;
             let carrier = self.peers.carrier_following(&self.entry, &to).await.map_err(|e| format!("the caller cannot reach {to}, the fabric-primary SeatMoved names: {e}"))?;
             let mut stream = Nodes::new(carrier.clone()).resume(self.kind.clone(), &self.accepted).await.map_err(|e| format!("Build {} was not resumed at {to}: {e}", self.accepted.build_id))?;
             let mut frames: Vec<Frame> = Vec::new();
@@ -118,7 +118,7 @@ impl Caller {
 /// the admin it named as soon as it is named.
 async fn replace_by_recipe(estate: &Estate, entry: &rafka_node_admin_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
     use rafka_node_admin_client::{NodeSelector, Nodes};
-    use rafka_node_rpc_contract::build::RecipeStep;
+    use rdm_core::build::RecipeStep;
     let peers = estate.peers().await;
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
     for mesh in ["mesh1", "mesh2"] {
@@ -126,7 +126,7 @@ async fn replace_by_recipe(estate: &Estate, entry: &rafka_node_admin_client::Pat
             peers.learn_known(&held);
         }
     }
-    let node: rafka_mesh_entity::PathName = p.parse().unwrap();
+    let node: rdm_core::PathName = p.parse().unwrap();
     let recipe = vec![
         RecipeStep::Create { node: node.successor() },
         RecipeStep::Stop { node: node.clone() },
@@ -448,7 +448,7 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     }
     let successor_id = successor_id.expect("the replaced admin's path is ready again under a new birth");
     // H: the lowest NodeId of N and P's successor, which was born `<P>.new` and took P's name.
-    let (h_name, h_id) = if successor_id < n_id { (p.parse::<rafka_mesh_entity::PathName>().unwrap().successor().to_string(), successor_id.clone()) } else { (n_name.clone(), n_id.clone()) };
+    let (h_name, h_id) = if successor_id < n_id { (p.parse::<rdm_core::PathName>().unwrap().successor().to_string(), successor_id.clone()) } else { (n_name.clone(), n_id.clone()) };
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
     // The fabric is ready-for-traffic once its planned births are all ready and the state-sync,
     // state-commit and open-traffic rounds have run under the new fabric-primary.
@@ -585,10 +585,10 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     // the recipe left to run.
     let (followed, receipts) = onward.unwrap_or_else(|why| panic!("the caller could not follow the recipe past the seat move: {why}"));
     assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rafka_node_admin_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
-    assert_eq!(receipts.phase, rafka_node_rpc_contract::build::BuildPhase::Complete, "build.get: the recipe's Build is complete: {receipts:?}");
+    assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the recipe's Build is complete: {receipts:?}");
     let resume = rafka_node_admin_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the recipe's steps");
     let step_keys: Vec<String> = {
-        let (p, succ) = (p.parse::<rafka_mesh_entity::PathName>().unwrap(), p.parse::<rafka_mesh_entity::PathName>().unwrap().successor());
+        let (p, succ) = (p.parse::<rdm_core::PathName>().unwrap(), p.parse::<rdm_core::PathName>().unwrap().successor());
         vec![format!("node.create:{succ}"), format!("node.stop:{p}"), format!("node.update:{p}"), format!("node.stop:{succ}"), format!("node.update:{succ}"), format!("node.start:{p}"), format!("node.delete:{}", p.renamed())]
     };
     for key in &step_keys {

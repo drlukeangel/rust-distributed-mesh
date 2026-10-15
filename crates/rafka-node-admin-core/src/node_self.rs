@@ -24,10 +24,10 @@
 //! never this node's retry.
 
 use crate::model::{IncarnationId, NodeId, PathName};
-use rafka_mesh_entity::{LifecycleOp, MemberStatus, MeshDigest};
+use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcClient, NodeRpcServer, NodeTarget};
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -87,11 +87,11 @@ pub struct TasksParked {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Deleted {
     /// The open entries closed, their drops written under the name the birth holds.
-    pub closed: Vec<rafka_mesh_entity::ConnectionId>,
+    pub closed: Vec<rdm_core::ConnectionId>,
     /// The ids named that are no open entry of the birth: unknown, or already closed.
-    pub not_open: Vec<rafka_mesh_entity::ConnectionId>,
+    pub not_open: Vec<rdm_core::ConnectionId>,
     /// The open entries the birth still holds after the cut, a drop the storage refused included.
-    pub held: Vec<rafka_mesh_entity::ConnectionId>,
+    pub held: Vec<rdm_core::ConnectionId>,
     /// For `All`, what the closure established; `None` for `Connections`.
     pub receipt: Option<ConnectionsReceipt>,
 }
@@ -322,7 +322,7 @@ impl NodeSelf {
 
     /// The connections this birth holds now (R-CR1), from its connections writer; refused by name
     /// when the process has not handed it one, so nothing is decided on a set it cannot read.
-    pub async fn held_routes(&self) -> Result<Vec<rafka_mesh_entity::connections::NodeConnection>, String> {
+    pub async fn held_routes(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, String> {
         let writer = self.connections.lock().unwrap().clone();
         match writer {
             Some(w) => Ok(w.held_routes().await),
@@ -377,7 +377,7 @@ impl NodeSelf {
         let (routes, not_open) = match scope {
             ConnectionScope::All => (open, Vec::new()),
             ConnectionScope::Connections(ids) => {
-                let (mut routes, mut not_open): (Vec<rafka_mesh_entity::connections::NodeConnection>, Vec<rafka_mesh_entity::ConnectionId>) = (Vec::new(), Vec::new());
+                let (mut routes, mut not_open): (Vec<rdm_core::connections::NodeConnection>, Vec<rdm_core::ConnectionId>) = (Vec::new(), Vec::new());
                 for id in ids {
                     match open.iter().find(|r| &r.id == id) {
                         Some(route) if !routes.iter().any(|r| r.id == route.id) => routes.push(route.clone()),
@@ -393,7 +393,7 @@ impl NodeSelf {
         // Proxy rides its carrier's Direct and only its route retires.
         let data_plane = self.data_plane.lock().unwrap().clone();
         if let Some(data_plane) = &data_plane {
-            for route in routes.iter().filter(|r| r.kind == rafka_mesh_entity::connections::ConnectionKind::Direct) {
+            for route in routes.iter().filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct) {
                 if let Some(peer) = data_plane.endpoint_of(&route.destination.node_id) {
                     for c in data_plane.close_connections_to(&peer, CONNECTIONS_DELETE) {
                         tracing::info_span!(
@@ -647,7 +647,7 @@ impl NodeSelf {
         };
         let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
         let answer = match &out {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
+            rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
             other => other.name().to_string(),
         };
         tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, hook = %hook, answer = %answer, "otel.kind" = "internal")
@@ -727,7 +727,7 @@ impl NodeSelf {
         if let Some(w) = &writer {
             let open = w.held_routes().await;
             if !open.is_empty() {
-                let connections: Vec<rafka_mesh_entity::ConnectionId> = open.into_iter().map(|r| r.id).collect();
+                let connections: Vec<rdm_core::ConnectionId> = open.into_iter().map(|r| r.id).collect();
                 tracing::info_span!(
                     "rdm.node.mesh.reject.via-busy-holding-connections",
                     node = %self.held_name(),
@@ -1076,13 +1076,13 @@ fn named(commander: Option<&NodeId>) -> String {
     commander.map(ToString::to_string).unwrap_or_default()
 }
 
-/// The record this runtime's provider wrote for it (`rafka_mesh_entity::runtime::read_own_record`),
+/// The record this runtime's provider wrote for it (`rdm_core::runtime::read_own_record`),
 /// waited for on the caller's runtime for at most `within`: a boot that ends (a stop signal) drops
 /// the wait at once, where a blocking wait would hold the runtime's shutdown until `within` passed.
-pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Duration) -> Result<rafka_mesh_entity::RuntimeFact, String> {
+pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Duration) -> Result<rdm_core::RuntimeFact, String> {
     let until = tokio::time::Instant::now() + within;
     loop {
-        let last = match rafka_mesh_entity::runtime::read_own_record(dir) {
+        let last = match rdm_core::runtime::read_own_record(dir) {
             Ok(f) => return Ok(f),
             Err(e) => e,
         };

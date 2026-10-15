@@ -18,7 +18,7 @@
 
 use crate::fault_door::{CutRow, FaultState, Hit};
 use async_trait::async_trait;
-use rafka_mesh_entity::LifecycleOp;
+use rdm_core::LifecycleOp;
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::certs::CertChoice;
 use rafka_node_admin_core::build_state::{

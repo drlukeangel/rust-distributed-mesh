@@ -8,10 +8,10 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore, ProofOp, ProofReply, ProofRequest, ProofStore, Provenance, MAX_KEY_BYTES, MAX_VALUE_BYTES};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -123,7 +123,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             store_dir: data_dir.clone(),
             mesh_id: None,
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
         let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))

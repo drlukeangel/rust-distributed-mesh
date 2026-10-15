@@ -190,7 +190,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let holder = estate.probe(&["resolve", "--target", &other, "--query", &path]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
-    let never = estate.probe(&["resolve", "--target", &other, "--query", &format!("exact:{}", rafka_mesh_entity::NodeId::mint())]);
+    let never = estate.probe(&["resolve", "--target", &other, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.stop().await;
 

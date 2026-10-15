@@ -4,7 +4,7 @@
 //! it as the `node_admin` launch id of an estate and holds the admin at a documented cut
 //! (`rafka_node_rpc_testkit::admin_faults`). A product binary never carries any of this.
 
-use rafka_mesh_entity::{NodeKind, PathName};
+use rdm_core::{NodeKind, PathName};
 use rafka_node_rpc_testkit::admin_faults::{self, AdminFaults};
 use rafka_node_rpc_testkit::test_app;
 

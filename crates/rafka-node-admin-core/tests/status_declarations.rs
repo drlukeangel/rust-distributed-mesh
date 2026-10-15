@@ -10,15 +10,15 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -137,7 +137,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let mut nodes = vec![admin.node.clone()];
     nodes.extend(others.values().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-        fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }));
@@ -381,7 +381,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
     rig.withhold.arm();
     let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(600) }, ..Default::default() };
     let (out, ev) = c.call::<Status>(&target, &declare(rpc1, NodeState::ReadyForTraffic), &opts).await;
-    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rafka_node_rpc_contract::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == rdm_core::outcome::IndeterminateReason::ReplyDeadline), "{out:?}");
     assert!(ev.unwrap().committed, "the request crossed the commit cut before the reply was withheld");
     rig.withhold.reached().await;
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::ReadyForTraffic), "applied before the reply was withheld");
@@ -445,7 +445,7 @@ async fn serve_node_answering(b: &Birth, reply: StatusReply) -> ServedNode {
 
 /// A birth serving Status that records every request and answers each with what `answer` says.
 async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusReply + Send + Sync + 'static) -> ServedNode {
-    use rafka_node_rpc_contract::catalog::OpOwner;
+    use rdm_core::catalog::OpOwner;
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
     let heard: Arc<tokio::sync::Notify> = Arc::default();
     let (s, h) = (seen.clone(), heard.clone());
@@ -598,14 +598,14 @@ async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
     let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
     let node = serve_node(rpc1).await;
     configs_door(&rig, &node).await;
-    let keys = rafka_mesh_entity::MAX_CONFIG_KEYS + 1;
+    let keys = rdm_core::MAX_CONFIG_KEYS + 1;
     let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("k{i:02}"), "v".to_string())).collect();
     let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
     let client = client_of(&rig, admin2).await;
     let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
     assert_eq!(
         reply,
-        StatusReply::RejectedConfig { over: rafka_mesh_entity::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rafka_mesh_entity::MAX_CONFIG_KEYS as u32, max_bytes: rafka_mesh_entity::MAX_CONFIG_BYTES as u32 } }
+        StatusReply::RejectedConfig { over: rdm_core::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rdm_core::MAX_CONFIG_KEYS as u32, max_bytes: rdm_core::MAX_CONFIG_BYTES as u32 } }
     );
     assert!(node.seen.lock().unwrap().is_empty(), "nothing is told to the node");
 }
@@ -623,7 +623,7 @@ impl NodesStorage for RefusingRows {
     async fn runtimes(&self) -> Result<Vec<rafka_node_admin_core::storage::RuntimeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.runtimes().await
     }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) -> Result<Option<rafka_node_admin_core::storage::RuntimeRow>, rafka_node_admin_core::record_store::StorageError> {
+    async fn runtime(&self, node_id: &NodeId, incarnation: &rdm_core::IncarnationId) -> Result<Option<rafka_node_admin_core::storage::RuntimeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.runtime(node_id, incarnation).await
     }
     async fn own(&self) -> Result<Option<rafka_node_admin_core::storage::NodeRecord>, rafka_node_admin_core::record_store::StorageError> {
@@ -638,7 +638,7 @@ impl NodesStorage for RefusingRows {
     async fn put_contact(&self, record: &rafka_node_admin_core::storage::NodeRecord) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.0.put_contact(record).await
     }
-    async fn remove_contact(&self, mesh: &str, node_id: &rafka_mesh_entity::NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+    async fn remove_contact(&self, mesh: &str, node_id: &rdm_core::NodeId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.0.remove_contact(mesh, node_id).await
     }
     async fn put_node_row(&self, row: &rafka_node_admin_core::storage::NodeRow) -> Result<Result<(), rafka_node_admin_core::storage::NameHeld>, rafka_node_admin_core::record_store::StorageError> {
@@ -694,7 +694,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
     assert_eq!(attrs.get("outcome").map(String::as_str), Some("config-not-applied"), "{spans:?}");
     assert_eq!(attrs.get("answered").map(String::as_str), Some("not-ready"), "{attrs:?}");
     let detail = attrs.get("detail").expect("the via-config span carries the refusal's detail");
-    assert!(detail.len() > rafka_node_rpc_contract::status::MAX_REFUSAL_REASON_BYTES && !detail.ends_with('…'), "the span's detail is whole: {detail}");
+    assert!(detail.len() > rdm_core::status::MAX_REFUSAL_REASON_BYTES && !detail.ends_with('…'), "the span's detail is whole: {detail}");
     assert!(detail.starts_with(cut.trim_end_matches('…')) && detail.contains(&refusal), "the reply's cut detail is the head of the span's whole one: {detail}");
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config outcome=config-not-applied answered=not-ready detail={} bytes (reply reason {} bytes, cut)", detail.len(), cut.len());
 }
@@ -930,7 +930,7 @@ impl Capture {
 /// mesh2's primary admin as a carrier: the admin composition (`admin::rpc_server`) on its own key,
 /// its live resolver holding `target`, the birth it carries to.
 async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Router) {
-    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionsHeld};
+    use rdm_core::connections::{ConnectionEnd, ConnectionsHeld};
     let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
@@ -1163,7 +1163,7 @@ async fn successor_drained(rig: &Rig) -> (Birth, ServedNode) {
     (b.node.status, b.node.declared) = (NodeStatus::Draining, Some("Draining".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |req| match req {
-        StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rafka_mesh_entity::ConnectionId::mint()], not_open: vec![], held: vec![], receipt: None },
+        StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rdm_core::ConnectionId::mint()], not_open: vec![], held: vec![], receipt: None },
         _ => StatusReply::Applied,
     })
     .await;
@@ -1172,7 +1172,7 @@ async fn successor_drained(rig: &Rig) -> (Birth, ServedNode) {
 }
 
 fn delete_all(b: &Birth) -> StatusRequest {
-    StatusRequest::DeleteConnections { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope: rafka_node_rpc_contract::status::ConnectionScope::All }
+    StatusRequest::DeleteConnections { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope: rdm_core::status::ConnectionScope::All }
 }
 
 fn update_name(b: &Birth, name: &str) -> StatusRequest {
@@ -1213,7 +1213,7 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
         let reply = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
-        assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: rafka_node_rpc_contract::views::NodeStatus::ReadyForTraffic, held_connections: vec![] });
+        assert_eq!(reply, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ReadyForTraffic, held_connections: vec![] });
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
@@ -1250,7 +1250,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
         let (succ, node) = successor_drained(&rig).await;
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
-        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rafka_node_rpc_contract::views::NodeStatus::Draining, held_connections: vec![] });
+        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Draining, held_connections: vec![] });
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
 
@@ -1297,7 +1297,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
 #[test]
 fn a_connections_deleted_node_still_holding_a_connection_is_refused_naming_it_and_nothing_is_written() {
     let cap = capture();
-    let held_id = rafka_mesh_entity::ConnectionId::mint();
+    let held_id = rdm_core::ConnectionId::mint();
     cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
@@ -1307,7 +1307,7 @@ fn a_connections_deleted_node_still_holding_a_connection_is_refused_naming_it_an
         }
         rig.authority.declared.lock().unwrap().connections_deleted.insert((succ.node.node_id.clone(), inc), rafka_node_admin_core::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![held_id.clone()], status_at_cut: NodeStatus::Draining });
         let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
-        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rafka_node_rpc_contract::views::NodeStatus::Draining, held_connections: vec![held_id.clone()] });
+        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Draining, held_connections: vec![held_id.clone()] });
         assert_eq!(rig.nodes.node_row_at(&"mesh1.rpc.3".parse().unwrap()).await.unwrap(), None, "nothing is claimed");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
@@ -1340,7 +1340,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
         let routed = &b["rpc1"];
         let refused = reply(&call(&rig, &b["admin2"], &update_name(routed, "1.old")).await);
-        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rafka_node_rpc_contract::views::NodeStatus::ReadyForTraffic, held_connections: vec![] }, "a live node that can carry traffic keeps its name");
+        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ReadyForTraffic, held_connections: vec![] }, "a live node that can carry traffic keeps its name");
     });
     let spans = cap.spans(NAME_SPAN);
     let outcomes: Vec<_> = spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
@@ -1649,7 +1649,7 @@ fn create_tags(b: &Birth, l: &[&str]) -> StatusRequest {
     StatusRequest::CreateTags { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), labels: labels(l) }
 }
 
-fn delete_tags(b: &Birth, scope: rafka_node_rpc_contract::status::TagScope) -> StatusRequest {
+fn delete_tags(b: &Birth, scope: rdm_core::status::TagScope) -> StatusRequest {
     StatusRequest::DeleteTags { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope }
 }
 
@@ -1673,7 +1673,7 @@ fn delete_tags(b: &Birth, scope: rafka_node_rpc_contract::status::TagScope) -> S
 /// cap, or a tags command that calls the node.
 #[test]
 fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traffic_are_refused_by_name_and_after_it_write_the_row_and_its_tags_index() {
-    use rafka_node_rpc_contract::status::TagScope;
+    use rdm_core::status::TagScope;
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -1865,7 +1865,7 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
         let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
         let a = asked.clone();
-        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Busy { connections: vec![rafka_mesh_entity::ConnectionId::parse("3123456789ab").unwrap(), rafka_mesh_entity::ConnectionId::parse("4123456789ab").unwrap()], routes: vec!["mesh1.rpc.1 (direct, entry 3123456789ab)".into(), "mesh1.rpc.2 (direct, entry 4123456789ab)".into()] }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
+        let decisions = Arc::new(Mutex::new(vec![rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Busy { connections: vec![rdm_core::ConnectionId::parse("3123456789ab").unwrap(), rdm_core::ConnectionId::parse("4123456789ab").unwrap()], routes: vec!["mesh1.rpc.1 (direct, entry 3123456789ab)".into(), "mesh1.rpc.2 (direct, entry 4123456789ab)".into()] }, rafka_node_admin_core::node_name::NameApply::AlreadyApplied, rafka_node_admin_core::node_name::NameApply::Applied]));
         let held: PathName = rig.admin.node.name.clone();
         let _ = rig.authority.rename.set(Arc::new(move |name: PathName| {
             let (a, d, held) = (a.clone(), decisions.clone(), held.clone());
@@ -1881,7 +1881,7 @@ fn a_node_admin_told_its_name_answers_from_its_own_decision() {
         assert_eq!(reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::AlreadyApplied);
         assert_eq!(
             reply(&call(&rig, admin2, &told(inc.clone(), "mesh1.admin.1.old")).await),
-            StatusReply::BusyHoldingConnections { connections: vec![rafka_mesh_entity::ConnectionId::parse("3123456789ab").unwrap(), rafka_mesh_entity::ConnectionId::parse("4123456789ab").unwrap()] }
+            StatusReply::BusyHoldingConnections { connections: vec![rdm_core::ConnectionId::parse("3123456789ab").unwrap(), rdm_core::ConnectionId::parse("4123456789ab").unwrap()] }
         );
         assert_eq!(reply(&call(&rig, admin2, &told(IncarnationId::mint(), "mesh1.admin.1.old")).await), StatusReply::RejectedStaleIncarnation { held: inc.clone() });
         assert_eq!(reply(&call(&rig, rpc1, &told(inc.clone(), "mesh1.admin.1.old")).await), StatusReply::AlreadyApplied, "the subject answers a member from its own decision");
@@ -2031,7 +2031,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
         let requests = [
             StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
             StatusRequest::UpdateName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: "2".into() },
-            StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All },
+            StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All },
         ];
         for req in requests {
             let got = reply(&call(&rig, caller, &req).await);
@@ -2060,7 +2060,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
 #[test]
 fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_predecessor_tag_index() {
     use rafka_node_admin_core::node_name_update::Cutover;
-    use rafka_node_rpc_contract::status::TagScope;
+    use rdm_core::status::TagScope;
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;

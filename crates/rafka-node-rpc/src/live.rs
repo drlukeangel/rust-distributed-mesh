@@ -19,13 +19,13 @@
 //! Node RPC depends on the other.
 
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
-use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
-use rafka_node_rpc_contract::outcome::ResolveFailure;
+use rdm_core::{IncarnationId, NodeId, PathName};
+use rdm_core::outcome::ResolveFailure;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-pub use rafka_mesh_entity::DEPARTED_RETENTION;
+pub use rdm_core::DEPARTED_RETENTION;
 
 /// What applying one fact did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn membership_names_the_birth_a_connection_fact_may_be_judged_against() {
-        use rafka_mesh_entity::connections::{Birth, CurrentIncarnations};
+        use rdm_core::connections::{Birth, CurrentIncarnations};
         let r = LiveNodeResolver::default();
         let a = birth("mesh1.rpc.1", 7000);
         assert_eq!(r.birth(&a.node_id, &a.name), Birth::Unknown, "never heard of: nothing is judged");
@@ -493,9 +493,9 @@ mod tests {
 /// Membership as the connections holder reads it: the birth each node holds now. A node this
 /// process has not heard of is `Unknown` and nothing is judged; a node that departed, or whose path
 /// another node holds, is `Departed`.
-impl rafka_mesh_entity::connections::CurrentIncarnations for LiveNodeResolver {
-    fn birth(&self, node_id: &NodeId, path: &PathName) -> rafka_mesh_entity::connections::Birth {
-        use rafka_mesh_entity::connections::Birth;
+impl rdm_core::connections::CurrentIncarnations for LiveNodeResolver {
+    fn birth(&self, node_id: &NodeId, path: &PathName) -> rdm_core::connections::Birth {
+        use rdm_core::connections::Birth;
         match self.resolve(&NodeTarget::ExactNode(node_id.clone())) {
             Ok(n) => Birth::Current(n.incarnation),
             Err(ResolveFailure::Gone) => Birth::Departed,

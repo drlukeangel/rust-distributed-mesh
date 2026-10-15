@@ -3,15 +3,15 @@
 //! server on the Node RPC ALPN. The cells call the role the way a peer does, over the wire.
 
 use iroh::SecretKey;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_node_base::{compose, Role, LEGACY_ADAPTERS};
 use rafka_node_rpc::{Budget, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::catalog::{EntryKind, OpOwner};
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::{EntryKind, OpOwner};
+use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
+use rdm_core::ping::{Ping, PingReply, PingRequest};
+use rdm_core::protocol::NodeProtocol;
 use rafka_node_rpc_testkit::node::{self, RunningNode};
 use rafka_node_rpc_testkit::rig::{admin_side, AdminSide, TEST_MESH_ID};
 use std::sync::Arc;
@@ -30,7 +30,7 @@ struct RoleProcess {
 /// The role is the node_type `name`'s launch names ([`Role::of`]), as the one node executable takes it.
 async fn born(name: &str) -> RoleProcess {
     let dir = tempdir::Dir::new();
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir.path()).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir.path()).unwrap();
     let key = node::load_or_mint_key(dir.path()).unwrap();
     // The admin that deployed this birth: it takes the node's JoinNode and serves its topology.
     let fabric_id = FabricId::mint();
@@ -50,7 +50,7 @@ async fn born(name: &str) -> RoleProcess {
         store_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     launcher.deployed(&launch, &key);
     let role = Role::of(&launch);
@@ -233,7 +233,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
 #[tokio::test]
 async fn a_malformed_traceparent_is_dropped_and_the_call_is_unchanged() {
     use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
-    use rafka_node_rpc_contract::context::CallContext;
+    use rdm_core::context::CallContext;
     let broker = born("mesh1.broker.1").await;
     let (client, target) = broker.peer().await;
     let opts = CallOptions {

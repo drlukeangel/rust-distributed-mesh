@@ -12,9 +12,9 @@
 //! exact paths before anything is persisted, so the executor never decides which node a count
 //! means.
 
-use rafka_mesh_entity::meta::PathConfig;
+use rdm_core::meta::PathConfig;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired, PinnedBirth};
-use rafka_node_rpc_contract::build::RecipeStep;
+use rdm_core::build::RecipeStep;
 use crate::build_state::{BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricIdentity, FabricStorage, FabricStorageError};
 use crate::model::{is_valid_mesh_name, IncarnationId, MeshId, NodeId, NodeKind, NodeStatus, PathName};
@@ -106,7 +106,7 @@ impl FabricTopology {
     /// bootstrap admin was born with, never minted here.
     pub fn root(fabric: &str, mesh: &str, mesh_id: MeshId) -> Self {
         let mut meshes = BTreeMap::new();
-        meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 0)]), mesh_id));
+        meshes.insert(mesh.to_string(), MeshTopology::with_id(&MeshDesired::of(mesh, [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 0)]), mesh_id));
         Self { fabric: fabric.into(), meshes }
     }
 
@@ -881,7 +881,7 @@ mod tests {
     }
 
     fn t(meshes: &[(&str, u32, u32)]) -> FabricTopology {
-        FabricTopology { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])))).collect() }
+        FabricTopology { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() }
     }
 
     fn paths(m: &MeshTopology) -> Vec<String> {
@@ -889,7 +889,7 @@ mod tests {
     }
 
     fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
-        MeshDesired::of(name.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, a), (rafka_mesh_entity::NodeKind::RpcNode, r)])
+        MeshDesired::of(name.to_string(), [(rdm_core::NodeKind::NodeAdmin, a), (rdm_core::NodeKind::RpcNode, r)])
     }
 
     #[test]
@@ -1214,7 +1214,7 @@ mod tests {
         assert!(!keys.iter().any(|k| k.starts_with("replace-node:")));
         let receipt = |attempt: u32, operation: &str| BuildStepReceipt {
             mesh: None,
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: operation.into(),
             step: "Complete".into(),
@@ -1223,7 +1223,7 @@ mod tests {
             executor: None,
         };
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1317,7 +1317,7 @@ mod tests {
         // The Complete commits no output: the attempt's fenced action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
             mesh: None,
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("node.delete:{path}"),
             step: step.into(),
@@ -1327,7 +1327,7 @@ mod tests {
         };
         let other = IncarnationId::mint();
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1367,7 +1367,7 @@ mod tests {
         // The Complete commits no output: the attempt's fenced action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
             mesh: None,
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("node.stop:{path}"),
             step: step.into(),
@@ -1377,7 +1377,7 @@ mod tests {
         };
         let other = IncarnationId::mint();
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1434,7 +1434,7 @@ mod tests {
         let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
         let receipt = |attempt: u32, operation: &str, step: &str, output: Option<serde_json::Value>| BuildStepReceipt {
             mesh: None,
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{operation}:{path}"),
             step: step.into(),
@@ -1443,12 +1443,12 @@ mod tests {
             executor: None,
         };
         let deleted = |attempt: u32, id: &NodeId, inc: &IncarnationId| {
-            let op = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt, operation: format!("node.delete:{path}"), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+            let op = rdm_core::LifecycleOp { build_id: "b1".into(), attempt, operation: format!("node.delete:{path}"), node_id: id.clone(), incarnation: inc.clone(), name: path.clone(), event_at_rafka_ms: 1 };
             receipt(attempt, "node.delete", "NodeDeleted", Some(serde_json::to_value(op).unwrap()))
         };
         let complete = |attempt: u32, operation: &str| receipt(attempt, operation, "Complete", None);
         let build = |path: &PathName, node_id: &NodeId, steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1516,7 +1516,7 @@ mod tests {
     /// config set explicitly stands.
     #[test]
     fn every_materialized_path_carries_exactly_one_path_config() {
-        use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
+        use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
         let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::RpcNode, 1)]));
         assert_eq!(m.nodes.len(), 5);
         assert_eq!(m.path_config_by_path.len(), 5);

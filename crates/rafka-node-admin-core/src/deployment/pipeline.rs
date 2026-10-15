@@ -59,8 +59,8 @@ use super::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, Fo
 use crate::build::BuildId;
 use crate::build_state::{BuildStateAdapter, BuildStateError, BuildStepReceipt, StepOutcome};
 use crate::model::{DeploymentId, EndpointId, IncarnationId, Node, NodeId, NodeStatus, PathName};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{LifecycleOp, RuntimeFact};
+use rdm_core::launch::Launch;
+use rdm_core::{LifecycleOp, RuntimeFact};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -359,10 +359,10 @@ impl CurrentRuntimeAdoption {
         a.step(AdoptStep::ResolveProviderControlDomain, |n| {
             let domain = match &container_domain {
                 Some(d) => d.clone(),
-                None => rafka_mesh_entity::runtime::process_control_domain()?,
+                None => rdm_core::runtime::process_control_domain()?,
             };
             if f.control_domain != domain {
-                return Err(format!("{n}: its runtime is in control domain {}, not this provider's domain {}", f.domain_fingerprint(), rafka_mesh_entity::runtime::fingerprint(&domain)));
+                return Err(format!("{n}: its runtime is in control domain {}, not this provider's domain {}", f.domain_fingerprint(), rdm_core::runtime::fingerprint(&domain)));
             }
             Ok((None, RuntimeEvidence::of(&f)))
         })?;
@@ -573,12 +573,12 @@ pub enum CommandAdmission {
     /// completed, it cut its transport and is stopped, and this is what that `All` established.
     Stopped {
         /// The `All`'s receipt.
-        receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
+        receipt: rdm_core::status::ConnectionsReceipt,
     },
     /// The birth answered `node.connections.delete { All }` with `node.connections.deleted`.
     ConnectionsDeleted {
         /// What the closure established.
-        receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
+        receipt: rdm_core::status::ConnectionsReceipt,
     },
     /// The birth answered `start-node` with `Started`: it rejoined as itself.
     Started {},
@@ -630,9 +630,9 @@ impl CommandAdmission {
 
 /// The arm one directed command call is: only `Applied` and `AlreadyApplied` admit it; every other
 /// reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
-pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafka_node_rpc_contract::status::StatusReply>) -> CommandAdmission {
-    use rafka_node_rpc_contract::outcome::RpcOutcome;
-    use rafka_node_rpc_contract::status::StatusReply;
+pub fn command_admission(out: &rdm_core::outcome::RpcOutcome<rdm_core::status::StatusReply>) -> CommandAdmission {
+    use rdm_core::outcome::RpcOutcome;
+    use rdm_core::status::StatusReply;
     match out {
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => CommandAdmission::Admitted {},
@@ -809,13 +809,13 @@ pub struct LaunchTemplate {
     /// The Fabric's name (its label) and its identity.
     pub fabric: String,
     /// The fabric's minted id.
-    pub fabric_id: rafka_mesh_entity::FabricId,
+    pub fabric_id: rdm_core::FabricId,
     /// The executable every launch runs.
     pub executable: PathBuf,
     /// Members to join gossip through: `(public key, address)`.
     pub seeds: Vec<(String, SocketAddr)>,
     /// The admin these launches are made by: the target of each birth's `JoinNode`.
-    pub launcher: rafka_mesh_entity::launch::Launcher,
+    pub launcher: rdm_core::launch::Launcher,
     /// Passed through to every node (`RDM_EVIDENCE_DIR`, `RUST_LOG`, ...).
     pub env: BTreeMap<String, String>,
     /// The root of every node's data directory.
@@ -865,7 +865,7 @@ pub struct CreateRequest {
 /// state for the admin created for an existing one). Runs as its own receipted step
 /// (`ApplyMeshPending`), which records the state applied; a failure fails the create, so nothing
 /// downstream starts under an assumed state.
-pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rafka_node_rpc_contract::status::MeshState, String>> + Send>> + Send + Sync>;
+pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rdm_core::status::MeshState, String>> + Send>> + Send + Sync>;
 
 /// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
 /// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
@@ -984,7 +984,7 @@ pub struct Bound {
 }
 
 impl Bound {
-    fn of(d: &rafka_mesh_entity::MeshDigest) -> Result<Self, String> {
+    fn of(d: &rdm_core::MeshDigest) -> Result<Self, String> {
         let transport = d.node.transport_addr;
         if transport.ip().is_unspecified() || transport.port() == 0 {
             return Err(format!("it reported the transport address {transport}, which is not an address a peer can dial"));
@@ -1543,7 +1543,7 @@ impl DeploymentPipeline<'_> {
             seeds: self.template.seeds.clone(),
             data_dir: data_dir.clone(),
             store_dir: self.template.store_dir.clone(),
-            mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
+            mesh_id: self.template.env.get(rdm_core::launch::ENV_MESH_ID).and_then(|v| rdm_core::MeshId::parse(v).ok()),
             mesh_issuer: self.template.mesh_issuer.clone(),
             connections_delete_deadline: self.template.connections_delete_deadline,
         };
@@ -1631,7 +1631,7 @@ impl DeploymentPipeline<'_> {
                     "{}: its runtime is in control domain {} (fingerprint), not this provider's {}",
                     req.node,
                     f.domain_fingerprint(),
-                    rafka_mesh_entity::runtime::fingerprint(&domain)
+                    rdm_core::runtime::fingerprint(&domain)
                 ));
             }
             Ok(RuntimeEvidence::of(&f))

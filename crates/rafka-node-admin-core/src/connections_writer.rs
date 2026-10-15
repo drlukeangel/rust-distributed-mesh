@@ -29,9 +29,9 @@
 //! longer holds is dropped undialled (§9.5 step 1).
 
 use crate::storage::ConnectionsStorage;
-use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rafka_mesh_entity::reconnect::{first_failure, next_due, owed_retirements};
-use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+use rdm_core::reconnect::{first_failure, next_due, owed_retirements};
+use rdm_core::{IncarnationId, NodeId, PathName};
 use std::collections::HashMap;
 use rafka_node_rpc::{ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
@@ -161,13 +161,13 @@ enum Step {
     /// Spent undialled, for the named reason.
     Spent(&'static str),
     /// Dial it: due at the instant, scheduled from the latest Direct row named (if any).
-    Dial(u64, Option<rafka_mesh_entity::ConnectionId>),
+    Dial(u64, Option<rdm_core::ConnectionId>),
 }
 
 /// When an attempt toward `destination` is due, and the latest Direct row it is scheduled from: the
 /// series' backoff from this node's latest Direct Failed row toward that birth (connections.md
 /// §9.3), else at once.
-fn recovery_due(held: &ConnectionsHeld, destination: &ConnectionEnd) -> (u64, Option<rafka_mesh_entity::ConnectionId>) {
+fn recovery_due(held: &ConnectionsHeld, destination: &ConnectionEnd) -> (u64, Option<rdm_core::ConnectionId>) {
     match held.own_latest_directs().into_iter().find(|d| d.destination.name == destination.name) {
         Some(row) if (&row.destination.node_id, &row.destination.incarnation) == (&destination.node_id, &destination.incarnation) => (next_due(row).unwrap_or(0), Some(row.id.clone())),
         Some(row) => (0, Some(row.id.clone())),
@@ -346,7 +346,7 @@ impl ConnectionsWriter {
     /// no longer the latest of its pair (a newer entry was written meanwhile) is cut and writes no
     /// drop: the newer entry is the pair's state. Returns the ids of the routes cut, and those whose
     /// drop the storage refused, with its refusal: the log still holds those open.
-    pub async fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> (Vec<rafka_mesh_entity::ConnectionId>, Vec<(rafka_mesh_entity::ConnectionId, String)>) {
+    pub async fn write_drops(&self, routes: &[NodeConnection], reason: &str) -> (Vec<rdm_core::ConnectionId>, Vec<(rdm_core::ConnectionId, String)>) {
         let _gate = self.inner.write_gate.lock().await;
         let own = self.own_now();
         let (mut closed, mut refused) = (Vec::new(), Vec::new());
@@ -360,7 +360,7 @@ impl ConnectionsWriter {
                 continue;
             }
             let drop = NodeConnection {
-                id: rafka_mesh_entity::ConnectionId::mint(),
+                id: rdm_core::ConnectionId::mint(),
                 source: own.clone(),
                 destination: route.destination.clone(),
                 kind: route.kind,
@@ -409,7 +409,7 @@ impl ConnectionsWriter {
 
     fn direct(own: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, reason: Option<String>) -> NodeConnection {
         NodeConnection {
-            id: rafka_mesh_entity::ConnectionId::mint(),
+            id: rdm_core::ConnectionId::mint(),
             source: own,
             destination,
             kind: ConnectionKind::Direct,
@@ -700,10 +700,10 @@ impl ConnectionObserver for ConnectionsWriter {
                         // The row names both ends as they are now: this process's birth, never the
                         // one that wrote the previous attempt, and the birth dialled.
                         Some(r) => NodeConnection {
-                            id: rafka_mesh_entity::ConnectionId::mint(),
+                            id: rdm_core::ConnectionId::mint(),
                             source: own,
                             destination,
-                            recovery: Some(rafka_mesh_entity::connections::DirectRecovery { recovery_round: r.recovery_round, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
+                            recovery: Some(rdm_core::connections::DirectRecovery { recovery_round: r.recovery_round, attempt_ordinal: r.attempt_ordinal.saturating_add(1) }),
                             reason: Some(reason),
                             logged_at_ms: local_now_ms(),
                             ..p.clone()
@@ -785,7 +785,7 @@ impl rafka_node_rpc::CarrierEdges for ConnectionsWriter {
         Some(format!("{} -> {} Direct {} ({reason})", self.own().name, node.name, state_name(ConnectionState::Failed)))
     }
 
-    async fn edge_not_active(&self, target: &rafka_mesh_entity::NodeId) -> Option<String> {
+    async fn edge_not_active(&self, target: &rdm_core::NodeId) -> Option<String> {
         // The dial that just failed handed its Failed fact to this writer; it is held once its write
         // has landed. The carrier answers from the facts, so it waits for them.
         self.observations_landed().await;

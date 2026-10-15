@@ -96,15 +96,15 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
         builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
-            fabric_id: rafka_mesh_entity::FabricId::mint(),
+            fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io".into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = rafka_node_admin_core::join::Joins::default();
         let pipeline = DeploymentPipeline { provider: &LaunchesNothing, joins: &joins, observer: &NoBirth, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -199,8 +199,8 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
         admin.incarnation_id = Some(IncarnationId::mint());
         let me_id = admin.node_id.clone();
         let view = Arc::new(RwLock::new(Topology {
-            fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-            meshes: vec![Mesh { id: Some(rafka_mesh_entity::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
             nodes: vec![admin],
         }));
         let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(
@@ -212,15 +212,15 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
         let sink = WithRows(rows);
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
-            fabric_id: rafka_mesh_entity::FabricId::mint(),
+            fabric_id: rdm_core::FabricId::mint(),
             executable: "/nonexistent/pipeline-step-io-s83".into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: me, node_id: me_id, incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: me, node_id: me_id, incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = rafka_node_admin_core::join::Joins::default();
 
@@ -247,7 +247,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
                     "node_id": NodeId::mint(),
                     "incarnation": IncarnationId::mint(),
                     "supersedes": null,
-                    "deployment_id": rafka_mesh_entity::DeploymentId::mint(),
+                    "deployment_id": rdm_core::DeploymentId::mint(),
                 })),
                 executor: Some("mesh1.admin.1".into()),
             })

@@ -7,8 +7,8 @@
 
 use opentelemetry::trace::TraceContextExt;
 use rafka_node_rpc::CallOptions;
-use rafka_node_rpc_contract::forward::FORWARD_REPLY_RESERVE;
-use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
+use rdm_core::forward::FORWARD_REPLY_RESERVE;
+use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use std::sync::atomic::Ordering;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 

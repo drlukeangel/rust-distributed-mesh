@@ -13,14 +13,14 @@
 //! store to a temp file, fsyncs it and renames it over the store file before
 //! it answers, so an answered mutation survives a crash.
 //!
-//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
+//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use crate::held_name::HeldName;
-use rafka_mesh_entity::launch::Launch;
+use rdm_core::launch::Launch;
 use rafka_node_rpc::{HandlerFault, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{MalformedKind, ReplyKind};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn the_protocol_is_testkit_forwardable_and_every_variant_round_trips() {
         assert_eq!(ProofStore::OP, 0x70);
-        assert!(rafka_node_rpc_contract::catalog::TESTKIT_OPS.contains(&ProofStore::OP));
+        assert!(rdm_core::catalog::TESTKIT_OPS.contains(&ProofStore::OP));
         assert!(ProofStore::FORWARDABLE);
         let a = at(ProofOp::Get);
         let replies = vec![

@@ -6,14 +6,14 @@
 
 use crate::common;
 
-use rafka_mesh_entity::{FabricId, IncarnationId};
+use rdm_core::{FabricId, IncarnationId};
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, Timeouts};
 use rafka_node_admin_core::deployment::provider::{DeployError, FabricPolicy, TerminationMode};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `DeleteConnections { All }` answers `ConnectionsDeleted`
@@ -122,9 +122,9 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // The reserved Reserved6 is refused by name; node.connections.delete { All } is answered with its receipt.
         let retired = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into() };
         assert!(matches!(call(retired).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
-        let all = StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        let all = StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         let deleted = call(all).await;
-        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { receipt: Some(rafka_node_rpc_contract::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");
+        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");
 
         let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }).await;
     })

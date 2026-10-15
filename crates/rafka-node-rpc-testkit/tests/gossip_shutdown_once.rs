@@ -11,9 +11,9 @@
 //! actor) logs to the subscriber this test thread installed.
 
 use crate::common::{admin_side, AdminSide};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use rafka_node_rpc_testkit::node;
@@ -79,14 +79,14 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide) -> Lau
         store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
 async fn admitted(what: &str) -> (std::path::PathBuf, AdminSide, Launch) {
     let dir = std::env::temp_dir().join(format!("{what}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let fabric = FabricId::mint();
     let admin = admin_side("127.0.0.1".parse().unwrap(), &fabric).await;
     let key = node::load_or_mint_key(&dir).unwrap();

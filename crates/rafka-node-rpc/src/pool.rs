@@ -31,7 +31,7 @@
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr};
-use rafka_mesh_entity::IncarnationId;
+use rdm_core::IncarnationId;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

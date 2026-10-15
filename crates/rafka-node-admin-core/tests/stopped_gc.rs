@@ -5,7 +5,7 @@
 //! runs the stopped and open-Build checks again, serialized with it. Every cell writes the Build log
 //! it decides from: nothing here depends on timing.
 
-use rafka_mesh_entity::LifecycleOp;
+use rdm_core::LifecycleOp;
 use rafka_node_admin_core::accepted::{AcceptedStore, AttemptAction, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
@@ -103,7 +103,7 @@ async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId) {
 /// The replace recipe of the birth `b` (lifecycles/node-replace.md), pinned to it: a successor at
 /// `.new`, `b` stopped and renamed `.old`, the successor renamed and started, `b` deleted.
 fn replace_recipe(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
-    use rafka_node_rpc_contract::build::RecipeStep;
+    use rdm_core::build::RecipeStep;
     let node = b.0.clone();
     AttemptAction::Recipe {
         steps: vec![

@@ -6,15 +6,15 @@
 //! `ProbeNodeState`, `node.topology.get` → `GetTopology` on op `0x1E`), sends it with the
 //! node-RPC client and returns the typed reply. A caller never builds the request.
 
-use crate::names::NodeOp;
+use rdm_core::names::NodeOp;
 use crate::{BuildId, ClientError};
-use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+use rdm_core::{IncarnationId, NodeId, PathName};
 use rafka_node_rpc::stream::StreamItem;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
-use rafka_node_rpc_contract::streaming::FrameKind;
-use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{Status, StatusReply, StatusRequest};
+use rdm_core::streaming::FrameKind;
+use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
 
 /// How an object call ended when it did not produce its typed reply.
 ///
@@ -173,22 +173,22 @@ pub struct ExactBirth {
 #[derive(Debug, Clone, Default)]
 pub struct HeldView {
     /// The births the node holds.
-    pub members: Vec<rafka_mesh_entity::MeshDigest>,
+    pub members: Vec<rdm_core::MeshDigest>,
     /// The open lifecycle overlays (restart, stop, delete) the node holds.
-    pub in_flight: Vec<rafka_mesh_entity::LifecycleOp>,
+    pub in_flight: Vec<rdm_core::LifecycleOp>,
     /// The departures the node retains.
-    pub departed: Vec<rafka_mesh_entity::LifecycleOp>,
+    pub departed: Vec<rdm_core::LifecycleOp>,
 }
 
 impl HeldView {
     /// The birth the node holds of `node_id`, if it holds one.
-    pub fn birth(&self, node_id: &NodeId) -> Option<&rafka_mesh_entity::MeshDigest> {
+    pub fn birth(&self, node_id: &NodeId) -> Option<&rdm_core::MeshDigest> {
         self.members.iter().find(|d| &d.node.node_id == node_id)
     }
 
     /// The overlay the node holds for `node_id` whose operation starts with `prefix`
     /// (`node.stop:`, `node.restart:`), if it holds one.
-    pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rafka_mesh_entity::LifecycleOp> {
+    pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rdm_core::LifecycleOp> {
         self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.starts_with(prefix))
     }
 }
@@ -325,7 +325,7 @@ impl<'a> NodeRpc<'a> {
     /// `node.tags.delete` of `scope` on the exact birth, as [`Self::tags_create`]: the row written
     /// without the labels and each removed label's key of the tags index tombstoned; answered
     /// `TagsDeleted` naming any named label the node did not carry.
-    pub async fn tags_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rafka_node_rpc_contract::status::TagScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+    pub async fn tags_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rdm_core::status::TagScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::DeleteTags { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
         self.row_writer_call(NodeOp::TagsDelete, mesh_primary, route, &req, opts).await
     }
@@ -359,7 +359,7 @@ impl<'a> NodeRpc<'a> {
     /// call to the node's mesh-primary `mesh_primary` (R-CR2, R-CR3): it carries the cut to the exact
     /// birth and holds the birth's `node.connections.deleted` for its rename precondition, answering the
     /// birth's reply. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn connections_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rafka_node_rpc_contract::status::ConnectionScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+    pub async fn connections_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rdm_core::status::ConnectionScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
         let span = NodeOp::ConnectionsDelete.span();
         let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
@@ -377,7 +377,7 @@ impl<'a> NodeRpc<'a> {
     /// published it, `AlreadyApplied` for the name it holds, `BusyHoldingConnections` naming each
     /// connection it holds while it holds any (R-CR1). `route` is executed exactly as chosen
     /// (`NodeRpcClient::call_routed`).
-    pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+    pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rdm_core::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
         let span = NodeOp::NameUpdate.span();
         let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
@@ -405,7 +405,7 @@ impl<'a> NodeRpc<'a> {
         for f in frames {
             match f {
                 TopologyReply::Snapshot { digests, in_flight, departed, .. } => {
-                    view.members.extend(digests.into_iter().map(rafka_mesh_entity::MeshDigest::from));
+                    view.members.extend(digests.into_iter().map(rdm_core::MeshDigest::from));
                     view.in_flight.extend(in_flight);
                     view.departed.extend(departed);
                 }
@@ -457,15 +457,15 @@ impl<'a> NodeRpc<'a> {
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at
     /// `holder` to move its mesh-primary seat (and the fabric-primary seat with it in the same row when
     /// it holds both) to its same-mesh successor.
-    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
-        use rafka_node_rpc_contract::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateRequest, Seat, SeatRevision};
+    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rdm_core::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateRequest, Seat, SeatRevision};
         let mesh = holder.mesh.clone();
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             fabric: fabric.to_string(),
             holder: HandoverBirth {
                 mesh: mesh.clone(),
                 node_id: NodeId::parse("100000000000").expect("valid syntactic placeholder; receiver judges by its own held seats (R-UC1a)"),
-                incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("primary-update")).expect("valid syntactic placeholder"),
+                incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("primary-update")).expect("valid syntactic placeholder"),
             },
             seats: vec![SeatRevision { seat: Seat::MeshPrimary { mesh }, expected_revision: 0 }],
             build_id: build_id.to_string(),
@@ -487,15 +487,15 @@ impl<'a> NodeRpc<'a> {
     /// fabric-primary holder at `holder` to move the fabric-primary seat (searching its own mesh first
     /// per C2 step 1 so both seats move together when a same-mesh secondary admin is ReadyForTraffic,
     /// and falling back to another mesh's primary per C2 step 2 when none is).
-    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
-        use rafka_node_rpc_contract::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatRevision};
+    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32, opts: &CallOptions) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
+        use rdm_core::handover::{HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatRevision};
         let mesh = holder.mesh.clone();
         let req = NodePrimaryUpdateRequest::UpdatePrimary {
             fabric: fabric.to_string(),
             holder: HandoverBirth {
                 mesh,
                 node_id: NodeId::parse("100000000000").expect("valid syntactic placeholder; receiver judges by its own held seats (R-UC1a)"),
-                incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("fabric-primary-update")).expect("valid syntactic placeholder"),
+                incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("fabric-primary-update")).expect("valid syntactic placeholder"),
             },
             seats: vec![SeatRevision { seat: Seat::FabricPrimary, expected_revision: 0 }],
             build_id: build_id.to_string(),

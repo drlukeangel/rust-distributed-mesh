@@ -3,7 +3,7 @@
 //! drive moves it by node.primary.update before the operation is dispatched), and a command the birth
 //! never admitted completes nothing. The provider, the observer and the Build state are fixtures.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, RetireRequest, RetireStep, Timeouts, TopologySink};
@@ -109,15 +109,15 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::dep
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-node-admin".into(),
             seeds: vec![("executorkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh2.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh2.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
+        let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
         let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id.log(), node = HOLDER);
         let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {

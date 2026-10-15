@@ -10,8 +10,8 @@
 
 use crate::build_log;
 use rafka_node_admin_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeSelector, NodeStatus, Nodes, PathName};
-use rafka_node_rpc_contract::build::RecipeStep;
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::build::RecipeStep;
+use rdm_core::status::StatusReply;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault};
@@ -765,7 +765,7 @@ async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
 
     estate.stop().await;
     let spans = estate.spans();
-    let of = |name: &str, id: &rafka_mesh_entity::NodeId| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == id.to_string()).cloned().collect() };
+    let of = |name: &str, id: &rdm_core::NodeId| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == id.to_string()).cloned().collect() };
     // The predecessor: stopped (its NodeStopped) before it gives up its name, renamed while stopped.
     let stopped1 = of("rdm.node_admin.node.update.via-node-stopped", &before.node_id);
     assert_eq!(stopped1.len(), 1, "the predecessor's NodeStopped once: {stopped1:#?}");
@@ -821,8 +821,8 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_the_cutover_and
     let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let node_id: rafka_mesh_entity::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rafka_mesh_entity::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
     let reply = rafka_node_admin_client::NodeRpc::new(&client)
         .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
         .await
@@ -943,7 +943,7 @@ async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_execute
     let stopped = frames(nodes.stop(&first_primary.parse().unwrap()).await.expect("the stop of mesh2's primary was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let new_primary = wait_for("mesh2's other admin holds the seat", Duration::from_secs(30), || async {
-        nodes.get(&NodeSelector::Mesh("mesh2".into())).await.ok()?.into_iter().find(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin && n.is_primary && n.name.to_string() != first_primary).map(|n| n.name.to_string())
+        nodes.get(&NodeSelector::Mesh("mesh2".into())).await.ok()?.into_iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary && n.name.to_string() != first_primary).map(|n| n.name.to_string())
     })
     .await;
     let executor = delete_parked_and_assert(&estate, &birth_build, &parked).await;
@@ -985,7 +985,7 @@ async fn stop_and_rename(estate: &Estate, nodes: &Nodes, node: &str) -> Parked {
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let mesh = nodes.get(&NodeSelector::Mesh(path.mesh.clone())).await.expect("node.get");
     let parked = mesh.iter().find(|n| n.name == path && n.parked).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} parked at once after Complete: {mesh:#?}"));
-    let primary = mesh.iter().find(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin && n.is_primary).cloned().expect("the node's mesh-primary");
+    let primary = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().expect("the node's mesh-primary");
     let birth = rafka_node_admin_client::ExactBirth {
         target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()),
         node_id: parked.node_id.clone(),
@@ -1408,7 +1408,7 @@ async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
 /// holds the same endpoint key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied() {
-    use rafka_node_rpc_contract::build::{BuildChange, Disposition};
+    use rdm_core::build::{BuildChange, Disposition};
     let (mut estate, birth_build) = two_mesh_estate("a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied").await;
     let (node, mesh_primary, primary) = placement(&estate.node_values().await);
     let fp = Estate::path(&s(&primary["name"]));
@@ -1600,7 +1600,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     // (one gossip interval). The hold-down span is not the round's end: the loop folds the verdict at
     // its first pass after the round ended, and a round of two whole dials starts on a pass and ends
     // just past one, so that fold comes almost one interval after the verdict.
-    let gossip = rafka_mesh_entity::cadence::gossip_interval();
+    let gossip = rdm_core::cadence::gossip_interval();
     let connect = floor.min(Duration::from_secs(10));
     let round1_due = floor + gossip + gossip + floor / 2 + rafka_node_admin_core::offline::tickle_round(connect) + Duration::from_millis(200);
     let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { round_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
@@ -1781,17 +1781,17 @@ async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refuse
 
 /// A caller outside the fabric that reaches the node-admin `admin` by its exact birth: its own
 /// endpoint, and a resolver holding that birth as the answering admin's view names it.
-async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClient>, rafka_mesh_entity::NodeId) {
+async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClient>, rdm_core::NodeId) {
     use rafka_node_rpc::{NodeRpcClient, ResolvedNode, StaticResolver};
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
     let resolver = std::sync::Arc::new(StaticResolver::new());
-    let node_id: rafka_mesh_entity::NodeId = s(&admin["node_id"]).parse().expect("a node id");
+    let node_id: rdm_core::NodeId = s(&admin["node_id"]).parse().expect("a node id");
     resolver.insert(ResolvedNode {
         node_id: node_id.clone(),
         name: s(&admin["name"]).parse().unwrap(),
         endpoint_id: s(&admin["endpoint_id"]).parse().expect("an iroh key"),
         transport_addr: s(&admin["transport_addr"]).parse().expect("a transport address"),
-        incarnation: rafka_mesh_entity::IncarnationId::parse(&s(&admin["incarnation_id"])).unwrap(),
+        incarnation: rdm_core::IncarnationId::parse(&s(&admin["incarnation_id"])).unwrap(),
     });
     (std::sync::Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), node_id)
 }
@@ -1819,8 +1819,8 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let node_id: rafka_mesh_entity::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rafka_mesh_entity::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
     let reply = rafka_node_admin_client::NodeRpc::new(&client)
         .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
         .await

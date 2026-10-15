@@ -21,7 +21,7 @@ use async_trait::async_trait;
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId};
 pub use rafka_node_admin_client::NameHeld;
 use crate::record_store::{FileRecords, StorageError};
-use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
+use rdm_core::connections::{ConnectionIndex, NodeConnection};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -246,7 +246,7 @@ pub struct RuntimeRow {
     /// The incarnation of the birth.
     pub incarnation_id: IncarnationId,
     /// The runtime the birth ran in.
-    pub runtime: rafka_mesh_entity::RuntimeFact,
+    pub runtime: rdm_core::RuntimeFact,
     /// The data dir the birth reported: where its process runtime records an exit code.
     pub data_dir: Option<String>,
 }
@@ -274,7 +274,7 @@ pub struct NodeRow {
     pub node_id: NodeId,
     /// The node's status: `Deleted` once its runtime exit is proven.
     pub status: crate::model::NodeStatus,
-    /// The application's own key/values on the node (capped: [`rafka_mesh_entity::check_config`]).
+    /// The application's own key/values on the node (capped: [`rdm_core::check_config`]).
     pub config: BTreeMap<String, String>,
     /// The node's tag labels (R-TG1), set through `node.tags.create` / `node.tags.delete`, each one a
     /// row of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
@@ -404,13 +404,13 @@ pub trait NodesStorage: Send + Sync {
     /// every write of a row, as it keeps the id index: one row per (label, node id), a blind put when
     /// the node's row carries the label, the tombstone of its own key when the node's row stops
     /// carrying it, turns `Deleted`, or is the only row the node lets go of. A `label` that is not a
-    /// tag label ([`rafka_node_rpc_contract::status::tag_refusal`]) is refused by name.
+    /// tag label ([`rdm_core::status::tag_refusal`]) is refused by name.
     async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError>;
 }
 
 /// The refusal of a key the tags index cannot hold: `label` is not a tag label.
 fn tag_key(label: &str, store: &str) -> Result<(), StorageError> {
-    match rafka_node_rpc_contract::status::tag_refusal(label) {
+    match rdm_core::status::tag_refusal(label) {
         None => Ok(()),
         Some(reason) => Err(StorageError::Unrecognised { file: format!("{store} (tags index)"), reason }),
     }
@@ -1011,8 +1011,8 @@ const CONNECTION_FORMAT: &str = "node-connection/1";
 
 fn connection_key(i: &ConnectionIndex) -> String {
     let kind = match i.kind {
-        rafka_mesh_entity::connections::ConnectionKind::Direct => "direct",
-        rafka_mesh_entity::connections::ConnectionKind::Proxy => "proxy",
+        rdm_core::connections::ConnectionKind::Direct => "direct",
+        rdm_core::connections::ConnectionKind::Proxy => "proxy",
     };
     format!("{}--{}--{kind}", i.source, i.destination)
 }
@@ -1139,7 +1139,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState};
+    use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState};
 
     fn node(name: &str) -> NodeRecord {
         NodeRecord {
@@ -1160,7 +1160,7 @@ mod tests {
 
     fn fact(state: ConnectionState) -> NodeConnection {
         NodeConnection {
-            id: rafka_mesh_entity::ConnectionId::mint(),
+            id: rdm_core::ConnectionId::mint(),
             source: end("mesh1.admin.1"),
             destination: end("mesh1.rpc.1"),
             kind: ConnectionKind::Direct,
@@ -1495,8 +1495,8 @@ mod tests {
         let row = |inc: &str| RuntimeRow {
             node_id: NodeId::mint(),
             name: "mesh1.admin.2".parse().unwrap(),
-            incarnation_id: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(),
-            runtime: rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(),
+            incarnation_id: IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap(),
+            runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
             data_dir: Some("/tmp/x".into()),
         };
         let (a, b) = (row("i1"), row("i2"));
@@ -1549,7 +1549,7 @@ mod tests {
     /// read: the runtime's only thread keeps running, and the list answers the row.
     #[test]
     fn a_list_of_records_waits_on_the_disk_off_the_runtime_thread() {
-        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i1")).unwrap(), runtime: rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(), data_dir: Some("/tmp/x".into()) };
+        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId::parse(&rdm_core::fixture_crockford60("i1")).unwrap(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(), data_dir: Some("/tmp/x".into()) };
         let bytes = serde_json::to_vec(&serde_json::json!({ "format": RUNTIME_FORMAT, "record": row })).unwrap();
         let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
         assert!(ran, "the runtime thread ran while the list waited on the disk");

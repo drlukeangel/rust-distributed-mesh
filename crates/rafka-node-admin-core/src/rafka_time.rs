@@ -10,7 +10,7 @@
 //!   the old process on that dir included, is confirmed gone by the provider, never by a wait.
 //! - Every other process adopts from the answer to its pull: the `JoinNode` answer
 //!   ([`crate::wire::JoinControl::rafka_time_ms`]), its start's last step, which refreshes rafka-time
-//!   from a `GetTopology` read ([`rafka_node_rpc_contract::topology::TopologyReply::RafkaTime`]), a
+//!   from a `GetTopology` read ([`rdm_core::topology::TopologyReply::RafkaTime`]), a
 //!   re-entry's read, and a mesh primary's pull from a new fabric-primary ([`run_seat_move_pull`]).
 //!   A member adopts from whoever answers. A mesh primary adopts only from a fabric-primary seat; any
 //!   other answer is refused by name and the mesh primary keeps the rafka-time it holds.
@@ -22,7 +22,7 @@
 //!
 //! Neither side estimates network delay: the value is adopted as the authority read it.
 
-use rafka_mesh_entity::{NodeId, Seat};
+use rdm_core::{NodeId, Seat};
 use rafka_mesh_transport::clock::{Adopted, RafkaTime};
 use rafka_mesh_transport::membership::SeatBook;
 use std::sync::Arc;
@@ -101,7 +101,7 @@ pub struct Served<'a> {
 pub fn verdict(puller: Puller, seat: Option<Seat>) -> Result<(), Refusal> {
     match (puller, seat) {
         (Puller::Member, _) | (Puller::MeshPrimary, Some(Seat::FabricPrimary)) => Ok(()),
-        (Puller::MeshPrimary, Some(Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin))) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
+        (Puller::MeshPrimary, Some(Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin))) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
         // Another cohort's primary holds no time authority: it answers as a replica does.
         (Puller::MeshPrimary, None | Some(Seat::Cohort(_))) => Err(Refusal::ServedByAReplica),
     }
@@ -247,8 +247,8 @@ async fn pull_from_fabric_primary(
     me_id: &NodeId,
     client: &rafka_node_rpc::NodeRpcClient,
     membership: &rafka_mesh_transport::membership::Membership,
-    moved_to: rafka_mesh_entity::SeatHolder,
-) -> (String, u32, Option<rafka_mesh_entity::SeatHolder>) {
+    moved_to: rdm_core::SeatHolder,
+) -> (String, u32, Option<rdm_core::SeatHolder>) {
     let mut last = String::from("no attempt");
     let mut holder = moved_to;
     for attempt in 1..=SEAT_MOVE_ATTEMPTS {

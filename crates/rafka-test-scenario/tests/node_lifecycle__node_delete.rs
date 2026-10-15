@@ -96,7 +96,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!(resolution(&path), "unknown", "the path has no holder: {path}");
     let survivor = estate.probe(&["resolve", "--target", WITNESS, "--query", "path:mesh2.rpc.1"]);
     assert_eq!(resolution(&survivor), "found", "the surviving node is untouched: {survivor}");
-    let never = estate.probe(&["resolve", "--target", WITNESS, "--query", &format!("exact:{}", rafka_mesh_entity::NodeId::mint())]);
+    let never = estate.probe(&["resolve", "--target", WITNESS, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(resolution(&never), "unknown", "{never}");
     estate.artifact("resolutions.json", &json!({"gone": gone, "path": path, "survivor": survivor, "never": never}));
 

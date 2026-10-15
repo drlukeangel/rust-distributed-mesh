@@ -12,14 +12,14 @@
 // @feature: node-lifecycle
 
 use crate::mesh_delete_resume::{capture, trace_id};
-use rafka_mesh_entity::{BuildId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::{BuildId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::mesh_delete::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, MeshDeleteKey, MeshDeleteOwner, RosterBirth};
 use rafka_node_rpc::NodeTarget;
 use rafka_node_admin_core::model::ProviderKind;
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::status::StatusReply;
 use serde_json::Value;
 
 const SOURCE_FAILED: &str = "rdm.node_admin.mesh.reject.via-source-failed";
@@ -166,7 +166,7 @@ impl DeploymentProvider for Host {
 fn a_mesh_deleted_report_naming_a_runtime_the_provider_cannot_adopt_is_refused_by_name() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
-    let fact = |domain: &str| RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep-final"), provider: RuntimeProvider::Process, control_domain: domain.into(), locator: RuntimeLocator::Process { pid: 4242, start: 7 } };
+    let fact = |domain: &str| RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep-final"), provider: RuntimeProvider::Process, control_domain: domain.into(), locator: RuntimeLocator::Process { pid: 4242, start: 7 } };
     let cap = capture();
     let (foreign, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-provider-refused", mesh_id = %mesh_id);
@@ -178,6 +178,6 @@ fn a_mesh_deleted_report_naming_a_runtime_the_provider_cannot_adopt_is_refused_b
     let spans = cap.spans();
     keep("provider_refused", &trace_id, &spans);
     let (source, op, cause) = source_failed(&foreign);
-    assert!(source.contains("provider of mesh1.admin.1") && op.contains("adopt") && op.contains(&rafka_mesh_entity::fixture_crockford60("dep-final")) && cause.contains("control domain"), "{source} | {op} | {cause}");
+    assert!(source.contains("provider of mesh1.admin.1") && op.contains("adopt") && op.contains(&rdm_core::fixture_crockford60("dep-final")) && cause.contains("control domain"), "{source} | {op} | {cause}");
     assert_eq!(refusals(&spans, &trace_id), vec![("mesh-deleted".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }

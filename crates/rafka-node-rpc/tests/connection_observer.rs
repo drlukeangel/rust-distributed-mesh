@@ -5,9 +5,9 @@
 
 use crate::common;
 use common::*;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{Budget, CallOptions, ConnectionObserver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::outcome::RpcOutcome;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -70,7 +70,7 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
 async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
     use iroh::protocol::Router;
     use rafka_node_rpc::{HandlerFault, LiveNodeResolver, PeerContext, ServedBirth, ServerBuilder};
-    use rafka_node_rpc_contract::catalog::OpOwner;
+    use rdm_core::catalog::OpOwner;
 
     #[derive(Default)]
     struct Accepts(Mutex<Vec<String>>);

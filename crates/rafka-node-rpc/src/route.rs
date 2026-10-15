@@ -16,10 +16,10 @@
 
 use crate::client::{CallEvidence, CallOptions, NodeRpcClient};
 use crate::resolve::NodeTarget;
-use rafka_mesh_entity::connections::{resolve, CarrierPolicy, ConnectionsHeld, EffectiveRoute, NodeConnection, INVALID_CARRIER_EDGE_LOST};
-use rafka_mesh_entity::{NodeId, PathName};
-use rafka_node_rpc_contract::outcome::{NotSentReason, PreCommit, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::connections::{resolve, CarrierPolicy, ConnectionsHeld, EffectiveRoute, NodeConnection, INVALID_CARRIER_EDGE_LOST};
+use rdm_core::{NodeId, PathName};
+use rdm_core::outcome::{NotSentReason, PreCommit, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use tracing::Instrument;
 
 /// What connections chose for reaching the exact target: the execution-relevant part of an
@@ -167,7 +167,7 @@ impl NodeRpcClient {
     /// held projection, so no lock is held across the call) on the exact `target`.
     pub async fn call_resolved<P: NodeProtocol>(
         &self,
-        resolution: rafka_mesh_entity::connections::RouteResolution,
+        resolution: rdm_core::connections::RouteResolution,
         own: &PathName,
         destination: &PathName,
         target: &NodeId,

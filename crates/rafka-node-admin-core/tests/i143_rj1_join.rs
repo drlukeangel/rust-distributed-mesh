@@ -8,9 +8,9 @@
 //! with both values, and installs nothing. A digest that matches installs the address the node
 //! reported for its key and completes the wait for the node's own report.
 
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rafka_node_admin_core::join::{Deployed, JoinDoor, Joins};
-use rafka_node_rpc_contract::join::{JoinReply, JoinRequest};
+use rdm_core::join::{JoinReply, JoinRequest};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -82,7 +82,7 @@ fn deployed() -> Deployed {
         incarnation: IncarnationId::mint(),
         supersedes: None,
         endpoint_id: EndpointId("node-key".into()),
-        runtime: RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-rj1")).unwrap(),
+        runtime: RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-rj1")).unwrap(),
         data_dir: "/data/mesh1.rpc.1".into(),
         last_accepted_name: None,
         held: false,

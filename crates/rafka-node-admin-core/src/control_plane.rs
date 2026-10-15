@@ -45,11 +45,11 @@ pub struct ControlPlane {
     pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
     /// The connection facts this admin holds (set once by the admin that owns its connections
     /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
-    pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rafka_mesh_entity::connections::ConnectionsHeld>>>,
+    pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rdm_core::connections::ConnectionsHeld>>>,
     /// The CPU and RAM each member's latest digest carries, by node id (set once by the admin that
     /// owns the digest book). Load is served beside the view, never inside it: it changes every
     /// digest and never moves the topology.
-    pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rafka_mesh_entity::NodeLoad>, Option<rafka_mesh_entity::GossipStats>)> + Send + Sync>>,
+    pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rdm_core::NodeLoad>, Option<rdm_core::GossipStats>)> + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
     /// The fabric's climb told of a Build this admin accepted, before the door answers it: a resize or
@@ -487,7 +487,7 @@ impl ControlPlane {
     /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a stop
     /// or delete of a seat holder while no other node of its type in its mesh can take its seat
     /// (R-MT1, Q7).
-    pub async fn open_recipe_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rafka_node_rpc_contract::build::RecipeStep>) -> Result<Opened, Refusal> {
+    pub async fn open_recipe_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::RecipeStep>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
@@ -518,8 +518,8 @@ impl ControlPlane {
                     }
                 }
                 let action = match step {
-                    rafka_node_rpc_contract::build::RecipeStep::Stop { .. } => Some("stop"),
-                    rafka_node_rpc_contract::build::RecipeStep::Delete { .. } => Some("delete"),
+                    rdm_core::build::RecipeStep::Stop { .. } => Some("stop"),
+                    rdm_core::build::RecipeStep::Delete { .. } => Some("delete"),
                     _ => None,
                 };
                 if let Some(reject) = action.and_then(|a| last_admin(node, a, &t)) {
@@ -804,7 +804,7 @@ impl ControlPlane {
             };
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
             match crate::build_claim::decide_claim(&me, &*self.builds, &self.claims, &self.contexts, &claim, &path.mesh).await {
-                rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
+                rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
                 other => Err(Refusal::Unavailable(format!("{me}: attempt {} of {} in mesh {}'s lane was opened and its claim not won: {other:?}", opened.attempt, opened.build_id, path.mesh))),
             }
         }

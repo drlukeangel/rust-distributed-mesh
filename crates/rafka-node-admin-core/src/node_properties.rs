@@ -12,8 +12,8 @@
 use crate::model::PathName;
 use crate::storage::{NodeRow, NodesStorage};
 use crate::topology::Topology;
-use rafka_mesh_entity::NodeId;
-use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest, TagScope};
+use rdm_core::NodeId;
+use rdm_core::status::{NotAuthority, StatusReply, StatusRequest, TagScope};
 use std::collections::BTreeSet;
 use tokio::sync::RwLock;
 
@@ -108,9 +108,9 @@ enum Change<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId, change: &Change<'_>, span: &tracing::Span) -> StatusReply {
+async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn NodesStorage, configs: Option<&crate::node_config::NodeConfigs>, node_id: &NodeId, incarnation: &rdm_core::IncarnationId, change: &Change<'_>, span: &tracing::Span) -> StatusReply {
     let refusal = match change {
-        Change::Create(labels) => rafka_node_rpc_contract::status::create_tags_refusal(labels),
+        Change::Create(labels) => rdm_core::status::create_tags_refusal(labels),
         Change::Delete(scope) => scope.refusal(),
     };
     if let Some(reason) = refusal {
@@ -127,7 +127,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     span.record("subject", subject.name.to_string().as_str());
     // The writer of the row is the mesh-primary of the node's mesh, and no other admin (R-OW1).
     if !view.holds_mesh_seat(&subject.mesh, me_id) {
-        let held_by = view.cohort_primary(&subject.mesh, rafka_mesh_entity::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+        let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
         span.record("detail", needed.as_str());
         return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };
@@ -168,7 +168,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
             let arrived: BTreeSet<String> = labels.difference(&was).cloned().collect();
             span.record("arrived", crate::node_rows::labels(&arrived).as_str()).record("already_carried", crate::node_rows::labels(&already).as_str());
             let tags: BTreeSet<String> = was.union(labels).cloned().collect();
-            if let Some(reason) = rafka_node_rpc_contract::status::tags_refusal(&tags) {
+            if let Some(reason) = rdm_core::status::tags_refusal(&tags) {
                 let why = format!("{me}: {} carries {} and the create adds {}: {reason}; nothing is written", subject.name, crate::node_rows::labels(&was), crate::node_rows::labels(&arrived));
                 span.record("detail", why.as_str());
                 return StatusReply::rejected_tags(&why);

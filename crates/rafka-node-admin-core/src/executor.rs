@@ -79,7 +79,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         }
         // A recipe step is executed as the op it calls: a create as node.create, every other step as
         // the node op on its node (the mesh-primary of the node's mesh writes its row, R13).
-        BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node }, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node }, .. } => mesh_executor(&node.mesh, None, t),
         BuildOperation::RecipeStep { step, .. } => node_op_executor(step.node(), op, t),
         // A member node of any kind is born by its own mesh's primary admin (the fabric primary when
         // the mesh has none): the rule names no role, so a product's kinds get the same executor as
@@ -225,7 +225,7 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// other node-admin in its mesh is still named: node.primary.update refuses it by name (the Build door
 /// refuses it first, `control_plane::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
-    use rafka_node_rpc_contract::build::RecipeStep;
+    use rdm_core::build::RecipeStep;
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         if !t.meshes.iter().any(|m| m.name != *mesh && m.status != crate::model::ScopeStatus::Dead) {
             return None;
@@ -417,7 +417,7 @@ impl BuildExecutor {
     /// `lane` is the attempt's lane: `None` the fabric lane, `Some(mesh)` that mesh's drift lane
     /// (R-BI7), which the mesh's own primary claimed and runs: every fact the run writes carries the
     /// lane and every read of the Build is the lane's ([`crate::build_run::LaneBuilds`]).
-    pub async fn run_attempt(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rafka_node_rpc_contract::context::CallContext, plan: &RunPlan) -> Reconciled {
+    pub async fn run_attempt(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext, plan: &RunPlan) -> Reconciled {
         use tracing::Instrument;
         let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
         let previous = builds.read_build(build_id).await.ok();
@@ -654,9 +654,9 @@ mod tests {
         assert_eq!(who(&BuildOperation::RestartNode { node: p2.parse().unwrap() }, &moved), m2, "once the seat moved, the new mesh primary executes the former holder's restart");
         let rename = |n: &str| {
             let node: PathName = n.parse().unwrap();
-            BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Update { name: node.renamed(), node }, birth: None }
+            BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Update { name: node.renamed(), node }, birth: None }
         };
-        let make = |n: &str| BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node: n.parse().unwrap() }, birth: None };
+        let make = |n: &str| BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node: n.parse().unwrap() }, birth: None };
         assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a recipe's update of a member is its mesh primary's, the writer of its row");
         assert_eq!(who(&rename(m2), &t3), p2, "a recipe's update of a non-primary admin is its mesh primary's");
         assert_eq!(who(&rename(p2), &moved), m2, "a recipe's update of a former mesh primary after its stop moved the seat is the new mesh primary's");
@@ -685,7 +685,7 @@ mod tests {
             } else {
                 "9000000000aa"
             };
-            n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
+            n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
         }
         crate::election::resolve(&mut t.nodes);
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()), Some(fp.to_string()), "the pinned ids seat {fp}");
@@ -783,7 +783,7 @@ mod tests {
     }
 
     fn shutdown(mesh: &str) -> BuildOperation {
-        BuildOperation::ShutdownMesh { mesh: mesh.into(), mesh_id: rafka_mesh_entity::MeshId::mint() }
+        BuildOperation::ShutdownMesh { mesh: mesh.into(), mesh_id: rdm_core::MeshId::mint() }
     }
 
     /// CONTRACT (R-ST2; the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1
@@ -827,7 +827,7 @@ mod tests {
         use crate::election::{commanded_successor, Moving};
         let with = |path: &str, id: &str, primary: bool, fabric: bool| {
             let mut n = node(path, primary, fabric);
-            n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
+            n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
             n
         };
         let mut nodes = vec![
@@ -871,7 +871,7 @@ mod tests {
     #[async_trait::async_trait]
     impl OperationRunner for RecipeRunner {
         async fn run(&self, _build_id: &BuildId, _lane: Option<&str>, _attempt: u32, op: &BuildOperation) -> Result<(), RunEnd> {
-            use rafka_node_rpc_contract::build::RecipeStep;
+            use rdm_core::build::RecipeStep;
             self.ran.lock().unwrap().push(op.key());
             let BuildOperation::RecipeStep { step, .. } = op else { return Ok(()) };
             let mut t = self.view.write().await;
@@ -911,10 +911,10 @@ mod tests {
     /// holder that planned it (the drive then claims attempt 6 for a birth that can never run it).
     #[tokio::test]
     async fn a_run_that_stops_the_seat_holder_that_planned_it_hands_off_from_the_view_it_ends_with() {
-        use rafka_node_rpc_contract::build::RecipeStep;
+        use rdm_core::build::RecipeStep;
         let with = |path: &str, id: &str, primary: bool, fabric: bool| {
             let mut n = node(path, primary, fabric);
-            n.node_id = rafka_mesh_entity::ids::NodeId::parse(id).unwrap();
+            n.node_id = rdm_core::ids::NodeId::parse(id).unwrap();
             n
         };
         let mut t = mm(false);
@@ -947,7 +947,7 @@ mod tests {
             .unwrap();
         let runner = Arc::new(RecipeRunner { view: view.clone(), ran: Default::default() });
         let exec = BuildExecutor { executor: "mesh1.admin.1.new".into(), builds: builds.clone(), topology: view.clone(), runner: runner.clone() };
-        let r = exec.run_attempt(&id, None, 5, &rafka_node_rpc_contract::context::CallContext::default(), &plan).await;
+        let r = exec.run_attempt(&id, None, 5, &rdm_core::context::CallContext::default(), &plan).await;
         assert_eq!(*runner.ran.lock().unwrap(), vec!["node.stop:mesh1.admin.1".to_string(), "node.update:mesh1.admin.1".to_string()], "the run ran P's stop and rename");
         let Reconciled::HandedOff { attempt: 5, to, .. } = &r else { panic!("the run hands off: {r:?}") };
         assert_ne!(to, "mesh1.admin.1", "the run handed off to P, which it stopped and renamed: {r:?}");

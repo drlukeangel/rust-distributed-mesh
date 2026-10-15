@@ -23,7 +23,7 @@
 //!      (`RosterAmended`), adopts held state (`roster_rows_read`), runs `mesh.delete` (`members_exited`),
 //!      and is removed last by the fabric-primary's `node.delete`.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, NodeKind};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
@@ -41,7 +41,7 @@ use rafka_node_admin_core::status_rpc::Declared;
 use rafka_node_admin_core::status_storage::{MeshStatusRow, MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRow, NodesStorage, RuntimeRow};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::status::MeshState;
+use rdm_core::status::MeshState;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -127,7 +127,7 @@ fn node_record(name: &str, primary: bool, fabric_primary: bool) -> Node {
 
 fn handle(name: &str, pid: u32) -> DeploymentHandle {
     DeploymentHandle {
-        deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{name}"))).unwrap(),
+        deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{name}"))).unwrap(),
         provider: ProviderKind::Process,
         pid: Some(pid),
         start: Some(1),
@@ -249,12 +249,12 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         fabric_id: fabric_id.clone(),
         executable: "/nonexistent/rafka-rpc-node".into(),
         seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-        launcher: rafka_mesh_entity::launch::Launcher { name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
+        launcher: rdm_core::launch::Launcher { name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
         env: BTreeMap::new(),
         data_root: data_root.clone(),
         store_dir: data_root.clone(),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &*builds, template: &template, timeouts: Timeouts::default() };
 
@@ -619,12 +619,12 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             fabric_id: fabric_id.clone(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
+            launcher: rdm_core::launch::Launcher { name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let manifest = members_exited(

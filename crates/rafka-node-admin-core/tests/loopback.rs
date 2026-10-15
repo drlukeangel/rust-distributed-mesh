@@ -11,7 +11,7 @@ use rafka_node_admin_core::build_state::{BuildAttemptReceipt, BuildStateAdapter,
 use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner};
 use rafka_node_admin_core::model::PathName;
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::context::CallContext;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;

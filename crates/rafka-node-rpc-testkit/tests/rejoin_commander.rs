@@ -13,12 +13,12 @@
 //!
 //! Each cell runs in its own process: the cells hold process-wide state (the parking flag).
 
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -65,12 +65,12 @@ async fn rig_carried(tag: &str, carry: bool) -> Rig {
 
 /// [`rig_carried`], the node running `hydrator` as its `hydrate_before_ready` hook when one is given.
 async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<rafka_node_rpc_testkit::hydrate_probe::TestHydrator>>) -> Rig {
-    let fabric = rafka_mesh_entity::FabricId::mint();
+    let fabric = rdm_core::FabricId::mint();
     let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
     let dir = std::env::temp_dir().join(format!("{tag}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),
@@ -87,7 +87,7 @@ async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<r
         store_dir: dir.clone(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     primary.deployed(&launch, &key);
     let running = match hydrator {

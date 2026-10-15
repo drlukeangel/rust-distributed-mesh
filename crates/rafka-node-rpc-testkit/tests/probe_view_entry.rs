@@ -9,7 +9,7 @@
 //! node can hold unreadable.
 
 use crate::common::admin_view::{node, serve_on_own_runtime};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 
 /// CONTRACT: a probe whose admin view holds a node with an `endpoint_id` that is not an Iroh key
 /// refuses the whole call: exit status 2, one `Refused` line whose reason names that node's id, the

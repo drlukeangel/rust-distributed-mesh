@@ -11,11 +11,11 @@
 use crate::client::{Budget, CallEvidence, CallOptions, Decode, NodeRpcClient, Payload};
 use crate::resolve::NodeTarget;
 use crate::server::{PeerContext, ServerBuilder};
-use rafka_mesh_entity::NodeId;
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest, FORWARD_REPLY_RESERVE};
-use rafka_node_rpc_contract::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::NodeId;
+use rdm_core::catalog::OpOwner;
+use rdm_core::forward::{Forward, ForwardReply, ForwardRequest, FORWARD_REPLY_RESERVE};
+use rdm_core::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use std::sync::Arc;
 
 /// The carrier's account of its own Direct edges (connections.md §8): the one fact a carrier
@@ -52,7 +52,7 @@ impl ServerBuilder {
     /// direct inner call through `client` (the process's one client). `edges` is the node's own
     /// account of its Direct edges when it keeps one ([`Self::serve_forward_with_edges`]).
     pub fn serve_core(self, client: Arc<NodeRpcClient>, edges: Option<Arc<dyn CarrierEdges>>) -> Self {
-        use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+        use rdm_core::ping::{Ping, PingReply, PingRequest};
         self.serve::<Ping, _, _>(OpOwner::Core, |_peer, req: PingRequest| async move {
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })

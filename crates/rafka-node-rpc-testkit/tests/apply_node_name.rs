@@ -20,13 +20,13 @@
 //! (`rdm.node_rpc.connection.delete.via-hard-cut`): that is the stop's own transport cut alone.
 
 use crate::common::admin_side_serving;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingRequest};
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingRequest};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
@@ -40,7 +40,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let dir = std::env::temp_dir().join(format!("apply-node-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
@@ -59,7 +59,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         // The node serves one op the cell can hold: a call into it stays in flight until released.

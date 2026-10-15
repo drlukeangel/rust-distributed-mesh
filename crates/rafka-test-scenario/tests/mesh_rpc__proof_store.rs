@@ -120,8 +120,8 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // 4. The replace recipe does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
     {
-        use rafka_node_rpc_contract::build::RecipeStep;
-        let node: rafka_mesh_entity::PathName = NODE.parse().unwrap();
+        use rdm_core::build::RecipeStep;
+        let node: rdm_core::PathName = NODE.parse().unwrap();
         let recipe = vec![
             RecipeStep::Create { node: node.successor() },
             RecipeStep::Stop { node: node.clone() },
@@ -163,7 +163,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let holder = estate.probe(&["resolve", "--target", other, "--query", &format!("path:{NODE}")]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
-    let never = estate.probe(&["resolve", "--target", other, "--query", &format!("exact:{}", rafka_mesh_entity::NodeId::mint())]);
+    let never = estate.probe(&["resolve", "--target", other, "--query", &format!("exact:{}", rdm_core::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
     estate.artifact("nodes-after.json", &json!(estate.node_values().await));
     estate.artifact("exact-old.json", &json!({"probe": old, "node": gone, "holder": holder, "never": never}));

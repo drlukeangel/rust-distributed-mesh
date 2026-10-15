@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The env variable that names a node's `store_dir`.
-pub use rafka_mesh_entity::launch::ENV_STORE_DIR;
+pub use rdm_core::launch::ENV_STORE_DIR;
 
 /// The Fabric row's file under the root: the fabric-primary publishes it at the fabric's first
 /// state-commit, so a root that holds it is a store that exists.

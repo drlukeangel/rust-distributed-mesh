@@ -128,7 +128,7 @@ impl std::fmt::Display for Key {
 
 /// The frame's name in spans and each source with its order key; empty for a frame with no order key.
 fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
-    let seats = |name: &'static str, seats: &[rafka_mesh_entity::seat::transfer::CommittedSeat], stage: SeatStage| {
+    let seats = |name: &'static str, seats: &[rdm_core::seat::transfer::CommittedSeat], stage: SeatStage| {
         (name, seats.iter().map(|c| (Source::Cohort { seat: c.seat.name(), mesh: c.mesh_key().unwrap_or_default().to_string() }, Key::Seat { revision: c.revision, stage })).collect())
     };
     match f {
@@ -156,7 +156,7 @@ fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
         Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         Frame::Seated { seat, holder } => Some((
             "seated",
-            Source::Cohort { seat: seat.name(), mesh: if *seat == rafka_mesh_entity::Seat::FabricPrimary { String::new() } else { holder.mesh.clone() } },
+            Source::Cohort { seat: seat.name(), mesh: if *seat == rdm_core::Seat::FabricPrimary { String::new() } else { holder.mesh.clone() } },
             Key::Seat { revision: holder.revision, stage: SeatStage::Seated },
         )),
         _ => None,
@@ -259,7 +259,7 @@ mod tests {
     use super::*;
     use crate::membership::StatusEvent;
     use crate::snapshot::PublisherId;
-    use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
 
     fn birth(path: &str) -> MeshDigest {
         MeshDigest {
@@ -402,7 +402,7 @@ mod tests {
     /// is another source. Must NOT happen: a late "updating" reaching a handler after its "updated".
     #[test]
     fn a_primary_updating_received_after_its_primary_updated_is_ignored() {
-        use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
+        use rdm_core::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
         let mut order = ReceiveOrder::default();
         let (holder, successor) = (birth("mesh1.admin.1"), birth("mesh1.admin.2"));
         let to = HandoverBirth { mesh: "mesh1".into(), node_id: successor.node.node_id.clone(), incarnation: successor.node.incarnation.clone() };
@@ -437,7 +437,7 @@ mod tests {
     /// another cohort's lower revision, or an older revision of the same seat passing the receive path.
     #[test]
     fn seated_records_order_by_revision_per_complete_seat_key_and_different_cohorts_never_suppress_each_other() {
-        use rafka_mesh_entity::{NodeKind, Seat, SeatHolder};
+        use rdm_core::{NodeKind, Seat, SeatHolder};
         let mut order = ReceiveOrder::default();
         let seated = |seat: Seat, mesh: &str, revision: u64| Frame::Seated {
             seat,

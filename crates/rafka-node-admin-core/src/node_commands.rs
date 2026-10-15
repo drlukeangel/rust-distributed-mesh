@@ -12,7 +12,7 @@
 use crate::deployment::pipeline::{CommandAdmission, CommandContext, Completion};
 use crate::model::{IncarnationId, Node, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
+use rdm_core::status::{StatusReply, StatusRequest};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -93,7 +93,7 @@ pub struct CommandBook {
 /// A book whose commanded births run their `node.connections.delete { All }` under the launch default.
 impl Default for CommandBook {
     fn default() -> Self {
-        Self::new(rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE)
+        Self::new(rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE)
     }
 }
 
@@ -174,9 +174,9 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         // The executor's own status authority carries it (status_rpc.rs `carry_delete_connections`):
         // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
         NodeCommand::DeleteConnections => {
-            let req = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+            let req = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
             let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
-            crate::deployment::pipeline::command_admission(&client.call::<rafka_node_rpc_contract::status::Status>(target, &req, &opts).await.0)
+            crate::deployment::pipeline::command_admission(&client.call::<rdm_core::status::Status>(target, &req, &opts).await.0)
         }
         NodeCommand::Stop => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
@@ -314,7 +314,7 @@ mod tests {
     use super::*;
 
     fn key(op: &str) -> CommandKey {
-        CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op.into(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() }
+        CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op.into(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
     }
 
     /// CONTRACT: a completion resolves its open command once; a repeat is a repeat; a completion

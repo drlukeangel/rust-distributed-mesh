@@ -7,7 +7,7 @@
 //! Before the node has joined it is the launch's name, the name it holds while nothing can have given
 //! it another.
 
-use rafka_mesh_entity::PathName;
+use rdm_core::PathName;
 use std::sync::{Arc, OnceLock};
 
 type Held = Arc<dyn Fn() -> PathName + Send + Sync>;

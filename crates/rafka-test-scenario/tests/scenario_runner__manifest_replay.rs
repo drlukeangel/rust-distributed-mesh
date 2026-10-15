@@ -4,7 +4,7 @@
 //! `I143_ACCEPTANCE_DIR` (each cell's `result.json` goes there) and whose estate commands set
 //! `RDM_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
-use rafka_mesh_entity::NodeKind;
+use rdm_core::NodeKind;
 use rafka_node_admin_client::binding::{sha256_file, BindingError, BindingSet};
 use rafka_node_admin_client::{FabricDesired, MeshDesired};
 use rafka_test_scenario::estate::{binding_set_from_build_manifest, descends_from, named, Estate, Owner, ENV_CONSUMER_BIN_DIR, RUNTIME_IMAGE};

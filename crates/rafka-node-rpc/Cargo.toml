@@ -10,8 +10,7 @@ autotests = false
 doctest = false
 
 [dependencies]
-rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
-rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rdm-core = { path = "../rdm-core" }
 rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }

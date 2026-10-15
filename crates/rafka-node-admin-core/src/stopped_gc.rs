@@ -12,7 +12,7 @@ use crate::build::{BuildId, BuildReject};
 use crate::build_state::{BuildFact, BuildState, StepOutcome};
 use crate::control_plane::Refusal;
 use crate::model::{IncarnationId, NodeId, PathName};
-use rafka_mesh_entity::LifecycleOp;
+use rdm_core::LifecycleOp;
 use std::collections::HashMap;
 use std::time::Duration;
 

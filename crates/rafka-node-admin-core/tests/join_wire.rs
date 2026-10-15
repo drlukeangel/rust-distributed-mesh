@@ -2,7 +2,7 @@
 //! `answer_to_wire` / `answer_from_wire` unchanged. It carries the control state and the statuses;
 //! the topology is read with `GetTopology` (op `0x1E`), never in the join.
 
-use rafka_mesh_entity::FabricId;
+use rdm_core::FabricId;
 use rafka_node_admin_core::fabric_storage::FabricIdentity;
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_admin_core::wire::{answer_from_wire, answer_to_wire, BuildFloor, JoinAnswer, JoinControl};

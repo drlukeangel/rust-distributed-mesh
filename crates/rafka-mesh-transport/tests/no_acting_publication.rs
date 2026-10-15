@@ -6,7 +6,7 @@
 //! (A deleted mesh's aggregate from its last admin's stop on is `deleted_mesh_aggregate`'s.)
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership, StatusEvent};
 use serde_json::Value;
 use std::time::{Duration, Instant};

@@ -41,12 +41,12 @@ pub use crate::election::Moving;
 use crate::fabric_storage::{FabricStorage, SeatTransferRow};
 use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::{LifecycleOp, Seat};
+use rdm_core::{LifecycleOp, Seat};
 use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SeatBook, SeatTaken};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::catalog::OpOwner;
+use rdm_core::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
+use rdm_core::outcome::RpcOutcome;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use tracing::Instrument as _;
@@ -1790,9 +1790,9 @@ pub async fn enter_seats(storage: &dyn FabricStorage, membership: &Membership, b
     let rows = hydrated(storage, book).await?;
     for row in rows.iter().filter(|r| r.holder.node_id == *node_id && !r.seats.is_empty()) {
         let current = row.seats.iter().all(|c| match &c.seat {
-            rafka_mesh_entity::seat::transfer::Seat::FabricPrimary => book.fabric() == Some(c.record()),
-            rafka_mesh_entity::seat::transfer::Seat::MeshPrimary { mesh } => book.mesh(mesh) == Some(c.record()),
-            rafka_mesh_entity::seat::transfer::Seat::Cohort { mesh, kind } => book.cohort(mesh, *kind) == Some(c.record()),
+            rdm_core::seat::transfer::Seat::FabricPrimary => book.fabric() == Some(c.record()),
+            rdm_core::seat::transfer::Seat::MeshPrimary { mesh } => book.mesh(mesh) == Some(c.record()),
+            rdm_core::seat::transfer::Seat::Cohort { mesh, kind } => book.cohort(mesh, *kind) == Some(c.record()),
         });
         if !current {
             continue;

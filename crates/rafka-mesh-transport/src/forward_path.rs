@@ -332,7 +332,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId};
     use std::time::Duration;
     use tokio::sync::mpsc;
 

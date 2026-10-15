@@ -252,7 +252,7 @@ mod tests {
         let wire = page(&pages, "wire.md");
         assert!(wire.contains("## 0x1B `status`"), "the 0x1B op has its section");
         for body in ["StatusRequest", "StatusReply"] {
-            let declared = declared_variants(&root, "crates/rafka-node-rpc-contract/src/status.rs", body);
+            let declared = declared_variants(&root, "crates/rdm-core/src/status.rs", body);
             assert_eq!(variant_rows(wire, body), positions(&declared), "{body}: every variant, in declaration order");
         }
     }
@@ -282,7 +282,7 @@ mod tests {
         let root = rafka_mesh_audit::workspace_root();
         let pages = pages(&root).unwrap();
         let config = page(&pages, "config.md");
-        let site = line_of(&root, "crates/rafka-mesh-entity/src/launch.rs", "pub const ENV_FABRIC:");
+        let site = line_of(&root, "crates/rdm-core/src/launch.rs", "pub const ENV_FABRIC:");
         assert!(config.contains(&format!("| `RDM_FABRIC` | {site} | const `ENV_FABRIC` |")), "a launch env const is listed at its declaration {site}:\n{config}");
         assert!(config.lines().any(|l| l.starts_with("| `RDM_STALENESS_MS` |")), "the staleness env is listed");
         assert!(!config.contains("RDM_NOT_YET_INVENTED"), "a test-only literal is not config");
@@ -293,7 +293,7 @@ mod tests {
         let root = rafka_mesh_audit::workspace_root();
         let copy = Copy::of(&root, "wire");
         let before = pages(&copy.0).unwrap();
-        const STATUS: &str = "crates/rafka-node-rpc-contract/src/status.rs";
+        const STATUS: &str = "crates/rdm-core/src/status.rs";
         const APPENDED: &str = "    /// Appended by the docgen cell.\n    DocgenAppended {\n        /// Its one field.\n        appended: u64,\n    },\n";
         copy.edit(STATUS, |s| {
             let start = s.find("pub enum StatusReply {").expect("StatusReply is declared");

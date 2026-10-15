@@ -5,14 +5,14 @@
 //! `<root>/faults/<name>.boot.json` (`admin_faults::arm_boot_cuts`). Testkit range only
 //! ([`TESTKIT_OPS`]); the testkit's own `faulted-node-admin` serves it, never a product binary.
 //!
-//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
+//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use crate::admin_faults::{AdminFaults, CutSpec};
-use rafka_mesh_entity::PathName;
+use rdm_core::PathName;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -15,8 +15,8 @@
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId};
 use crate::topology::Topology;
 use rafka_node_rpc::{PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::status::{transition, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
+use rdm_core::catalog::OpOwner;
+use rdm_core::status::{transition, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
@@ -49,7 +49,7 @@ pub struct ConnectionsDeletedReceipt {
     /// Whether the cut was `All` (gossip neighbours and every pooled peer connection).
     pub all: bool,
     /// The open entries the birth still held after the cut.
-    pub held: Vec<rafka_mesh_entity::ConnectionId>,
+    pub held: Vec<rdm_core::ConnectionId>,
     /// The birth's status in this admin's view when the cut was carried.
     pub status_at_cut: crate::model::NodeStatus,
 }
@@ -272,28 +272,7 @@ impl SeatFold {
     }
 }
 
-/// What a node declared, as its mesh-primary's book holds it: the one mapping from the declaration
-/// vocabulary to the member status ([`declared_of_member`] is its inverse).
-pub fn member_of_declared(s: NodeState) -> rafka_mesh_entity::MemberStatus {
-    use rafka_mesh_entity::MemberStatus as M;
-    match s {
-        NodeState::Pending => M::Pending,
-        NodeState::ReadyForTraffic => M::ReadyForTraffic,
-        NodeState::Draining => M::Draining,
-        NodeState::Leaving => M::Leaving,
-    }
-}
-
-/// A member status in the declaration vocabulary: the inverse of [`member_of_declared`].
-pub fn declared_of_member(s: rafka_mesh_entity::MemberStatus) -> NodeState {
-    use rafka_mesh_entity::MemberStatus as M;
-    match s {
-        M::Pending => NodeState::Pending,
-        M::ReadyForTraffic => NodeState::ReadyForTraffic,
-        M::Draining => NodeState::Draining,
-        M::Leaving => NodeState::Leaving,
-    }
-}
+pub use rdm_core::status::{declared_of_member, member_of_declared};
 
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
@@ -816,18 +795,18 @@ impl StatusAuthority {
             let Some(configs) = self.configs.get() else {
                 return StatusReply::NotReady { reason: format!("{me_name} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", subject.name) };
             };
-            let all = matches!(scope, rafka_node_rpc_contract::status::ConnectionScope::All);
+            let all = matches!(scope, rdm_core::status::ConnectionScope::All);
             // `All` is admitted: this mesh-primary sets the birth connections-deleting (states.md
             // "Who sets each state"), and its projection carries it from its next round.
             if all {
                 if let Some(book) = &self.book {
-                    book.reported(node_id, incarnation, rafka_mesh_entity::MemberStatus::Draining);
+                    book.reported(node_id, incarnation, rdm_core::MemberStatus::Draining);
                 }
             }
             let target = rafka_node_rpc::NodeTarget::ExactNode(node_id.clone());
             let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
-            let reply = match configs.client().call::<rafka_node_rpc_contract::status::Status>(&target, req, &opts).await.0 {
-                rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.into_value(),
+            let reply = match configs.client().call::<rdm_core::status::Status>(&target, req, &opts).await.0 {
+                rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
                 other => {
                     let detail = format!("{me_name} carried node.connections.delete to {} and the call ended {}: {other:?}; no node.connections.deleted is held", subject.name, other.name());
                     tracing::Span::current().record("detail", detail.as_str());
@@ -976,10 +955,10 @@ pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::p
 
 /// This node deciding a name its mesh-primary's row gives it (`ApplyNodeName`): the name it held
 /// and the decision, the name taken and published only on `Applied`.
-pub type Rename = Arc<OnceLock<Arc<dyn Fn(rafka_mesh_entity::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = (rafka_mesh_entity::PathName, crate::node_name::NameApply)> + Send>> + Send + Sync>>>;
+pub type Rename = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = (rdm_core::PathName, crate::node_name::NameApply)> + Send>> + Send + Sync>>>;
 
 /// This mesh-primary's view taking a row `node.name.update` moved: `(from, node_id, incarnation, to)`.
-pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rafka_mesh_entity::PathName, NodeId, rafka_mesh_entity::IncarnationId, rafka_mesh_entity::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
+pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rdm_core::PathName, NodeId, rdm_core::IncarnationId, rdm_core::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// What a node is now, in the declaration vocabulary.
 pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
@@ -1070,12 +1049,12 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
         }
         StatusRequest::ApplyNodeName { name, .. } => {
             // R12, R-CR1: the node owns its name and takes the row's name only while it holds no connection.
-            let asked = match name.parse::<rafka_mesh_entity::PathName>() {
+            let asked = match name.parse::<rdm_core::PathName>() {
                 Ok(n) => n,
                 Err(e) => {
                     tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node = %me.name, sender = %sender_name, to = %name, reason = %format!("the name {name:?} is not a path.name: {e}"), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
-                    return Some(StatusReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt });
+                    return Some(StatusReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt });
                 }
             };
             let Some(rename) = rename.get() else {
@@ -1148,7 +1127,7 @@ fn _assert_send_sync() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_node_rpc_contract::status::StatusReply as R;
+    use rdm_core::status::StatusReply as R;
 
     fn node(name: &str) -> crate::model::Node {
         let mut n = crate::model::Node::allocated(name.parse().unwrap());
@@ -1603,10 +1582,10 @@ mod tests {
         assert!(held.report_of("mesh3", Some(&m2_member)).is_none(), "and for no other birth");
     }
 
-    fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rafka_mesh_entity::MeshDigest {
-        rafka_mesh_entity::MeshDigest {
+    fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rdm_core::MeshDigest {
+        rdm_core::MeshDigest {
             fabric_id: FabricId::mint(),
-            node: rafka_mesh_entity::MeshNode {
+            node: rdm_core::MeshNode {
                 node_id: n.node_id.clone(),
                 name: n.name.clone(),
                 endpoint_id: EndpointId(format!("key-{}", n.name)),
@@ -1615,7 +1594,7 @@ mod tests {
                 supersedes: None,
                 runtime: None,
             },
-            status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+            status: rdm_core::MemberStatus::ReadyForTraffic,
             node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 0,
@@ -1693,7 +1672,7 @@ mod tests {
         book.record(digest_of(&restarted, IncarnationId::mint()));
         // rpc.2 deleted: its exact birth departed.
         book.record(digest_of(&deleted, deleted.incarnation_id.clone().unwrap()));
-        book.depart(rafka_mesh_entity::LifecycleOp {
+        book.depart(rdm_core::LifecycleOp {
             build_id: "build1".into(),
             attempt: 1,
             operation: "node.delete:mesh1.rpc.2".into(),

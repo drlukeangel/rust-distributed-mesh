@@ -4,7 +4,7 @@
 //! is stopping"; node stopping by "the node's mesh-primary" at "the stop call's admission (node.stop)").
 
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::GossipLifecycle;
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
@@ -93,7 +93,7 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
 async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
     use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
-    use rafka_node_rpc_contract::status::{NodeState, StatusReply, StatusRequest};
+    use rdm_core::status::{NodeState, StatusReply, StatusRequest};
     let fabric = FabricId::mint();
     let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
@@ -107,7 +107,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     assert!(membership.book.record(member.clone()), "the member's heartbeat is held");
     let node = |name: &str, primary: bool, id: NodeId, inc: IncarnationId| {
         let mut n = Node::allocated(name.parse().unwrap());
-        n.kind = rafka_mesh_entity::NodeKind::NodeAdmin;
+        n.kind = rdm_core::NodeKind::NodeAdmin;
         n.mesh = "mesh1".into();
         n.node_id = id;
         n.incarnation_id = Some(inc);

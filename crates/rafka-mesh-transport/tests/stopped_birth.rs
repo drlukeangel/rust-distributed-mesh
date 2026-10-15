@@ -13,7 +13,7 @@
 //! stop as `rdm.mesh.membership.update.via-node-started`.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, DigestBook, Frame, Membership, StatusEvent};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, PublisherId};
 use serde_json::Value;

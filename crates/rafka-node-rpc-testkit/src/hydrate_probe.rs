@@ -5,13 +5,13 @@
 //!
 //! Testkit range only ([`TESTKIT_OPS`]); never a product binary.
 //!
-//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
+//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use rafka_node_admin_core::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, RetryOn};
 use rafka_node_rpc::{CallOptions, HydrationGate, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};

@@ -9,12 +9,12 @@
 // @feature: node-lifecycle
 
 use crate::mesh_delete_resume::{capture, trace_id};
-use rafka_mesh_entity::{BuildId, MeshId, NodeId};
+use rdm_core::{BuildId, MeshId, NodeId};
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteBook, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
 use rafka_node_admin_core::status_rpc::Declared;
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, MeshStatusRow, StatusStorage};
-use rafka_node_rpc_contract::status::{MeshDeleteRound, MeshState, StatusReply};
+use rdm_core::status::{MeshDeleteRound, MeshState, StatusReply};
 use serde_json::Value;
 
 const STALE: &str = "rdm.node_admin.mesh.reject.via-stale-round";

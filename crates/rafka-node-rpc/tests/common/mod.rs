@@ -5,14 +5,14 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::connections::{
+use rdm_core::connections::{
     ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, DirectRecovery, NodeConnection,
 };
-use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+use rdm_core::{IncarnationId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, HandlerFault, NodeRpcClient, PeerContext, ResolvedNode, RouteChoice, RouteLeg, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -188,7 +188,7 @@ pub fn own_end(own: &PathName) -> ConnectionEnd {
 /// A connections fact at stamp `at`, in the shape the writer records it.
 pub fn edge(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64) -> NodeConnection {
     let recovery = (kind == ConnectionKind::Direct && state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
-    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: from, destination: to, kind, state, carrier, recovery, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source: from, destination: to, kind, state, carrier, recovery, reason: None, logged_at_ms: at }
 }
 
 pub fn held_for(own: &PathName) -> ConnectionsHeld {

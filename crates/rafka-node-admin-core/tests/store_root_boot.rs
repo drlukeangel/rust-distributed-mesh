@@ -330,8 +330,8 @@ impl Prepared {
                 listeners: Vec::new(),
             };
             nodes.put_own(&own).await.unwrap();
-            let mut runtime = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
-            runtime.locator = rafka_mesh_entity::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
+            let mut runtime = rdm_core::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
+            runtime.locator = rdm_core::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
             nodes
                 .put_runtime(&rafka_node_admin_core::storage::RuntimeRow {
                     node_id: node_id.clone(),
@@ -731,7 +731,7 @@ fn an_admin_started_on_a_prepared_root_writes_the_inherited_birth_deleted_only_a
     let err = refused("no runtime row for the inherited birth");
     assert!(err.contains("refusing to start") && err.contains(&root.node_id.to_string()) && err.contains("no runtime fact"), "the refusal names the inherited birth and the missing runtime fact: {err}");
     // 2. The inherited birth's runtime is still running (this test runner's live process): refused before Deleted is written.
-    let live = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
+    let live = rdm_core::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
     let live_row: serde_json::Value = {
         let mut v: serde_json::Value = serde_json::from_slice(&exited_bytes).unwrap();
         v["record"]["runtime"] = serde_json::to_value(&live).unwrap();

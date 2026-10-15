@@ -80,12 +80,12 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
 
     // 3. A subject the authority does not hold (decided for the subject, never the caller:
     // node-rpc.md §14); a stale birth.
-    let never_born = rafka_mesh_entity::NodeId::mint();
+    let never_born = rdm_core::NodeId::mint();
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-node-id", never_born.as_str()]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("SubjectUnknown"), "{r}");
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", rafka_mesh_entity::IncarnationId::mint().as_str()]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", rdm_core::IncarnationId::mint().as_str()]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
     // 4. The non-primary admin is not the authority.

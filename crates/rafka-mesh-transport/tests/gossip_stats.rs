@@ -8,7 +8,7 @@
 //! the isolation), or counters that do not move when frames flow.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, GossipStats, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, GossipStats, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::Membership;
 use std::time::{Duration, Instant};
 

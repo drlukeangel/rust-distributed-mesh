@@ -3,8 +3,8 @@
 //! The domain chooses one exact semantic target; the resolver answers where
 //! it is now. It never chooses a role, a fallback or a retry.
 
-use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
-use rafka_node_rpc_contract::outcome::ResolveFailure;
+use rdm_core::{IncarnationId, NodeId, PathName};
+use rdm_core::outcome::ResolveFailure;
 use std::collections::HashMap;
 use std::sync::RwLock;
 

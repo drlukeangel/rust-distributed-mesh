@@ -7,7 +7,7 @@ mod own_process;
 /// The binary's process environment, set once, here, before `main` and before any thread exists
 /// (one binary is one process): a cell never sets or removes a variable. The gate's cadence
 /// (`tools/test-runner/src/lib.rs` CADENCE): every node a cell starts in this process reads it once
-/// (`rafka_mesh_entity::cadence`). Each value is set only where the environment the binary was
+/// (`rdm_core::cadence`). Each value is set only where the environment the binary was
 /// started with names none, so a cell whose process needs another value is started as its own
 /// process with that value in its environment (`own_process::delegated_with_env`) and keeps it.
 #[ctor::ctor]

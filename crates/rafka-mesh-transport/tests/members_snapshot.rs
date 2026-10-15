@@ -17,7 +17,7 @@
 //! primary's backbone aggregate, the forwarding primary, and an ordinary member of its Mesh.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use serde_json::{json, Value};

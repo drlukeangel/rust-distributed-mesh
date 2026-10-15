@@ -6,7 +6,7 @@
 //! is lost with it, so a scenario that reads the call's trace id from that file finds none.
 
 use crate::common::admin_view::{node, serve_on_own_runtime};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 
 /// CONTRACT: a probe asked to carry a call through a resolvable carrier to an exact node its view
 /// does not hold prints `NotSent` with the `via-peer` route, exits without the iroh "dropped

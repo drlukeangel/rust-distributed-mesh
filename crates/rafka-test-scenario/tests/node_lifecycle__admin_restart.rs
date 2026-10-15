@@ -108,7 +108,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         for peer in views.iter().filter(|n| n.mesh == home && n.kind == rafka_node_admin_client::LaunchKind::RpcNode) {
             peers
                 .fact(peer, &target_view.mesh, "it holds the restarted target as the same birth, live, with no restart in flight", |v| {
-                    v.birth(&target_view.node_id).is_some_and(|d| d.node.incarnation.as_str() == target_birth.1 && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic) && v.overlay(&target_view.node_id, "node.restart:").is_none()
+                    v.birth(&target_view.node_id).is_some_and(|d| d.node.incarnation.as_str() == target_birth.1 && d.status == rdm_core::MemberStatus::ReadyForTraffic) && v.overlay(&target_view.node_id, "node.restart:").is_none()
                 })
                 .await;
         }

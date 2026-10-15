@@ -8,16 +8,16 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
+use rdm_core::{EndpointId, IncarnationId, MeshId, NodeId, NodeKind};
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::status::{MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingReply, PingRequest};
+use rdm_core::status::{MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -161,11 +161,11 @@ async fn rig(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>) -
 
 /// The rig over a given `status.storage` and a given starting `Declared` (what a restarted
 /// authority folded from its rows).
-async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, status_storage: Arc<dyn StatusStorage>, declared: Declared, fabric: Option<rafka_mesh_entity::FabricId>) -> Rig {
+async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshId>, status_storage: Arc<dyn StatusStorage>, declared: Declared, fabric: Option<rdm_core::FabricId>) -> Rig {
     let mut nodes = vec![me.node.clone()];
     nodes.extend(others.iter().map(|b| b.node.clone()));
     let topology = Arc::new(tokio::sync::RwLock::new(Topology {
-        fabric: Fabric { id: fabric.unwrap_or_else(rafka_mesh_entity::FabricId::mint), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: fabric.unwrap_or_else(rdm_core::FabricId::mint), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }));
@@ -346,7 +346,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
     // The node command: node.connections.delete { All } to the exact birth (DrainNode is a reserved
     // position, refused by name before any birth is checked).
-    let command = |inc: IncarnationId| StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: inc, scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+    let command = |inc: IncarnationId| StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: inc, scope: rdm_core::status::ConnectionScope::All };
 
     // Healthy control before draining: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -464,7 +464,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     impl TopologySink for Discard {
         fn publish(&self, _: Node) {}
         fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
-        fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+        fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
     }
 
     // The drawing's first box: the operation is claimed under an accepted Build.
@@ -483,15 +483,15 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     let node = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false).node;
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: rafka_mesh_entity::IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline {
@@ -597,7 +597,7 @@ impl StatusStorage for Refusing {
         self.check()?;
         self.inner.put_node_declared(row).await
     }
-    async fn remove_node_declared(&self, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+    async fn remove_node_declared(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.check()?;
         self.inner.remove_node_declared(node_id, incarnation_id).await
     }
@@ -615,7 +615,7 @@ impl StatusStorage for Refusing {
         self.check()?;
         self.inner.put_node_exit(row).await
     }
-    async fn node_exit(&self, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
+    async fn node_exit(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.node_exit(node_id, incarnation_id).await
     }
     async fn mesh_status_held_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
@@ -624,7 +624,7 @@ impl StatusStorage for Refusing {
     async fn put_mesh_status_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.inner.put_mesh_status_of(mesh, row).await
     }
-    async fn node_exit_of(&self, mesh: &str, node_id: &rafka_mesh_entity::NodeId, incarnation_id: &rafka_mesh_entity::IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
+    async fn node_exit_of(&self, mesh: &str, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.node_exit_of(mesh, node_id, incarnation_id).await
     }
     async fn put_node_exit_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::NodeExitRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
@@ -646,7 +646,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
     capture.run(async {
         let fabric_primary = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let mesh2 = MeshId::mint();
-        let fabric = rafka_mesh_entity::FabricId::mint();
+        let fabric = rdm_core::FabricId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh2".to_string(), mesh2.clone())].into_iter().collect();
         let store = Refusing::refusing();
         let me = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
@@ -668,7 +668,7 @@ fn status_authority_answers_applied_only_after_its_row_is_acknowledged() {
         // A Fabric event: refused, then applied, then a repeat.
         let mesh1_primary = birth("mesh3.admin.1", NodeKind::NodeAdmin, "mesh3", true, false);
         let rig3 = rig_with(mesh1_primary, &[&fabric_primary], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
-        let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic };
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
         store.refuse.store(true, Ordering::SeqCst);
         let ev_refused = reply(&call(&rig3, &fabric_primary, &event, &CallOptions::default()).await);
         assert!(matches!(&ev_refused, StatusReply::NotReady { reason } if reason.contains("status.storage refused the Fabric event row")), "{ev_refused:?}");
@@ -804,7 +804,7 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::ReadyForTraffic }, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "fabric-primary"), "{r:?}");
         // The fabric-primary applies an event at an admin that is not a mesh primary.
-        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic };
+        let event = StatusRequest::ApplyFabricEvent { fabric_id: rig.authority.fabric_id.clone(), event: rdm_core::status::FabricEvent::ReadyForTraffic };
         let r = reply(&call(&rig, &fp, &event, &CallOptions::default()).await);
         assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary"), "{r:?}");
         // The fabric-primary applies a Mesh state at an admin of another mesh.
@@ -824,8 +824,8 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let held = MeshId::mint();
         let ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), held.clone())].into_iter().collect();
         let rig2 = rig_with(mp_receiver, &[&fp], ids, Arc::new(MemoryStatusStorage::default()), Declared::default(), None).await;
-        let wrong_fabric = rafka_mesh_entity::FabricId::mint();
-        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic }, &CallOptions::default()).await);
+        let wrong_fabric = rdm_core::FabricId::mint();
+        let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyFabricEvent { fabric_id: wrong_fabric, event: rdm_core::status::FabricEvent::ReadyForTraffic }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleFabric { held: rig2.authority.fabric_id.clone() });
         let r = reply(&call(&rig2, &fp, &StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh1".into(), state: MeshState::Pending }, &CallOptions::default()).await);
         assert_eq!(r, StatusReply::RejectedStaleMesh { held });
@@ -853,11 +853,11 @@ fn applied_events_survive_authority_change_and_each_applies_once_whoever_sends_i
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        use rafka_node_rpc_contract::status::FabricEvent;
+        use rdm_core::status::FabricEvent;
         let fp1 = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let fp2 = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
         let receiver = birth("mesh2.admin.1", NodeKind::NodeAdmin, "mesh2", true, false);
-        let fabric = rafka_mesh_entity::FabricId::mint();
+        let fabric = rdm_core::FabricId::mint();
         let store: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
         let rig = rig_with(receiver, &[&fp1, &fp2], BTreeMap::new(), store.clone(), Declared::default(), Some(fabric.clone())).await;
         let ready = StatusRequest::ApplyFabricEvent { fabric_id: fabric.clone(), event: FabricEvent::ReadyForTraffic };
@@ -999,7 +999,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
                 let ep = fp.endpoint().await;
                 let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
-                rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rafka_node_rpc_contract::status::MeshState::Pending, &target).await
+                rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, &target).await
             }
         };
         let target_of = |rig: &Rig| {
@@ -1098,7 +1098,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
             gate.store(true, Ordering::SeqCst);
         });
         let started = std::time::Instant::now();
-        rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rafka_node_rpc_contract::status::MeshState::Pending, &target).await.expect("Pending applies once the authority is filled");
+        rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, &target).await.expect("Pending applies once the authority is filled");
         let waited = started.elapsed();
         opener.await.unwrap();
         assert!(waited >= Duration::from_millis(1000), "the hand-off did not pass while the gate was closed: {waited:?}");

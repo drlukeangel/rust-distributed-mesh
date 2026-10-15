@@ -25,8 +25,8 @@ use crate::topology::Topology;
 use crate::wiring::{FabricHooks, StateSyncRound, SyncState};
 use async_trait::async_trait;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -1209,7 +1209,7 @@ mod tests {
         let declarer = Declarer::new();
         let owe = |build: &str, attempt: u32| {
             let round = RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: build.to_string(), attempt };
-            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc")).unwrap()), None);
+            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId::parse(&rdm_core::fixture_crockford60("inc")).unwrap()), None);
             Key::round(&round)
         };
         let (earlier_attempt, earlier_build) = (owe("amrrv6tggykq", 1), owe("vm0khprh5mtj", 2));

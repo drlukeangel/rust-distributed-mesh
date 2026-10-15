@@ -12,8 +12,8 @@ use rafka_node_admin_core::build_state::{AttemptOpened, AttemptReason, AttemptOu
 use rafka_node_admin_core::hydrate::{HydrationBlocker, Hydrator, Responder, Responders};
 use rafka_node_admin_core::model::{FabricId, PathName};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::build_facts::{BuildFacts, BuildFactsReply};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::build_facts::{BuildFacts, BuildFactsReply};
+use rdm_core::{IncarnationId, NodeId};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -62,7 +62,7 @@ struct Node {
 /// A node serving `FetchBuildFacts` with `serve`, counting the reads it is asked.
 async fn node_serving<F, Fut>(name: &str, serve: F) -> Node
 where
-    F: Fn(rafka_node_rpc_contract::build_facts::BuildFactsRequest, rafka_node_rpc::stream::ReplySink<BuildFacts, rafka_node_rpc::stream::NotStarted>) -> Fut + Send + Sync + 'static,
+    F: Fn(rdm_core::build_facts::BuildFactsRequest, rafka_node_rpc::stream::ReplySink<BuildFacts, rafka_node_rpc::stream::NotStarted>) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<BuildFactsReply, rafka_node_rpc::HandlerFault>> + Send + 'static,
 {
     let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
@@ -72,7 +72,7 @@ where
     let calls = Arc::new(AtomicU32::new(0));
     let counted = calls.clone();
     let server = ServerBuilder::new()
-        .serve_stream::<BuildFacts, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Product("rdm".into()), move |_peer, req, sink| {
+        .serve_stream::<BuildFacts, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_peer, req, sink| {
             counted.fetch_add(1, Ordering::SeqCst);
             serve(req, sink)
         })
@@ -523,8 +523,8 @@ async fn full_facts(door: &BuildFactsDoor) -> Vec<rafka_node_admin_core::build_s
     door.builds.facts().await.unwrap()
 }
 
-fn id_of(req: &rafka_node_rpc_contract::build_facts::BuildFactsRequest) -> String {
-    let rafka_node_rpc_contract::build_facts::BuildFactsRequest::FetchBuildFacts { build_id } = req;
+fn id_of(req: &rdm_core::build_facts::BuildFactsRequest) -> String {
+    let rdm_core::build_facts::BuildFactsRequest::FetchBuildFacts { build_id } = req;
     build_id.clone()
 }
 

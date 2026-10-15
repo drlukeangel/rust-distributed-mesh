@@ -4,9 +4,9 @@
 //! the bytes: the cells decode them with the test signer's own reader.
 
 use crate::common::{admin_side_issuing, AdminSide};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_node_admin_core::app_hydration::Hydration;
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use rafka_node_rpc_testkit::node;
@@ -33,14 +33,14 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
         store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
 fn birth_dir(what: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{what}-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     dir
 }
 

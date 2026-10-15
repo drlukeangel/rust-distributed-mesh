@@ -14,9 +14,9 @@
 //! answered `unknown-mesh` for mesh1 until the run ended.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::launch::{Launch, Launcher};
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{IncarnationId, MemberStatus, MeshDigest, NodeId};
+use rdm_core::launch::{Launch, Launcher};
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
 use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Frame, Membership};
 use rafka_mesh_transport::snapshot::PublisherId;
 use rafka_node_admin_core::admin::{start_with, AdminConfig, Running};
@@ -49,7 +49,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     Launch {
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
@@ -65,7 +65,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
@@ -77,8 +77,8 @@ fn deployed(launch: &Launch) -> Deployed {
         node_id: launch.node_id.clone(),
         incarnation: launch.incarnation.clone(),
         supersedes: None,
-        endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
-        runtime: rafka_mesh_entity::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
+        endpoint_id: rdm_core::EndpointId(key.public().to_string()),
+        runtime: rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).unwrap(),
         data_dir: launch.data_dir.display().to_string(),
         last_accepted_name: None,
         held: false,

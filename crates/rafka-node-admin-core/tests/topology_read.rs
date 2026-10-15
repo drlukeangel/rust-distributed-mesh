@@ -3,14 +3,14 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rafka_mesh_transport::membership::Membership;
 use rafka_mesh_transport::snapshot::{Chunk, SourceSnapshot, Taken};
 use rafka_node_admin_core::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyDoor, TopologyFailure, TopologySlot};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::protocol::NodeProtocol;
+use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -87,7 +87,7 @@ fn open(n: &Node, fabric: &FabricId) {
 }
 
 fn publisher(node: &str) -> PublisherId {
-    PublisherId { node: node.into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth-1")).unwrap() }
+    PublisherId { node: node.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-1")).unwrap() }
 }
 
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
@@ -386,7 +386,7 @@ fn a_since_from_another_publisher_epoch_is_answered_with_the_snapshot_not_unchan
         let epoch1 = publisher("mesh2.admin.1");
         hold(&server.membership, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
         let t = target_of(&caller, &server);
-        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth-2")).unwrap() };
+        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-2")).unwrap() };
         let other_epoch = SourceVersion { publisher: epoch2, topology_version: 7 };
         let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
         assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");
@@ -454,7 +454,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_over
         open(&server, &fabric);
         let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
         let retiring = &members[1];
-        let op = rafka_mesh_entity::LifecycleOp {
+        let op = rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.delete:mesh3.rpc.2".into(),
@@ -492,7 +492,7 @@ fn a_late_reader_lists_a_stopped_node_parked_from_the_stop_overlay_a_read_carrie
         open(&server, &fabric);
         let members: Vec<MeshDigest> = (1..=3).map(|k| member_of(&fabric, "mesh3", "rpc", k)).collect();
         let stopped = &members[1];
-        let op = rafka_mesh_entity::LifecycleOp {
+        let op = rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh3.rpc.2".into(),
@@ -518,12 +518,12 @@ fn a_late_reader_lists_a_stopped_node_parked_from_the_stop_overlay_a_read_carrie
     });
 }
 
-fn stored_of(d: &MeshDigest) -> rafka_node_rpc_contract::topology::StoredNode {
-    rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id.clone(), name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
+fn stored_of(d: &MeshDigest) -> rdm_core::topology::StoredNode {
+    rdm_core::topology::StoredNode { node_id: d.node.node_id.clone(), name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id.clone(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr }
 }
 
 /// `n` serves the births `rows` as its stored map.
-fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rafka_node_rpc_contract::topology::StoredNode>) {
+fn open_with_stored(n: &Node, fabric: &FabricId, rows: Vec<rdm_core::topology::StoredNode>) {
     let d = own_digest(n, fabric);
     let source: rafka_node_admin_core::topology_read::StoredSource = Arc::new(move || {
         let rows = rows.clone();
@@ -585,7 +585,7 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
 /// admin's), which `get_topology` installs into the caller's seat book.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_holds() {
-    use rafka_mesh_entity::{NodeKind, Seat, SeatHolder};
+    use rdm_core::{NodeKind, Seat, SeatHolder};
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
@@ -643,7 +643,7 @@ async fn a_node_holding_no_rafka_time_answers_not_ready_by_name() {
 fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_fabric_primarys() {
     let cap = capture("rafka-time-verdict");
     cap.run(async {
-        use rafka_mesh_entity::{Seat, SeatHolder};
+        use rdm_core::{Seat, SeatHolder};
         use rafka_node_admin_core::rafka_time::Refusal;
         use rafka_node_admin_core::topology_read::TimeNotAdopted;
         let fabric = FabricId::mint();

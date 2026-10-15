@@ -26,11 +26,10 @@ futures-lite = "2"
 futures-util = "0.3"
 bytes = "1"
 rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
-rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rdm-core = { path = "../rdm-core" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
-rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 
 [[bin]]
 name = "rafka-node-admin"

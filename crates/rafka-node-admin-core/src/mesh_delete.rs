@@ -21,8 +21,8 @@ use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildSte
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
-use rafka_mesh_entity::{LifecycleOp, MeshId, NodeId};
-use rafka_node_rpc_contract::status::{MeshDeleteRound, StatusReply, StatusRequest};
+use rdm_core::{LifecycleOp, MeshId, NodeId};
+use rdm_core::status::{MeshDeleteRound, StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -82,7 +82,7 @@ impl RosterBirth {
 
     /// The exact birth the roster names, refused by name when its incarnation is not a Crockford id
     /// (a roster of an older format).
-    pub fn birth(&self) -> Result<crate::model::IncarnationId, rafka_mesh_entity::IdError> {
+    pub fn birth(&self) -> Result<crate::model::IncarnationId, rdm_core::IdError> {
         crate::model::IncarnationId::parse(&self.incarnation_id)
     }
 
@@ -997,7 +997,7 @@ async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, execu
 /// of a mesh with none left and records it as applied. One
 /// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
 async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str) -> Result<(), String> {
-    let dead = rafka_node_rpc_contract::status::MeshState::Dead;
+    let dead = rdm_core::status::MeshState::Dead;
     let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
     let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
     let refused = |e: String| {
@@ -1183,7 +1183,7 @@ pub fn leave_owner(call: Option<MeshDeleteOwner>, fabric_primary: Option<MeshDel
 /// The final primary's runtime, as a `MeshDeleted` names it, adopted by this admin's provider: the
 /// provider proof path the owner stops it through (mesh-delete.md step 5). A runtime the provider
 /// refuses is refused by name.
-pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, final_runtime: &rafka_mesh_entity::RuntimeFact, me: &str, key: &MeshDeleteKey) -> Result<(), StatusReply> {
+pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, final_runtime: &rdm_core::RuntimeFact, me: &str, key: &MeshDeleteKey) -> Result<(), StatusReply> {
     match crate::deployment::provider::adopt(provider, final_runtime) {
         Ok(_) => Ok(()),
         Err(refusal) => Err(refuse_source_failed("mesh-deleted", key, &format!("the {:?} provider of {me}", provider.kind()), &format!("adopt the final primary's runtime {}", final_runtime.deployment_id), &refusal.to_string())),
@@ -1596,7 +1596,7 @@ pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::statu
     if runs.holds(&key.mesh_id) {
         return DeleteMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
     }
-    let committed = crate::status_rpc::commit_mesh_state(storage, declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
+    let committed = crate::status_rpc::commit_mesh_state(storage, declared, &key.mesh_id, rdm_core::status::MeshState::Leaving).await;
     let admission = match &committed {
         StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
         refused => MeshDeleteAdmission::Refused(refused.clone()),
@@ -1653,7 +1653,7 @@ pub trait MeshDeleter: Send + Sync {
     async fn mesh_deleted(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// This admin, as an executor, published `op`'s birth deleted (NodeDeleted, from the provider's
     /// exact exit proof).
-    async fn birth_deleted(&self, _op: &rafka_mesh_entity::LifecycleOp) {}
+    async fn birth_deleted(&self, _op: &rdm_core::LifecycleOp) {}
 }
 
 /// The door a running admin fills once its runner exists.
@@ -1829,7 +1829,7 @@ pub async fn complete_fabric_delete(
     storage: &dyn crate::fabric_storage::FabricStorage,
     build_id: &BuildId,
     attempt: u32,
-    fabric_id: &rafka_mesh_entity::FabricId,
+    fabric_id: &rdm_core::FabricId,
     executor: &str,
 ) -> Result<(), String> {
     let operation = format!("fabric.delete:{fabric_id}");

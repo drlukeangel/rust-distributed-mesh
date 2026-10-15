@@ -8,7 +8,7 @@
 //! the node holding the primary role authors a status frame; a forwarding primary keeps the
 //! original publisher; and no status travels inside `Members`.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId};
+use rdm_core::{FabricId, IncarnationId, MeshId};
 use rafka_mesh_transport::snapshot::PublisherId;
 use rafka_mesh_transport::membership::{
     forward_of, Backbone, Frame, Membership, StatusBook, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,

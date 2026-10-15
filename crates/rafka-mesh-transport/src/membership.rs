@@ -25,15 +25,15 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use iroh_gossip::net::Gossip;
 use iroh_gossip::proto::TopicId;
-use rafka_mesh_entity::seat::transfer::CommittedSeat;
-use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
+use rdm_core::seat::transfer::CommittedSeat;
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshDigest, MeshId, NodeId, RoundHook, Seat, SeatHolder, DEPARTED_RETENTION};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub use rafka_mesh_entity::cadence::{backbone_gossip_interval, gossip_interval, staleness_floor};
+pub use rdm_core::cadence::{backbone_gossip_interval, gossip_interval, staleness_floor};
 
 /// How often a node's publish loop marks its heartbeat in the trace (the digest itself goes out
 /// every gossip interval).
@@ -74,7 +74,7 @@ pub fn gossip_addr(d: &MeshDigest) -> Option<EndpointAddr> {
 /// `peer_location_wall_time`), and the socket that birth named: governs the address book only,
 /// never the held view. Ordered as the held view is: by `digest_seq` within one incarnation, and
 /// along the lineage across incarnations.
-type LocationMark = (rafka_mesh_entity::IncarnationId, u64, Option<rafka_mesh_entity::IncarnationId>, std::net::SocketAddr);
+type LocationMark = (rdm_core::IncarnationId, u64, Option<rdm_core::IncarnationId>, std::net::SocketAddr);
 
 /// The marks of one peer-location book, by key. Each book holds its own: a newer birth one node of
 /// a process consumed is still newer to every other node of that process.
@@ -95,7 +95,7 @@ pub struct LocationBook {
     marks: Arc<LocationMarks>,
     /// The node this book belongs to: the observer every location span names.
     observer: String,
-    held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
+    held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
 }
 
 impl LocationBook {
@@ -106,7 +106,7 @@ impl LocationBook {
         Ok(Self { lookup, endpoint: endpoint.clone(), marks: Arc::default(), observer: observer.to_string(), held_name: Arc::default() })
     }
 
-    fn with_held_name(mut self, held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>) -> Self {
+    fn with_held_name(mut self, held_name: Arc<Mutex<Option<rdm_core::PathName>>>) -> Self {
         self.held_name = held_name;
         self
     }
@@ -116,7 +116,7 @@ impl LocationBook {
     }
 
     /// The path name the endpoint's membership view holds (`Some` once installed or renamed).
-    pub fn held_path_name(&self) -> Option<rafka_mesh_entity::PathName> {
+    pub fn held_path_name(&self) -> Option<rdm_core::PathName> {
         self.held_name.lock().unwrap().clone()
     }
 
@@ -153,12 +153,12 @@ fn fenced_incarnations() -> &'static Mutex<std::collections::HashSet<(String, St
 }
 
 /// Fence the exact birth `(node_id, incarnation)` in the peer-location book.
-pub fn fence_incarnation(node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) {
+pub fn fence_incarnation(node_id: &NodeId, incarnation: &rdm_core::IncarnationId) {
     fenced_incarnations().lock().unwrap().insert((node_id.to_string(), incarnation.to_string()));
 }
 
 /// Whether `(node_id, incarnation)` is fenced in the peer-location book.
-fn incarnation_fenced(node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) -> bool {
+fn incarnation_fenced(node_id: &NodeId, incarnation: &rdm_core::IncarnationId) -> bool {
     fenced_incarnations().lock().unwrap().contains(&(node_id.to_string(), incarnation.to_string()))
 }
 
@@ -997,7 +997,7 @@ struct HeldSeats {
     fabric: Option<SeatHolder>,
     meshes: HashMap<String, SeatHolder>,
     /// Every other (mesh, node type) cohort's primary record, by (mesh, kind).
-    cohorts: HashMap<(String, rafka_mesh_entity::NodeKind), SeatHolder>,
+    cohorts: HashMap<(String, rdm_core::NodeKind), SeatHolder>,
     /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
@@ -1010,7 +1010,7 @@ impl HeldSeats {
     fn get(&self, seat: Seat, mesh: &str) -> Option<SeatHolder> {
         match seat {
             Seat::FabricPrimary => self.fabric.clone(),
-            Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
+            Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
             Seat::Cohort(kind) => self.cohorts.get(&(mesh.to_string(), kind)).cloned(),
         }
     }
@@ -1019,7 +1019,7 @@ impl HeldSeats {
     fn put(&mut self, seat: Seat, mesh: &str, record: SeatHolder) {
         match seat {
             Seat::FabricPrimary => self.fabric = Some(record),
-            Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin) => {
+            Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => {
                 self.meshes.insert(mesh.to_string(), record);
             }
             Seat::Cohort(kind) => {
@@ -1148,12 +1148,12 @@ impl SeatBook {
     }
 
     /// The held record of `mesh`'s `kind` cohort primary seat (`node_admin`: its mesh-primary seat).
-    pub fn cohort(&self, mesh: &str, kind: rafka_mesh_entity::NodeKind) -> Option<SeatHolder> {
+    pub fn cohort(&self, mesh: &str, kind: rdm_core::NodeKind) -> Option<SeatHolder> {
         self.inner.lock().unwrap().get(Seat::of_cohort(kind), mesh)
     }
 
     /// Every other cohort's primary record held, by (mesh, kind).
-    pub fn cohorts(&self) -> std::collections::BTreeMap<(String, rafka_mesh_entity::NodeKind), SeatHolder> {
+    pub fn cohorts(&self) -> std::collections::BTreeMap<(String, rdm_core::NodeKind), SeatHolder> {
         self.inner.lock().unwrap().cohorts.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
     }
 
@@ -1171,7 +1171,7 @@ impl SeatBook {
         let in_together = |seat: Seat, h: &SeatHolder| together.is_some_and(|(_, seats)| seats.iter().any(|c| c.seat.kind() == seat && &c.record() == h));
         let mut out: Vec<Frame> = held.meshes.values().filter(|h| !in_together(Seat::MeshPrimary, h)).map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
         out.sort_by_key(|f| if let Frame::Seated { holder, .. } = f { holder.mesh.clone() } else { String::new() });
-        let mut cohorts: Vec<(&(String, rafka_mesh_entity::NodeKind), &SeatHolder)> = held.cohorts.iter().filter(|((_, kind), h)| !in_together(Seat::Cohort(*kind), h)).collect();
+        let mut cohorts: Vec<(&(String, rdm_core::NodeKind), &SeatHolder)> = held.cohorts.iter().filter(|((_, kind), h)| !in_together(Seat::Cohort(*kind), h)).collect();
         cohorts.sort_by(|a, b| a.0.cmp(b.0));
         out.extend(cohorts.into_iter().map(|((_, kind), h)| Frame::Seated { seat: Seat::Cohort(*kind), holder: h.clone() }));
         if let Some(h) = held.fabric.as_ref().filter(|h| !in_together(Seat::FabricPrimary, h)) {
@@ -1357,7 +1357,7 @@ pub(crate) fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool
     let overlaid = overlaid_nodes(book);
     book.silent_held(now)
         .into_iter()
-        .filter(|(d, _)| pick(d) && d.status != rafka_mesh_entity::MemberStatus::Leaving && !overlaid.contains(d.node.node_id.as_str()))
+        .filter(|(d, _)| pick(d) && d.status != rdm_core::MemberStatus::Leaving && !overlaid.contains(d.node.node_id.as_str()))
         .filter_map(|(d, silent_for)| gossip_addr(&d).map(|addr| RepairTarget { addr, node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), silent_for }))
         .collect()
 }
@@ -1905,7 +1905,7 @@ struct View {
     completion_carrier: Arc<Mutex<Option<CompletionCarrier>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
     /// membership; `None` while the birth holds its launch name (`node`).
-    held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
+    held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
 }
 
 /// What a node-admin does with a node's own completion frame heard on its mesh channel.
@@ -2421,8 +2421,8 @@ impl View {
     fn apply_full(&self, mesh: &str, full: &Full, complete: Option<&Full>, fabric: &FabricId, side: Side, fence: &Fence) -> Vec<MeshDigest> {
         let complete_digests = complete.map(Full::digests).unwrap_or_default();
         let final_delete = if complete_digests.len() == 1
-            && complete_digests[0].status == rafka_mesh_entity::MemberStatus::Leaving
-            && complete_digests[0].node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin
+            && complete_digests[0].status == rdm_core::MemberStatus::Leaving
+            && complete_digests[0].node.name.kind == rdm_core::NodeKind::NodeAdmin
         {
             let last_id = &complete_digests[0].node.node_id;
             complete
@@ -2521,8 +2521,8 @@ impl View {
 
     /// A peer mesh's member whose own state this node now holds changed (or was first held saying
     /// Draining or Leaving): what this node routes to it follows that state alone (R4).
-    fn note_member_state(&self, d: &MeshDigest, prior: Option<rafka_mesh_entity::MemberStatus>, side: Side) {
-        use rafka_mesh_entity::MemberStatus::{Draining, Leaving};
+    fn note_member_state(&self, d: &MeshDigest, prior: Option<rdm_core::MemberStatus>, side: Side) {
+        use rdm_core::MemberStatus::{Draining, Leaving};
         if d.node.name.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, Draining | Leaving)) {
             return;
         }
@@ -2543,7 +2543,7 @@ impl View {
     /// A peer mesh's member this node now holds parked, from its mesh primary's `NodeStopped` overlay
     /// (gossip.md, node-stopped lifecycle overlay): Leaving and parked, not routable. `channel` is
     /// where the overlay arrived: the frame itself, or the aggregate's `in_flight`.
-    fn note_member_parked(&self, op: &rafka_mesh_entity::LifecycleOp, prior: Option<rafka_mesh_entity::MemberStatus>, channel: &str) {
+    fn note_member_parked(&self, op: &rdm_core::LifecycleOp, prior: Option<rdm_core::MemberStatus>, channel: &str) {
         if op.name.mesh == self.mesh {
             return;
         }
@@ -2553,7 +2553,7 @@ impl View {
             member = %op.name,
             member_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
-            status = ?rafka_mesh_entity::MemberStatus::Leaving,
+            status = ?rdm_core::MemberStatus::Leaving,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             channel,
             routable = self.book.routable(op.node_id.as_str()),
@@ -2621,7 +2621,7 @@ pub struct Membership {
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
     /// digest this membership publishes from then on. `None` while the birth holds its launch name.
-    name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
+    name: Arc<Mutex<Option<rdm_core::PathName>>>,
 }
 
 impl Membership {
@@ -2712,7 +2712,7 @@ impl Membership {
             loop {
                 let node = view.current_name();
                 let current = book.current(book.staleness_floor());
-                let now_heard: BTreeMap<String, (String, bool)> = current.iter().map(|d| (d.node.node_id.to_string(), (d.node.name.to_string(), d.status == rafka_mesh_entity::MemberStatus::Leaving))).collect();
+                let now_heard: BTreeMap<String, (String, bool)> = current.iter().map(|d| (d.node.node_id.to_string(), (d.node.name.to_string(), d.status == rdm_core::MemberStatus::Leaving))).collect();
                 for (id, (name, leaving)) in heard.iter().filter(|(id, _)| !now_heard.contains_key(*id)) {
                     if *leaving || *name == node || book.is_departed(id) {
                         continue;
@@ -2758,7 +2758,7 @@ impl Membership {
             self.book.record_joined(d.clone())
         } else {
             let held = self.book.get(d.node.node_id.as_str()).filter(|(h, _)| h.node.incarnation == d.node.incarnation).map(|(h, _)| h.status);
-            self.book.record_topology(MeshDigest { status: held.unwrap_or(rafka_mesh_entity::MemberStatus::Pending), ..d.clone() })
+            self.book.record_topology(MeshDigest { status: held.unwrap_or(rdm_core::MemberStatus::Pending), ..d.clone() })
         };
         if taken {
             self.view.note(&d, via);
@@ -2871,9 +2871,9 @@ impl Membership {
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
         // about itself; its status never travels on its heartbeat.
-        d.node_state = rafka_mesh_entity::NodeState::self_published(d.status);
+        d.node_state = rdm_core::NodeState::self_published(d.status);
         d.load = Some(self.load.sample());
-        d.gossip = Some(rafka_mesh_entity::GossipStats {
+        d.gossip = Some(rdm_core::GossipStats {
             heard: self.book.current(self.book.staleness_floor()).len() as u32,
             neighbours: self.mesh.neighbors.lock().unwrap().len() as u32,
             frames_sent: self.mesh.frames_sent.load(Ordering::Relaxed),
@@ -2891,13 +2891,13 @@ impl Membership {
 
     /// Hold `name` as this birth's name: every digest this membership publishes from now on carries
     /// it (R12: the node publishes only the name its row holds).
-    pub fn set_name(&self, name: rafka_mesh_entity::PathName) {
+    pub fn set_name(&self, name: rdm_core::PathName) {
         *self.view.book.holder.lock().unwrap() = name.to_string();
         *self.name.lock().unwrap() = Some(name);
     }
 
     /// The name this birth publishes: the one it was told ([`Self::set_name`]), else `birth`'s.
-    pub fn held_name(&self, birth: &rafka_mesh_entity::PathName) -> rafka_mesh_entity::PathName {
+    pub fn held_name(&self, birth: &rdm_core::PathName) -> rdm_core::PathName {
         self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
     }
 
@@ -3351,8 +3351,8 @@ impl Backbone {
                 // nothing unless this node holds the forwarder role, read under its lock.
                 if let Some((source_mesh, publisher, version, full)) = taken.source {
                     let is_final_delete = full.digests().len() == 1
-                        && full.digests()[0].status == rafka_mesh_entity::MemberStatus::Leaving
-                        && full.digests()[0].node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin
+                        && full.digests()[0].status == rdm_core::MemberStatus::Leaving
+                        && full.digests()[0].node.name.kind == rdm_core::NodeKind::NodeAdmin
                         && full
                             .in_flight()
                             .iter()
@@ -3384,7 +3384,7 @@ impl Backbone {
         });
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
-            Arc::new(move || held_view(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin));
+            Arc::new(move || held_view(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rdm_core::NodeKind::NodeAdmin));
         let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, membership.mesh.book.clone(), membership.view.order.clone(), on_frame, targets, replay).await?;
         let me = Self {
             channel,
@@ -3591,8 +3591,8 @@ impl Backbone {
     fn own_full(&self, membership: &Membership, members: Vec<MeshDigest>) -> Full {
         let (mut in_flight, departed) = membership.book.overlays_of(&self.mesh);
         if members.len() == 1
-            && members[0].node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin
-            && members[0].status != rafka_mesh_entity::MemberStatus::Leaving
+            && members[0].node.name.kind == rdm_core::NodeKind::NodeAdmin
+            && members[0].status != rdm_core::MemberStatus::Leaving
         {
             let last_id = &members[0].node.node_id;
             in_flight.retain(|op| op.is_restart() || op.is_stop() || &op.node_id != last_id);
@@ -4044,7 +4044,7 @@ pub struct DigestBook {
     /// The status this book holds for each own-mesh birth, by NodeId: what the mesh-primary's
     /// projection said, or, while this book's holder is the primary, what it authored. The only copy:
     /// no held digest carries an own-mesh birth's status.
-    member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rafka_mesh_entity::MemberStatus)>>>,
+    member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rdm_core::MemberStatus)>>>,
     /// The own-mesh births this book holds only from its mesh-primary's projection, by NodeId: the
     /// birth as the projection carried it (its identity, endpoint and runtime fact: gossip.md §3,
     /// "needed by an authority-bearing admin to manage that birth"), and the instant this book first
@@ -4061,7 +4061,7 @@ pub struct DigestBook {
     holder: Arc<Mutex<String>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
     /// membership; `None` while the birth holds its launch name.
-    held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
+    held_name: Arc<Mutex<Option<rdm_core::PathName>>>,
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
     /// which meshes the fabric has.
     accepted_meshes: Arc<Mutex<Option<BTreeSet<String>>>>,
@@ -4197,9 +4197,9 @@ impl DigestBook {
         (!holder.is_empty()).then(|| holder.clone())
     }
 
-    /// The [`PathName`](rafka_mesh_entity::PathName) the mesh-primary's row last gave this book's
+    /// The [`PathName`](rdm_core::PathName) the mesh-primary's row last gave this book's
     /// holder (`ApplyNodeName`, R12), or `None` while the holder has its launch name.
-    pub fn held_path_name(&self) -> Option<rafka_mesh_entity::PathName> {
+    pub fn held_path_name(&self) -> Option<rdm_core::PathName> {
         self.held_name.lock().unwrap().clone()
     }
 
@@ -4531,7 +4531,7 @@ impl DigestBook {
     }
 
     /// The open restart of `node_id`'s birth `incarnation`, if any.
-    pub fn restart_of(&self, node_id: &str, incarnation: &rafka_mesh_entity::IncarnationId) -> Option<LifecycleOp> {
+    pub fn restart_of(&self, node_id: &str, incarnation: &rdm_core::IncarnationId) -> Option<LifecycleOp> {
         self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
     }
 
@@ -4548,7 +4548,7 @@ impl DigestBook {
         let name = held.clone().or(restart.as_ref().map(|o| o.name.clone()));
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = name.filter(|n| !own_mesh.is_empty() && n.mesh == own_mesh) else { return false };
-        let prior = self.author_status(node_id.as_str(), incarnation, rafka_mesh_entity::MemberStatus::ReadyForTraffic);
+        let prior = self.author_status(node_id.as_str(), incarnation, rdm_core::MemberStatus::ReadyForTraffic);
         let closed: Vec<LifecycleOp> = {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
@@ -4717,7 +4717,7 @@ impl DigestBook {
                 });
                 if let Some(d) = &again {
                     self.inner.lock().unwrap().insert(op.node_id.to_string(), (d.clone(), Instant::now(), Heard::Direct));
-                    self.author_status(op.node_id.as_str(), &op.incarnation, rafka_mesh_entity::MemberStatus::Pending);
+                    self.author_status(op.node_id.as_str(), &op.incarnation, rdm_core::MemberStatus::Pending);
                     self.heard.send_modify(|v| *v += 1);
                     self.births.send_modify(|v| *v += 1);
                     self.digests.send_modify(|v| *v += 1);
@@ -4728,7 +4728,7 @@ impl DigestBook {
                 let own_mesh = self.own_mesh.lock().unwrap().clone();
                 let held = self.inner.lock().unwrap().get(op.node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == op.incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.digest_seq);
                 let Some(seq) = held else { return false };
-                self.author_status(op.node_id.as_str(), &op.incarnation, rafka_mesh_entity::MemberStatus::Pending);
+                self.author_status(op.node_id.as_str(), &op.incarnation, rdm_core::MemberStatus::Pending);
                 (true, seq)
             }
         };
@@ -4755,7 +4755,7 @@ impl DigestBook {
     /// its status"): held for the birth, so its projection carries it from its next round. Its
     /// node.started is [`Self::started`]. `false` when the birth is not of this book's own mesh or this
     /// book holds no digest of exactly that birth.
-    pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rafka_mesh_entity::MemberStatus) -> bool {
+    pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rdm_core::MemberStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.node.name.clone()) else {
             return false;
@@ -4781,7 +4781,7 @@ impl DigestBook {
     /// for the birth, so its projection carries it from its next round. No heartbeat says it (gossip.md
     /// §3.1: a Digest "carries no status"). `false` when the birth is not of this book's own mesh or
     /// this book holds no digest of exactly that birth.
-    pub fn admitted(&self, op: &LifecycleOp, status: rafka_mesh_entity::MemberStatus) -> bool {
+    pub fn admitted(&self, op: &LifecycleOp, status: rdm_core::MemberStatus) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let held = !own_mesh.is_empty() && op.name.mesh == own_mesh && self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == op.incarnation);
         if !held {
@@ -4807,7 +4807,7 @@ impl DigestBook {
     /// The status this book holds for the own-mesh birth `incarnation` of `node_id`: what its
     /// mesh-primary set, here or in the projection this book took. `None` when it holds none for that
     /// exact birth.
-    pub fn member_status(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_mesh_entity::MemberStatus> {
+    pub fn member_status(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::MemberStatus> {
         self.member_statuses.lock().unwrap().get(node_id.as_str()).filter(|(inc, _)| inc == incarnation).map(|(_, s)| *s)
     }
 
@@ -4822,7 +4822,7 @@ impl DigestBook {
     /// birth or a predecessor at its own path.name, a departed or stopped birth, or another birth of
     /// the node this book holds. `Ok` carries
     /// the status held before.
-    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &rafka_mesh_entity::PathName, status: rafka_mesh_entity::MemberStatus) -> Result<Option<rafka_mesh_entity::MemberStatus>, &'static str> {
+    pub fn adopt_status(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &rdm_core::PathName, status: rdm_core::MemberStatus) -> Result<Option<rdm_core::MemberStatus>, &'static str> {
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         if own_mesh.is_empty() || name.mesh != own_mesh {
             return Err("another-mesh");
@@ -4853,7 +4853,7 @@ impl DigestBook {
     /// "Who sets each state"): held for the birth, its one copy, which its projection and every read
     /// of its digest carry. A move ticks `heard`. Returns the status held for that birth before
     /// (`None` when none was).
-    fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rafka_mesh_entity::MemberStatus) -> Option<rafka_mesh_entity::MemberStatus> {
+    fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rdm_core::MemberStatus) -> Option<rdm_core::MemberStatus> {
         let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), status)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
         if prior != Some(status) {
             self.heard.send_modify(|v| *v += 1);
@@ -5007,7 +5007,7 @@ impl DigestBook {
         for d in ds {
             let itself = own.as_deref() == Some(d.node.node_id.as_str()) || d.node.name.to_string() == holder;
             if d.node.name.mesh == own_mesh && !itself {
-                d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rafka_mesh_entity::MemberStatus::Pending);
+                d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rdm_core::MemberStatus::Pending);
             }
         }
     }
@@ -5225,7 +5225,7 @@ impl DigestBook {
         if self.is_departed(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic).map(|(d, _)| d.node.name.mesh) else {
+        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rdm_core::MemberStatus::ReadyForTraffic).map(|(d, _)| d.node.name.mesh) else {
             return false;
         };
         self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY_FOR_TRAFFIC)
@@ -5401,7 +5401,7 @@ impl DigestBook {
         }
         let first = carried == Carried::NoStatus && own_mesh && self.primary.load(Ordering::Relaxed) && !self.member_statuses.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(inc, _)| *inc == d.node.incarnation);
         if first {
-            self.author_status(d.node.node_id.as_str(), &d.node.incarnation, rafka_mesh_entity::MemberStatus::Pending);
+            self.author_status(d.node.node_id.as_str(), &d.node.incarnation, rdm_core::MemberStatus::Pending);
             tracing::info_span!(
                 "rdm.mesh.membership.update.from-join-report",
                 node = %self.holder.lock().unwrap(),
@@ -5538,7 +5538,7 @@ impl DigestBook {
     /// parked by its stop), so a deleted mesh's final aggregate or `MeshLeft` leaves no crashed
     /// predecessor birth of the mesh in the active topology and holds it departed for the retention.
     pub fn depart_mesh_births(&self, mesh: &str, build_id: &str, attempt: u32, at_rafka_ms: u64) {
-        let mut roster: BTreeMap<String, (IncarnationId, rafka_mesh_entity::PathName)> = BTreeMap::new();
+        let mut roster: BTreeMap<String, (IncarnationId, rdm_core::PathName)> = BTreeMap::new();
         for d in self.all().into_iter().filter(|d| d.node.name.mesh == mesh) {
             roster.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.node.name.clone()));
         }
@@ -5595,7 +5595,7 @@ impl DigestBook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{EndpointId, IncarnationId, MemberStatus, MeshNode, NodeId};
+    use rdm_core::{EndpointId, IncarnationId, MemberStatus, MeshNode, NodeId};
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
         MeshDigest {
@@ -5630,7 +5630,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let plain = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 1);
         let mut with = plain.clone();
-        with.gossip = Some(rafka_mesh_entity::GossipStats { heard: 3, neighbours: 2, frames_sent: 10, frames_received: 12 });
+        with.gossip = Some(rdm_core::GossipStats { heard: 3, neighbours: 2, frames_sent: 10, frames_received: 12 });
         assert_ne!(plain, with);
         assert_eq!(crate::snapshot::topology_view(&with), crate::snapshot::topology_view(&plain));
         assert_eq!(crate::snapshot::without_load(&with).gossip, None);
@@ -5691,9 +5691,9 @@ mod tests {
 
     #[test]
     fn a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one() {
-        use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+        use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
         let fact = |pid: u32, domain: &str| RuntimeFact {
-            deployment_id: rafka_mesh_entity::fixture_crockford60("dep"),
+            deployment_id: rdm_core::fixture_crockford60("dep"),
             provider: RuntimeProvider::Process,
             control_domain: domain.into(),
             locator: RuntimeLocator::Process { pid, start: 7 },
@@ -5749,7 +5749,7 @@ mod tests {
     fn members(mesh: &str, publisher: &str, forwarded_by: Option<&str>, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Frame {
         Frame::Members {
             mesh: mesh.into(),
-            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap() },
+            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() },
             forwarded_by: forwarded_by.map(String::from),
             topology_version: 1,
             published_at_rafka_ms: 1,
@@ -5916,7 +5916,7 @@ mod tests {
         *book.own_mesh.lock().unwrap() = "mesh1".into();
         *book.holder.lock().unwrap() = "mesh1.admin.1".into();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        let rpc1: rafka_mesh_entity::PathName = "mesh1.rpc.1".parse().unwrap();
+        let rpc1: rdm_core::PathName = "mesh1.rpc.1".parse().unwrap();
         assert_eq!(book.adopt_status(&id, &inc, &rpc1, MemberStatus::ReadyForTraffic), Ok(None), "held before its heartbeat");
         assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 10)));
@@ -6554,8 +6554,8 @@ mod tests {
 
     #[test]
     fn digests_carrying_the_largest_runtime_fact_still_pack_within_one_message() {
-        use rafka_mesh_entity::runtime::MAX_FACT_BYTES;
-        use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+        use rdm_core::runtime::MAX_FACT_BYTES;
+        use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
         // The largest fact a birth may publish: a container id in a long domain.
         let mut fact = RuntimeFact {
             deployment_id: "d".repeat(12),
@@ -6782,7 +6782,7 @@ mod tests {
             d.node.name = "mesh2.rpc.1".parse().unwrap();
             d
         };
-        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap() };
+        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() };
         let first = Frame::Members {
             mesh: "mesh2".into(),
             publisher: publisher.clone(),
@@ -7100,7 +7100,7 @@ mod tests {
     /// cohort's record overwriting the mesh-primary record of its mesh.
     #[test]
     fn a_cohort_seat_record_is_held_apart_from_its_meshs_primary_seat() {
-        use rafka_mesh_entity::NodeKind;
+        use rdm_core::NodeKind;
         let seats = SeatBook::default();
         let admin = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
         let rpc = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
@@ -7133,7 +7133,7 @@ mod tests {
     /// same channel never suppress each other, and neighbour-up replay carries every cohort's holder.
     #[test]
     fn a_late_older_seated_record_is_ignored_by_the_receive_path_and_cannot_restore_an_exited_holder() {
-        use rafka_mesh_entity::NodeKind;
+        use rdm_core::NodeKind;
         use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));

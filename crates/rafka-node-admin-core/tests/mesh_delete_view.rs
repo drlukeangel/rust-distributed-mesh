@@ -11,7 +11,7 @@
 
 use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::{project, project_with, GossipLifecycle, Records, ViewReads};
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;

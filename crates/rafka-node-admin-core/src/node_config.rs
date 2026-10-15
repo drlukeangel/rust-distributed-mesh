@@ -15,7 +15,7 @@ use crate::storage::NodeRow;
 use crate::topology::Topology;
 use rafka_node_admin_client::{CallEnd, ExactBirth, NodeRpc};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
+use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use std::sync::Arc;
 
 /// A mesh-primary's config door: the client it tells a birth of its mesh through, what holds this
@@ -63,7 +63,7 @@ impl NodeConfigs {
     /// span, opened first, holds the whole put: the row write and the call that tells the birth are
     /// inside it, and its outcome is the reply's name. A refusal's reply carries its detail cut to the
     /// reply bound; the span carries it whole (`answered`, `detail`), so nothing of it is lost.
-    pub async fn update(&self, me: &crate::model::PathName, me_id: &rafka_mesh_entity::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
+    pub async fn update(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateNodeConfig { node_id, incarnation, config } = req else { unreachable!("update is called for UpdateNodeConfig only") };
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-config",
@@ -87,8 +87,8 @@ impl NodeConfigs {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn put(&self, me: &crate::model::PathName, me_id: &rafka_mesh_entity::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rafka_mesh_entity::NodeId, incarnation: &rafka_mesh_entity::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
-        if let Err(over) = rafka_mesh_entity::check_config(config) {
+    async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
+        if let Err(over) = rdm_core::check_config(config) {
             return StatusReply::RejectedConfig { over };
         }
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
@@ -105,7 +105,7 @@ impl NodeConfigs {
         // The writer of the row is the mesh-primary of the node's mesh, and no other admin
         // (fabric-node-lifecycle §4.3); a caller that sent it elsewhere is told whose seat it needs.
         if !view.holds_mesh_seat(&subject.mesh, me_id) {
-            let held_by = view.cohort_primary(&subject.mesh, rafka_mesh_entity::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+            let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
             let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
             span.record("detail", needed.as_str());
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };

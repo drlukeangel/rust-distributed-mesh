@@ -3,10 +3,10 @@
 //! unserved (`421`) everywhere else in the same sealed catalog.
 
 use rafka_node_rpc::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_mesh_entity::NodeKind;
+use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::outcome::{MalformedKind, ReplyKind};
+use rdm_core::protocol::NodeProtocol;
+use rdm_core::NodeKind;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

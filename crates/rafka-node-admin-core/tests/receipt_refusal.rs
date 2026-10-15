@@ -54,7 +54,7 @@ struct Answers;
 impl NodeObserver for Answers {
     async fn send_command(&self, _: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
         match cmd {
-            NodeCommand::DeleteConnections => CommandAdmission::ConnectionsDeleted { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
+            NodeCommand::DeleteConnections => CommandAdmission::ConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
             _ => CommandAdmission::Admitted {},
         }
     }
@@ -178,15 +178,15 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
     node.status = NodeStatus::ReadyForTraffic;
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Answers, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -341,7 +341,7 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rafka_node_admin_co
     let builds = rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter::join(
         &gossip,
         &rafka_mesh_transport::membership::LocationBook::new(&endpoint, name).unwrap(),
-        &rafka_mesh_entity::FabricId::mint(),
+        &rdm_core::FabricId::mint(),
         vec![],
         local,
         std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), name)),
@@ -367,15 +367,15 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
     node.status = NodeStatus::ReadyForTraffic;
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/rshape-none".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };

@@ -21,7 +21,7 @@
 use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::{Seat, SeatHolder};
+use rdm_core::{Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, ConcernHeard, Membership};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashSet;
@@ -248,11 +248,11 @@ impl Looker {
             return Finding::Unproven { reason: format!("{} ({}) holds no recorded birth: there is no exact birth to look at", n.name, n.node_id) };
         };
         // Every probe names the same exact birth: one kick, by node id and incarnation.
-        let kick = rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
+        let kick = rdm_core::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
         // 1. A direct ping; when it answers, the status kick makes the birth say it is there.
         let direct = async {
-            let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"seat-watch".to_vec() };
-            let (out, _) = self.client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &CallOptions::default()).await;
+            let ping = rdm_core::ping::PingRequest::Ping { payload: b"seat-watch".to_vec() };
+            let (out, _) = self.client.call::<rdm_core::ping::Ping>(&target, &ping, &CallOptions::default()).await;
             if out.reply().is_none() {
                 return false;
             }
@@ -269,7 +269,7 @@ impl Looker {
             .map(|c| {
                 let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
                 let probe = async move {
-                    let (out, _, _) = self.client.call_routed::<rafka_node_rpc_contract::status::Status>(&n.node_id, &route, kick, &CallOptions::default()).await;
+                    let (out, _, _) = self.client.call_routed::<rdm_core::status::Status>(&n.node_id, &route, kick, &CallOptions::default()).await;
                     out.reply().map(|r| r.value().clone())
                 };
                 (c.name.to_string(), probe)
@@ -329,8 +329,8 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
 /// The birth's own answer on the kick (node-recovery.md step 2): `Current`, `CurrentParked` while it
 /// is parked, or `Blocked` while its hook is Blocked, naming the exact birth probed. A carrier's
 /// carrier-edge-lost (no reply reaches the ladder), a `NotReady` and any refusal are not answers.
-pub fn birth_answered(reply: Option<&rafka_node_rpc_contract::status::StatusReply>, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-    use rafka_node_rpc_contract::status::StatusReply;
+pub fn birth_answered(reply: Option<&rdm_core::status::StatusReply>, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+    use rdm_core::status::StatusReply;
     match reply {
         Some(StatusReply::Current { node_id: n, incarnation: i, .. } | StatusReply::CurrentParked { node_id: n, incarnation: i } | StatusReply::Blocked { node_id: n, incarnation: i, .. }) => n == node_id && i == incarnation,
         _ => false,
@@ -344,7 +344,7 @@ pub fn birth_answered(reply: Option<&rafka_node_rpc_contract::status::StatusRepl
 async fn ladder<D, P, V>(node_id: &NodeId, incarnation: &IncarnationId, direct: D, peers: Vec<(String, P)>, provider: V) -> Finding
 where
     D: std::future::Future<Output = bool>,
-    P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
+    P: std::future::Future<Output = Option<rdm_core::status::StatusReply>>,
     V: std::future::Future<Output = Finding>,
 {
     if direct.await {
@@ -522,7 +522,7 @@ mod tests {
     fn admin(path: &str, id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.node_id = NodeId::parse(id).unwrap();
-        n.incarnation_id = Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap());
+        n.incarnation_id = Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap());
         n.status = status;
         n
     }
@@ -641,7 +641,7 @@ mod tests {
         //! The ladder's rungs and completion rules (ruling R-SW1; node-recovery.md step 2), under
         //! paused time: a probe's wait is its budget, and the clock moves only when every probe waits.
         use super::super::*;
-        use rafka_node_rpc_contract::status::{NodeState, RetryOn, StatusReply};
+        use rdm_core::status::{NodeState, RetryOn, StatusReply};
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::time::Duration;
         use tokio::time::{sleep, Instant};
@@ -650,7 +650,7 @@ mod tests {
         const BUDGET: Duration = Duration::from_secs(10);
 
         fn birth() -> (NodeId, IncarnationId) {
-            (NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-the-holder")).unwrap())
+            (NodeId::mint(), IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-the-holder")).unwrap())
         }
 
         fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
@@ -750,7 +750,7 @@ mod tests {
             for r in [current(&b), parked(&b), blocked] {
                 assert!(birth_answered(Some(&r), &b.0, &b.1), "{} is the birth's answer", r.name());
             }
-            let other = (b.0.clone(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("an-older-birth")).unwrap());
+            let other = (b.0.clone(), IncarnationId::parse(&rdm_core::fixture_crockford60("an-older-birth")).unwrap());
             for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), parked(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
                 assert!(!birth_answered(Some(&r), &b.0, &b.1), "{} is no answer from the exact birth", r.name());
             }

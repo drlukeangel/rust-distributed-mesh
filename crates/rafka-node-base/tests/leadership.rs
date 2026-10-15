@@ -1,6 +1,6 @@
 //! e11.s4 — a product reads a cohort's seat from node-admin's view and never computes it.
 
-use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind};
+use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_node_base::leadership::{fabric_primary, primary_of};
 

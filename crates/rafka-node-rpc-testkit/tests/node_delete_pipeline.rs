@@ -13,7 +13,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
-use rafka_mesh_entity::{FabricId, MemberStatus};
+use rdm_core::{FabricId, MemberStatus};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};
@@ -74,7 +74,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         // The stop is answered `Stopped` on its own call: the receipt names what its
         // node.connections.delete { All } established.
         let stopped: CommandAdmission = serde_json::from_value(output(RetireStep::StopNode)).expect("a CommandAdmission");
-        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { .. } }), "StopNode: {stopped:?}");
+        assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Established { .. } }), "StopNode: {stopped:?}");
         for step in [RetireStep::AwaitNodeLeft] {
             let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
             assert_eq!(completion, Completion::Received {}, "{}", step.name());
@@ -135,8 +135,8 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         // terminates the runtime and keeps the data dir and its key (node-delete.md: "It releases
         // node.id and name, not storage"; deployment-provider.md: "Delete releases no storage").
         let mut release = common::add_node();
-        let released = rafka_mesh_entity::meta::PathConfig {
-            storage: rafka_mesh_entity::meta::StorageMeta::Persistent { on_retire: rafka_mesh_entity::meta::PersistentRetireDisposition::Release },
+        let released = rdm_core::meta::PathConfig {
+            storage: rdm_core::meta::StorageMeta::Persistent { on_retire: rdm_core::meta::PersistentRetireDisposition::Release },
             placement: Default::default(),
         };
         release.meshes.get_mut("mesh1").unwrap().set_path_config(&again.node.name, released).unwrap();

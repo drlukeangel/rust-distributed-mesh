@@ -5,7 +5,7 @@
 //! (node-delete.md "Storage": "Retain data dir and endpoint key"). The cell drives the retire
 //! pipeline over a recording provider and a recording observer: nothing here depends on timing.
 
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::pipeline::{
@@ -115,15 +115,15 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
     node.parked = true;
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/stopped-delete".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3072-delete-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3072-delete-store-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, joins) = (Exits::default(), Recorded::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {

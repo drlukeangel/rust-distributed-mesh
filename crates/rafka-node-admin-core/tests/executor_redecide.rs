@@ -8,7 +8,7 @@
 //! birth that never joined: that runtime names the lost admin and can never join. It decides the
 //! birth afresh, under its own endpoint. Receipts that do not depend on the executor stay.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
@@ -132,22 +132,22 @@ impl Fleet {
 const DOMAIN: &str = "i143-2892";
 
 /// The digest a launched node reports at its join, from the launch it was handed.
-fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rafka_mesh_entity::RuntimeFact>) -> rafka_mesh_entity::MeshDigest {
+fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::RuntimeFact>) -> rdm_core::MeshDigest {
     let env = |k: &str| spec.env.get(k).cloned().unwrap_or_else(|| panic!("the launch names {k}"));
     let key_hex = std::fs::read_to_string(spec.data_dir.join("node-key")).expect("PrepareStorage wrote the node key");
     let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
-    rafka_mesh_entity::MeshDigest {
-        fabric_id: rafka_mesh_entity::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
-        node: rafka_mesh_entity::MeshNode {
+    rdm_core::MeshDigest {
+        fabric_id: rdm_core::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
+        node: rdm_core::MeshNode {
             node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),
             name: env("RDM_NODE_NAME").parse().unwrap(),
-            endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
+            endpoint_id: rdm_core::EndpointId(key.public().to_string()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
             incarnation: IncarnationId::parse(&env("RDM_INCARNATION_ID")).unwrap(),
             supersedes: spec.env.get("RDM_SUPERSEDES").filter(|s| !s.is_empty()).map(|s| IncarnationId::parse(s).unwrap()),
             runtime,
         },
-        status: rafka_mesh_entity::MemberStatus::Pending,
+        status: rdm_core::MemberStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
@@ -249,7 +249,7 @@ struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &PathName) {}
-    fn remove_birth(&self, _: &PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+    fn remove_birth(&self, _: &PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
 }
 
 /// An executor: one admin birth, named by its own endpoint (the seed every launch it makes carries).
@@ -267,12 +267,12 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![(key.into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         },
         joins,
     }

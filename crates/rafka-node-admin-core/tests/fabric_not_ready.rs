@@ -14,7 +14,7 @@ use rafka_node_admin_core::build_state::{AttemptReason, BuildStateAdapter, Memor
 use rafka_node_admin_core::control_plane::{ActionKind, ControlPlane, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::build::BuildReply;
+use rdm_core::build::BuildReply;
 use std::sync::Arc;
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
@@ -109,7 +109,7 @@ async fn a_caller_node_workflow_before_the_fabric_first_reaches_ready_for_traffi
         let (named, status) = refused(r.attempt(reason, path, kind).await);
         assert_eq!((named.as_str(), status.as_str()), (workflow, "state-sync"), "{workflow}");
     }
-    let recipe_step = rafka_node_rpc_contract::build::RecipeStep::Create { node: "mesh1.rpc.1.new".parse().unwrap() };
+    let recipe_step = rdm_core::build::RecipeStep::Create { node: "mesh1.rpc.1.new".parse().unwrap() };
     let (named, status) = refused(r.cp.open_recipe_in(tracing::Span::current(), "test", vec![recipe_step]).await);
     assert_eq!((named.as_str(), status.as_str()), ("recipe (node.create:mesh1.rpc.1.new)", "state-sync"));
     assert_eq!(r.facts().await, before, "no attempt is opened and nothing is accepted by a refused workflow");
@@ -152,12 +152,12 @@ async fn a_mesh_delete_or_node_delete_before_the_fabric_first_reaches_ready_for_
     let r = rig(ScopeStatus::StateSync).await;
     let before = r.facts().await;
     let current = r.builds.current_build().await.unwrap();
-    let mesh1 = || MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]);
+    let mesh1 = || MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]);
     let cases: Vec<(TopologyChange, &str)> = vec![
         (TopologyChange::RemoveMesh { mesh: "mesh2".into() }, "mesh.delete mesh2"),
         (TopologyChange::RemoveNode { node: "mesh1.rpc.1".parse().unwrap() }, "node.delete mesh1.rpc.1"),
         (TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1()] } }, "mesh.delete mesh2"),
-        (TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2)]) }, "node.delete mesh1.rpc.1"),
+        (TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2)]) }, "node.delete mesh1.rpc.1"),
     ];
     for (change, workflow) in cases {
         match r.cp.submit("test", change.clone()).await {
@@ -181,12 +181,12 @@ async fn the_initial_accepted_build_and_growth_are_admitted_before_the_fabric_fi
     for status in [ScopeStatus::Pending, ScopeStatus::StateSync, ScopeStatus::StateCommit] {
         let grown = |rpc: u32| FabricDesired {
             fabric: "fabric1".into(),
-            meshes: ["mesh1", "mesh2"].iter().map(|m| MeshDesired::of(m.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, rpc)])).collect(),
+            meshes: ["mesh1", "mesh2"].iter().map(|m| MeshDesired::of(m.to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, rpc)])).collect(),
         };
         for change in [
             TopologyChange::ReconcileFabric { desired: grown(3) },
-            TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rafka_mesh_entity::NodeKind::RpcNode },
-            TopologyChange::CreateMesh { desired: MeshDesired::of("mesh3".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1)]) },
+            TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode },
+            TopologyChange::CreateMesh { desired: MeshDesired::of("mesh3".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1)]) },
         ] {
             let r = rig(status).await;
             let before = r.facts().await;

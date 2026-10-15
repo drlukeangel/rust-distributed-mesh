@@ -9,9 +9,9 @@
 
 use super::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 #[cfg(test)]
-use rafka_mesh_entity::RuntimeLocator;
+use rdm_core::RuntimeLocator;
 use crate::model::ProviderKind;
-use rafka_mesh_entity::runtime::{process_control_domain, process_start_token};
+use rdm_core::runtime::{process_control_domain, process_start_token};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -265,13 +265,13 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     };
     // A record left by an earlier birth in this data dir is not this one's:
     // the birth waits for the one the pipeline makes available.
-    let stale = spec.data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+    let stale = spec.data_dir.join(rdm_core::runtime::RUNTIME_FILE);
     match std::fs::remove_file(&stale) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(err(format!("{}: {e}", stale.display()))),
     }
-    rafka_mesh_entity::runtime::ExitRecord::clear(&spec.data_dir).map_err(err)?;
+    rdm_core::runtime::ExitRecord::clear(&spec.data_dir).map_err(err)?;
     let mut cmd = std::process::Command::new(&spec.executable);
     // The launcher's environment is the child's host environment (PATH, HOME, RUST_LOG, OTLP
     // endpoint, ...) and nothing of its launch contract: every `RDM_*` variable and the trace
@@ -521,7 +521,7 @@ mod tests {
         // The handle names exactly the runtime it started; making its fact
         // available to the birth is the pipeline's step, not the provider's.
         let fact = h.fact().expect("an exact handle");
-        assert!(rafka_mesh_entity::RuntimeFact::read_record(&dir).is_none());
+        assert!(rdm_core::RuntimeFact::read_record(&dir).is_none());
         let successor = ProcessDeploymentProvider::new();
         // The same pid under another start token is another process: never ours to signal.
         let mut forged = fact.clone();

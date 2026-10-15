@@ -7,7 +7,7 @@
 //! neighbour, a frame leaving a parked node, or an unpark that leaves the node deaf.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::Membership;
 use std::time::{Duration, Instant};
 

@@ -14,14 +14,14 @@
 //! Its own process: the cell holds process-wide state (the parking flag).
 
 use crate::common::admin_side_serving;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_admin_core::model::NodeStatus;
 use rafka_node_admin_core::storage::NodeRow;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::proof_store::{self, ProofRequest, ProofStore};
 use std::time::Duration;
@@ -46,7 +46,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("rejoin-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1".parse().unwrap();
         let old: PathName = "mesh1.rpc.1.old".parse().unwrap();
@@ -65,7 +65,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let store = std::sync::Arc::new(proof_store::FileProofStore::open(&dir).unwrap());
@@ -162,7 +162,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("rejoin-held-name-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
@@ -181,7 +181,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
@@ -195,7 +195,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let delete = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        let delete = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         assert!(matches!(call(&admin, &target, &delete).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
         assert_eq!(call(&admin, &target, &apply).await, StatusReply::Applied);

@@ -12,8 +12,8 @@ use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, Build
 use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner, RunEnd, RunPlan};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::stop_gate::StopGate;
-use rafka_node_rpc_contract::build::{BuildReply, Disposition};
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::build::{BuildReply, Disposition};
+use rdm_core::context::CallContext;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};

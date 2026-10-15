@@ -12,13 +12,13 @@
 use crate::connections_writer::HeldConnections;
 use crate::model::{Node, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rafka_mesh_entity::{GossipStats, NodeLoad};
+use rdm_core::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+use rdm_core::{GossipStats, NodeLoad};
 use crate::storage::NodesStorage;
 use crate::status_storage::StatusStorage;
-use rafka_mesh_entity::NodeId;
-use rafka_node_rpc_contract::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
-use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+use rdm_core::NodeId;
+use rdm_core::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
+use rdm_core::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

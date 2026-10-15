@@ -10,7 +10,7 @@
 //! `TerminateRuntime` step proves its exit (mesh-delete.md step 7). The last admin's departure is read
 //! from its own leg spans, the executor's steps and a peer's resolver.
 
-use rafka_mesh_entity::NodeKind;
+use rdm_core::NodeKind;
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};

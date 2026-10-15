@@ -20,7 +20,7 @@
 //! Every refusal is a [`Violation`] naming the invariant, the operation id and the expected and
 //! actual values.
 
-use rafka_node_rpc_contract::outcome::{ReplyKind, RpcOutcome};
+use rdm_core::outcome::{ReplyKind, RpcOutcome};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;

@@ -36,8 +36,8 @@ use crate::model::*;
 use crate::topology::Topology;
 use iroh::protocol::Router as IrohRouter;
 use iroh::{Endpoint, EndpointAddr, SecretKey};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{MemberStatus, MeshDigest, MeshNode};
+use rdm_core::launch::Launch;
+use rdm_core::{MemberStatus, MeshDigest, MeshNode};
 use rafka_mesh_transport::membership::{gossip_interval, Backbone, DigestBook, Membership};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use tracing::Instrument;
@@ -67,7 +67,7 @@ pub fn hung_hold_floors() -> u64 {
 
 /// Configured hold duration in milliseconds (`hung_hold_floors() * staleness_floor()`).
 pub fn hung_hold_ms() -> u64 {
-    hung_hold_floors().saturating_mul(rafka_mesh_entity::cadence::staleness_floor().as_millis() as u64)
+    hung_hold_floors().saturating_mul(rdm_core::cadence::staleness_floor().as_millis() as u64)
 }
 
 /// The environment variable configuring the hold duration (in staleness floors) before an absent
@@ -89,7 +89,7 @@ pub fn data_dir_gone_floors() -> u64 {
 
 /// Configured hold duration in milliseconds (`data_dir_gone_floors() * staleness_floor()`).
 pub fn data_dir_gone_hold_ms() -> u64 {
-    data_dir_gone_floors().saturating_mul(rafka_mesh_entity::cadence::staleness_floor().as_millis() as u64)
+    data_dir_gone_floors().saturating_mul(rdm_core::cadence::staleness_floor().as_millis() as u64)
 }
 
 /// Everything a node-admin reads from its environment.
@@ -130,7 +130,7 @@ pub struct AdminConfig {
     /// The explicit executable bindings this admin launches from (`RDM_EXECUTABLE_BINDINGS`),
     /// validated before it opens a provider. `None` is the built-in mode: executables come from
     /// `bin_dir`. With bindings, nothing is launched from `bin_dir`.
-    pub bindings: Option<rafka_mesh_entity::binding::Validated>,
+    pub bindings: Option<rdm_core::binding::Validated>,
     /// The two variables that named them, handed on to every node-admin this admin launches.
     pub bindings_env: BTreeMap<String, String>,
     /// `RDM_STOPPED_NODE_TTL` (node-identity-and-state.md §6.9): a node stopped longer than it is
@@ -147,14 +147,14 @@ impl AdminConfig {
     /// The admin's configuration from the environment `get` reads, refused by name when a variable
     /// is malformed.
     pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        let launch = if get(rafka_mesh_entity::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
+        let launch = if get(rdm_core::launch::ENV_NODE_ID).is_some() { Some(Launch::from_env(&get)?) } else { None };
         let fabric = launch.as_ref().map(|l| l.fabric.clone()).or_else(|| get("RDM_FABRIC")).unwrap_or_else(|| "fabric1".into());
         // A launched node is handed its Fabric's id; the bootstrap admin takes
         // `RDM_FABRIC_ID` when given, else its Fabric is new and it mints one.
         let fabric_id = match &launch {
             Some(l) => l.fabric_id.clone(),
-            None => match get(rafka_mesh_entity::launch::ENV_FABRIC_ID).filter(|v| !v.trim().is_empty()) {
-                Some(v) => FabricId::parse(&v).map_err(|e| format!("{}: {e}", rafka_mesh_entity::launch::ENV_FABRIC_ID))?,
+            None => match get(rdm_core::launch::ENV_FABRIC_ID).filter(|v| !v.trim().is_empty()) {
+                Some(v) => FabricId::parse(&v).map_err(|e| format!("{}: {e}", rdm_core::launch::ENV_FABRIC_ID))?,
                 None => FabricId::mint(),
             },
         };
@@ -170,8 +170,8 @@ impl AdminConfig {
         // The fabric's store root: required, never defaulted, never the data dir (R14 items 1, 8).
         let store_dir = match &launch {
             Some(l) => l.store_dir.clone(),
-            None => get(rafka_mesh_entity::launch::ENV_STORE_DIR).filter(|v| !v.trim().is_empty()).map(PathBuf::from).ok_or_else(|| {
-                format!("{} is required: the fabric's shared store root every node of the fabric reaches; nothing falls back to the data dir", rafka_mesh_entity::launch::ENV_STORE_DIR)
+            None => get(rdm_core::launch::ENV_STORE_DIR).filter(|v| !v.trim().is_empty()).map(PathBuf::from).ok_or_else(|| {
+                format!("{} is required: the fabric's shared store root every node of the fabric reaches; nothing falls back to the data dir", rdm_core::launch::ENV_STORE_DIR)
             })?,
         };
         let bin_dir = get("RDM_BIN_DIR").map(PathBuf::from).unwrap_or_else(|| {
@@ -181,18 +181,18 @@ impl AdminConfig {
             .map(|b| b.parse().map_err(|e| format!("RDM_NODE_ADMIN_API_BIND `{b}`: {e}")))
             .transpose()?
             .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 0)));
-        let bindings_env: BTreeMap<String, String> = [rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS, rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE]
+        let bindings_env: BTreeMap<String, String> = [rdm_core::binding::ENV_EXECUTABLE_BINDINGS, rdm_core::binding::ENV_EXECUTABLE_CANDIDATE]
             .iter()
             .filter_map(|k| get(k).filter(|v| !v.trim().is_empty()).map(|v| (k.to_string(), v)))
             .collect();
-        let bindings = match get(rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS).filter(|v| !v.trim().is_empty()) {
+        let bindings = match get(rdm_core::binding::ENV_EXECUTABLE_BINDINGS).filter(|v| !v.trim().is_empty()) {
             None => None,
             Some(file) => {
-                let candidate = get(rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE)
+                let candidate = get(rdm_core::binding::ENV_EXECUTABLE_CANDIDATE)
                     .filter(|v| !v.trim().is_empty())
-                    .ok_or_else(|| format!("{} names a binding file but {} (the candidate sha this run is of) is not set", rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS, rafka_mesh_entity::binding::ENV_EXECUTABLE_CANDIDATE))?;
-                let set = rafka_mesh_entity::binding::BindingSet::load(Path::new(&file)).map_err(|e| e.to_string())?;
-                let expect = rafka_mesh_entity::binding::Expect { candidate_sha: &candidate, required: &[], provider_image: rafka_mesh_entity::binding::ProviderImage::Unchecked };
+                    .ok_or_else(|| format!("{} names a binding file but {} (the candidate sha this run is of) is not set", rdm_core::binding::ENV_EXECUTABLE_BINDINGS, rdm_core::binding::ENV_EXECUTABLE_CANDIDATE))?;
+                let set = rdm_core::binding::BindingSet::load(Path::new(&file)).map_err(|e| e.to_string())?;
+                let expect = rdm_core::binding::Expect { candidate_sha: &candidate, required: &[], provider_image: rdm_core::binding::ProviderImage::Unchecked };
                 // The bootstrap admin hashes every bound file before any provider opens; an admin
                 // another admin launched checks all but the hashes (its launch re-hashed its own
                 // executable; each later launch re-hashes the one it runs).
@@ -207,21 +207,21 @@ impl AdminConfig {
         let (mesh_primary, fabric_primary) = match &launch {
             Some(_) => (false, false),
             None => (
-                rafka_mesh_entity::launch::decode_flag(rafka_mesh_entity::launch::ENV_MESH_PRIMARY, get(rafka_mesh_entity::launch::ENV_MESH_PRIMARY))?,
-                rafka_mesh_entity::launch::decode_flag(rafka_mesh_entity::launch::ENV_FABRIC_PRIMARY, get(rafka_mesh_entity::launch::ENV_FABRIC_PRIMARY))?,
+                rdm_core::launch::decode_flag(rdm_core::launch::ENV_MESH_PRIMARY, get(rdm_core::launch::ENV_MESH_PRIMARY))?,
+                rdm_core::launch::decode_flag(rdm_core::launch::ENV_FABRIC_PRIMARY, get(rdm_core::launch::ENV_FABRIC_PRIMARY))?,
             ),
         };
         if fabric_primary && !mesh_primary {
             return Err(format!(
                 "{} is set without {}: a fabric recovery starts the primary node-admin of its own mesh as well (node-admin-lifecycle.md §3)",
-                rafka_mesh_entity::launch::ENV_FABRIC_PRIMARY,
-                rafka_mesh_entity::launch::ENV_MESH_PRIMARY
+                rdm_core::launch::ENV_FABRIC_PRIMARY,
+                rdm_core::launch::ENV_MESH_PRIMARY
             ));
         }
         let stopped_node_ttl = crate::stopped_gc::ttl_from_env(get(crate::stopped_gc::ENV).as_deref())?;
         let connections_delete_deadline = match &launch {
             Some(l) => l.connections_delete_deadline,
-            None => rafka_mesh_entity::launch::decode_connections_delete_deadline(get(rafka_mesh_entity::launch::ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
+            None => rdm_core::launch::decode_connections_delete_deadline(get(rdm_core::launch::ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         };
         Ok(Self {
             stopped_node_ttl,
@@ -232,9 +232,9 @@ impl AdminConfig {
             fabric_primary,
             seeds: match &launch {
                 Some(_) => Vec::new(),
-                None => rafka_mesh_entity::launch::decode_seeds(&get(rafka_mesh_entity::launch::ENV_SEEDS).unwrap_or_default())?,
+                None => rdm_core::launch::decode_seeds(&get(rdm_core::launch::ENV_SEEDS).unwrap_or_default())?,
             },
-            fabric_id_named: launch.is_some() || get(rafka_mesh_entity::launch::ENV_FABRIC_ID).is_some_and(|v| !v.trim().is_empty()),
+            fabric_id_named: launch.is_some() || get(rdm_core::launch::ENV_FABRIC_ID).is_some_and(|v| !v.trim().is_empty()),
             mesh,
             mesh_id: launch
                 .as_ref()
@@ -500,17 +500,17 @@ impl Records {
     /// Committed as an `ApplyFabricEvent` at this admin is (`crate::status_rpc::commit_fabric_event`):
     /// the declarer's later one for this mesh answers `AlreadyApplied`. `Err` names what refused it, and
     /// nothing is held.
-    pub async fn put_ready_row(&self, fabric_id: &FabricId) -> Result<rafka_node_rpc_contract::status::StatusReply, String> {
+    pub async fn put_ready_row(&self, fabric_id: &FabricId) -> Result<rdm_core::status::StatusReply, String> {
         let Some(fold) = self.status.get() else {
             return Err(format!("no status store is held to put the ready-for-traffic row of fabric {fabric_id}"));
         };
-        let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
+        let ready = crate::status_rpc::event_key(&rdm_core::status::FabricEvent::ReadyForTraffic);
         match crate::status_rpc::commit_fabric_event(&**fold.storage(), &self.declared, fabric_id, &ready).await {
-            r @ (rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) => {
+            r @ (rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied) => {
                 self.first_ready.reach("ready-for-traffic");
                 Ok(r)
             }
-            rafka_node_rpc_contract::status::StatusReply::NotReady { reason } => Err(format!("the status rows of mesh {} on the store root: {reason}", fold.mesh())),
+            rdm_core::status::StatusReply::NotReady { reason } => Err(format!("the status rows of mesh {} on the store root: {reason}", fold.mesh())),
             other => Err(format!("the status rows of mesh {} on the store root answered {}", fold.mesh(), other.name())),
         }
     }
@@ -1034,19 +1034,19 @@ pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (N
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
-pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)> {
+pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&NodeId, &IncarnationId), decided: &crate::election::Incumbency) -> Vec<(rdm_core::Seat, rdm_core::SeatHolder)> {
     let mesh_primary = live && t.holds_mesh_seat(mesh, me.0);
     let fabric_primary = live && t.holds_fabric_seat(me.0);
     let mut said = Vec::new();
-    for (seat, holds) in [(rafka_mesh_entity::Seat::MeshPrimary, mesh_primary), (rafka_mesh_entity::Seat::FabricPrimary, fabric_primary)] {
+    for (seat, holds) in [(rdm_core::Seat::MeshPrimary, mesh_primary), (rdm_core::Seat::FabricPrimary, fabric_primary)] {
         if !holds {
             continue;
         }
-        let held = if seat == rafka_mesh_entity::Seat::FabricPrimary { decided.fabric.clone() } else { decided.meshes.get(mesh).cloned() };
+        let held = if seat == rdm_core::Seat::FabricPrimary { decided.fabric.clone() } else { decided.meshes.get(mesh).cloned() };
         if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
             continue;
         }
-        said.push((seat, rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+        said.push((seat, rdm_core::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
     }
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
     // says each other cohort's seat the election filled with a birth the record does not name.
@@ -1057,7 +1057,7 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
             }
-            said.push((rafka_mesh_entity::Seat::Cohort(kind), rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+            said.push((rdm_core::Seat::Cohort(kind), rdm_core::SeatHolder { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
         }
     }
     said
@@ -1523,10 +1523,10 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         let row = id.as_ref().and_then(|id| declared_meshes.get(id).copied());
         let authored_here = records.me.get().is_some_and(|me| topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
         let status = match row {
-            Some(rafka_node_rpc_contract::status::MeshState::Dead) => ScopeStatus::Dead,
+            Some(rdm_core::status::MeshState::Dead) => ScopeStatus::Dead,
             _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
             _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
-            Some(rafka_node_rpc_contract::status::MeshState::Leaving) => ScopeStatus::Leaving,
+            Some(rdm_core::status::MeshState::Leaving) => ScopeStatus::Leaving,
             _ if ready => ScopeStatus::ReadyForTraffic,
             _ => ScopeStatus::Pending,
         };
@@ -2264,7 +2264,7 @@ impl RecoverySubmitter {
     /// the birth ([`Self::owed_submits`]).
     async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
-        let of = |announced: &'static str, op: rafka_mesh_entity::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
+        let of = |announced: &'static str, op: rdm_core::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
         if let Some(op) = self.book.departed().into_iter().find(|op| op.node_id == n.node_id) {
             return Some(of("node-deleted", op));
         }
@@ -2416,7 +2416,7 @@ impl RecoverySubmitter {
     /// followed to the terminal ([`crate::build_run::run_recovery`]).
     async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, String> {
         use crate::build_run::{Recovered, RecoveryNotRun};
-        use rafka_node_rpc_contract::build::BuildReply;
+        use rdm_core::build::BuildReply;
         let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary seat but its Build door is not built yet", self.held_name()))?;
         let opened = |o: &crate::control_plane::Opened, disposition: &str| {
             span.record("build_id", o.build_id.as_str());
@@ -2602,7 +2602,7 @@ impl crate::build_drive::Gate for SeatGate {
     async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
-        use rafka_mesh_entity::Seat;
+        use rdm_core::Seat;
         let door = &self.handover;
         if m.holder.node_id != door.node_id {
             // A mesh-primary's seat, commanded on its holder; any other cohort's seat, commanded through
@@ -2644,7 +2644,7 @@ impl crate::build_drive::Gate for SeatGate {
             for s in &p.steps {
                 if s.operation.starts_with("node.stop:") && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete {
                     stopped = true;
-                    if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()).ok()) {
+                    if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rdm_core::LifecycleOp>(v.clone()).ok()) {
                         let _ = self.membership.book.stopped(op);
                     }
                 }
@@ -3138,7 +3138,7 @@ pub async fn reconcile_drift(
     // The create of a node-admin into a live mesh is a one-step recipe on the existing carrier
     // (`BuildChange::Recipe`; no new wire variant): the node the create names pins the birth the view
     // holds there, so a later loss of the same path is a different action.
-    let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rafka_node_rpc_contract::build::RecipeStep::Create { node: admin.clone() }], t);
+    let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rdm_core::build::RecipeStep::Create { node: admin.clone() }], t);
     let (key, scope, action) = if let Some(admin) = recover_admin {
         match create_of(admin) {
             Ok(action) => (vec![admin.to_string()], admin.to_string(), Some(action)),
@@ -3337,13 +3337,13 @@ pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>)
         }
         let mut missing = Vec::new();
         if cfg.mesh_id.is_none() {
-            missing.push(rafka_mesh_entity::launch::ENV_MESH_ID);
+            missing.push(rdm_core::launch::ENV_MESH_ID);
         }
         if !cfg.fabric_id_named {
-            missing.push(rafka_mesh_entity::launch::ENV_FABRIC_ID);
+            missing.push(rdm_core::launch::ENV_FABRIC_ID);
         }
         if cfg.seeds.is_empty() {
-            missing.push(rafka_mesh_entity::launch::ENV_SEEDS);
+            missing.push(rdm_core::launch::ENV_SEEDS);
         }
         if !missing.is_empty() {
             return Err(format!("a fabric recovery on {dir} names the Fabric, the mesh and a live node to dial; missing {}", missing.join(", ")));
@@ -3351,7 +3351,7 @@ pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>)
     } else if cfg.mesh_id.is_some() || !cfg.seeds.is_empty() {
         return Err(format!(
             "{dir} is started with {} but no recovery flag: Day 0 names no mesh and no seed, and a recovery sets RDM_MESH_PRIMARY and RDM_FABRIC_PRIMARY",
-            [(cfg.mesh_id.is_some(), rafka_mesh_entity::launch::ENV_MESH_ID), (!cfg.seeds.is_empty(), rafka_mesh_entity::launch::ENV_SEEDS)]
+            [(cfg.mesh_id.is_some(), rdm_core::launch::ENV_MESH_ID), (!cfg.seeds.is_empty(), rdm_core::launch::ENV_SEEDS)]
                 .iter()
                 .filter(|(set, _)| *set)
                 .map(|(_, k)| *k)
@@ -3441,7 +3441,7 @@ pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: 
     }
     let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     match rafka_node_admin_client::NodeRpc::new(client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
-        Ok(rafka_node_rpc_contract::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
+        Ok(rdm_core::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
             Some(format!("{}: hydrate_before_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
         }
         _ => None,
@@ -3476,8 +3476,8 @@ impl NodeObserver for MembershipObserver {
         let started = match self.authority.get().map(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation)) {
             None => "node.started is not known here: this admin holds no declared states yet".to_string(),
             Some(None) => "this admin holds no declared state of the birth: it took no node.started".to_string(),
-            Some(Some(rafka_node_rpc_contract::status::NodeState::Pending)) => "this admin holds the birth declared Pending: it took no node.started".to_string(),
-            Some(Some(rafka_node_rpc_contract::status::NodeState::ReadyForTraffic)) => "this admin holds the birth declared ReadyForTraffic: it took node.started".to_string(),
+            Some(Some(rdm_core::status::NodeState::Pending)) => "this admin holds the birth declared Pending: it took no node.started".to_string(),
+            Some(Some(rdm_core::status::NodeState::ReadyForTraffic)) => "this admin holds the birth declared ReadyForTraffic: it took node.started".to_string(),
             Some(Some(state)) => format!("this admin holds the birth declared {state:?}"),
         };
         Err(format!("{} is held {:?}, not ready-for-traffic: {member}; {started}", node.name, d.status))
@@ -3501,10 +3501,10 @@ impl NodeObserver for MembershipObserver {
             let (Some(authority), Some(incarnation)) = (self.authority.get(), node.incarnation_id.clone()) else {
                 return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connections.delete to {}", node.name) };
             };
-            let req = rafka_node_rpc_contract::status::StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation, scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+            let req = rdm_core::status::StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation, scope: rdm_core::status::ConnectionScope::All };
             let reply = authority.apply(None, &req).await;
             return match reply {
-                rafka_node_rpc_contract::status::StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => crate::deployment::pipeline::CommandAdmission::ConnectionsDeleted { receipt },
+                rdm_core::status::StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => crate::deployment::pipeline::CommandAdmission::ConnectionsDeleted { receipt },
                 other => crate::deployment::pipeline::CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
             };
         }
@@ -3576,7 +3576,7 @@ impl crate::node_self::Session for AdminSession {
             node_id = %self.node_id,
             mesh = %self.membership.mesh_name(),
             mesh_id = %self.mesh_id,
-            which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+            which = rdm_core::status::WhichMesh::Own.name(),
         )
         .in_scope(|| tracing::info!("left the mesh channel"));
         self.backbone.park().await;
@@ -3586,7 +3586,7 @@ impl crate::node_self::Session for AdminSession {
             node_id = %self.node_id,
             mesh = %self.membership.mesh_name(),
             mesh_id = %self.mesh_id,
-            which = rafka_node_rpc_contract::status::WhichMesh::Backbone.name(),
+            which = rdm_core::status::WhichMesh::Backbone.name(),
         )
         .in_scope(|| tracing::info!("left the backbone channel"));
         let pooled = self.client.close_pooled("node.connections.delete");
@@ -3603,8 +3603,8 @@ impl crate::node_self::Session for AdminSession {
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
     }
 
-    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rafka_node_rpc_contract::status::WhichMesh>, String> {
-        use rafka_node_rpc_contract::status::WhichMesh;
+    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
+        use rdm_core::status::WhichMesh;
         use tracing::Instrument as _;
         let mut digest = self.digest.lock().unwrap().clone();
         digest.status = MemberStatus::Pending;
@@ -3739,7 +3739,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             node_id = %s.node_id,
             mesh = %s.membership.mesh_name(),
             mesh_id = %s.mesh_id,
-            which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+            which = rdm_core::status::WhichMesh::Own.name(),
         )
         .in_scope(|| tracing::info!("joined the mesh channel"));
         s.backbone.unpark().await;
@@ -3749,7 +3749,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             node_id = %s.node_id,
             mesh = %s.membership.mesh_name(),
             mesh_id = %s.mesh_id,
-            which = rafka_node_rpc_contract::status::WhichMesh::Backbone.name(),
+            which = rdm_core::status::WhichMesh::Backbone.name(),
         )
         .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
@@ -4119,7 +4119,7 @@ pub struct AdminRunner {
     pub bin_dir: PathBuf,
     /// Explicit executable bindings: when set, every launch runs its bound executable and
     /// `bin_dir` is never consulted.
-    pub bindings: Option<rafka_mesh_entity::binding::Validated>,
+    pub bindings: Option<rdm_core::binding::Validated>,
     /// The lifecycle transitions of the births this admin executes.
     pub lifecycle: LifecycleTransitionPipeline,
     /// The runtimes this admin started, by node.
@@ -4193,7 +4193,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     fn now_rafka_ms(&self) -> u64 {
         self.membership.clock().now_rafka_ms()
     }
-    async fn deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn deleting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
             self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Deleting, op).await;
@@ -4202,7 +4202,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .instrument(span)
         .await
     }
-    async fn restarting(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn restarting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
             self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Restarting, op).await;
@@ -4211,7 +4211,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .instrument(span)
         .await
     }
-    async fn stopped(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn stopped(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
             self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
@@ -4223,20 +4223,20 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .instrument(span)
         .await
     }
-    async fn stop_completed(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn stop_completed(&self, op: &rdm_core::LifecycleOp) {
         self.backbone.announce_update_of_stopped_holder(op).await;
     }
-    async fn joined(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn joined(&self, op: &rdm_core::LifecycleOp) {
         self.membership.book.joined(op);
     }
-    async fn connections_deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn connections_deleting(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         span.in_scope(|| {
             self.membership.book.admitted(op, MemberStatus::Draining);
             tracing::info!("node.connections.delete {{ All }} was admitted: the birth is connections-deleting in this mesh-primary's projection");
         });
     }
-    async fn leaving(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn leaving(&self, op: &rdm_core::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-leaving", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
@@ -4249,7 +4249,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .instrument(span)
         .await
     }
-    async fn deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn deleted(&self, op: &rdm_core::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
@@ -4315,7 +4315,7 @@ impl AdminRunner {
         }
         // Every node of a mesh carries its id: it names the mesh's channel.
         if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
-            t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.to_string());
+            t.env.insert(rdm_core::launch::ENV_MESH_ID.into(), id.to_string());
         }
         if mesh != self.held_name().mesh {
             let peers: Vec<(String, SocketAddr)> = self
@@ -4452,8 +4452,8 @@ impl AdminRunner {
         // Every kind, a node-admin included, serves Ping on its one endpoint.
         let node_rpc = &self.node_rpc;
         let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(WITHIN), ..Default::default() };
-        let req = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"fence".to_vec() };
-        let (out, _) = node_rpc.client.call::<rafka_node_rpc_contract::ping::Ping>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
+        let req = rdm_core::ping::PingRequest::Ping { payload: b"fence".to_vec() };
+        let (out, _) = node_rpc.client.call::<rdm_core::ping::Ping>(&rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), &req, &opts).await;
         out.reply().is_some()
     }
 
@@ -4527,7 +4527,7 @@ impl AdminRunner {
     /// `AlreadyApplied` succeed; any other outcome fails the step typed (a stale-birth answer, a
     /// backward move, an unreachable target, a lost reply), and the rectifier is the retry, so
     /// `Build(shape)` never starts under an assumed state.
-    fn mesh_state_hook(&self, admin: &PathName, state: rafka_node_rpc_contract::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
+    fn mesh_state_hook(&self, admin: &PathName, state: rdm_core::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
         let node_rpc = &self.node_rpc;
         let (client, resolver, me, book, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.book.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
@@ -4649,7 +4649,7 @@ impl AdminRunner {
         // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
         // joins the live mesh").
         let first_admin = self.topology.read().await.first_admin_of(node);
-        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
+        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rdm_core::status::MeshState::Pending)?) } else { None };
         // The launch is the kind's template, as every create's: the new node's config is seeded
         // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told
         // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
@@ -5019,7 +5019,7 @@ impl AdminRunner {
                     // birth, before it is asked to be Ready; only with that certainty does the shape
                     // proceed (e4.s11).
                     let first_admin = self.topology.read().await.first_admin_of(node);
-                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
+                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, rdm_core::status::MeshState::Pending)?) } else { None };
                     self.create(build_id, attempt, node, before_ready).await
                 }
                 .instrument(span)
@@ -5068,8 +5068,8 @@ impl AdminRunner {
     /// node.create is the create workflow; node.stop the standalone stop; node.name.update its
     /// own core at this admin as the node's mesh-primary; node.start the start of the stopped birth;
     /// node.delete node.delete's workflow from the state the birth is in.
-    async fn recipe_step(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rafka_node_rpc_contract::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
-        use rafka_node_rpc_contract::build::RecipeStep as S;
+    async fn recipe_step(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rdm_core::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
+        use rdm_core::build::RecipeStep as S;
         let me = self.held_name();
         let node = step.node();
         let key = crate::build::recipe_step_key(step);
@@ -5123,9 +5123,9 @@ impl AdminRunner {
                         } else {
                             None
                         };
-                        let req = rafka_node_rpc_contract::status::StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.name() };
+                        let req = rdm_core::status::StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.name() };
                         match authority.update_name(&req, cutover.as_ref()).await {
-                            rafka_node_rpc_contract::status::StatusReply::NameUpdated { .. } => Ok(()),
+                            rdm_core::status::StatusReply::NameUpdated { .. } => Ok(()),
                             refused => Err(format!("{key}: node.name.update of {node} ({}) to {name} answered {refused:?}", birth.node_id)),
                         }
                     };
@@ -5143,9 +5143,9 @@ impl AdminRunner {
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-pub async fn apply_mesh_state(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, state: rafka_node_rpc_contract::status::MeshState, target: &Node) -> Result<(), String> {
-    use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-    use rafka_node_rpc_contract::status::{MeshState, Status, StatusReply, StatusRequest};
+pub async fn apply_mesh_state(client: &rafka_node_rpc::NodeRpcClient, resolver: &rafka_node_rpc::LiveNodeResolver, me: &PathName, me_id: &NodeId, topology: &Arc<RwLock<Topology>>, mesh: &str, mesh_id: &str, state: rdm_core::status::MeshState, target: &Node) -> Result<(), String> {
+    use rdm_core::ping::{Ping, PingReply, PingRequest};
+    use rdm_core::status::{MeshState, Status, StatusReply, StatusRequest};
     // The target is not heard yet (a peer mesh's admin reaches the backbone only as its mesh's
     // primary): this admin launched it and holds its birth exactly, so its resolver takes the
     // birth from what it launched, never from a digest it has not heard.
@@ -5176,9 +5176,9 @@ pub async fn apply_mesh_state(client: &rafka_node_rpc::NodeRpcClient, resolver: 
         let (out, _) = client
             .call::<Ping>(&rafka_node_rpc::NodeTarget::ExactNode(target.node_id.clone()), &PingRequest::Ping { payload: Vec::new() }, &rafka_node_rpc::CallOptions::default())
             .await;
-        let answered = matches!(&out, rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. }));
+        let answered = matches!(&out, rdm_core::outcome::RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. }));
         let seen = match &out {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => format!("{:?}", r.value()),
+            rdm_core::outcome::RpcOutcome::Reply(r) => format!("{:?}", r.value()),
             other => format!("{}: {other:?}", other.name()),
         };
         if answered {
@@ -5208,7 +5208,7 @@ pub async fn apply_mesh_state(client: &rafka_node_rpc::NodeRpcClient, resolver: 
     // and the rectifier is the retry.
     let (out, _) = client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(target.node_id.clone()), &request, &rafka_node_rpc::CallOptions::default()).await;
     let (outcome, verdict) = match &out {
-        rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => match r.value() {
+        rdm_core::outcome::RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => ("applied".to_string(), Ok(())),
             StatusReply::AlreadyApplied => ("already-applied".to_string(), Ok(())),
             StatusReply::RejectedStaleMesh { held } => (format!("rejected-stale-mesh: the target holds mesh id {held}"), Err(format!("{} holds mesh id {held}, not {mesh_id}: no replacement id is minted; the {state:?} hand-off is refused", target.name))),
@@ -5399,10 +5399,10 @@ impl Running {
 }
 
 /// What the provider runs a node in, for explicit executable bindings.
-fn provider_image(p: ProviderKind) -> rafka_mesh_entity::binding::ProviderImage<'static> {
+fn provider_image(p: ProviderKind) -> rdm_core::binding::ProviderImage<'static> {
     match p {
-        ProviderKind::Process => rafka_mesh_entity::binding::ProviderImage::Process,
-        ProviderKind::Container => rafka_mesh_entity::binding::ProviderImage::Container(crate::deployment::container::RUNTIME_IMAGE),
+        ProviderKind::Process => rdm_core::binding::ProviderImage::Process,
+        ProviderKind::Container => rdm_core::binding::ProviderImage::Container(crate::deployment::container::RUNTIME_IMAGE),
     }
 }
 
@@ -5417,7 +5417,7 @@ pub fn rpc_server(
 ) -> rafka_node_rpc::ServerBuilder {
     let core = rafka_node_rpc::ServerBuilder::new().serve_core(client, Some(connections));
     // Status is forwardable: a peer may carry an authority's status call through this admin.
-    crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rafka_node_rpc_contract::status::Status>()
+    crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rdm_core::status::Status>()
 }
 
 /// The unreadable pre-event steps already named: each is named once, not on every fact.
@@ -5531,7 +5531,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 cfg.data_dir.display(),
                 own.name,
                 own.fabric_id,
-                rafka_mesh_entity::launch::ENV_FABRIC_ID,
+                rdm_core::launch::ENV_FABRIC_ID,
                 cfg.fabric_id
             ));
         }
@@ -5701,7 +5701,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // A host-process admin binds on the gateway; an admin that itself runs in a container of the
     // fabric binds on its own address there (its control address), the gateway not being local.
     let mesh_addr = match (&early, &cfg.launch, &inherited) {
-        (Some((p, _)), None, None) if p.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_none() => SocketAddr::new(p.admin_ip, 0),
+        (Some((p, _)), None, None) if p.provider.kind() == ProviderKind::Container && rdm_core::runtime::this_container_id().is_none() => SocketAddr::new(p.admin_ip, 0),
         _ => mesh_addr,
     };
 
@@ -5726,9 +5726,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // This admin's own connections: hydrated from its storage, then kept by what its client
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
-        rafka_mesh_entity::connections::ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) },
+        rdm_core::connections::ConnectionEnd { name: name.clone(), node_id: node_id.clone(), incarnation: Some(incarnation.clone()) },
         connections_storage.clone(),
-        Arc::new(std::sync::Mutex::new(rafka_mesh_entity::connections::ConnectionsHeld::new())),
+        Arc::new(std::sync::Mutex::new(rdm_core::connections::ConnectionsHeld::new())),
     ));
     match connections.hydrate().await {
         Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
@@ -5924,7 +5924,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     node_id = %node_id,
                     mesh = %cfg.mesh,
                     mesh_id = %mesh_id,
-                    which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+                    which = rdm_core::status::WhichMesh::Own.name(),
                 )
                 .in_scope(|| tracing::info!("joined the mesh channel"));
                 drop(step);
@@ -5967,7 +5967,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     node_id = %node_id,
                     mesh = %cfg.mesh,
                     mesh_id = %mesh_id,
-                    which = rafka_node_rpc_contract::status::WhichMesh::Backbone.name(),
+                    which = rdm_core::status::WhichMesh::Backbone.name(),
                 )
                 .in_scope(|| tracing::info!("joined the backbone channel"));
                 if let Some(seam) = wiring.announcement_seam.take() {
@@ -6331,7 +6331,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 // it (loopback for a process fabric, the gateway or its own container address for a
                                 // container fabric).
                                 seeds: vec![(key.public().to_string(), mesh_addr)],
-                                launcher: rafka_mesh_entity::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
+                                launcher: rdm_core::launch::Launcher { name: name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() },
                                 env: cfg.passthrough.clone(),
                                 data_root,
                                 store_dir: cfg.store_dir.clone(),
@@ -6450,7 +6450,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // In a container of this fabric's container runtime, its runtime is that container;
                                     // a host process stays a process (it then cannot be failed over by a container admin,
                                     // which refuses Ready by name).
-                                    let in_container = (prepared.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
+                                    let in_container = (prepared.provider.kind() == ProviderKind::Container && rdm_core::runtime::this_container_id().is_some()).then(|| prepared.provider.control_domain());
                                     let a = CurrentRuntimeAdoption::begin_in(&name, &cfg.data_dir, &crate::model::DeploymentId::mint(), in_container).await.map_err(|e| e.to_string())?;
                                     let f = a.fact().clone();
                                     adoption = Some(a);
@@ -6458,7 +6458,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 }
                             };
                             // The identity this process records its intentional exit under (a transport that stopped).
-                            rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
+                            rdm_core::runtime::set_own_exit(rdm_core::runtime::OwnExit {
                                 data_dir: cfg.data_dir.clone(),
                                 deployment_id: runtime.deployment_id.clone(),
                                 incarnation: incarnation.to_string(),
@@ -6616,14 +6616,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     Box::pin(async move {
                                         let rows = contacts.contacts().await.map_err(|e| e.to_string())?;
                                         let ids = meshes.meshes().await.map_err(|e| e.to_string())?;
-                                        let mut nodes: BTreeMap<NodeId, rafka_node_rpc_contract::topology::StoredNode> = rows
+                                        let mut nodes: BTreeMap<NodeId, rdm_core::topology::StoredNode> = rows
                                             .into_iter()
-                                            .map(|r| (r.node_id.clone(), rafka_node_rpc_contract::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr }))
+                                            .map(|r| (r.node_id.clone(), rdm_core::topology::StoredNode { node_id: r.node_id, name: r.name.to_string(), endpoint_id: r.endpoint_id, incarnation: r.incarnation_id, transport_addr: r.transport_addr }))
                                             .collect();
                                         for d in held_births(&held_book, &held_fabric, &held_me) {
                                             nodes.insert(
                                                 d.node.node_id.clone(),
-                                                rafka_node_rpc_contract::topology::StoredNode { node_id: d.node.node_id, name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
+                                                rdm_core::topology::StoredNode { node_id: d.node.node_id, name: d.node.name.to_string(), endpoint_id: d.node.endpoint_id, incarnation: d.node.incarnation, transport_addr: d.node.transport_addr },
                                             );
                                         }
                                         Ok(crate::topology_read::StoredMap {
@@ -6634,7 +6634,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 });
                                 let gone: crate::topology_read::GoneSource = {
                                     let (book, records) = (book.clone(), records.clone());
-                                    Arc::new(move |h: &rafka_mesh_entity::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
+                                    Arc::new(move |h: &rdm_core::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
                                 };
                                 let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()), rafka_time.clone()).with_stored(stored).with_gone(gone)));
                             }
@@ -6846,7 +6846,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                     PendingGate::SelfApply => match authority.get() {
                                                         Some(auth) => {
                                                             let reply = auth.self_apply_mesh_pending(&mesh_id).await;
-                                                            if !matches!(reply, rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) {
+                                                            if !matches!(reply, rdm_core::status::StatusReply::Applied | rdm_core::status::StatusReply::AlreadyApplied) {
                                                                 blocked.push(format!("{me}: its mesh's Pending is not applied (self-apply answered {reply:?})"));
                                                             }
                                                         }
@@ -6894,7 +6894,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                         node_id = %node_id,
                                                         mesh_id = %mesh_id,
                                                         fabric_id = %fabric_id,
-                                                        id_format = rafka_mesh_entity::ID_FORMAT,
+                                                        id_format = rdm_core::ID_FORMAT,
                                                         deployment_id = %runtime.deployment_id,
                                                         provider = runtime.provider.as_str(),
                                                         provider_control_domain_fingerprint = %runtime.domain_fingerprint(),
@@ -7147,7 +7147,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let client = Some(runner.node_rpc.client.clone());
                                                 // The tickle: ask the exact birth to reassert itself.
                                                 // Protocol name: ProbeNodeState.
-                                                let kick_of = |n: &Node, incarnation: &crate::model::IncarnationId| rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
+                                                let kick_of = |n: &Node, incarnation: &crate::model::IncarnationId| rdm_core::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
                                                 let own_id = me_id.clone();
                                                 let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
                                                 for ((nid, _), v) in verdicts.lock().unwrap().iter() {
@@ -7169,8 +7169,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
                                                                 let target = rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone());
-                                                                let ping = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"tickle".to_vec() };
-                                                                let (out, _) = client.call::<rafka_node_rpc_contract::ping::Ping>(&target, &ping, &rafka_node_rpc::CallOptions::default()).await;
+                                                                let ping = rdm_core::ping::PingRequest::Ping { payload: b"tickle".to_vec() };
+                                                                let (out, _) = client.call::<rdm_core::ping::Ping>(&target, &ping, &rafka_node_rpc::CallOptions::default()).await;
                                                                 if out.reply().is_none() {
                                                                     return Err(format!("{} did not answer the ping: {}", node.name, out.name()));
                                                                 }
@@ -7210,7 +7210,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                                     .map(|c| {
                                                                         let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
                                                                         let probe = async move {
-                                                                            let (out, _, _) = client.call_routed::<rafka_node_rpc_contract::status::Status>(&node.node_id, &route, kick, &rafka_node_rpc::CallOptions::default()).await;
+                                                                            let (out, _, _) = client.call_routed::<rdm_core::status::Status>(&node.node_id, &route, kick, &rafka_node_rpc::CallOptions::default()).await;
                                                                             out.reply().map(|r| r.value().clone())
                                                                         };
                                                                         (c.name.to_string(), probe)
@@ -7625,7 +7625,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             records: records.clone(),
                                             settled: { let builds = builds_dyn.clone(); Arc::new(move || { let builds = builds.clone(); Box::pin(async move { builds.current().await.map(|c| c.is_some_and(|b| !matches!(b.state, crate::build_state::BuildState::Pending | crate::build_state::BuildState::Running))).map_err(|e| e.to_string()) }) }) },
                                             client: node_rpc.client.clone(),
-                                            connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rafka_mesh_entity::connections::ConnectionState::Connected)),
+                                            connected: Arc::new(move |id: &NodeId| held.lock().unwrap().own_latest_directs().iter().any(|d| &d.destination.node_id == id && d.state == rdm_core::connections::ConnectionState::Connected)),
                                             ladder: ladder.clone(),
                                             carriers: Mutex::new(BTreeMap::new()),
                                         };
@@ -7847,7 +7847,7 @@ mod tests {
         let mesh1 = |t: &Topology| t.meshes.iter().find(|m| m.name == "mesh1").map(|m| (m.id.clone(), m.status));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
         assert_eq!(mesh1(&t), Some((Some(id.clone()), ScopeStatus::Dead)), "mesh.deleted accepted: mesh1 is deleted");
-        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+        assert!(book.stopped(rdm_core::LifecycleOp {
             build_id: "b7".into(),
             attempt: 1,
             operation: "node.stop:mesh1.admin.1".into(),
@@ -8394,17 +8394,17 @@ mod tests {
     async fn a_fabric_primarys_refused_fabric_claim_writes_nothing_of_the_fabric() {
         let storage: Arc<dyn crate::fabric_storage::FabricStorage> = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         let (holder, ours) = (crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }, crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() });
-        let birth = |revision: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision };
+        let birth = |revision: u64| rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision };
         let (h_birth, o_birth) = (birth(1), birth(2));
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let h_seats = rafka_mesh_transport::membership::SeatBook::default();
-        h_seats.take(rafka_mesh_entity::Seat::FabricPrimary, &h_birth);
+        h_seats.take(rdm_core::Seat::FabricPrimary, &h_birth);
         let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone());
         hw.round(&h_seats).await;
         assert_eq!(storage.fabric().await.unwrap(), Some(holder.clone()), "the holder's fabric-primary writes its identity once its claim won");
         let o_seats = rafka_mesh_transport::membership::SeatBook::default();
-        o_seats.take(rafka_mesh_entity::Seat::FabricPrimary, &o_birth);
+        o_seats.take(rdm_core::Seat::FabricPrimary, &o_birth);
         let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone());
         for _round in 0..2 {
             ow.round(&o_seats).await;
@@ -8643,7 +8643,7 @@ mod tests {
     async fn the_executor_exit_proof_point_reads_its_births_runtime_row_and_names_unwritten_apart_from_unreadable() {
         use crate::build_drive::DepartureProof as _;
         use crate::storage::NodesStorage as _;
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-executor")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-executor")).unwrap();
         let executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
         let book = DigestBook::default();
         for d in [executor.clone(), digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic)] {
@@ -8706,7 +8706,7 @@ mod tests {
     #[tokio::test]
     async fn a_departure_recorded_for_the_executors_exact_birth_is_answered_without_a_new_proof() {
         use crate::build_drive::DepartureProof as _;
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-recorded")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-recorded")).unwrap();
         let executor = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
         let book = DigestBook::default();
         book.record(executor.clone());
@@ -8726,7 +8726,7 @@ mod tests {
         assert!(!departure.recorded(&name).await, "nothing is recorded yet");
         let mut birth = Node::allocated(name.clone());
         birth.node_id = executor.node.node_id.clone();
-        birth.incarnation_id = Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("an-earlier-birth")).unwrap());
+        birth.incarnation_id = Some(IncarnationId::parse(&rdm_core::fixture_crockford60("an-earlier-birth")).unwrap());
         records.put_exit(&birth, Some(1), "provider").await.unwrap();
         assert!(!departure.recorded(&name).await, "an earlier birth's exit is not this birth's");
         birth.incarnation_id = Some(executor.node.incarnation.clone());
@@ -8781,7 +8781,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_true_offline_member_the_provider_cannot_tell_about_is_not_proven_exited_and_never_recovered() {
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-unknown")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unknown")).unwrap();
         let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
         member.node.runtime = Some(fact.clone());
         let book = DigestBook::default();
@@ -8813,7 +8813,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_refused_exit_proof_write_ends_the_recovery_submit_on_its_span_naming_the_stores_cause() {
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-exit-refused")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-exit-refused")).unwrap();
         let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
         member.node.runtime = Some(fact.clone());
         let book = DigestBook::default();
@@ -8861,7 +8861,7 @@ mod tests {
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
         let (path, node_id, incarnation): (PathName, _, _) = ("mesh2.rpc.1".parse().unwrap(), NodeId::mint(), IncarnationId::mint());
         assert!(view.node(&path).is_none(), "the exited birth departed: no view holds it");
-        let b1 = crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let b1 = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let deleted = |step: &str| crate::build_state::BuildStepReceipt {
             mesh: None,
@@ -8871,7 +8871,7 @@ mod tests {
             step: step.into(),
             outcome: crate::build_state::StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
             }),
             executor: Some("mesh2.admin.2".into()),
         };
@@ -8956,7 +8956,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_proven_exit_of_a_birth_whose_removal_was_announced_submits_no_recovery() {
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-removal-announced")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-removal-announced")).unwrap();
         for (case, announced, workflow) in [("delete-deleting", "node-deleting", "node.delete"), ("delete-deleted", "node-deleted", "node.delete")] {
             let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
             member.node.runtime = Some(fact.clone());
@@ -8966,7 +8966,7 @@ mod tests {
             }
             // The tick's view, read before the announcement arrived.
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-            let op = rafka_mesh_entity::LifecycleOp {
+            let op = rdm_core::LifecycleOp {
                 build_id: "dbs8z9896j0f".into(),
                 attempt: 2,
                 operation: format!("{workflow}:mesh2.rpc.1"),
@@ -9017,7 +9017,7 @@ mod tests {
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn a_proven_exit_of_a_member_of_a_deleting_or_deleted_mesh_submits_no_recovery() {
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-mesh-deleting")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-mesh-deleting")).unwrap();
         for (status, announced) in [("leaving", "mesh-deleting"), ("dead", "mesh-deleted")] {
             let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
             member.node.runtime = Some(fact.clone());
@@ -9062,7 +9062,7 @@ mod tests {
         async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_mesh_status(row).await
         }
-        async fn mesh_statuses(&self) -> Result<HashMap<crate::model::MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+        async fn mesh_statuses(&self) -> Result<HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::record_store::StorageError> {
             self.inner.mesh_statuses().await
         }
         async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
@@ -9124,7 +9124,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn the_mesh_primary_records_a_proven_exit_once_over_every_tick_that_finds_it() {
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-exit-once")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-exit-once")).unwrap();
         for case in ["announced", "submitted"] {
             let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
             member.node.runtime = Some(fact.clone());
@@ -9134,7 +9134,7 @@ mod tests {
             }
             let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
             if case == "announced" {
-                let op = rafka_mesh_entity::LifecycleOp {
+                let op = rdm_core::LifecycleOp {
                     build_id: "dbs8z9896j0f".into(),
                     attempt: 2,
                     operation: "node.delete:mesh2.rpc.1".into(),
@@ -9190,7 +9190,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_removal_attempts_target_is_recovered_by_the_next_tick() {
         use crate::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-failed-removal")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-failed-removal")).unwrap();
         let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
         member.node.runtime = Some(fact.clone());
         let book = DigestBook::default();
@@ -9198,7 +9198,7 @@ mod tests {
             book.record(d);
         }
         let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        let op = rafka_mesh_entity::LifecycleOp {
+        let op = rdm_core::LifecycleOp {
             build_id: "9r7cpewghdkk".into(),
             attempt: 2,
             operation: "node.delete:mesh2.rpc.1".into(),
@@ -9225,7 +9225,7 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             overlays_from_facts(&facts, &book, &mut named);
         }
-        assert_eq!(book.in_flight(), Vec::<rafka_mesh_entity::LifecycleOp>::new(), "the failed attempt's overlay leaves Members.in_flight: its operation is no longer claimed by that attempt");
+        assert_eq!(book.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed attempt's overlay leaves Members.in_flight: its operation is no longer claimed by that attempt");
         let closed = capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts");
         assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
         let a = &closed[0].attributes;
@@ -9272,7 +9272,7 @@ mod tests {
             book.record(d);
         }
         let mesh = || Some("mesh2".to_string());
-        let recovery = |build: &str| rafka_mesh_entity::LifecycleOp {
+        let recovery = |build: &str| rdm_core::LifecycleOp {
             build_id: build.into(),
             attempt: 1,
             operation: "node.delete:mesh2.rpc.1".into(),
@@ -9282,7 +9282,7 @@ mod tests {
             event_at_rafka_ms: 1,
         };
         // mesh2's lane runs attempt 1, the member's recovery; its node.delete published NodeDeleting.
-        let lane_attempt = |build: &crate::build::BuildId, op: &rafka_mesh_entity::LifecycleOp| {
+        let lane_attempt = |build: &crate::build::BuildId, op: &rdm_core::LifecycleOp| {
             vec![
                 BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
                 BuildFact::Opened(AttemptOpened { mesh: mesh(), build_id: build.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 1 }),
@@ -9305,7 +9305,7 @@ mod tests {
         // The attempt's verdict in mesh2's lane: Failed (its claimant departed with it unfinished).
         facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.admin.1 departed with attempt 1 of mesh2's lane unfinished".into() } }));
         derive(&facts, &mut named);
-        assert_eq!(book.in_flight(), Vec::<rafka_mesh_entity::LifecycleOp>::new(), "the failed drift attempt's hold closes: the member's exit belongs to no workflow now");
+        assert_eq!(book.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed drift attempt's hold closes: the member's exit belongs to no workflow now");
         let closed = capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts");
         assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
         let a = &closed[0].attributes;
@@ -9363,7 +9363,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_true_offline_member_whose_runtime_row_cannot_be_read_is_not_proven_exited_and_never_recovered() {
-        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-unreadable")).unwrap();
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-unreadable")).unwrap();
         let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
         let book = DigestBook::default();
         for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
@@ -9601,7 +9601,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_successor_has_no_recovery_due_for_a_silent_mesh_primary_until_the_seat_moves() {
         use crate::offline::{OfflineTickle, SilentNode, ViaPeerVerdict};
-        use rafka_mesh_entity::Seat::MeshPrimary;
+        use rdm_core::Seat::MeshPrimary;
         use MemberStatus::*;
         let book = DigestBook::default();
         let holder = with_id(digest("mesh2.admin.1", ReadyForTraffic), "200000000000");
@@ -9679,8 +9679,8 @@ mod tests {
         assert_eq!(due, vec!["mesh2.admin.1".to_string()], "the old primary is due for recovery at the successor, after the seat moved");
     }
 
-    fn holder_of(d: &MeshDigest, revision: u64) -> rafka_mesh_entity::SeatHolder {
-        rafka_mesh_entity::SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
+    fn holder_of(d: &MeshDigest, revision: u64) -> rdm_core::SeatHolder {
+        rdm_core::SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
     /// CONTRACT (R-A2, the dw33-1 shape): the seat records an admin holds decide its projection. A
@@ -9690,7 +9690,7 @@ mod tests {
     #[tokio::test]
     async fn the_projection_keeps_a_recorded_holder_and_elects_nobody_before_it_is_told() {
         use MemberStatus::*;
-        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
         let book = DigestBook::default();
         let holder = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
         let sibling = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
@@ -9727,7 +9727,7 @@ mod tests {
     #[test]
     fn a_later_birth_that_supersedes_the_holder_proves_it_gone() {
         use MemberStatus::*;
-        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
         let book = DigestBook::default();
         let holder = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
         book.record(holder.clone());
@@ -9746,7 +9746,7 @@ mod tests {
     /// first seated as mesh2's primary at epoch 1: the fabric-primary's book, its records holding
     /// its node-rows writer over `storage`, and its view projected from both.
     async fn fabric_primary_over(mesh2: &[MeshDigest], storage: Arc<crate::storage::MemoryNodesStorage>) -> (MeshDigest, DigestBook, Arc<Records>, Arc<RwLock<Topology>>, Arc<crate::node_rows::NodeRows>) {
-        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
         let fp = with_id(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), "100000000000");
         let book = DigestBook::default();
         book.record(fp.clone());
@@ -9885,7 +9885,7 @@ mod tests {
     #[tokio::test]
     async fn mesh_lefts_dead_write_is_already_applied_over_the_mesh_primarys_dead_and_the_acting_primarys_when_none_survived() {
         use crate::status_storage::{MeshStatusRow, StatusStorage};
-        let dead = |m: &str| MeshStatusRow { mesh_id: mesh_id(m), state: rafka_node_rpc_contract::status::MeshState::Dead };
+        let dead = |m: &str| MeshStatusRow { mesh_id: mesh_id(m), state: rdm_core::status::MeshState::Dead };
         let key = crate::mesh_delete::MeshDeleteKey { mesh_id: mesh_id("mesh2"), build_id: crate::build::BuildId::parse("6n8kaqdncqwv").unwrap(), attempt: 1, operation: format!("mesh.delete:{}", mesh_id("mesh2")) };
         for case in ["surviving-primary-wrote-dead", "no-survivor"] {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
@@ -10009,7 +10009,7 @@ mod tests {
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn the_lost_primarys_exit_held_seats_the_live_admin_in_the_fabric_primarys_view_and_its_own() {
-        use rafka_mesh_entity::Seat::MeshPrimary;
+        use rdm_core::Seat::MeshPrimary;
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let lost = with_id(digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), "200000000000");
         let live = with_id(digest("mesh2.admin.2", MemberStatus::ReadyForTraffic), "300000000000");
@@ -10043,7 +10043,7 @@ mod tests {
     #[test]
     fn a_leaving_holder_keeps_both_seats_in_the_readers_until_its_yield_is_held() {
         use MemberStatus::*;
-        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
         let book = DigestBook::default();
         let records = Records::default();
         let holder = with_id(digest("mesh1.admin.1", Leaving), "500000000000");
@@ -10081,7 +10081,7 @@ mod tests {
     #[tokio::test]
     async fn a_handover_committed_while_the_loop_awaits_is_not_taken_back_by_the_incumbent() {
         use MemberStatus::*;
-        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{FabricPrimary, MeshPrimary};
         let book = DigestBook::default();
         let records = Records::default();
         let me = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
@@ -10131,7 +10131,7 @@ mod tests {
     #[tokio::test]
     async fn a_mesh_primary_announces_its_meshs_cohort_seats_the_election_fills() {
         use MemberStatus::*;
-        use rafka_mesh_entity::Seat::{Cohort, FabricPrimary, MeshPrimary};
+        use rdm_core::Seat::{Cohort, FabricPrimary, MeshPrimary};
         let book = DigestBook::default();
         let records = Records::default();
         let me = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
@@ -10144,7 +10144,7 @@ mod tests {
         book.seats.take(MeshPrimary, &holder_of(&me, 1));
         book.seats.take(FabricPrimary, &holder_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
-        let cohort_said = |said: &[(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)]| said.iter().filter(|(s, _)| matches!(s, Cohort(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
+        let cohort_said = |said: &[(rdm_core::Seat, rdm_core::SeatHolder)]| said.iter().filter(|(s, _)| matches!(s, Cohort(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
         // A first election: no record of the rpc cohort, the lowest Ready fills it at revision 1.
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
@@ -10208,12 +10208,12 @@ mod tests {
     fn an_admin_is_authority_capable_only_when_every_held_birth_is_adoptable_here() {
         use crate::deployment::process::ProcessDeploymentProvider;
         use crate::deployment::provider::DeploymentProvider;
-        use rafka_mesh_entity::{RuntimeLocator, RuntimeProvider};
+        use rdm_core::{RuntimeLocator, RuntimeProvider};
         let p = ProcessDeploymentProvider::new();
         let with = |name: &str, domain: Option<String>| {
             let mut d = digest(name, MemberStatus::ReadyForTraffic);
-            d.node.runtime = domain.map(|control_domain| rafka_mesh_entity::RuntimeFact {
-                deployment_id: rafka_mesh_entity::fixture_crockford60("dep"),
+            d.node.runtime = domain.map(|control_domain| rdm_core::RuntimeFact {
+                deployment_id: rdm_core::fixture_crockford60("dep"),
                 provider: RuntimeProvider::Process,
                 control_domain,
                 locator: RuntimeLocator::Process { pid: 4242, start: 17 },
@@ -10315,8 +10315,8 @@ mod tests {
     async fn an_admitted_node_admin_is_a_held_subject_before_its_digest_is_gossiped() {
         use crate::join::{Deployed, JoinDoor, Joins};
         use crate::status_rpc::{Declared, StatusAuthority};
-        use rafka_node_rpc_contract::status::{NodeState, NotAuthority, StatusReply, StatusRequest};
-        use rafka_node_rpc_contract::join::{JoinReply, JoinRequest};
+        use rdm_core::status::{NodeState, NotAuthority, StatusReply, StatusRequest};
+        use rdm_core::join::{JoinReply, JoinRequest};
         let book = DigestBook::default();
         let records = Arc::new(Records::default());
         book.record(with_id(digest("mesh1.admin.1", MemberStatus::ReadyForTraffic), "100000000000"));
@@ -10351,7 +10351,7 @@ mod tests {
         let _ = Declared::default();
 
         // The birth this admin deployed, and the digest it reports on its first call.
-        let runtime = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-admitted")).unwrap();
+        let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-admitted")).unwrap();
         let mut reported = with_id(digest("mesh1.admin.2", MemberStatus::Pending), "200000000000");
         reported.node.runtime = Some(runtime.clone());
         reported.data_dir = Some("/data/mesh1.admin.2".into());
@@ -10436,7 +10436,7 @@ mod tests {
         let book = DigestBook::default();
         let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         book.record(held.clone());
-        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+        assert!(book.stopped(rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -10489,7 +10489,7 @@ mod tests {
         let book = DigestBook::default();
         let held = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
         book.record(held.clone());
-        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+        assert!(book.stopped(rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -10571,7 +10571,7 @@ mod tests {
     /// the view, which is what makes `declared` unreadable at the authority that applied it.
     #[test]
     fn a_member_held_leaving_is_listed_leaving_with_its_declared_state_until_it_is_silent_past_the_staleness_floor() {
-        use rafka_node_rpc_contract::status::NodeState;
+        use rdm_core::status::NodeState;
         let book = DigestBook::default();
         let records = Records::default();
         let d = digest("mesh1.rpc.1", MemberStatus::Leaving);
@@ -10594,7 +10594,7 @@ mod tests {
     /// mesh whose row holds Leaving (or Dead) projected, and so announced, ready-for-traffic.
     #[test]
     fn a_mesh_whose_row_holds_leaving_is_projected_leaving_so_its_primary_announces_leaving() {
-        use rafka_node_rpc_contract::status::MeshState;
+        use rdm_core::status::MeshState;
         let book = DigestBook::default();
         let records = Records::default();
         for (mesh, state) in [("mesh1", MeshState::Leaving), ("mesh2", MeshState::Dead), ("mesh3", MeshState::ReadyForTraffic)] {
@@ -10639,7 +10639,7 @@ mod tests {
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying Draining makes the rebuild due at once");
 
         facts.seen();
-        let stop = rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };
+        let stop = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };
         assert!(book.stopped(stop));
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a NodeStopped overlay makes the rebuild due at once");
     }
@@ -10750,7 +10750,7 @@ mod tests {
         let book = DigestBook::default();
         let held = digest("mesh1.rpc.1.new", MemberStatus::ReadyForTraffic);
         book.record(held.clone());
-        assert!(book.stopped(rafka_mesh_entity::LifecycleOp {
+        assert!(book.stopped(rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1.new".into(),
@@ -10822,7 +10822,7 @@ mod tests {
     fn a_successor_admin_lists_a_parked_node_from_the_stop_overlay_it_read() {
         let book = DigestBook::default();
         let stopped = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
-        let stop = rafka_mesh_entity::LifecycleOp {
+        let stop = rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -10875,7 +10875,7 @@ mod tests {
         n.status = NodeStatus::ReadyForTraffic;
         launched.publish(n);
         assert!(project("fabric1", &fabric1(), ProviderKind::Process, &book, &launched).node(&gone.node.name).is_some());
-        book.depart(rafka_mesh_entity::LifecycleOp {
+        book.depart(rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
             operation: "node.delete:mesh1.rpc.3".into(),
@@ -10983,7 +10983,7 @@ mod tests {
         async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_mesh_status(row).await
         }
-        async fn mesh_statuses(&self) -> Result<HashMap<MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+        async fn mesh_statuses(&self) -> Result<HashMap<MeshId, rdm_core::status::MeshState>, crate::record_store::StorageError> {
             self.inner.mesh_statuses().await
         }
         async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
@@ -11169,12 +11169,12 @@ mod tests {
     /// milliseconds is refused by name at boot, never read as the default.
     #[test]
     fn an_admin_takes_its_connections_delete_bound_from_its_config_once() {
-        assert_eq!(cfg(&[]).connections_delete_deadline, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE);
+        assert_eq!(cfg(&[]).connections_delete_deadline, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE);
         assert_eq!(cfg(&[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "750")]).connections_delete_deadline, Duration::from_millis(750));
         let env: std::collections::HashMap<String, String> = [("RDM_STORE_DIR", STORE_DIR), ("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "soon")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let e = AdminConfig::from_env(|k| env.get(k).cloned()).err().expect("a bound that is no number was accepted");
         assert!(e.starts_with("RDM_CONNECTIONS_DELETE_DEADLINE_MS `soon`"), "{e}");
-        let launch = rafka_mesh_entity::launch::Launch {
+        let launch = rdm_core::launch::Launch {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
             name: "mesh1.admin.2".parse().unwrap(),

@@ -4,7 +4,7 @@
 #![deny(missing_docs)]
 
 
-pub use rafka_mesh_entity::launch;
+pub use rdm_core::launch;
 pub mod node;
 mod taskdump;
 /// The app's `hydrate_before_ready` hook and everything it is handed.
@@ -104,7 +104,7 @@ mod tests {
     /// sees the knob empty and the hook answers `Blocked` with no reason.
     #[test]
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
-        let root = std::env::temp_dir().join(format!("hydrate-knob-rewrite-{}", rafka_mesh_entity::NodeId::mint()));
+        let root = std::env::temp_dir().join(format!("hydrate-knob-rewrite-{}", rdm_core::NodeId::mint()));
         let (a, b) = ("the rows of orders are not yet published", "the authority of orders is draining");
         write_hydrate_knob(&root, "mesh1.rpc.2", a).unwrap();
         let mut held = std::fs::File::open(hydrate_knob_dir(&root).join("mesh1.rpc.2")).unwrap();

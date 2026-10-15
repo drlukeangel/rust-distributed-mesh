@@ -14,7 +14,7 @@ use rafka_node_admin_core::deployment::container::ContainerDeploymentProvider;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{adopt, AdoptRefusal, DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::model::DeploymentId;
-use rafka_mesh_entity::runtime::{RuntimeFact, RuntimeLocator};
+use rdm_core::runtime::{RuntimeFact, RuntimeLocator};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 

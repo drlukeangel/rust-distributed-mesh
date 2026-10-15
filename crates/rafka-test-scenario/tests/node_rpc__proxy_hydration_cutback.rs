@@ -272,11 +272,11 @@ async fn source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutb
     // Failed row's backoff is when the source's own dial may run (connections.md section 9.3).
     let seeded = seed_proxy(&estate, 1);
     let seeded_rows = history(&estate, SOURCE).await;
-    let failed: rafka_mesh_entity::connections::NodeConnection = serde_json::from_value(
+    let failed: rdm_core::connections::NodeConnection = serde_json::from_value(
         seeded_rows.iter().rev().find(|r| r["kind"] == "Direct" && r["state"] == "Failed" && r["destination"]["name"] == DEST).cloned().expect("the seeded Direct Failed row"),
     )
     .expect("a connections row decodes");
-    let due_ms = rafka_mesh_entity::reconnect::next_due(&failed).expect("a Failed row with its recovery is due once its backoff ends");
+    let due_ms = rdm_core::reconnect::next_due(&failed).expect("a Failed row with its recovery is due once its backoff ends");
     let (healthy, ..) = originate(&estate, SOURCE, DEST, "before-inbound");
     assert_eq!((healthy["call_outcome"].as_str(), healthy["route"].as_str(), healthy["carrier"].as_str()), (Some("reply"), Some("via-peer"), Some(CARRIER)), "{healthy}");
 

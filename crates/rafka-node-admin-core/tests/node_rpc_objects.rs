@@ -4,12 +4,12 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_admin_client::{CallEnd, ExactBirth, NodeRpc};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
-use rafka_node_rpc_contract::topology::{Topology, TopologyReply, TopologyRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
+use rdm_core::topology::{Topology, TopologyReply, TopologyRequest};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -86,7 +86,7 @@ async fn serve(reply: StatusReply, delay: Duration) -> Served {
             async move {
                 t.lock().unwrap().push(req);
                 let mut sink = sink.started(TopologyReply::Started).await.map_err(|_| rafka_node_rpc::HandlerFault::invariant_broken("the sink refused Started"))?;
-                sink.data(TopologyReply::Unchanged { mesh: "mesh1".into(), publisher: rafka_mesh_entity::PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }, topology_version: 3 }).await.map_err(|_| rafka_node_rpc::HandlerFault::invariant_broken("the sink refused Data"))?;
+                sink.data(TopologyReply::Unchanged { mesh: "mesh1".into(), publisher: rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }, topology_version: 3 }).await.map_err(|_| rafka_node_rpc::HandlerFault::invariant_broken("the sink refused Data"))?;
                 Ok(TopologyReply::End { meshes: 1 })
             }
         })

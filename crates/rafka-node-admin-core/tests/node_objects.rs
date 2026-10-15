@@ -8,7 +8,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
@@ -174,7 +174,7 @@ impl TopologySink for Published {
         self.0.lock().unwrap().push(n);
     }
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
-    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
     fn node_rows(&self) -> Option<Arc<rafka_node_admin_core::node_rows::NodeRows>> {
         self.1.get().cloned()
     }
@@ -199,7 +199,7 @@ fn node(name: &str, primary: bool) -> Node {
 fn mn() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
-        meshes: vec![Mesh { id: Some(rafka_mesh_entity::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        meshes: vec![Mesh { id: Some(rdm_core::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", false), node("mesh1.rpc.2", true)],
     }
 }
@@ -233,7 +233,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -261,7 +261,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -288,7 +288,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
         turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -296,7 +296,7 @@ struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rdm_core::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
@@ -364,12 +364,12 @@ impl Rig {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-objects".into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
@@ -676,13 +676,13 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined | NodeEvent::Started | NodeEvent::Created))), "no event past the join was delivered: {frames:?}");
 
     let completed_steps = |r: &rafka_node_admin_client::BuildReceipts, attempt: u32| -> Vec<String> {
-        r.steps.iter().filter(|s| s.attempt == attempt && s.result == rafka_node_rpc_contract::build::StepResult::Complete).map(|s| s.step.clone()).collect()
+        r.steps.iter().filter(|s| s.attempt == attempt && s.result == rdm_core::build::StepResult::Complete).map(|s| s.step.clone()).collect()
     };
     assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
     assert_eq!(resume.from, Some(("node.create".to_string(), "WaitForMeshJoin".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
-    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
+    assert_eq!(disposition, rdm_core::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
 
     for step in ATTEMPT_ONE_STEPS {
         assert_eq!(receipts_after.steps.iter().filter(|s| s.step == step).count(), 1, "{step} was not run again: one receipt, from attempt 1");
@@ -736,7 +736,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         (first, again, disposition)
     });
     assert_eq!(first[1..], [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete], "{first:?}");
-    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
+    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
 }
 
@@ -780,7 +780,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         (build, kept, first, again, disposition)
     });
     assert!(kept, "the reconcile tick is handed the completed drive, never a new one in its place");
-    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
+    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
     let spans = cap.spans();
     let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.log().to_string().as_str()).collect();
@@ -821,7 +821,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         // The recovery's receipts as its two workflows write them, in the lane its door opened it in
         // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
         // each operation's Complete commits no output; the create is the last.
-        let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        let deleted = rdm_core::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
         for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None), ("node.create", "Complete", None)] {
             rig.builds
                 .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
@@ -833,7 +833,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let opened = |facts: Vec<BuildFact>| facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count();
         let opened_before = opened(rig.builds.facts().await.unwrap());
         let served = serve(door.clone()).await;
-        let mut stream = served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Recover { node: path.clone(), node_id: node_id.clone(), incarnation: birth.clone() }).await.expect("the repeat is answered with a stream");
+        let mut stream = served.carrier.create(rdm_core::build::BuildChange::Recover { node: path.clone(), node_id: node_id.clone(), incarnation: birth.clone() }).await.expect("the repeat is answered with a stream");
         let head = (stream.build_id().to_string(), stream.attempt(), stream.disposition());
         let mut frames = Vec::new();
         while let Some(f) = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the answer ends") {
@@ -843,7 +843,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let drive = door.drives.get(&b0).is_some();
         (opened_before, opened_after, b0, recovering, head, frames, drive)
     });
-    assert_eq!(stream, (b0.to_string(), recovering.attempt, rafka_node_rpc_contract::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
+    assert_eq!(stream, (b0.to_string(), recovering.attempt, rdm_core::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
     assert_eq!(frames.len(), 1, "one terminal and nothing else: {frames:?}");
     assert!(matches!(&frames[0], Ok(rafka_node_admin_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
     assert_eq!(opened_after, opened_before, "no attempt is opened");
@@ -885,7 +885,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
-    assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
+    assert_eq!(disposition, rdm_core::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
@@ -907,11 +907,11 @@ fn calls_no_op_carries_today_say_so_by_name() {
         let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
         for (bad, says) in [("Rpc", "\"Rpc\""), (".old", "starts with '.'"), ("", "empty")] {
             let refused = nodes.name_update(&birth, &mp, &route, bad).await.expect("a typed refusal");
-            assert!(matches!(&refused, rafka_node_rpc_contract::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
+            assert!(matches!(&refused, rdm_core::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
         }
         // Labels that are not a node's tag set, and a tag filter no node can match, are refused here.
         let not_a_label = nodes.tags_create(&birth, &mp, &route, &["Rabbit".to_string()].into()).await.expect("a typed refusal");
-        assert!(matches!(&not_a_label, rafka_node_rpc_contract::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
+        assert!(matches!(&not_a_label, rdm_core::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
         for (filter, says) in [(rafka_node_admin_client::TagFilter::All(Default::default()), "names no label"), (rafka_node_admin_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
             match nodes.get(&rafka_node_admin_client::NodeSelector::Tags(filter.clone())).await {
                 Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "{filter:?}: {reason}: {detail}"),
@@ -920,7 +920,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         }
         // node.connections.delete naming no connection is refused by name, and nothing is sent.
         assert!(
-            matches!(nodes.connections_delete(&birth, &mp, &route, &rafka_node_rpc_contract::status::ConnectionScope::Connections(vec![])).await, Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
+            matches!(nodes.connections_delete(&birth, &mp, &route, &rdm_core::status::ConnectionScope::Connections(vec![])).await, Ok(rdm_core::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
             "an empty Connections list is refused by name"
         );
         let end = nodes.config_get();
@@ -948,7 +948,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
     let f = rafka_node_admin_client::fold(&WorkflowKind::Create, &view("node.create:mesh1.rpc.3", create), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
-    let name: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
+    let name: rdm_core::PathName = "mesh1.rpc.3".parse().unwrap();
     let retire: Vec<&str> = RetireStep::ORDER.iter().map(|s| s.name()).collect();
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("node.delete:mesh1.rpc.3", retire.clone()), 1).unwrap();
     assert_eq!(
@@ -981,7 +981,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
-    let admin: rafka_mesh_entity::PathName = "mesh1.admin.2".parse().unwrap();
+    let admin: rdm_core::PathName = "mesh1.admin.2".parse().unwrap();
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
@@ -1030,7 +1030,7 @@ fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
         }))
         .unwrap()
     };
-    let old: rafka_mesh_entity::PathName = "mesh1.rpc.3.old".parse().unwrap();
+    let old: rdm_core::PathName = "mesh1.rpc.3.old".parse().unwrap();
     let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("node.delete".to_string(), "TerminateRuntime".to_string())), "the stopped predecessor's delete stands at TerminateRuntime");
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
@@ -1039,7 +1039,7 @@ fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
         rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "StopNode"]), 1).unwrap_err(),
         CallEnd::UnrecognisedReceipt { operation: "node.delete:mesh1.rpc.3.old".into(), step: "StopNode".into() }
     );
-    let bare: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
+    let bare: rdm_core::PathName = "mesh1.rpc.3".parse().unwrap();
     let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("node.delete:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("node.delete".to_string(), "StopNode".to_string())), "a bare path's delete keeps its stop half");
 }
@@ -1067,8 +1067,8 @@ struct LostAfterStopNode {
 
 #[async_trait::async_trait]
 impl Dispatcher for LostAfterStopNode {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
-        use rafka_node_rpc_contract::build::BuildReply;
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rdm_core::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+        use rdm_core::build::BuildReply;
         let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.to_string(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
         let run = {
             let mut runs = self.runs.lock().unwrap();
@@ -1140,7 +1140,7 @@ fn a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_rej
     let end = cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door_without_the_seat(&rig).await).await;
-        served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
+        served.carrier.create(rdm_core::build::BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
     });
     match &end {
         Some(CallEnd::Rejected { reason, detail }) => {

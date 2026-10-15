@@ -21,8 +21,8 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 /// submit on the next tick; then the recovery Build's run (node.delete, node.create through the
 /// new node's start), one call budget.
 pub fn node_recovery_due() -> std::time::Duration {
-    let floor = rafka_mesh_entity::cadence::staleness_floor();
-    let gossip = rafka_mesh_entity::cadence::gossip_interval();
+    let floor = rdm_core::cadence::staleness_floor();
+    let gossip = rdm_core::cadence::gossip_interval();
     let call = match rafka_node_rpc::CallOptions::default().budget {
         rafka_node_rpc::Budget::Overall(d) => d,
         other => panic!("the default call budget is not one overall deadline: {other:?}"),

@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
-rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rdm-core = { path = "../rdm-core" }
 rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 blake3 = "1"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }

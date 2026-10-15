@@ -577,7 +577,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         let (estate, accepted, lost_births) = (&estate, accepted.clone(), lost_births.clone());
         async move {
             let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).ok()?).await.ok()?;
-            let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
+            let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
             (later && reborn).then_some(b)
         }

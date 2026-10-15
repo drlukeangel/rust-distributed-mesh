@@ -5,7 +5,7 @@
 //! and memory unless the process was given a budget (`RDM_CPU_BUDGET_MILLICORES`,
 //! `RDM_RAM_BUDGET_BYTES`).
 
-use rafka_mesh_entity::NodeLoad;
+use rdm_core::NodeLoad;
 use std::sync::Mutex;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 

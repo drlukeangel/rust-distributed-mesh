@@ -11,17 +11,17 @@
 use crate::admission::{Admission, Limits, Permit};
 use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use rafka_node_rpc_contract::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, OpOwner};
-use rafka_node_rpc_contract::codes::ResetCode;
-use rafka_node_rpc_contract::dispatch::{RequestAssembly, ServerAction};
-use rafka_node_rpc_contract::framing::encode_frame;
-use rafka_node_rpc_contract::outcome::MalformedKind;
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, OpOwner};
+use rdm_core::codes::ResetCode;
+use rdm_core::dispatch::{RequestAssembly, ServerAction};
+use rdm_core::framing::encode_frame;
+use rdm_core::outcome::MalformedKind;
+use rdm_core::protocol::NodeProtocol;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
+use rdm_core::context::{dropped_as_str, CallContext};
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -311,7 +311,7 @@ impl ServerBuilder {
 
     /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
     /// catalog.
-    pub fn ledger(mut self, rows: impl IntoIterator<Item = rafka_node_rpc_contract::catalog::LedgerEntry>) -> Self {
+    pub fn ledger(mut self, rows: impl IntoIterator<Item = rdm_core::catalog::LedgerEntry>) -> Self {
         self.catalog = self.catalog.ledger(rows);
         self
     }

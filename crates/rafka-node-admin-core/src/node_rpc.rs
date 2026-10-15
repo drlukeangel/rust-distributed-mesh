@@ -7,7 +7,7 @@
 //! its endpoint when it starts, holds it in its running state and hands it to
 //! every caller by clone; nothing builds a resolver or a client per call.
 
-use rafka_mesh_entity::MeshDigest;
+use rdm_core::MeshDigest;
 use rafka_mesh_transport::membership::DigestBook;
 use rafka_node_rpc::{Applied, LiveNodeResolver, NodeRpcClient, ResolvedNode};
 use std::sync::Arc;

@@ -14,7 +14,7 @@
 //! replaced is not. A real `Membership` given a frozen clock stamps one frozen `emitted_at_rafka_ms`
 //! and a strictly increasing `digest_seq` from 1 on every heartbeat it publishes.
 
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::clock::Clock;
 use rafka_mesh_transport::membership::{DigestBook, Membership};
 use serde_json::{json, Value};

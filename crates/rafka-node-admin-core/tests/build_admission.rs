@@ -133,7 +133,7 @@ async fn rig() -> (Arc<Held>, Arc<ControlPlane>) {
 }
 
 fn add_rpc() -> TopologyChange {
-    TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rafka_mesh_entity::NodeKind::RpcNode }
+    TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }
 }
 
 /// CONTRACT: two topology submissions that both arrive while the accepted Build is settled admit

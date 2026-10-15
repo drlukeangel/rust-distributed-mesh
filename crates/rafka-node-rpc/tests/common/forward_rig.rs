@@ -3,12 +3,12 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, CarrierEdges, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::outcome::{MalformedKind, ReplyKind};
+use rdm_core::ping::{Ping, PingReply, PingRequest};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

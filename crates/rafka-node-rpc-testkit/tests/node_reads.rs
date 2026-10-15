@@ -5,13 +5,13 @@
 //! "Reading or cutting a node's held connections"). The typed objects read them from the node
 //! itself over Node RPC; they hold no control API client.
 
-use rafka_mesh_entity::connections::NodeConnection;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
+use rdm_core::connections::NodeConnection;
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
 use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
-use rafka_node_rpc_contract::status::TagScope;
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::status::TagScope;
+use rdm_core::status::StatusReply;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -45,10 +45,10 @@ async fn caller(nodes: &[ResolvedNode]) -> (Arc<NodeRpcClient>, iroh::Endpoint) 
 
 /// The ids of the connections a node holds: its latest Direct per destination that is `connected`,
 /// and its active Proxies (the open entries `node.connections.delete` names).
-fn own_ids(held: &rafka_mesh_entity::connections::ConnectionsHeld) -> BTreeSet<String> {
+fn own_ids(held: &rdm_core::connections::ConnectionsHeld) -> BTreeSet<String> {
     held.own_latest_directs()
         .into_iter()
-        .filter(|e| e.state == rafka_mesh_entity::connections::ConnectionState::Connected)
+        .filter(|e| e.state == rdm_core::connections::ConnectionState::Connected)
         .chain(held.own_active_proxies())
         .map(|e: &NodeConnection| e.id.to_string())
         .collect()
@@ -306,7 +306,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
         let dir = root.join(name.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -323,7 +323,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             store_dir: store.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let seams: Arc<OnceLock<Seams>> = Arc::default();
@@ -341,8 +341,8 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             heard.changed().await.unwrap();
         }
         // The node originates a data-plane connection to its admin: a Direct entry of its log.
-        match seams.client.call::<rafka_node_rpc_contract::ping::Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &rafka_node_rpc::CallOptions::default()).await.0 {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(_) => {}
+        match seams.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &rdm_core::ping::PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &rafka_node_rpc::CallOptions::default()).await.0 {
+            rdm_core::outcome::RpcOutcome::Reply(_) => {}
             other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }
         seams.connections.observations_landed().await;

@@ -11,9 +11,9 @@
 //! The detectors are `rafka_test_scenario::wedge`: they judge a cut by the consequences it leaves,
 //! never by the injector's success and never by a duration.
 
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, PreCommit, RequestFinished};
-use rafka_node_rpc_contract::ping::Ping;
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::outcome::{IndeterminateReason, NotSentReason, PreCommit, RequestFinished};
+use rdm_core::ping::Ping;
+use rdm_core::protocol::NodeProtocol;
 use rafka_test_scenario::ledger::{Ledger, MutationIntent};
 use rafka_test_scenario::wedge::*;
 use serde_json::{json, Value};
@@ -79,9 +79,9 @@ fn request_ledger(lost: bool) -> (Ledger, BTreeMap<String, Vec<u8>>) {
     let put = ledger.issue(Ping::OP, "node-held", Some(MutationIntent { key: "41".into(), value: b"held-put".to_vec() }));
     let cut = ledger.issue(Ping::OP, "node-held", Some(MutationIntent { key: "42".into(), value: b"never-sent".to_vec() }));
     let lost_reply = ledger.issue(Ping::OP, "node-held", Some(MutationIntent { key: "43".into(), value: b"lost-reply".to_vec() }));
-    ledger.classify(put, &committed().reply::<Ping>(&Ping::encode_reply(&rafka_node_rpc_contract::ping::PingReply::Pong { payload: vec![1] }).unwrap())).unwrap();
-    ledger.classify(cut, &PreCommit::begin(Ping::OP).not_sent::<rafka_node_rpc_contract::ping::PingReply>(NotSentReason::Deadline)).unwrap();
-    ledger.classify(lost_reply, &committed().indeterminate::<rafka_node_rpc_contract::ping::PingReply>(IndeterminateReason::ReplyLost("held".into()))).unwrap();
+    ledger.classify(put, &committed().reply::<Ping>(&Ping::encode_reply(&rdm_core::ping::PingReply::Pong { payload: vec![1] }).unwrap())).unwrap();
+    ledger.classify(cut, &PreCommit::begin(Ping::OP).not_sent::<rdm_core::ping::PingReply>(NotSentReason::Deadline)).unwrap();
+    ledger.classify(lost_reply, &committed().indeterminate::<rdm_core::ping::PingReply>(IndeterminateReason::ReplyLost("held".into()))).unwrap();
     let mut state = BTreeMap::new();
     if !lost {
         state.insert("41".to_string(), b"held-put".to_vec());

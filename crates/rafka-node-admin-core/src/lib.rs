@@ -40,7 +40,7 @@ pub mod investigate;
 pub mod lifecycle;
 pub mod mesh_claims;
 pub mod mesh_delete;
-pub mod model;
+pub use rdm_core::model;
 pub mod node_commands;
 pub mod node_config;
 pub mod node_properties;

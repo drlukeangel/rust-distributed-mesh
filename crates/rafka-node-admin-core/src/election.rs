@@ -47,8 +47,8 @@
 
 use crate::model::{Node, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rafka_mesh_entity::ids::{IncarnationId, NodeId};
-use rafka_mesh_entity::SeatHolder;
+use rdm_core::ids::{IncarnationId, NodeId};
+use rdm_core::SeatHolder;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Mutex;
 
@@ -513,7 +513,7 @@ mod tests {
         let ordered = ["000000000000", "000000000009", "00000000000a", "00000000000z", "000000000010", "900000000000", "a00000000000", "zzzzzzzzzzzz"];
         for w in ordered.windows(2) {
             assert!(id(w[0]) < id(w[1]), "{} < {}", w[0], w[1]);
-            let (a, b) = (rafka_mesh_entity::ids::decode_crockford60(w[0]).unwrap(), rafka_mesh_entity::ids::decode_crockford60(w[1]).unwrap());
+            let (a, b) = (rdm_core::ids::decode_crockford60(w[0]).unwrap(), rdm_core::ids::decode_crockford60(w[1]).unwrap());
             assert!(a < b, "numeric {} < {}", w[0], w[1]);
         }
     }
@@ -626,13 +626,13 @@ mod tests {
     fn born(path: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.node_id = id(node_id);
-        n.incarnation_id = Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap());
+        n.incarnation_id = Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap());
         n.status = status;
         n
     }
 
     fn holder(mesh: &str, node_id: &str, inc: &str, revision: u64) -> SeatHolder {
-        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(), revision }
+        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap(), revision }
     }
 
     fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {
@@ -640,7 +640,7 @@ mod tests {
     }
 
     fn lose(inc: &mut Incumbency, _node_id: &str, incarnation: &str) {
-        inc.lost.insert(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(incarnation)).unwrap());
+        inc.lost.insert(IncarnationId::parse(&rdm_core::fixture_crockford60(incarnation)).unwrap());
     }
 
     fn fabric_name(nodes: &[Node]) -> Option<String> {

@@ -4,11 +4,11 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::{CatalogEntry, EntryKind, OpOwner};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+use rdm_core::catalog::{CatalogEntry, EntryKind, OpOwner};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingReply, PingRequest};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -60,5 +60,5 @@ fn a_core_owned_transitional_entry_is_refused_at_seal() {
     let mut entry = CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 1024);
     entry.owner = OpOwner::Core;
     let errors = ServerBuilder::new().adapter(entry).seal(ServedBirth { node_id: "n".into(), incarnation: "i".into() }).err().expect("refused");
-    assert!(errors.iter().any(|e| matches!(e, rafka_node_rpc_contract::catalog::SealError::OwnerMismatch { op: 0x12, .. } | rafka_node_rpc_contract::catalog::SealError::CoreTransitional { op: 0x12, .. })), "{errors:?}");
+    assert!(errors.iter().any(|e| matches!(e, rdm_core::catalog::SealError::OwnerMismatch { op: 0x12, .. } | rdm_core::catalog::SealError::CoreTransitional { op: 0x12, .. })), "{errors:?}");
 }

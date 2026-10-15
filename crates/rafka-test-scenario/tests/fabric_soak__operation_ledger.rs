@@ -6,10 +6,10 @@
 //! Every outcome is built through the contract's own proving-condition API (`PreCommit`,
 //! `RequestFinished`, `Committed`), so no variant is invented here.
 
-use rafka_node_rpc_contract::framing::Target;
-use rafka_node_rpc_contract::outcome::{Committed, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, ResolveFailure, RpcOutcome};
-use rafka_node_rpc_contract::ping::{Ping, PingReply};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::framing::Target;
+use rdm_core::outcome::{Committed, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, ResolveFailure, RpcOutcome};
+use rdm_core::ping::{Ping, PingReply};
+use rdm_core::protocol::NodeProtocol;
 use rafka_test_scenario::ledger::{Bucket, Ledger, MutationIntent, OperationId, Violation, CLASSIFIES_EVERY_OPERATION_ONCE, DETECTS_LOST_APPLIED_MUTATION};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -98,7 +98,7 @@ fn final_state(run: &Run, rng: &mut Rng) -> (BTreeMap<String, Vec<u8>>, Vec<Oper
     for (o, out) in run.ledger.operations().iter().zip(&run.outcomes) {
         let Some(m) = &o.mutation else { continue };
         let applies = match out {
-            RpcOutcome::Reply(r) => r.class() == rafka_node_rpc_contract::outcome::ReplyKind::Success,
+            RpcOutcome::Reply(r) => r.class() == rdm_core::outcome::ReplyKind::Success,
             RpcOutcome::Indeterminate(_) => {
                 let a = rng.next() % 2 == 0;
                 if a {

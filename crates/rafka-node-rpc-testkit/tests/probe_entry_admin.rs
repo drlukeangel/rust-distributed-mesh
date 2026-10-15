@@ -9,10 +9,10 @@
 use crate::common::admin_view::{self, node};
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
-use rafka_node_rpc_contract::status::{NodeSelect, StatusRequest};
+use rdm_core::status::{NodeSelect, StatusRequest};
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore};
 use std::sync::Arc;
 
@@ -50,7 +50,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             store_dir: data.clone(),
             mesh_id: None,
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
         let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))

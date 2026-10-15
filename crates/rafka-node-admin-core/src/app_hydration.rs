@@ -21,7 +21,7 @@
 //! [`AfterReady`] is for optional work only: nothing required may live there.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rafka_mesh_entity::{MemberStatus, MeshDigest};
+use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
 use rafka_mesh_transport::membership::{DigestBook, Membership};
 use rafka_node_rpc::{CancelToken, HydrationGate, NodeRpcClient};
@@ -153,7 +153,7 @@ impl HydrateCtx {
 
 /// The event a blocked hook waits for: the envelope's typed `RetryOn` (node-rpc-envelope.md, Status
 /// op 0x1B), the same value a probe of a blocked birth answers in `Blocked`.
-pub use rafka_node_rpc_contract::status::RetryOn;
+pub use rdm_core::status::RetryOn;
 
 /// What the hook returns.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -127,7 +127,7 @@ fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
     let t = Planted::of_tree();
     // The retired name is assembled here so this file never carries it as a token.
     let retired = format!("{}Owner", "Tag");
-    t.write("crates/rafka-node-rpc/src/planted.rs", &format!("use rafka_node_rpc_contract::catalog::{retired};\n"));
+    t.write("crates/rafka-node-rpc/src/planted.rs", &format!("use rdm_core::catalog::{retired};\n"));
     let v = only(check(t.root()), Ratchet::NoTransportTagVocabulary);
     assert!(matches!(&v[0], Violation::Token { token, .. } if *token == retired));
     // A serde discriminator named `tag` is JSON vocabulary, not transport vocabulary.
@@ -181,7 +181,7 @@ fn retire_receipt_names_command_arm_fails_an_untagged_outcome() {
 #[test]
 fn connections_deleted_is_not_refusal_fails_when_the_receipt_is_gone() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "        receipt: Option<ConnectionsReceipt>,\n", "        receipt: Option<u64>,\n");
+    t.edit("crates/rdm-core/src/status.rs", "        receipt: Option<ConnectionsReceipt>,\n", "        receipt: Option<u64>,\n");
     only(check(t.root()), Ratchet::ConnectionsDeletedIsNotRefusal);
 }
 
@@ -195,14 +195,14 @@ fn forward_preserves_context_fails_without_its_proof() {
 #[test]
 fn postcard_section_bounds_fails_when_the_declared_length_is_no_longer_refused_first() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/framing.rs", "fn oversize_is_refused_from_the_declared_length_before_the_body", "fn oversize_is_refused");
+    t.edit("crates/rdm-core/src/framing.rs", "fn oversize_is_refused_from_the_declared_length_before_the_body", "fn oversize_is_refused");
     only(check(t.root()), Ratchet::PostcardSectionBounds);
 }
 
 #[test]
 fn typed_protocol_identity_fails_a_string_id_in_a_request() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "/// The birth probed.\n        node_id: NodeId,", "/// The birth probed.\n        node_id: String,");
+    t.edit("crates/rdm-core/src/status.rs", "/// The birth probed.\n        node_id: NodeId,", "/// The birth probed.\n        node_id: String,");
     let v = only(check(t.root()), Ratchet::TypedProtocolIdentity);
     assert!(matches!(&v[0], Violation::Token { token, .. } if token == "node_id: String"));
 }
@@ -210,27 +210,27 @@ fn typed_protocol_identity_fails_a_string_id_in_a_request() {
 #[test]
 fn typed_protocol_evidence_fails_untyped_held_evidence() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "/// The mesh id held.\n        held: MeshId,", "/// The mesh id held.\n        held: String,");
+    t.edit("crates/rdm-core/src/status.rs", "/// The mesh id held.\n        held: MeshId,", "/// The mesh id held.\n        held: String,");
     only(check(t.root()), Ratchet::TypedProtocolEvidence);
 }
 
 #[test]
 fn status_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "const REPLY_VARIANTS: u32 = 51;", "const REPLY_VARIANTS: u32 = 52;");
+    t.edit("crates/rdm-core/src/status.rs", "const REPLY_VARIANTS: u32 = 51;", "const REPLY_VARIANTS: u32 = 52;");
     only(check(t.root()), Ratchet::StatusResealIsAtomic);
     let f = Planted::of_tree();
-    f.delete("crates/rafka-node-rpc-contract/tests/status_wire.rs");
+    f.delete("crates/rdm-core/tests/status_wire.rs");
     only(check(f.root()), Ratchet::StatusResealIsAtomic);
 }
 
 #[test]
 fn forward_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/forward.rs", "const REPLY_VARIANTS: u32 = 14;", "const REPLY_VARIANTS: u32 = 15;");
+    t.edit("crates/rdm-core/src/forward.rs", "const REPLY_VARIANTS: u32 = 14;", "const REPLY_VARIANTS: u32 = 15;");
     only(check(t.root()), Ratchet::ForwardResealIsAtomic);
     let f = Planted::of_tree();
-    f.delete("crates/rafka-node-rpc-contract/tests/forward_wire.rs");
+    f.delete("crates/rdm-core/tests/forward_wire.rs");
     only(check(f.root()), Ratchet::ForwardResealIsAtomic);
 }
 
@@ -240,7 +240,7 @@ fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
     t.write("crates/rafka-node-rpc-testkit/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");
     only(check(t.root()), Ratchet::OneNewLivenessPrimitive);
     let r = Planted::of_tree();
-    r.edit("crates/rafka-node-rpc-contract/src/catalog.rs", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Retired", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Live");
+    r.edit("crates/rdm-core/src/catalog.rs", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Retired", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Live");
     only(check(r.root()), Ratchet::OneNewLivenessPrimitive);
 }
 
@@ -316,7 +316,7 @@ fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
 
     // A Node RPC source takes no JSON either.
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-rpc-contract/src/planted.rs", "fn frame(v: &Req) -> Vec<u8> { serde_json::to_vec(v).unwrap() }\n");
+    t.write("crates/rdm-core/src/planted.rs", "fn frame(v: &Req) -> Vec<u8> { serde_json::to_vec(v).unwrap() }\n");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
 }
 

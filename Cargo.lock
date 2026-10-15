@@ -2997,7 +2997,7 @@ name = "rafka-chaos"
 version = "0.1.0"
 dependencies = [
  "libc",
- "rafka-mesh-entity",
+ "rdm-core",
  "serde",
  "serde_json",
  "tracing",
@@ -3027,18 +3027,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka-mesh-entity"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "hex",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "rafka-mesh-ops"
 version = "0.1.0"
 dependencies = [
@@ -3063,6 +3051,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "rdm-core",
  "serde_json",
  "tokio",
  "tokio-stream",
@@ -3084,9 +3073,9 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "postcard",
- "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-node-rpc",
+ "rdm-core",
  "serde",
  "serde_json",
  "sysinfo",
@@ -3100,9 +3089,8 @@ name = "rafka-node-admin-client"
 version = "0.1.0"
 dependencies = [
  "iroh",
- "rafka-mesh-entity",
  "rafka-node-rpc",
- "rafka-node-rpc-contract",
+ "rdm-core",
  "serde",
  "serde_json",
  "tokio",
@@ -3125,13 +3113,12 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "opentelemetry_sdk",
- "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-rpc",
- "rafka-node-rpc-contract",
  "rand 0.8.6",
+ "rdm-core",
  "serde",
  "serde_json",
  "tokio",
@@ -3145,14 +3132,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "iroh",
- "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
  "rafka-node-rpc",
- "rafka-node-rpc-contract",
  "rafka-node-rpc-testkit",
+ "rdm-core",
  "serde",
  "tokio",
  "tracing",
@@ -3168,24 +3154,14 @@ dependencies = [
  "iroh-gossip",
  "opentelemetry",
  "opentelemetry_sdk",
- "rafka-mesh-entity",
  "rafka-mesh-telemetry",
- "rafka-node-rpc-contract",
+ "rdm-core",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rafka-node-rpc-contract"
-version = "0.1.0"
-dependencies = [
- "postcard",
- "rafka-mesh-entity",
- "serde",
 ]
 
 [[package]]
@@ -3200,14 +3176,13 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "opentelemetry_sdk",
- "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
  "rafka-node-rpc",
- "rafka-node-rpc-contract",
  "rafka-node-rpc-testkit",
+ "rdm-core",
  "serde",
  "serde_json",
  "tokio",
@@ -3226,14 +3201,13 @@ dependencies = [
  "libc",
  "opentelemetry_sdk",
  "rafka-chaos",
- "rafka-mesh-entity",
  "rafka-mesh-telemetry",
  "rafka-mesh-transport",
  "rafka-node-admin-client",
  "rafka-node-admin-core",
  "rafka-node-rpc",
- "rafka-node-rpc-contract",
  "rafka-node-rpc-testkit",
+ "rdm-core",
  "serde",
  "serde_json",
  "tokio",
@@ -3334,6 +3308,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rdm-core"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "hex",
+ "postcard",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
 ]
 
 [[package]]

@@ -15,16 +15,16 @@
 //! the earlier entry rewritten.
 
 use crate::common::admin_side_serving;
-use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, NodeConnection};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingRequest};
 use rafka_node_admin_core::model::NodeStatus;
 use rafka_node_admin_core::storage::NodeRow;
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
+use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
 use std::sync::{Arc, OnceLock};
@@ -65,7 +65,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let launch_of = |name: &PathName| {
             let dir = root.join(name.to_string());
             std::fs::create_dir_all(&dir).unwrap();
-            RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+            RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
             let launch = Launch {
                 fabric: "fabric1".into(),
@@ -82,7 +82,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
                 mesh_issuer: None,
-                connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+                connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);
             launch
@@ -285,7 +285,7 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let dir = root.join(born.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -302,7 +302,7 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
             store_dir: store.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let seams: Arc<OnceLock<Seams>> = Arc::default();

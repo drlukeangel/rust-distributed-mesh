@@ -9,7 +9,7 @@
 //! Node-admin composes the same mapping in `rafka_node_admin_core::node_rpc`;
 //! the rpc node never links node-admin.
 
-use rafka_mesh_entity::MeshDigest;
+use rdm_core::MeshDigest;
 use rafka_mesh_transport::membership::DigestBook;
 use rafka_node_rpc::{Applied, LiveNodeResolver, NodeRpcClient, ResolvedNode};
 use std::sync::Arc;

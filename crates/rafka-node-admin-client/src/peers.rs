@@ -5,7 +5,7 @@
 //! fact is named, with the fact and the last thing it reported.
 
 use crate::{HeldView, NodeRpc, NodeStatus, NodeView};
-use rafka_mesh_entity::{MeshNode, NodeId, PathName};
+use rdm_core::{MeshNode, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -31,7 +31,7 @@ pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
     Some(MeshNode {
         node_id: n.node_id.clone(),
         name: n.name.clone(),
-        endpoint_id: rafka_mesh_entity::EndpointId(n.endpoint_id.clone().filter(|e| !e.is_empty())?),
+        endpoint_id: rdm_core::EndpointId(n.endpoint_id.clone().filter(|e| !e.is_empty())?),
         transport_addr: n.transport_addr?,
         incarnation: n.incarnation_id.clone()?,
         supersedes: None,

@@ -7,16 +7,16 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
 use rafka_node_admin_core::storage::MemoryConnectionsStorage;
 use rafka_node_rpc::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
-use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::forward::{Forward, ForwardReply, ForwardRequest};
+use rdm_core::outcome::{NotSentReason, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
+use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -157,7 +157,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
     let own = ConnectionEnd { name: r.admin.name.clone(), node_id: r.admin.node_id.clone(), incarnation: Some(r.admin.incarnation.clone()) };
     let destination = ConnectionEnd { name: dead_resolved.name.clone(), node_id: dead.node_id.clone(), incarnation: Some(dead.incarnation.clone()) };
     r.admin_connections
-        .record(NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: own, destination, kind: ConnectionKind::Direct, state: ConnectionState::Disconnected, carrier: None, recovery: None, reason: Some("pooled connection broke".into()), logged_at_ms: 1 })
+        .record(NodeConnection { id: rdm_core::ConnectionId::mint(), source: own, destination, kind: ConnectionKind::Direct, state: ConnectionState::Disconnected, carrier: None, recovery: None, reason: Some("pooled connection broke".into()), logged_at_ms: 1 })
         .await
         .unwrap();
     let resolver = Arc::new(StaticResolver::new());

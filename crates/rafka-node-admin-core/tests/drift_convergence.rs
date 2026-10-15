@@ -22,7 +22,7 @@
 //! exactly one live birth, and the accepted Build is complete (a recovery's attempt in its mesh's
 //! lane, a drift repair's in the fabric lane).
 
-use rafka_mesh_entity::{MeshDigest, MeshNode, MemberStatus, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::{MeshDigest, MeshNode, MemberStatus, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_mesh_transport::membership::DigestBook;
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
@@ -168,12 +168,12 @@ impl PathProbe for Probe {
 
 
 /// The node id of the birth `me` names in `t`: the drift pass's authority identity.
-fn own_id(t: &rafka_node_admin_core::topology::Topology, me: &PathName) -> rafka_mesh_entity::NodeId {
+fn own_id(t: &rafka_node_admin_core::topology::Topology, me: &PathName) -> rdm_core::NodeId {
     t.node(me).map(|n| n.node_id.clone()).unwrap_or_else(|| panic!("{me} is not in the view"))
 }
 
 fn fact(pid: u32) -> RuntimeFact {
-    RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60(&format!("dep-{pid}")), provider: RuntimeProvider::Process, control_domain: DOMAIN.into(), locator: RuntimeLocator::Process { pid, start: 1 } }
+    RuntimeFact { deployment_id: rdm_core::fixture_crockford60(&format!("dep-{pid}")), provider: RuntimeProvider::Process, control_domain: DOMAIN.into(), locator: RuntimeLocator::Process { pid, start: 1 } }
 }
 
 /// The estate: the world, the accepted Build, the admins' shared view and membership.
@@ -205,7 +205,7 @@ async fn seatless_rpc(e: &Estate, mesh: &str) -> String {
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
     let fabric_id = FabricId::mint();
-    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of(*m, [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])))).collect() };
+    let topology = FabricTopology { fabric: "fabric1".into(), meshes: SHAPE.iter().map(|(m, a, r)| ((*m).to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])))).collect() };
     let mut nodes = Vec::new();
     let book = DigestBook::default();
     for m in topology.meshes.values() {
@@ -302,7 +302,7 @@ impl OperationRunner for Runner {
         use rafka_node_admin_core::build_state::BuildStateAdapter as _;
         let created;
         let op = match op {
-            BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node }, .. } => {
+            BuildOperation::RecipeStep { step: rdm_core::build::RecipeStep::Create { node }, .. } => {
                 created = BuildOperation::CreateNode { node: node.clone(), over: None };
                 &created
             }
@@ -522,7 +522,7 @@ impl Estate {
         for n in v.nodes.iter().filter(|n| n.status.is_live()) {
             *per_path.entry(n.name.to_string()).or_default() += 1;
         }
-        let want: BTreeSet<String> = SHAPE.iter().flat_map(|(m, a, r)| MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of(*m, [(rafka_mesh_entity::NodeKind::NodeAdmin, *a), (rafka_mesh_entity::NodeKind::RpcNode, *r)])).nodes.into_iter().map(|p| p.to_string())).collect();
+        let want: BTreeSet<String> = SHAPE.iter().flat_map(|(m, a, r)| MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of(*m, [(rdm_core::NodeKind::NodeAdmin, *a), (rdm_core::NodeKind::RpcNode, *r)])).nodes.into_iter().map(|p| p.to_string())).collect();
         assert_eq!(per_path.keys().cloned().collect::<BTreeSet<_>>(), want, "every accepted path is live");
         assert!(per_path.values().all(|c| *c == 1), "one live birth per path: {per_path:?}");
         // And the world: one running runtime per path.
@@ -559,7 +559,7 @@ impl Estate {
 
     /// The recoverer runs the recovery attempt `opened` (opened at its door) through its own executor
     /// to its terminal (`build_run::run_opened_recovery`).
-    async fn run_opened(&self, recoverer: &str, opened: rafka_node_admin_core::control_plane::Opened) -> rafka_node_rpc_contract::build::BuildReply {
+    async fn run_opened(&self, recoverer: &str, opened: rafka_node_admin_core::control_plane::Opened) -> rdm_core::build::BuildReply {
         let door = self.dispatch.door(&recoverer.parse().unwrap());
         match rafka_node_admin_core::build_run::run_opened_recovery(&*self.door_at(recoverer).await, &door, opened).await {
             Ok(rafka_node_admin_core::build_run::Recovered::Ran { terminal, .. }) => terminal,
@@ -863,7 +863,7 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
     let e = estate().await;
     let before = e.builds.current().await.unwrap().unwrap();
     let id = e.node_id("mesh1.rpc.2").await;
-    e.world.exit_with(&id, Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE));
+    e.world.exit_with(&id, Some(rdm_core::runtime::TRANSPORT_STOPPED_EXIT_CODE));
     e.unheard(&["mesh1.rpc.2"]).await;
     assert_eq!(e.drift().await, None, "the fabric-primary restarts no ordinary member");
     e.recover("mesh1.rpc.2").await;
@@ -888,7 +888,7 @@ async fn a_transport_stopped_exit_is_recovered_as_a_new_node_never_restarted() {
 /// Replace or a Restart.
 #[tokio::test]
 async fn a_secondary_node_admins_exit_is_recovered_by_its_mesh_primary_whatever_its_code() {
-    for code in [Some(rafka_mesh_entity::runtime::TRANSPORT_STOPPED_EXIT_CODE), Some(137)] {
+    for code in [Some(rdm_core::runtime::TRANSPORT_STOPPED_EXIT_CODE), Some(137)] {
         let e = estate().await;
         let before = e.builds.current().await.unwrap().unwrap();
         let fp = e.fabric_primary().await;
@@ -1130,7 +1130,7 @@ async fn a_topology_build_claims_nothing_in_a_mesh_its_recovery_holds_and_runs_o
     }
     assert!(e.dispatch.dispatched.lock().unwrap().is_empty(), "nothing is dispatched while the recovery holds mesh1");
     let terminal = e.run_opened(&mp, recovery.clone()).await;
-    assert_eq!(terminal, rafka_node_rpc_contract::build::BuildReply::Complete { build_id: recovery.build_id.to_string(), attempt: recovery.attempt }, "the recovery ran to its verdict");
+    assert_eq!(terminal, rdm_core::build::BuildReply::Complete { build_id: recovery.build_id.to_string(), attempt: recovery.attempt }, "the recovery ran to its verdict");
     e.converge().await;
     let after = e.builds.read_build(&create.build_id).await.unwrap();
     assert_eq!(after.state, BuildState::Complete, "the node.create ran once the recovery released mesh1: {after:?}");
@@ -1352,7 +1352,7 @@ mod one_attempt_number {
         let cp = door(&e, g.clone()).await;
         let submit = tokio::spawn({
             let cp = cp.clone();
-            async move { cp.submit("POST /api/topology", rafka_node_admin_core::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rafka_mesh_entity::NodeKind::RpcNode }).await }.instrument(root.clone())
+            async move { cp.submit("POST /api/topology", rafka_node_admin_core::accepted::TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: rdm_core::NodeKind::RpcNode }).await }.instrument(root.clone())
         });
         g.arrived.notified().await;
         // The drift pass of the same fabric-primary: the admission its door holds.
@@ -1507,7 +1507,7 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
-    heard.depart(rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
+    heard.depart(rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
     let mut t = e.view.read().await.clone();
     t.nodes.retain(|n| n.name.to_string() != lost);
     rafka_node_admin_core::election::resolve(&mut t.nodes);
@@ -2136,7 +2136,7 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
         let extra = birth(&e.world, &e.book, &e.view.read().await.fabric.id.clone(), "mesh1.rpc.9", None);
         e.view.write().await.nodes.push(extra.clone());
         if receipted {
-            let op = rafka_mesh_entity::LifecycleOp {
+            let op = rdm_core::LifecycleOp {
                 build_id: current.build_id.to_string(),
                 attempt: current.attempt,
                 operation: "node.delete:mesh1.rpc.9".into(),
@@ -2161,7 +2161,7 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
 /// (mesh-investigation.md step 6: the node-admin joins the live mesh on the same accepted Build); `None`
 /// for any other action.
 fn one_step_create_of(action: &Option<rafka_node_admin_core::accepted::AttemptAction>) -> Option<String> {
-    use rafka_node_rpc_contract::build::RecipeStep;
+    use rdm_core::build::RecipeStep;
     match action {
         Some(rafka_node_admin_core::accepted::AttemptAction::Recipe { steps, .. }) => match steps.as_slice() {
             [RecipeStep::Create { node }] => Some(node.to_string()),
@@ -2173,7 +2173,7 @@ fn one_step_create_of(action: &Option<rafka_node_admin_core::accepted::AttemptAc
 
 fn exit_records() -> rafka_node_admin_core::admin::Records {
     let r = rafka_node_admin_core::admin::Records::default();
-    r.set_status(std::sync::Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rafka_mesh_entity::NodeId::mint());
+    r.set_status(std::sync::Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
     r
 }
 
@@ -2189,7 +2189,7 @@ impl rafka_node_admin_core::status_storage::StatusStorage for CountsExitPuts {
     async fn put_mesh_status(&self, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.inner.put_mesh_status(row).await
     }
-    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, rafka_node_rpc_contract::status::MeshState>, rafka_node_admin_core::record_store::StorageError> {
+    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, rdm_core::status::MeshState>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.mesh_statuses().await
     }
     async fn put_fabric_event(&self, row: &rafka_node_admin_core::status_storage::FabricEventRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
@@ -2264,7 +2264,7 @@ async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it()
     let t = e.view.read().await.clone();
     let store = Arc::new(CountsExitPuts::default());
     let exits = rafka_node_admin_core::admin::Records::default();
-    exits.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rafka_mesh_entity::NodeId::mint());
+    exits.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rdm_core::NodeId::mint());
     let mut started = HashSet::new();
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
     #[allow(clippy::too_many_arguments)]

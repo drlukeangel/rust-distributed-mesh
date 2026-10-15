@@ -28,8 +28,8 @@ use crate::build::BuildId;
 use crate::build_state::{AttemptOutcome, BuildFact, BuildProjection, BuildState, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
 use crate::executor::{BuildExecutor, Reconciled, RunPlan};
 use crate::model::PathName;
-use rafka_node_rpc_contract::build::{BuildReply, Disposition};
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::build::{BuildReply, Disposition};
+use rdm_core::context::CallContext;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
@@ -974,7 +974,7 @@ mod tests {
     async fn a_recovery_lookup_through_the_framed_builds_is_a_point_read_by_the_exited_birth() {
         let memory = Arc::new(MemoryBuildStateAdapter::new());
         let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh1.rpc.1".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        let deleted = rafka_mesh_entity::LifecycleOp { build_id: id().to_string(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        let deleted = rdm_core::LifecycleOp { build_id: id().to_string(), attempt: 2, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
         for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None)] {
             memory
                 .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: id(), attempt: 2, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })

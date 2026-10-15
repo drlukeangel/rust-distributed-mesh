@@ -1,7 +1,7 @@
 //! i143 R-B2 (Luke), D: a `JoinNode` that arrives after the deploying admin ended the birth's
 //! deployment is refused by name (`DeploymentAbandoned`), never as `NotAuthority`.
 
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
@@ -9,7 +9,7 @@ use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipel
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::{JoinDoor, Joins};
 use rafka_node_admin_core::model::{Node, ProviderKind};
-use rafka_node_rpc_contract::join::{JoinReply, JoinRequest};
+use rdm_core::join::{JoinReply, JoinRequest};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -96,7 +96,7 @@ struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
-    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
 }
 
 fn receipt_output(view: &rafka_node_admin_core::build_state::BuildProjection, step: &str) -> Value {
@@ -126,12 +126,12 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rb2-none".into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Arc::new(Joins::default());
         let pipeline = DeploymentPipeline {
@@ -216,6 +216,6 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
     let abandoned: Vec<&&Value> = via_join.iter().filter(|s| s["attributes"]["outcome"] == "deployment-abandoned").collect();
     assert_eq!(abandoned.len(), 1, "{via_join:?}");
     assert_eq!(abandoned[0]["attributes"]["attempt"], "3");
-    assert!(rafka_mesh_entity::BuildId::parse(abandoned[0]["attributes"]["build_id"].as_str().unwrap()).is_ok());
+    assert!(rdm_core::BuildId::parse(abandoned[0]["attributes"]["build_id"].as_str().unwrap()).is_ok());
     assert!(via_join.iter().all(|s| s["attributes"]["outcome"] != "not-authority"), "the authority never answers not-authority about itself");
 }

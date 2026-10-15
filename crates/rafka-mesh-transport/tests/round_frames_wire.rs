@@ -4,7 +4,7 @@
 //! postcard rules by hand. Never regenerate an expectation from the Rust serializer to make a
 //! schema change pass.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId, RoundHook};
+use rdm_core::{FabricId, IncarnationId, NodeId, RoundHook};
 use rafka_mesh_transport::membership::{forward_of, Frame};
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -16,7 +16,7 @@ fn hook(operation: &str, publisher: &str) -> RoundHook {
     RoundHook {
         fabric_id: FabricId::parse("04raj09p3zp7").unwrap(),
         node_id: NodeId::parse("0123456789ab").unwrap(),
-        incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
+        incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(),
         build_id: "66h8qrqvaajk".into(),
         attempt: 1,
         operation: operation.into(),
@@ -54,8 +54,8 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
         assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
     }
     // The frames that existed keep their positions.
-    assert_eq!(Frame::NodeConnectionsDeleted { op: rafka_mesh_entity::LifecycleOp {
-        build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
+    assert_eq!(Frame::NodeConnectionsDeleted { op: rdm_core::LifecycleOp {
+        build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
         forwarded_by: None }.encode()[0], 13);
 }
 

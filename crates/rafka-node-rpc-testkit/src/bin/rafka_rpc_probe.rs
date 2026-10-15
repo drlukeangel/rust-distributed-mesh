@@ -18,10 +18,10 @@
 //! `{"outcome": "Reply"|"NotSent"|"Unserved"|"Indeterminate", ...}`; a
 //! `Reply` carries the executing node's provenance and the typed result.
 
-use rafka_mesh_entity::{IncarnationId, MeshNode, NodeId, PathName};
+use rdm_core::{IncarnationId, MeshNode, NodeId, PathName};
 use rafka_node_admin_client::{BuildCarrier, Fabrics, NodeSelector, NodeView, Nodes};
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -132,7 +132,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
 
 /// `declare`: ask the node at `--target` to declare `--state` for its own birth to `--to`.
 async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
-    use rafka_node_rpc_contract::status::NodeState;
+    use rdm_core::status::NodeState;
     use rafka_node_rpc_testkit::declare_probe::{DeclareProbe, DeclareReply, DeclareRequest, DeclareTarget};
     let to = a.to.as_deref().ok_or("declare needs --to <path:..|exact:..>")?;
     let to = match to.split_once(':') {
@@ -320,14 +320,14 @@ async fn run(a: Args) -> Result<Value, String> {
     };
     let opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
     let (out, leg): (RpcOutcome<ProofReply>, &str) = match route {
-        Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), "via-peer"),
+        Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), "via-peer"),
         Ok(route) => match resolver.resolve(&target) {
             Ok(n) => {
                 let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &opts).await;
                 (out, leg.token())
             }
             Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &opts).await.0, "direct"),
-            Err(f) => (rafka_node_rpc_contract::outcome::PreCommit::begin(<ProofStore as rafka_node_rpc_contract::protocol::NodeProtocol>::OP).not_sent(rafka_node_rpc_contract::outcome::NotSentReason::Resolve(f)), route.token()),
+            Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), route.token()),
         },
     };
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
@@ -502,14 +502,14 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 /// nothing: it has no membership.
 async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     use rafka_node_rpc::stream::StreamItem;
-    use rafka_node_rpc_contract::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
+    use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
     let since = match &a.since {
         None => None,
         Some(s) => {
             let parts: Vec<&str> = s.split('|').collect();
             let [node, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<incarnation>|<version>")) };
             Some(SourceVersion {
-                publisher: rafka_mesh_entity::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))? },
+                publisher: rdm_core::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))? },
                 topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
             })
         }
@@ -527,7 +527,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                         TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => json!({
                             "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
-                            "members": digests.into_iter().map(|d| rafka_mesh_entity::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
+                            "members": digests.into_iter().map(|d| rdm_core::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
                             "in_flight": in_flight.len(), "departed": departed.len(),
                         }),
                         TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
@@ -547,9 +547,9 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::resolved;
-    use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+    use rdm_core::{IncarnationId, NodeId, PathName};
     use rafka_node_admin_client::NodeView;
-    use rafka_node_rpc_contract::views::NodeStatus;
+    use rdm_core::views::NodeStatus;
 
     /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`
     /// are all given.

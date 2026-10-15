@@ -25,9 +25,9 @@ use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::outcome::NotSentReason;
-use rafka_node_rpc_contract::ping::{Ping, PingRequest};
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
+use rdm_core::outcome::NotSentReason;
+use rdm_core::ping::{Ping, PingRequest};
+use rdm_core::status::{Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -61,7 +61,7 @@ impl Rungs {
 
     /// The rungs at the configured cadences.
     pub fn configured() -> Rungs {
-        Self::at(rafka_mesh_entity::cadence::staleness_floor(), rafka_mesh_entity::cadence::backbone_gossip_interval())
+        Self::at(rdm_core::cadence::staleness_floor(), rdm_core::cadence::backbone_gossip_interval())
     }
 }
 
@@ -630,8 +630,8 @@ fn verdict(me: &str, mesh: &str, outcome: &str, unheard_ms: u64, why: &str) {
 /// carrier saying its own edge to the node-admin is lost is `carrier-edge-lost`; a carrier that
 /// cannot be reached, refuses, or loses the call (it died after its Ping) says nothing of the
 /// node-admin, so it is `unreachable`.
-pub fn classify(out: &rafka_node_rpc_contract::outcome::RpcOutcome<StatusReply>, admin: &PathName) -> (ProbeOutcome, String) {
-    use rafka_node_rpc_contract::outcome::RpcOutcome;
+pub fn classify(out: &rdm_core::outcome::RpcOutcome<StatusReply>, admin: &PathName) -> (ProbeOutcome, String) {
+    use rdm_core::outcome::RpcOutcome;
     match out {
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Current { state, .. } => (ProbeOutcome::AdminAlive, format!("{admin} answered: {state:?}")),
@@ -666,7 +666,7 @@ pub(crate) struct Found {
 /// exact mesh-primary the held seat record `seat` names first (its birth, the record's, R-EL1a),
 /// then the mesh's other node-admins in path order (mesh-investigation.md step 1). With no record
 /// held, path order. Only exact births are asked: a probe names `(node.id, incarnation)`.
-pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rafka_mesh_entity::seat::SeatHolder>) -> Vec<Node> {
+pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&rdm_core::seat::SeatHolder>) -> Vec<Node> {
     let mut admins: Vec<Node> = view.cohort(mesh, NodeKind::NodeAdmin).filter(|a| a.incarnation_id.is_some()).cloned().collect();
     admins.sort_by_key(|a| a.name.to_string());
     if let Some(record) = seat.filter(|r| r.mesh == mesh) {
@@ -706,7 +706,7 @@ pub(crate) struct Contact {
 
 impl Contact {
     /// What `out`, a `ProbeNodeState` of `admin`, says.
-    pub(crate) fn of(out: &rafka_node_rpc_contract::outcome::RpcOutcome<StatusReply>, admin: &PathName) -> Self {
+    pub(crate) fn of(out: &rdm_core::outcome::RpcOutcome<StatusReply>, admin: &PathName) -> Self {
         let (outcome, detail) = classify(out, admin);
         Self { outcome, detail, end: out.name() }
     }
@@ -769,7 +769,7 @@ impl ProbeCalls for WatchCalls<'_> {
 /// node-admin (`admins_in_probe_order`), each direct and, when that fails, Forwarded through a member
 /// that answered the Ping round made for it ([`find_carrier`]). `carriers` holds the carrier each
 /// mesh's latest probe went through; probe 2 prefers another member.
-pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rafka_mesh_entity::seat::SeatHolder>, mesh: &str, n: u8) -> Found {
+pub(crate) async fn probe<C: ProbeCalls + ?Sized>(calls: &C, carriers: &Mutex<BTreeMap<String, PathName>>, view: &Topology, record: Option<rdm_core::seat::SeatHolder>, mesh: &str, n: u8) -> Found {
     let seat_record = record.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let admins = admins_in_probe_order(view, mesh, record.as_ref());
     if admins.is_empty() {
@@ -904,7 +904,7 @@ mod tests {
         use crate::model::*;
         let node = |n: &str| Node::allocated(n.parse().unwrap());
         let t = Topology {
-            fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
             meshes: Vec::new(),
             nodes: vec![node("mesh1.admin.1"), node("mesh2.admin.1"), node("mesh2.rpc.1"), node("mesh3.admin.1")],
         };
@@ -1005,7 +1005,7 @@ mod tests {
     /// it. With no probe answered the decision is a hold: nothing marks the mesh dead on silence.
     #[test]
     fn one_investigation_runs_on_elapsed_time_from_the_last_direct_backbone_receipt() {
-        use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
+        use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
         let digest = |name: &str| MeshDigest {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { node_id: NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
@@ -1072,7 +1072,7 @@ mod tests {
     /// choosing the first target, a probe that asks only one node-admin, or another mesh's admin.
     #[test]
     fn a_probe_asks_the_seat_records_exact_mesh_primary_first_then_the_other_admins() {
-        use rafka_mesh_entity::seat::SeatHolder;
+        use rdm_core::seat::SeatHolder;
         let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
         let a3 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.3").unwrap().clone();
         let names = |order: Vec<Node>| order.iter().map(|a| a.name.to_string()).collect::<Vec<_>>();
@@ -1377,10 +1377,10 @@ mod tests {
     /// The peer mesh mesh2 of the probe cells: node-admins 1 and 2, the held mesh-primary seat record
     /// naming node-admin 2 (so the exact mesh-primary is not the first in path order), rpc members 1
     /// to 3, and this admin's own mesh1, never asked.
-    fn mesh2() -> (Arc<Topology>, rafka_mesh_entity::seat::SeatHolder) {
+    fn mesh2() -> (Arc<Topology>, rdm_core::seat::SeatHolder) {
         let v = view_of(vec![admin("mesh1.admin.1", true), member("mesh1.rpc.1"), admin("mesh2.admin.1", true), admin("mesh2.admin.2", false), member("mesh2.rpc.1"), member("mesh2.rpc.2"), member("mesh2.rpc.3")]);
         let a2 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.2").unwrap().clone();
-        let record = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
+        let record = rdm_core::seat::SeatHolder { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
         (Arc::new(v), record)
     }
 

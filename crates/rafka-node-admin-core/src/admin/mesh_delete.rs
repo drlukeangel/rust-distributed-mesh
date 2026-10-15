@@ -20,7 +20,7 @@ use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::executor::RunEnd;
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::mesh_delete::{accepted_roster, manifest_reference, members_exited, Admitted, ExitManifest, MeshDeleteKey, MeshDeleter, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_DELETED, STEP_MESH_LEFT};
-use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
 /// What serves `DeleteMesh` and `MeshDeleted` for a running admin.
@@ -36,14 +36,14 @@ impl MeshDeleter for MeshDeleteDoor {
     async fn mesh_deleted(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         self.runner.validate_handoff(sender, req).await
     }
-    async fn birth_deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    async fn birth_deleted(&self, op: &rdm_core::LifecycleOp) {
         self.runner.mesh_left_after_delete(op).await
     }
 }
 
 impl AdminRunner {
     /// The runtime fact the book holds for `node` (its digest).
-    fn held_runtime(&self, node: &Node) -> Option<rafka_mesh_entity::RuntimeFact> {
+    fn held_runtime(&self, node: &Node) -> Option<rdm_core::RuntimeFact> {
         self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref()).and_then(|d| d.node.runtime)
     }
 
@@ -108,7 +108,7 @@ impl AdminRunner {
         // the fabric-primary's own mesh, the fabric-primary seat stays put so mesh.delete skips its
         // node.fabric-primary.update step (lifecycles/fabric-delete.md step 1).
         if !build.topology.meshes.is_empty() || mesh != self.me.mesh.as_str() {
-            let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, build_id.as_str(), run, outer);
+            let fabric_update = crate::fabric_handover::update_operation(rdm_core::Seat::FabricPrimary, build_id.as_str(), run, outer);
             self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
         }
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
@@ -132,7 +132,7 @@ impl AdminRunner {
                             return Ok(());
                         }
                         crate::mesh_delete::UnansweredMeshOutcome::CreateAdmin { .. } => {
-                            self.records.declared.lock().unwrap().meshes.entry(key.mesh_id.clone()).or_insert(rafka_node_rpc_contract::status::MeshState::ReadyForTraffic);
+                            self.records.declared.lock().unwrap().meshes.entry(key.mesh_id.clone()).or_insert(rdm_core::status::MeshState::ReadyForTraffic);
                             steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
                         }
                     }
@@ -348,8 +348,8 @@ impl AdminRunner {
         let req = StatusRequest::DeleteMesh { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
         let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
         match &out {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::Failed(format!("{outer}: {} refused delete-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
+            rdm_core::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
+            rdm_core::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::Failed(format!("{outer}: {} refused delete-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
             // The call did not come back: the primary is unreached or the stream broke. A broken stream
             // proves neither a failed step nor a completed one (node-rpc-envelope.md, "Caller execution
             // and certainty"): the leave is incomplete and its receipts stand.
@@ -434,7 +434,7 @@ impl AdminRunner {
     /// ([`crate::mesh_delete::mesh_left_proof`]) and recorded as `MeshLeft`, and mesh-left is published.
     /// Any other deleted birth names no completion and nothing happens. A refusal is spanned by name
     /// and leaves the node.delete as it is.
-    pub(super) async fn mesh_left_after_delete(&self, op: &rafka_mesh_entity::LifecycleOp) {
+    pub(super) async fn mesh_left_after_delete(&self, op: &rdm_core::LifecycleOp) {
         let me = self.held_name();
         let found = match self.builds.mesh_deleted_of(&op.node_id, &op.incarnation).await {
             Ok(Some(found)) => found,
@@ -460,7 +460,7 @@ impl AdminRunner {
         span.in_scope(|| tracing::info!("the final primary of a deleted mesh is proven exited: mesh-left is decided"));
     }
 
-    async fn mesh_left_in(&self, op: &rafka_mesh_entity::LifecycleOp, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<&'static str, String> {
+    async fn mesh_left_in(&self, op: &rdm_core::LifecycleOp, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<&'static str, String> {
         let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{operation}: the Build {build_id} could not be read for its completion: {e}"))?.steps;
         if crate::mesh_delete::owner_resume(&steps, operation)? == crate::mesh_delete::OwnerResume::Left {
             return Ok("already-applied");
@@ -554,7 +554,7 @@ impl AdminRunner {
             Err(e) => {
                 tracing::info_span!("rdm.node_admin.mesh.reject.via-malformed-build-id", node = %me_name, mesh_id = %mesh_id, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("delete-mesh refused: its Build id is not a Crockford id"));
-                return StatusReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
+                return StatusReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt };
             }
         };
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build, attempt: *attempt, operation: operation.clone() };
@@ -717,7 +717,7 @@ impl AdminRunner {
         // answers no handoff: the owner's repeated delete-mesh decides it afresh.
         // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1
         // item 2); a refused write answers no handoff either.
-        let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Dead).await;
+        let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, &key.mesh_id, rdm_core::status::MeshState::Dead).await;
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.held_name(), mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
         let mesh_row = match committed {
             StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_delete::mesh_row_dead(&*self.mesh_storage, &me.mesh, &key.mesh_id).await,
@@ -756,7 +756,7 @@ impl AdminRunner {
         let req = StatusRequest::MeshDeleted { mesh_id: key.mesh_id.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
         let (out, _) = node_rpc.client.call::<Status>(&owner.target, &req, &rafka_node_rpc::CallOptions::default()).await;
         let outcome = match &out {
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
+            rdm_core::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
             other => format!("{} {other:?}", other.name()),
         };
         tracing::info_span!("rdm.node_admin.mesh.update.via-handoff-sent", mesh_id = %key.mesh_id, operation = %key.operation, owner = %owner, manifest, manifest_receipts, outcome = %outcome)
@@ -778,7 +778,7 @@ impl AdminRunner {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn validate_handoff_in(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, operation: &str, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rafka_mesh_entity::RuntimeFact, receipt_manifest: &str) -> StatusReply {
+    async fn validate_handoff_in(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, operation: &str, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rdm_core::RuntimeFact, receipt_manifest: &str) -> StatusReply {
         let me_name = self.held_name().to_string();
         let unmatched = |field: &str, expected: String, reported: String| StatusReply::RejectedUnmatchedCompletion { field: field.into(), expected, reported };
         let build = match crate::build::BuildId::parse(build_id) {
@@ -804,8 +804,8 @@ impl AdminRunner {
                 return refused;
             }
         };
-        if receipt_manifest.len() > rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES {
-            return unmatched("receipt_manifest", format!("at most {} bytes", rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES), format!("{} bytes", receipt_manifest.len()));
+        if receipt_manifest.len() > rdm_core::status::MAX_RECEIPT_MANIFEST_BYTES {
+            return unmatched("receipt_manifest", format!("at most {} bytes", rdm_core::status::MAX_RECEIPT_MANIFEST_BYTES), format!("{} bytes", receipt_manifest.len()));
         }
         if final_node_id.to_string() != admitted.final_primary.node_id || final_incarnation.as_str() != admitted.final_primary.incarnation_id {
             return unmatched("final_primary", format!("{} {}", admitted.final_primary.node_id, admitted.final_primary.incarnation_id), format!("{final_node_id} {}", final_incarnation.as_str()));

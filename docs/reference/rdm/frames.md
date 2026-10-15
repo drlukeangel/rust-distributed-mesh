@@ -17,7 +17,7 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 0.0 | `digest` | `MeshDigest` | `with = "crate::wire::digest"` | The member's digest, in its wire shape. |
 | 1 | **`Members`** |  |  | One chunk of a snapshot of `mesh`'s members (gossip.md §3.1). On the backbone it is the |
 | 1.0 | `mesh` | `String` |  | The source mesh's name. |
-| 1.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The source mesh's primary birth that published the snapshot, the epoch of |
+| 1.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The source mesh's primary birth that published the snapshot, the epoch of |
 | 1.2 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the snapshot onto its own channel; `None` on the |
 | 1.3 | `topology_version` | `u64` |  | The topology version the snapshot carries. |
 | 1.4 | `published_at_rafka_ms` | `u64` |  | The Rafka-time of the publication, making each publication distinct. |
@@ -25,30 +25,30 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 1.6 | `chunk_index` | `u32` |  | This chunk's index within the snapshot. |
 | 1.7 | `chunk_count` | `u32` |  | The number of chunks in the snapshot. |
 | 1.8 | `digests` | `Vec<MeshDigest>` | `with = "crate::wire::entries"` | The members this chunk carries, each a member projection entry: its digest, then the |
-| 1.9 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The open lifecycle overlays this chunk carries. |
-| 1.10 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The retained proven departures this chunk carries. |
+| 1.9 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The open lifecycle overlays this chunk carries. |
+| 1.10 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The retained proven departures this chunk carries. |
 | 2 | **`MembersDelta`** |  |  | What moved a source Mesh's held projection from `base_version` to `topology_version`, |
 | 2.0 | `mesh` | `String` |  | The source mesh's name. |
-| 2.1 | `source_publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The source mesh's primary birth the delta is derived from. |
+| 2.1 | `source_publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The source mesh's primary birth the delta is derived from. |
 | 2.2 | `base_version` | `u64` |  | The version a receiver must hold for the delta to apply. |
 | 2.3 | `topology_version` | `u64` |  | The version the delta moves to. |
 | 2.4 | `published_at_rafka_ms` | `u64` |  | The Rafka-time of the publication. |
 | 2.5 | `changed` | `Vec<MeshDigest>` | `with = "crate::wire::entries"` | The births added or changed, each a member projection entry: its digest, then the status |
 | 2.6 | `removed` | `Vec<String>` |  | The node ids no longer listed. |
-| 2.7 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The overlays added since the base version. |
-| 2.8 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The departures added since the base version. |
+| 2.7 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The overlays added since the base version. |
+| 2.8 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The departures added since the base version. |
 | 3 | **`NodeDeleting`** |  |  | The mesh executor holding `op` has started removing its exact birth: |
-| 3.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The removal being executed. |
+| 3.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The removal being executed. |
 | 3.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 3.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`. A receiver |
+| 3.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`. A receiver |
 | 3.3 | `topology_version` | `u64` |  | The publisher's `topology_version` of the subject's mesh at which the subject changed. |
 | 4 | **`NodeDeleted`** |  |  | The provider proved `op`'s exact birth terminal: it has left. Same |
-| 4.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The removal that completed. |
+| 4.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The removal that completed. |
 | 4.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
 | 5 | **`NodeRestarting`** |  |  | The mesh executor holding `op` (`node.restart:<path>`) is restarting its exact birth: |
-| 5.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The restart being executed. |
+| 5.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The restart being executed. |
 | 5.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 5.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
+| 5.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
 | 5.3 | `topology_version` | `u64` |  | The publisher's `topology_version` of the subject's mesh at which the subject changed. |
 | 6 | **`MeshStatus`** |  |  | A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the |
 | 6.0 | `mesh` | `String` |  | The mesh the status belongs to. |
@@ -57,113 +57,113 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 6.3 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
 | 6.4 | `changed_at_rafka_ms` | `u64` |  | The Rafka-time of the change. |
 | 7 | **`FabricStatus`** |  |  | The fabric's status, authored by the fabric primary alone; same channels, forwarding and |
-| 7.0 | `fabric` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  | The fabric the status belongs to. |
+| 7.0 | `fabric` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  | The fabric the status belongs to. |
 | 7.1 | `status` | `String` |  | The status. |
 | 7.2 | `publisher` | `String` |  | The fabric primary that authored the status. |
 | 7.3 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
 | 7.4 | `changed_at_rafka_ms` | `u64` |  | The Rafka-time of the change. |
 | 8 | **`Seated`** |  |  | A seat changed hands: its new holder announces itself, once, on its own mesh channel and the |
-| 8.0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-Seat) |  | The seat that changed hands. |
-| 8.1 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  | Its new holder: the exact birth and the record's epoch. |
+| 8.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-Seat) |  | The seat that changed hands. |
+| 8.1 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rdm_core-seat-SeatHolder) |  | Its new holder: the exact birth and the record's epoch. |
 | 9 | **`Concern`** |  |  | A mesh primary marked the exact birth `node_id`/`incarnation` of `seat`'s holder |
-| 9.0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-Seat) |  | The seat whose holder looks silent. |
-| 9.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The silent holder's node. |
-| 9.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The silent holder's exact birth. |
+| 9.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-Seat) |  | The seat whose holder looks silent. |
+| 9.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The silent holder's node. |
+| 9.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The silent holder's exact birth. |
 | 9.3 | `observer` | `String` |  | The mesh primary that marked the birth silent. |
 | 10 | **`NodeConnectionsDeleting`** |  |  | Reserved position (R-CR4; gossip.md, node-connections-deleting): never sent on any channel. |
-| 10.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The accepted command. |
+| 10.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The accepted command. |
 | 10.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
 | 11 | **`NodeLeaving`** |  |  | Reserved position (R-CR4; gossip.md, node-leaving): never sent on any channel. |
-| 11.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The accepted stop command. |
+| 11.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The accepted stop command. |
 | 11.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
 | 12 | **`NodeLeft`** |  |  | Reserved position (R-CR4; gossip.md, node-left): never sent on any channel. |
-| 12.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The stop operation and the exact birth that left. |
+| 12.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The stop operation and the exact birth that left. |
 | 12.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 13 | **`NodeConnectionsDeleted`** |  |  | Reserved position (R-CR4; gossip.md, node-connections-deleted): never sent on any channel. |
-| 13.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation and the exact birth whose connections were deleted. |
+| 13.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The operation and the exact birth whose connections were deleted. |
 | 13.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 14 | **`NewFabricPrimary`** |  |  | Reserved position (R-G3; gossip.md, reserved lifecycle frame positions): never sent on any |
-| 14.0 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  | The committed holder: mesh, node, incarnation and the seat's revision. |
+| 14.0 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rdm_core-seat-SeatHolder) |  | The committed holder: mesh, node, incarnation and the seat's revision. |
 | 14.1 | `endpoint_id` | `String` |  | The holder's endpoint key. |
 | 14.2 | `transport_addr` | `std::net::SocketAddr` |  | The holder's bound QUIC UDP address. |
 | 14.3 | `admin_api_base` | `Option<String>` |  | The holder's control API base URL with its bound HTTP port, when it runs one. |
 | 15 | **`StateCommitting`** |  |  | The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook` |
-| 15.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 15.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
 | 15.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
 | 16 | **`StateCommitted`** |  |  | The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were |
-| 16.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 16.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
 | 16.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 17 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same |
-| 17.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 17.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
 | 17.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
 | 18 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as |
-| 18.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 18.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rdm_core-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
 | 18.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 19 | **`NodeStopped`** |  |  | The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the |
-| 19.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The stop being executed. |
+| 19.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The stop being executed. |
 | 19.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 19.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
+| 19.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
 | 19.3 | `topology_version` | `u64` |  | The publisher's `topology_version` of the subject's mesh at which the subject changed: a |
 | 20 | **`PrimaryUpdated`** |  |  | "primary updated" (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part |
-| 20.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the holder the seats moved from. |
-| 20.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  | Every seat the row moved: its cohort, the successor's exact birth and the committed epoch. |
+| 20.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the holder the seats moved from. |
+| 20.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rdm_core-seat-transfer-CommittedSeat) |  | Every seat the row moved: its cohort, the successor's exact birth and the committed epoch. |
 | 21 | **`PrimaryUpdating`** |  |  | "primary updating" (the same edit): the holder of a seat, its cohort's row writer, says the |
-| 21.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the current holder. |
-| 21.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  | Every seat that is updating, each naming the successor's exact birth at the epoch it would take. |
+| 21.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the current holder. |
+| 21.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rdm_core-seat-transfer-CommittedSeat) |  | Every seat that is updating, each naming the successor's exact birth at the epoch it would take. |
 
 ## Types the frames carry
 
 Every workspace struct and enum a frame field names, followed through their own fields, sorted by name.
 
-<a id="t-rafka_mesh_entity-seat-transfer-CommittedSeat"></a>
+<a id="t-rdm_core-seat-transfer-CommittedSeat"></a>
 
 ### `CommittedSeat`
 
-`crates/rafka-mesh-entity/src/seat.rs` · struct · 3 fields · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
 
 One seat a transfer committed: the seat, its committed holder's exact birth and the revision.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-transfer-Seat) |  | The seat that moved. |
-| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rafka_mesh_entity-seat-transfer-HandoverBirth) |  | Its committed holder. |
+| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat that moved. |
+| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | Its committed holder. |
 | 2 | `revision` | `u64` |  | The revision the transfer committed. |
 
-<a id="t-rafka_mesh_entity-ids-FabricId"></a>
+<a id="t-rdm_core-ids-FabricId"></a>
 
 ### `FabricId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 The logical Fabric's identity, kept for the Fabric's lifetime.
 
-<a id="t-rafka_mesh_entity-seat-transfer-HandoverBirth"></a>
+<a id="t-rdm_core-seat-transfer-HandoverBirth"></a>
 
 ### `HandoverBirth`
 
-`crates/rafka-mesh-entity/src/seat.rs` · struct · 3 fields · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
 
 An exact birth named by a handover or a seat transfer: its mesh, node and incarnation.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh the birth belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The birth's node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The birth's incarnation. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The birth's node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The birth's incarnation. |
 
-<a id="t-rafka_mesh_entity-ids-IncarnationId"></a>
+<a id="t-rdm_core-ids-IncarnationId"></a>
 
 ### `IncarnationId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 One process birth of a logical node (`RuntimeIncarnationId`). Equality only: never ordered.
 
-<a id="t-rafka_mesh_entity-lifecycle-LifecycleOp"></a>
+<a id="t-rdm_core-lifecycle-LifecycleOp"></a>
 
 ### `LifecycleOp`
 
-`crates/rafka-mesh-entity/src/lifecycle.rs` · struct · 7 fields · rafka-mesh-entity
+`crates/rdm-core/src/lifecycle.rs` · struct · 7 fields · rdm-core
 
 One lifecycle operation on one exact birth, as its events name it.
 
@@ -174,24 +174,24 @@ serde: `deny_unknown_fields`
 | 0 | `build_id` | `String` |  | The Build the operation belongs to. |
 | 1 | `attempt` | `u32` |  | The attempt of the Build. |
 | 2 | `operation` | `String` |  | The operation's idempotency key (`node.delete:mesh2.rpc.2`), never a pipeline step. |
-| 3 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The logical node. |
-| 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the birth. |
-| 5 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node's `path.name`. |
+| 3 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The logical node. |
+| 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth. |
+| 5 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
 | 6 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry |
 
-<a id="t-rafka_mesh_entity-ids-NodeId"></a>
+<a id="t-rdm_core-ids-NodeId"></a>
 
 ### `NodeId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 Logical node identity: minted once, kept across restarts, never
 
-<a id="t-rafka_mesh_entity-path-NodeKind"></a>
+<a id="t-rdm_core-path-NodeKind"></a>
 
 ### `NodeKind`
 
-`crates/rafka-mesh-entity/src/path.rs` · enum · 5 variants · rafka-mesh-entity
+`crates/rdm-core/src/path.rs` · enum · 5 variants · rdm-core
 
 What a node is in its mesh. The kind is the second segment of its `path.name`.
 
@@ -205,60 +205,60 @@ serde: `rename_all = "snake_case"`
 | 3 | **`Gateway`** |  |  | `name() = "gateway"`<br>`segment() = "gateway"`<br>`node_type() = "gateway"` | A gateway. |
 | 4 | **`Compute`** |  |  | `name() = "compute"`<br>`segment() = "compute"`<br>`node_type() = "compute"` | A compute node. |
 
-<a id="t-rafka_mesh_entity-path-PathName"></a>
+<a id="t-rdm_core-path-PathName"></a>
 
 ### `PathName`
 
-`crates/rafka-mesh-entity/src/path.rs` · struct · 6 fields · rafka-mesh-entity
+`crates/rdm-core/src/path.rs` · struct · 6 fields · rdm-core
 
 A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh's name. |
-| 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  | The node's kind. |
+| 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  | The node's kind. |
 | 2 | `ordinal` | `u32` |  | The node's ordinal within its mesh and kind, from 1 (`0` when `label` carries a non-numeric free-text name). |
 | 3 | `label` | `String` |  | Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`. |
 | 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
 | 5 | `new` | `bool` |  | The path is the `.new` name of a successor that has not yet taken the name. |
 
-<a id="t-rafka_mesh_entity-publisher-PublisherId"></a>
+<a id="t-rdm_core-publisher-PublisherId"></a>
 
 ### `PublisherId`
 
-`crates/rafka-mesh-entity/src/publisher.rs` · struct · 2 fields · rafka-mesh-entity
+`crates/rdm-core/src/publisher.rs` · struct · 2 fields · rdm-core
 
 A publisher's EXACT identity: its path name AND the birth that holds the seat. It is the epoch
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `node` | `String` |  | The publisher's node name. |
-| 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
+| 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
 
-<a id="t-rafka_mesh_entity-lifecycle-RoundHook"></a>
+<a id="t-rdm_core-lifecycle-RoundHook"></a>
 
 ### `RoundHook`
 
-`crates/rafka-mesh-entity/src/lifecycle.rs` · struct · 8 fields · rafka-mesh-entity
+`crates/rdm-core/src/lifecycle.rs` · struct · 8 fields · rdm-core
 
 One fabric round hook on one exact birth (gossip.md, "Fabric round gossip hooks"): the fields
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  | The fabric the round belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The subject: the commanded or reporting node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of that birth. |
+| 0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  | The fabric the round belongs to. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The subject: the commanded or reporting node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of that birth. |
 | 3 | `build_id` | `String` |  | The Build the round belongs to. |
 | 4 | `attempt` | `u32` |  | The Build attempt that holds the round. |
 | 5 | `operation` | `String` |  | The operation: `commit-state:<fabric_id>` or `open-traffic:<fabric_id>`. |
 | 6 | `publisher` | `String` |  | The author at this hop, by `path.name`. |
 | 7 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only. |
 
-<a id="t-rafka_mesh_entity-seat-Seat"></a>
+<a id="t-rdm_core-seat-Seat"></a>
 
 ### `Seat`
 
-`crates/rafka-mesh-entity/src/seat.rs` · enum · 3 variants · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · enum · 3 variants · rdm-core
 
 A primary seat. The discriminants are the wire positions.
 
@@ -267,13 +267,13 @@ A primary seat. The discriminants are the wire positions.
 | 0 | **`MeshPrimary`** |  |  | `name() = "mesh-primary"` | The node-admin primary of one mesh (named by `SeatHolder::mesh`). |
 | 1 | **`FabricPrimary`** |  |  | `name() = "fabric-primary"` | The fabric primary: a mesh primary that also holds the fabric's control. |
 | 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of the holder's mesh's cohort of this node type, every type but `node_admin` |
-| 2.0 | `0` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  |  |  |
+| 2.0 | `0` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  |  |
 
-<a id="t-rafka_mesh_entity-seat-transfer-Seat"></a>
+<a id="t-rdm_core-seat-transfer-Seat"></a>
 
 ### `Seat`
 
-`crates/rafka-mesh-entity/src/seat.rs` · enum · 3 variants · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · enum · 3 variants · rdm-core
 
 A seat as a transfer names it. The discriminants are the wire positions.
 
@@ -284,20 +284,20 @@ A seat as a transfer names it. The discriminants are the wire positions.
 | 1.0 | `mesh` | `String` |  |  | The mesh whose primary seat it is. |
 | 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of `mesh`'s cohort of node type `kind` (every type but `node_admin`). |
 | 2.0 | `mesh` | `String` |  |  | The mesh whose cohort it is. |
-| 2.1 | `kind` | `crate::path::NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  |  | The cohort's node type. |
+| 2.1 | `kind` | `crate::path::NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  | The cohort's node type. |
 
-<a id="t-rafka_mesh_entity-seat-SeatHolder"></a>
+<a id="t-rdm_core-seat-SeatHolder"></a>
 
 ### `SeatHolder`
 
-`crates/rafka-mesh-entity/src/seat.rs` · struct · 4 fields · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · struct · 4 fields · rdm-core
 
 The holder of a seat: the exact birth, the mesh it belongs to, and the revision of the record.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh the holder belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The holder's node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The holder's exact birth. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The holder's node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The holder's exact birth. |
 | 3 | `revision` | `u64` |  | The record's revision: a later revision supersedes an earlier one. |
 

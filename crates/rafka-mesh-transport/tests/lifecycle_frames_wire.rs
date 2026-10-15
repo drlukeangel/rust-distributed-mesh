@@ -3,7 +3,7 @@
 //! independently of codec round trips; they are derived from the postcard rules by hand. Never
 //! regenerate an expectation from the Rust serializer to make a schema change pass.
 
-use rafka_mesh_entity::{IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
+use rdm_core::{IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
 use rafka_mesh_transport::membership::{forward_of, Frame};
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -19,7 +19,7 @@ fn mesh() -> MeshId {
 
 /// The publisher a status event names: mesh1's primary, birth `p-birth`.
 fn publisher() -> PublisherId {
-    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p-birth")).unwrap() }
+    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p-birth")).unwrap() }
 }
 
 fn op(operation: &str) -> LifecycleOp {
@@ -28,7 +28,7 @@ fn op(operation: &str) -> LifecycleOp {
         attempt: 1,
         operation: operation.into(),
         node_id: NodeId::parse("0123456789ab").unwrap(),
-        incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
+        incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(),
         name: "mesh1.rpc.1".parse().unwrap(),
         event_at_rafka_ms: 300,
     }

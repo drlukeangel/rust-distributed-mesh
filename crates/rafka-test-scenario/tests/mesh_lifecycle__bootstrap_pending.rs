@@ -8,7 +8,7 @@
 //! receives MeshStatus::Pending from the fabric primary, and only then does any of mesh2's own
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
-use rafka_mesh_entity::NodeKind;
+use rdm_core::NodeKind;
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};

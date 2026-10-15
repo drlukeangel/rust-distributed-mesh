@@ -2,13 +2,13 @@
 //! call, a non-forwardable family is refused by type, and certainty composes across the hop.
 
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, CarrierEdges, HandlerFault, NodeRpcClient, NodeTarget, ResolvedNode, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::ping::{Ping, PingRequest};
-use rafka_node_rpc_contract::forward::{Forward, ForwardReply, ForwardRequest};
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::ping::{Ping, PingRequest};
+use rdm_core::forward::{Forward, ForwardReply, ForwardRequest};
+use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -132,12 +132,12 @@ async fn a_carrier_with_no_non_active_edge_fact_keeps_the_plain_inner_not_sent()
 }
 
 /// The source of a Proxy `origin -> carrier -> target` and the held projection that records it.
-fn proxied_held(r: &Rig) -> (rafka_mesh_entity::connections::ConnectionsHeld, rafka_mesh_entity::PathName, rafka_mesh_entity::connections::NodeConnection) {
-    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-    let own: rafka_mesh_entity::PathName = "mesh1.rpc.1".parse().unwrap();
+fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::PathName, rdm_core::connections::NodeConnection) {
+    use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
+    let own: rdm_core::PathName = "mesh1.rpc.1".parse().unwrap();
     let end = |n: &ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let proxy = NodeConnection {
-        id: rafka_mesh_entity::ConnectionId::mint(),
+        id: rdm_core::ConnectionId::mint(),
         source: ConnectionEnd { name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         destination: end(&r.target.resolved),
         kind: ConnectionKind::Proxy,
@@ -162,8 +162,8 @@ fn proxied_held(r: &Rig) -> (rafka_mesh_entity::connections::ConnectionsHeld, ra
 /// (connections.md section 8) and from nothing else.
 #[tokio::test]
 async fn a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_for_retirement() {
-    use rafka_mesh_entity::connections::{resolve, CarrierPolicy, INVALID_CARRIER_EDGE_LOST};
-    let policy = CarrierPolicy::Forwardable { carrier_kind: rafka_mesh_entity::NodeKind::RpcNode };
+    use rdm_core::connections::{resolve, CarrierPolicy, INVALID_CARRIER_EDGE_LOST};
+    let policy = CarrierPolicy::Forwardable { carrier_kind: rdm_core::NodeKind::RpcNode };
     for (edge, retired) in [(Some("Direct Failed".to_string()), true), (None, false)] {
         let r = rig_with(Some(Arc::new(EdgeFact(edge))), true).await;
         let (held, own, proxy) = proxied_held(&r);

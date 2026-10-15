@@ -92,7 +92,7 @@ pub(crate) fn build_names_a_provider(body: &serde_json::Value) -> bool {
 // ---------------------------------------------------------------------------
 
 use crate::model::{DeploymentId, PathName};
-use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::{RuntimeFact, RuntimeLocator, RuntimeProvider};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -235,8 +235,8 @@ impl fmt::Display for AdoptRefusal {
             Self::ForeignControlDomain { fact_domain, here } => write!(
                 f,
                 "the runtime lives in control domain {} and this provider controls {}; refusing to act on its locator",
-                rafka_mesh_entity::runtime::fingerprint(fact_domain),
-                rafka_mesh_entity::runtime::fingerprint(here)
+                rdm_core::runtime::fingerprint(fact_domain),
+                rdm_core::runtime::fingerprint(here)
             ),
         }
     }
@@ -286,7 +286,7 @@ pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: 
         (DeploymentStatus::Exited { code: None }, RuntimeProvider::Process, Some(dir)) => {
             // Read on the blocking pool (`record_store::blocking_io`).
             let (dir, deployment, incarnation) = (dir.to_path_buf(), fact.deployment_id.clone(), incarnation.to_string());
-            let code = crate::record_store::blocking_io(move || rafka_mesh_entity::runtime::ExitRecord::proven_code(&dir, &deployment, &incarnation)).await?;
+            let code = crate::record_store::blocking_io(move || rdm_core::runtime::ExitRecord::proven_code(&dir, &deployment, &incarnation)).await?;
             Ok(DeploymentStatus::Exited { code })
         }
         (other, _, _) => Ok(other),
@@ -452,7 +452,7 @@ mod tests {
 
     fn fact(domain: &str) -> RuntimeFact {
         RuntimeFact {
-            deployment_id: rafka_mesh_entity::fixture_crockford60("dep-1"),
+            deployment_id: rdm_core::fixture_crockford60("dep-1"),
             provider: RuntimeProvider::Process,
             control_domain: domain.into(),
             locator: RuntimeLocator::Process { pid: 4242, start: 17 },
@@ -523,7 +523,7 @@ mod tests {
     fn the_failure_detail_is_read_on_the_blocking_pool() {
         let dir = crate::record_store::tempdir("failure-detail-fifo");
         let fifo = dir.join("stderr.log");
-        let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
+        let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
         let (heard, detail) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, b"boom\n".to_vec(), Box::pin(async move { RemotePool("d").failure_detail(&h, &dir).await }));
         assert!(heard, "the runtime stopped while stderr.log was read");
         assert_eq!(detail, "boom");
@@ -534,7 +534,7 @@ mod tests {
     async fn an_unreadable_stderr_log_is_named_in_the_failure_detail() {
         let dir = crate::record_store::tempdir("failure-detail-unreadable");
         std::fs::create_dir_all(dir.join("stderr.log")).unwrap();
-        let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
+        let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
         let detail = RemotePool("d").failure_detail(&h, &dir).await;
         assert!(detail.contains("stderr.log"), "{detail:?}");
     }
@@ -543,7 +543,7 @@ mod tests {
 #[cfg(test)]
 mod exit_proof_tests {
     use super::*;
-    use rafka_mesh_entity::runtime::{ExitRecord, TRANSPORT_STOPPED_EXIT_CODE};
+    use rdm_core::runtime::{ExitRecord, TRANSPORT_STOPPED_EXIT_CODE};
 
     fn process_fact(deployment: &str) -> RuntimeFact {
         RuntimeFact { deployment_id: deployment.into(), provider: RuntimeProvider::Process, control_domain: "d".into(), locator: RuntimeLocator::Process { pid: 1, start: 1 } }

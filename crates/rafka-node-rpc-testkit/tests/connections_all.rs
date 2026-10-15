@@ -7,13 +7,13 @@
 
 use crate::common::{admin_side_serving, serve_ping, Spans};
 use rafka_node_rpc_testkit::rig::AdminSide;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest, WhichMesh};
+use rdm_core::outcome::{NotSentReason, RpcOutcome};
+use rdm_core::ping::{Ping, PingReply, PingRequest};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest, WhichMesh};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
@@ -36,7 +36,7 @@ async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) 
 /// [`live_node`], serving what `register` adds, with its seams: the data-plane client it originates
 /// its connections on and the connections writer that logs them.
 async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId, register: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> (Launch, node::RunningNode, Seams) {
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     let key = node::load_or_mint_key(dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),
@@ -53,7 +53,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
         store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     admin.deployed(&launch, &key);
     let seams: std::sync::Arc<std::sync::OnceLock<Seams>> = Default::default();

@@ -15,7 +15,7 @@ use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::build::BuildReply;
+use rdm_core::build::BuildReply;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -106,7 +106,7 @@ struct Rig {
 }
 
 async fn rig() -> Rig {
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     rig_for(view(), change, |ran, _| ran).await
 }
 
@@ -170,7 +170,7 @@ async fn a_fabric_primary_whose_seat_record_moved_claims_and_dispatches_nothing(
 #[tokio::test]
 async fn a_fabric_primary_whose_view_shows_another_birth_of_its_path_holding_the_seat_dispatches_nothing() {
     let r = rig().await;
-    let other = rafka_mesh_entity::NodeId::mint();
+    let other = rdm_core::NodeId::mint();
     {
         let mut t = r.env.topology.write().await;
         let fp = t.nodes.iter_mut().find(|n| n.is_fabric_primary).expect("the view shows a fabric-primary");
@@ -232,7 +232,7 @@ async fn a_fabric_primary_whose_view_shows_another_holder_names_the_seat_records
 /// never the view's. No executor is called.
 #[tokio::test]
 async fn a_fenced_fabric_primary_is_refused_fenced_whatever_its_view_shows_and_names_the_new_seat() {
-    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
+    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
     assert!(r.env.topology.read().await.node(&"mesh2.admin.1".parse().unwrap()).is_none(), "the view holds no row of the new holder");
     r.switch.fence_to(Some("mesh2.admin.1"));
     let drive = Drive::detached(r.build.clone());
@@ -254,7 +254,7 @@ async fn a_fence_set_by_a_committed_transfer_names_the_successor_while_the_view_
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
-    let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
+    let r = rig_for(t, TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, |ran, _| ran).await;
     assert_eq!(r.env.topology.read().await.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"), "the view still shows the old seat");
     *r.switch.successor.lock().unwrap() = Some("mesh2.admin.1".into());
     r.switch.fenced.store(true, Ordering::SeqCst);
@@ -349,10 +349,10 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
     t.nodes.push(node("mesh2.admin.1", true, false));
     t.nodes.push(node("mesh2.admin.2", false, false));
     t.nodes.push(node("mesh2.rpc.1", true, false));
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     let r = rig_for(t, change, |ran, _| ran).await;
     // Attempt 1 is mesh2.admin.1's; then it is lost, and the view shows its exit and mesh2.admin.2 silent.
-    assert!(matches!(r.env.door.claim("mesh2.admin.1", &r.build, 1).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
+    assert!(matches!(r.env.door.claim("mesh2.admin.1", &r.build, 1).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
     r.dispatch.lose("mesh2.admin.1");
     r.proofs.exited.lock().unwrap().insert("mesh2.admin.1".into());
     {
@@ -428,7 +428,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_th
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
     t.nodes.push(node("mesh2.rpc.1", true, false));
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
     let held = |recovery_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), recovery_decided, unreachable_decided: false };
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
@@ -483,7 +483,7 @@ async fn crashed_rig() -> Rig {
         lost.status = NodeStatus::Dead;
         t.nodes.push(lost);
     }
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await
 }
 
@@ -570,7 +570,7 @@ async fn recovery_rig() -> Rig {
     lost.status = NodeStatus::Dead;
     t.nodes.push(lost);
     t.nodes.push(node("mesh2.rpc.1", true, false));
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
     r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: true, unreachable_decided: false });
     r
@@ -603,7 +603,7 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
     // The next attempt already claimed for another admin outside mesh2 when a third drive finds it.
     let open = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
-    assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, open).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
+    assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, open).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
     let third = Drive::detached(r.build.clone());
     let end = r.env.run(&third).await;
     assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("node.create:mesh2.admin.2")), "a running attempt held by another admin admits no second admin either: {end:?}");
@@ -653,7 +653,7 @@ async fn held_successor_rig(lands: bool) -> Rig {
     held.status = NodeStatus::PendingReconnect;
     t.nodes.push(held);
     t.nodes.push(node("mesh2.rpc.1", false, false));
-    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, admins), (rafka_mesh_entity::NodeKind::RpcNode, rpcs)]);
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]);
     let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
     rig_for(t, change, move |ran, topology| Arc::new(Lands { ran, topology, lands })).await
 }
@@ -730,7 +730,7 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
     held.status = NodeStatus::PendingReconnect;
     t.nodes.push(held);
     t.nodes.push(node("mesh2.rpc.1", false, false));
-    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, admins), (rafka_mesh_entity::NodeKind::RpcNode, rpcs)]);
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]);
     let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
     let r = rig_for(t, change, |ran, _| Arc::new(Records(ran))).await;
     let remote = r.dispatch.own_log("mesh1.admin.2");
@@ -811,7 +811,7 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
     held.status = NodeStatus::PendingReconnect;
     t.nodes.push(held);
     t.nodes.push(node("mesh2.rpc.1", false, false));
-    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, admins), (rafka_mesh_entity::NodeKind::RpcNode, rpcs)]);
+    let counts = |mesh: &str, admins: u32, rpcs: u32| MeshDesired::of(mesh.to_string(), [(rdm_core::NodeKind::NodeAdmin, admins), (rdm_core::NodeKind::RpcNode, rpcs)]);
     let change = TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: "fabric1".into(), meshes: vec![counts("mesh1", 2, 2), counts("mesh2", 2, 1)] } };
     let r = rig_for(t, change, |ran, topology| Arc::new(LandsAndSeats { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
@@ -829,9 +829,9 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
 /// receipt does not make its node done.
 #[tokio::test]
 async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() {
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)]) };
     let r = rig_for(view(), change, |ran, _| ran).await;
-    assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, 1).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
+    assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, 1).await, rdm_core::build_claim::BuildClaimReply::Won { .. }));
     let receipt = BuildStepReceipt { mesh: None, build_id: r.build.clone(), attempt: 1, operation: "node.create:mesh1.rpc.2".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
     r.builds.append_step_receipt(&receipt).await.unwrap();
     r.dispatch.lose("mesh1.admin.2");
@@ -962,7 +962,7 @@ async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_al
 /// executor runs: the node launched a moment ago is not created a second time.
 #[tokio::test]
 async fn an_executor_whose_view_lacks_a_just_launched_node_creates_only_what_the_call_carries() {
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)]) };
     let mut ours = view();
     ours.nodes.push(node("mesh1.rpc.2", false, false));
     let r = rig_for(ours, change, |ran, _| ran).await;
@@ -999,7 +999,7 @@ impl OperationRunner for MeshBirth {
 async fn a_run_that_seats_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(MeshBirth { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
@@ -1029,7 +1029,7 @@ impl OperationRunner for HeldOpen {
 async fn a_seat_row_naming_another_holder_than_the_executor_ends_the_drive_naming_that_holder() {
     let held = Arc::new(HeldOpen { began: tokio::sync::Notify::new() });
     let runner = held.clone();
-    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, move |_, _| -> Arc<dyn OperationRunner> { runner }).await;
+    let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) }, move |_, _| -> Arc<dyn OperationRunner> { runner }).await;
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     let (env, d) = (r.env.clone(), drive.clone());
@@ -1065,7 +1065,7 @@ impl rafka_node_admin_core::build_drive::InnerStream for FedStream {
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_drive::Dispatcher for Fed {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, _: &PathName, _: &BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, _: &PathName, _: &BuildId, _: u32, _: rdm_core::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
         let items = self.items.lock().unwrap().take().expect("one dispatch");
         self.dispatched.notify_one();
         rafka_node_admin_core::build_drive::Dispatched::Stream(Box::new(FedStream(items)))
@@ -1493,7 +1493,7 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
     let (began, mut running) = tokio::sync::watch::channel(false);
     let let_go = Arc::new(tokio::sync::Semaphore::new(0));
     let held = let_go.clone();
-    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 2)]) };
     let r = rig_for(view(), change, move |ran, _| -> Arc<dyn OperationRunner> { Arc::new(HeldUntilLetGo { ran, began, let_go: held }) }).await;
     let gate = r.env.turns.clone();
     let drive = Drive::detached(r.build.clone());
@@ -1589,7 +1589,7 @@ impl Gate for Acknowledges {
 async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknowledges>, PrecedingUpdate) {
     let r = rig_for(view_after_the_row(), TopologyChange::RemoveNode { node: "mesh1.admin.2".parse().unwrap() }, |ran, _| ran).await;
     let op = "node.delete:mesh1.admin.2";
-    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.2".parse().unwrap()) };
+    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.2".parse().unwrap()) };
     let gate = Arc::new(Acknowledges { inner: r.switch.clone(), rows: vec![row.clone()], dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()), refusal: refusal.map(str::to_string) });
     let e = &r.env;
     let env = Arc::new(DriveEnv {
@@ -2018,7 +2018,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
     let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
     let op = "node.delete:mesh1.admin.1";
-    let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
+    let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rdm_core::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
     let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
     let successor = Arc::new(DriveEnv {
         me: n_name.clone(),
@@ -2209,7 +2209,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         cp.topology = topology.clone();
 
         let change = TopologyChange::ReconcileMesh {
-            desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 2)]),
+            desired: MeshDesired::of("mesh1".to_string(), [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 2)]),
         };
         let opened = cp.submit("test", change).await.expect("the renamed fabric-primary admits the Build");
 

@@ -21,7 +21,7 @@
 //! `Backbone::publish`, before the chunks are built and sent.
 
 use crate::clock::{Ignored, Observed, SharedClock};
-use rafka_mesh_entity::{MemberStatus, MeshDigest, PublisherId};
+use rdm_core::{MemberStatus, MeshDigest, PublisherId};
 
 use crate::membership::SeatBook;
 
@@ -115,7 +115,7 @@ pub(crate) fn offer(clock: &SharedClock, node: &str, source: &'static str, verdi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshNode, NodeId, Seat, SeatHolder};
+    use rdm_core::{EndpointId, FabricId, IncarnationId, MeshNode, NodeId, Seat, SeatHolder};
 
     const MESH: &str = "mesh1";
 

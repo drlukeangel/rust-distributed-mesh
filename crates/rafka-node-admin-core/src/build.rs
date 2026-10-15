@@ -12,7 +12,7 @@ use std::fmt;
 
 /// The Build identity: a Crockford id like every other id (R-BI5). It belongs to fabric control
 /// state, not to the executor that happens to run it.
-pub use rafka_mesh_entity::BuildId;
+pub use rdm_core::BuildId;
 
 /// The desired counts of one mesh's nodes by kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +101,7 @@ pub enum BuildOperation {
         /// The mesh's id, minted once when the mesh entered the accepted topology
         /// ([`crate::accepted::MeshTopology::mesh_id`]): every run of the operation, by any executor
         /// and any attempt, claims the mesh's name with it, so a re-run finds the mesh's own row.
-        mesh_id: rafka_mesh_entity::MeshId,
+        mesh_id: rdm_core::MeshId,
     },
     /// Create a node at `node` (node-create.md).
     CreateNode {
@@ -168,7 +168,7 @@ pub enum BuildOperation {
     /// the executor resolves at its path when the step runs.
     RecipeStep {
         /// The step.
-        step: rafka_node_rpc_contract::build::RecipeStep,
+        step: rdm_core::build::RecipeStep,
         /// The exact birth the step is fenced to, for a node the recipe did not create.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         birth: Option<PinnedBirth>,
@@ -180,13 +180,13 @@ pub enum BuildOperation {
         /// The mesh's name.
         mesh: String,
         /// The mesh's minted id.
-        mesh_id: rafka_mesh_entity::MeshId,
+        mesh_id: rdm_core::MeshId,
     },
     /// Release the fabric name and record `fabric.deleted` after every mesh's `mesh.delete` and
     /// every other mesh's final primary's `node.delete` have completed (fabric-delete.md step 3).
     DeleteFabric {
         /// The fabric's minted id.
-        fabric_id: rafka_mesh_entity::FabricId,
+        fabric_id: rdm_core::FabricId,
     },
 }
 
@@ -204,7 +204,7 @@ impl BuildOperation {
     /// other operation.
     pub fn created_node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node }, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::RecipeStep { step: rdm_core::build::RecipeStep::Create { node }, .. } => Some(node),
             _ => None,
         }
     }
@@ -230,8 +230,8 @@ impl BuildOperation {
 
 /// The operation key of a recipe step: its op's own key, the one that op's workflow receipts under.
 /// One op has one key, whatever the node's name: node.delete's is `node.delete:<path>`.
-pub fn recipe_step_key(step: &rafka_node_rpc_contract::build::RecipeStep) -> String {
-    use rafka_node_rpc_contract::build::RecipeStep as S;
+pub fn recipe_step_key(step: &rdm_core::build::RecipeStep) -> String {
+    use rdm_core::build::RecipeStep as S;
     match step {
         S::Create { node } => format!("node.create:{node}"),
         S::Stop { node } => format!("node.stop:{node}"),
@@ -522,7 +522,7 @@ pub(crate) fn shutdown_mesh(observed: &Topology, mesh: &str) -> Result<BuildOper
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_node_rpc_contract::build::RecipeStep;
+    use rdm_core::build::RecipeStep;
 
     /// CONTRACT: the node a create operation makes is named for `create-node` and for a recipe's Create
     /// step alike, and for no other operation: the drive's fence on a fully crashed mesh admits a create

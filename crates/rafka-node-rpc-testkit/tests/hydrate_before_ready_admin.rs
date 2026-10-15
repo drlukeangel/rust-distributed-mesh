@@ -3,7 +3,7 @@
 //! completes from local state; an admin launched by another admin pulls from it, and is refused
 //! typed `NotReady` until that admin's own hook has passed.
 
-use rafka_mesh_entity::MemberStatus;
+use rdm_core::MemberStatus;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
@@ -54,7 +54,7 @@ fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_st
     let cap = crate::common::capture("the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let dir = std::env::temp_dir().join(format!("hydrate-day0-{}", rafka_mesh_entity::NodeId::mint()));
+        let dir = std::env::temp_dir().join(format!("hydrate-day0-{}", rdm_core::NodeId::mint()));
         let hydrator = TestHydrator::new(Mode::Local);
         let wiring = Wiring { hydration: Hydration::new(hydrator.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
@@ -95,9 +95,9 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
     let cap = crate::common::capture("an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_does");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        use rafka_mesh_entity::launch::{Launch, Launcher};
-        use rafka_mesh_entity::runtime::RuntimeFact;
-        use rafka_mesh_entity::{IncarnationId, NodeId};
+        use rdm_core::launch::{Launch, Launcher};
+        use rdm_core::runtime::RuntimeFact;
+        use rdm_core::{IncarnationId, NodeId};
         use rafka_node_admin_core::app_hydration::RetryOn;
         use rafka_node_rpc_testkit::hydrate_probe::{PullServer, Row};
 
@@ -130,7 +130,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             (d.clone(), d.mesh_id.clone().expect("the root holds its mesh id"))
         };
         std::fs::create_dir_all(&joiner_dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
         let key = rafka_node_rpc_testkit::node::load_or_mint_key(&joiner_dir).unwrap();
         let launch = Launch {
             fabric,
@@ -147,15 +147,15 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
-        let runtime = rafka_mesh_entity::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
+        let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
         let _ = root.runner.joins.expect(rafka_node_admin_core::join::Deployed {
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: None,
-            endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
+            endpoint_id: rdm_core::EndpointId(key.public().to_string()),
             runtime,
             data_dir: joiner_dir.display().to_string(),
             last_accepted_name: None,
@@ -245,6 +245,6 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
     })
 }
 
-fn key_of(d: &rafka_mesh_entity::MeshDigest) -> String {
+fn key_of(d: &rdm_core::MeshDigest) -> String {
     d.node.endpoint_id.0.clone()
 }

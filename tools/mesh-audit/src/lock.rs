@@ -159,7 +159,7 @@ pub const NODE_ROWS: &str = "crates/rafka-node-admin-core/src/node_rows.rs";
 pub const NODES_STORAGE: &str = "crates/rafka-node-admin-core/src/storage.rs";
 
 pub const RUNTIME_SOURCES: &[&str] = &[
-    "crates/rafka-mesh-entity/src",
+    "crates/rdm-core/src",
     "crates/rafka-mesh-transport/src",
     "crates/rafka-node-rpc/src",
     "crates/rafka-node-rpc-testkit/src",
@@ -175,11 +175,11 @@ pub const DESCRIPTIVE_READ_TOKENS: &[&str] = &[".extra.get(", ".extra[", ".extra
 pub const UNTYPED_BEHAVIOR_TOKENS: &[&str] = &["stateful: bool", "permanent: bool", "stateful: Option<bool>"];
 
 /// The one file that may carry a legacy `stateful` intent: the ingress normalization input.
-pub const INGRESS_META: &str = "crates/rafka-mesh-entity/src/meta.rs";
+pub const INGRESS_META: &str = "crates/rdm-core/src/meta.rs";
 
 /// Where a per-kind default or a normalization may be applied: before Build acceptance only.
 pub const INGRESS_SOURCES: &[&str] = &[
-    "crates/rafka-mesh-entity/src/meta.rs",
+    "crates/rdm-core/src/meta.rs",
     "crates/rafka-node-admin-core/src/accepted.rs",
     "crates/rafka-node-admin-core/src/build.rs",
 ];
@@ -195,6 +195,7 @@ pub const PROVIDER_BANNED_TOKENS: &[&str] = &["PathConfig", "StorageMeta", "Plac
 
 /// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
 /// postcard. These sources carry no JSON codec in their non-test code.
+pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "digest.rs", "dto.rs", "ids.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "runtime.rs", "seat.rs"];
 pub const WIRE_SOURCES: &[&str] = &[
     "crates/rafka-mesh-transport/src/membership.rs",
     "crates/rafka-mesh-transport/src/snapshot.rs",
@@ -204,8 +205,8 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rafka-node-admin-core/src/wire.rs",
     "crates/rafka-node-admin-core/src/join.rs",
     "crates/rafka-node-admin-core/src/topology_read.rs",
-    "crates/rafka-mesh-entity/src/wire.rs",
-    "crates/rafka-node-rpc-contract/src",
+    "crates/rdm-core/src/wire.rs",
+    "crates/rdm-core/src",
     "crates/rafka-node-rpc/src",
 ];
 /// A JSON codec: bytes or text produced or read as JSON. `serde_json::to_value`/`from_value`
@@ -238,26 +239,26 @@ pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
 pub const TOPOLOGY_SOURCE: &str = "crates/rafka-node-admin-core/src/topology_read.rs";
 pub const SEAT_FRAME_CELLS: &str = "crates/rafka-mesh-transport/tests/seat_frames_wire.rs";
-pub const TOPOLOGY_CELLS: &str = "crates/rafka-node-rpc-contract/tests/topology_wire.rs";
+pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
 pub const BUILD_FACTS_SOURCE: &str = "crates/rafka-node-admin-core/src/build_facts_read.rs";
 pub const BUILD_FACTS_HYDRATE: &str = "crates/rafka-node-admin-core/src/hydrate.rs";
-pub const BUILD_FACTS_CELLS: &str = "crates/rafka-node-rpc-contract/tests/build_facts_wire.rs";
+pub const BUILD_FACTS_CELLS: &str = "crates/rdm-core/tests/build_facts_wire.rs";
 /// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the holder writes the one committed seat-transfer row, the successor installs from it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape and the seat frames.
 pub const HANDOVER_SOURCE: &str = "crates/rafka-node-admin-core/src/fabric_handover.rs";
-pub const HANDOVER_CELLS: &str = "crates/rafka-node-rpc-contract/tests/handover_wire.rs";
+pub const HANDOVER_CELLS: &str = "crates/rdm-core/tests/handover_wire.rs";
 
 pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
 pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
-pub const STATUS: &str = "crates/rafka-node-rpc-contract/src/status.rs";
-pub const FORWARD: &str = "crates/rafka-node-rpc-contract/src/forward.rs";
-pub const FORWARD_WIRE: &str = "crates/rafka-node-rpc-contract/tests/forward_wire.rs";
+pub const STATUS: &str = "crates/rdm-core/src/status.rs";
+pub const FORWARD: &str = "crates/rdm-core/src/forward.rs";
+pub const FORWARD_WIRE: &str = "crates/rdm-core/tests/forward_wire.rs";
 /// The frozen 0x1A counts.
 pub const FORWARD_REQUESTS: u32 = 1;
 pub const FORWARD_REPLIES: u32 = 14;
-pub const STATUS_WIRE: &str = "crates/rafka-node-rpc-contract/tests/status_wire.rs";
-pub const FRAMING: &str = "crates/rafka-node-rpc-contract/src/framing.rs";
-pub const CATALOG: &str = "crates/rafka-node-rpc-contract/src/catalog.rs";
+pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
+pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
+pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rafka-node-rpc/tests/context.rs";
 pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/node_delete_pipeline.rs";
 pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
@@ -651,7 +652,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             );
         }
         Ratchet::NoJsonOnTheWire => {
-            let files = files_in(root, WIRE_SOURCES);
+            let files: Vec<PathBuf> = files_in(root, WIRE_SOURCES).into_iter().filter(|f| !NON_WIRE_CORE_FILES.iter().any(|n| rel(root, f) == format!("crates/rdm-core/src/{n}"))).collect();
             if files.is_empty() {
                 out.push(Violation::Missing { ratchet, file: WIRE_SOURCES.join(", "), what: "the wire sources themselves".into() });
             }

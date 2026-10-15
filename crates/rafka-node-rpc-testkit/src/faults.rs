@@ -4,7 +4,7 @@
 //! writer's reconciliation (connections.md §10) against this decorator in a real process.
 
 use async_trait::async_trait;
-use rafka_mesh_entity::connections::{ConnectionIndex, NodeConnection};
+use rdm_core::connections::{ConnectionIndex, NodeConnection};
 use rafka_node_admin_core::record_store::StorageError;
 use rafka_node_admin_core::storage::ConnectionsStorage;
 use std::sync::atomic::{AtomicU32, Ordering};

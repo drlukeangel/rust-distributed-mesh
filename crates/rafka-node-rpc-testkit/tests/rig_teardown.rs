@@ -7,7 +7,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
-use rafka_mesh_entity::FabricId;
+use rdm_core::FabricId;
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, NoLifecycleEvents, Timeouts};
@@ -18,7 +18,7 @@ use std::net::IpAddr;
 /// of its tasks has not exited. A zombie has exited (only its parent's wait is outstanding); an
 /// absent entry or another start token is another process, or none.
 fn runs(pid: u32, start: u64) -> bool {
-    if rafka_mesh_entity::runtime::process_start_token(pid) != Some(start) {
+    if rdm_core::runtime::process_start_token(pid) != Some(start) {
         return false;
     }
     let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return false };

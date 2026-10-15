@@ -3,7 +3,7 @@
 //! round trips. Never regenerate an expectation from the Rust serializer to make a schema change
 //! pass: a changed byte here is a moved wire format and needs a rebirth.
 
-use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
+use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Frame, SeatBook, SeatTaken};
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -16,7 +16,7 @@ fn node() -> NodeId {
 }
 
 fn holder(revision: u64) -> SeatHolder {
-    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), revision }
+    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), revision }
 }
 
 /// CONTRACT: `Seated` is variant 8 and `Concern` variant 9 of the membership frame, appended after
@@ -30,14 +30,14 @@ fn seat_frames_match_the_frozen_wire_schema() {
     let fixtures = [
         (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0c79727a34396a333033796834 02")),
         (Frame::Seated { seat: Seat::MeshPrimary, holder: holder(300) }, format!("08 00 016d {node_hex} 0c79727a34396a333033796834 ac02")),
-        (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), observer: "o".into() }, format!("09 01 {node_hex} 0c79727a34396a333033796834 016f")),
+        (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), observer: "o".into() }, format!("09 01 {node_hex} 0c79727a34396a333033796834 016f")),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
         assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
     }
     // The frames that existed keep their positions.
-    assert_eq!(Frame::FabricStatus { fabric: rafka_mesh_entity::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.encode()[0], 7);
+    assert_eq!(Frame::FabricStatus { fabric: rdm_core::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.encode()[0], 7);
     // A seat this build does not know is refused by name, never read as a prefix.
     let e = Frame::decode(&bytes("08 02 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02")).unwrap_err().to_string();
     assert!(e.contains("postcard decode"), "{e}");
@@ -76,14 +76,14 @@ fn new_fabric_primary_matches_the_frozen_wire_schema() {
 }
 
 
-fn op() -> rafka_mesh_entity::LifecycleOp {
-    rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 }
+fn op() -> rdm_core::LifecycleOp {
+    rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 }
 }
 
 /// Both seats of mesh `m`, committed to the birth `m`/`node()`/`i` at their revisions.
-fn both(mesh_revision: u64, fabric_revision: u64) -> Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> {
-    use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
-    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() };
+fn both(mesh_revision: u64, fabric_revision: u64) -> Vec<rdm_core::seat::transfer::CommittedSeat> {
+    use rdm_core::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
+    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() };
     vec![CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: "m".into() }, holder: birth.clone(), revision: mesh_revision }, CommittedSeat { seat: TransferSeat::FabricPrimary, holder: birth, revision: fabric_revision }]
 }
 

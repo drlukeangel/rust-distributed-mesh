@@ -3,14 +3,14 @@
 //! cell leaves `result.json` (its direct observations) and `spans.json` (every span the cell's own
 //! threads emitted, captured by its `EvidenceCapture`) there.
 
-use rafka_mesh_entity::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
-use rafka_mesh_entity::reconnect::reconnect_plan;
-use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind};
+use rdm_core::connections::{resolve, CarrierPolicy, ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute, NodeConnection};
+use rdm_core::reconnect::reconnect_plan;
+use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
 use rafka_node_admin_core::storage::{ConnectionsStorage, FileConnectionsStorage};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingRequest};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,7 @@ fn end(name: &str) -> ConnectionEnd {
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
 }
 
 /// CONN-D (connections.md §13 D, §3, §9): many completed NotSent dial attempts from this source
@@ -52,7 +52,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         // The source, its carrier's edge and its own Proxy to the destination (the previous birth's
         // facts), then the destination made unreachable: a key nobody serves, a port nobody listens on.
         let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&data_dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap());
+        let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&data_dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap());
         let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
         let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
         writer.hydrate().await.unwrap();

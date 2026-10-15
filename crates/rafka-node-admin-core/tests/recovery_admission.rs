@@ -281,7 +281,7 @@ fn recovery_receipts(lane: Option<&str>, build: &rafka_node_admin_core::build::B
 #[allow(clippy::too_many_arguments)]
 fn deletion_receipts(lane: Option<&str>, kind: &str, build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
     let operation = format!("{kind}:{path}");
-    let op = rafka_mesh_entity::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+    let op = rdm_core::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
     let receipt = |step: &str, output: Option<serde_json::Value>| BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
     vec![
         receipt("NodeDeleting", Some(serde_json::to_value(&op).unwrap())),
@@ -542,7 +542,7 @@ fn run_door(executor: &str, builds: &Arc<MemoryBuildStateAdapter>, topology: Arc
 async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admits_the_next_one() {
     use rafka_node_admin_core::build_run::{run_recovery, Recovered};
     use rafka_node_admin_core::build_state::BuildState;
-    use rafka_node_rpc_contract::build::BuildReply;
+    use rdm_core::build::BuildReply;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-run-in-mesh", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

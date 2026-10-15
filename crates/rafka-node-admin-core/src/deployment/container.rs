@@ -231,9 +231,9 @@ fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<St
         if let Some(root) = data_dir.parent() {
             disk.data_root = dir_present(root).map_err(|e| format!("data root {e}"))?.then(|| root.to_path_buf());
         }
-        if let Some(file) = env.get(rafka_mesh_entity::binding::ENV_EXECUTABLE_BINDINGS) {
+        if let Some(file) = env.get(rdm_core::binding::ENV_EXECUTABLE_BINDINGS) {
             let mut dirs: std::collections::BTreeSet<PathBuf> = Path::new(file).parent().map(Path::to_path_buf).into_iter().collect();
-            let set = rafka_mesh_entity::binding::BindingSet::load(Path::new(file)).map_err(|e| format!("executable bindings {file}: {e}"))?;
+            let set = rdm_core::binding::BindingSet::load(Path::new(file)).map_err(|e| format!("executable bindings {file}: {e}"))?;
             dirs.extend(set.bindings.iter().filter_map(|b| b.executable.parent().map(Path::to_path_buf)));
             let bin_dir = disk.bin_dir.as_ref().map(PathBuf::from);
             for d in dirs {
@@ -246,7 +246,7 @@ fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<St
     if let Some(dir) = env.get("RDM_EVIDENCE_DIR") {
         disk.evidence_dir = dir_present(Path::new(dir)).map_err(|e| format!("RDM_EVIDENCE_DIR {e}"))?.then(|| dir.clone());
     }
-    let record = data_dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+    let record = data_dir.join(rdm_core::runtime::RUNTIME_FILE);
     match std::fs::remove_file(&record) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -499,7 +499,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         let exe_name = spec.executable.file_name().ok_or_else(|| err(format!("{} names no file", spec.executable.display())))?;
         let exe_in = Path::new(BIN_DIR).join(exe_name);
         // The data dir, the mounts and an earlier birth's runtime record, on the blocking pool.
-        let admin = spec.node.kind == rafka_mesh_entity::NodeKind::NodeAdmin;
+        let admin = spec.node.kind == rdm_core::NodeKind::NodeAdmin;
         let disk = {
             let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
             crate::record_store::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
@@ -792,7 +792,7 @@ mod tests {
         assert!(ok.is_dir(), "the data dir is made");
         assert!(disk.runtime_mounts.contains(&"/usr"), "{:?}", disk.runtime_mounts);
         let stale = dir.join("stale");
-        let record = stale.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+        let record = stale.join(rdm_core::runtime::RUNTIME_FILE);
         std::fs::create_dir_all(record.join("held")).unwrap();
         let err = launch_disk(&stale, false, &std::collections::BTreeMap::new()).unwrap_err();
         assert!(err.contains(&record.display().to_string()), "{err}");

@@ -3,7 +3,7 @@
 //! `(mesh, kind)` cohort). A product reads the seat from node-admin's public view and never
 //! computes it: nothing here orders NodeIds.
 
-use rafka_mesh_entity::NodeKind;
+use rdm_core::NodeKind;
 use rafka_node_admin_client::NodeView;
 
 /// The primary of the `(mesh, kind)` cohort as the view advertises it: the one row with

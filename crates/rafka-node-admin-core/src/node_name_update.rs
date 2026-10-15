@@ -25,10 +25,10 @@ use crate::model::{Node, PathName};
 use crate::node_rows::{Moved, RenameRefused};
 use crate::storage::NodesStorage;
 use crate::topology::Topology;
-use rafka_mesh_entity::ConnectionId;
+use rdm_core::ConnectionId;
 use rafka_node_admin_client::{ExactBirth, NodeRpc, Traffic};
 use rafka_node_rpc::{CallOptions, NodeTarget, RouteChoice};
-use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
+use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
 
 /// What a mesh-primary's `node.name.update` acts through: the door its record changes take turns at
@@ -56,13 +56,13 @@ pub struct Cutover {
     /// The key of the predecessor's retained row (`<name>.old`).
     pub retained: PathName,
     /// The predecessor: the row at `retained` is inherited only while it is this node's.
-    pub retained_id: rafka_mesh_entity::NodeId,
+    pub retained_id: rdm_core::NodeId,
 }
 
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest, cutover: Option<&Cutover>) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest, cutover: Option<&Cutover>) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.name.update.via-writer",
@@ -124,13 +124,13 @@ fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDele
 #[allow(clippy::too_many_arguments)]
 async fn rename(
     me: &PathName,
-    me_id: &rafka_mesh_entity::NodeId,
+    me_id: &rdm_core::NodeId,
     now: &Topology,
     storage: &dyn NodesStorage,
     doors: NameDoors<'_>,
     deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>,
-    node_id: &rafka_mesh_entity::NodeId,
-    incarnation: &rafka_mesh_entity::IncarnationId,
+    node_id: &rdm_core::NodeId,
+    incarnation: &rdm_core::IncarnationId,
     name: &str,
     cutover: Option<&Cutover>,
     span: &tracing::Span,
@@ -153,7 +153,7 @@ async fn rename(
     }
     // 2. The writer: the mesh-primary of the node's mesh, or the fabric-primary for a mesh with none (R-OW1).
     if !crate::node_rows::writes_for(now, me_id, &held.mesh) {
-        let held_by = now.cohort_primary(&held.mesh, rafka_mesh_entity::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
+        let held_by = now.cohort_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", held.mesh, held.name);
         span.record("detail", needed.as_str());
         return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };
@@ -166,7 +166,7 @@ async fn rename(
         return StatusReply::rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
     // 4. The name: within the grammar, and joined at the held record's path into a key this build keys.
-    if let Some(reason) = rafka_node_rpc_contract::status::name_refusal(name) {
+    if let Some(reason) = rdm_core::status::name_refusal(name) {
         let why = format!("{me}: {reason}; nothing is claimed or written");
         span.record("detail", why.as_str());
         return StatusReply::rejected_name(&why);
@@ -288,7 +288,7 @@ async fn rename(
 
 /// The command ends incomplete after its put at `to`: the release of `from` is pending, both keys held
 /// (proposal §2.4); the next writer that meets the row finishes it.
-fn release_pending(me: &PathName, node_id: &rafka_mesh_entity::NodeId, to: &PathName, from: &PathName, why: &str, span: &tracing::Span) -> StatusReply {
+fn release_pending(me: &PathName, node_id: &rdm_core::NodeId, to: &PathName, from: &PathName, why: &str, span: &tracing::Span) -> StatusReply {
     let detail = format!("{me}: {node_id} holds {to} (its row carries renamed_from {from}) and the release of {from} is pending: {why}; a resubmit releases it and continues to the apply");
     span.record("answered", "release-pending").record("detail", detail.as_str());
     StatusReply::name_not_applied(&to.to_string(), "release-pending", &detail)
@@ -311,7 +311,7 @@ async fn retained_row(storage: &dyn NodesStorage, me: &PathName, c: &Cutover) ->
 /// index in that put (`NodeRow::tag_moves`). A row that says it already is not written again. One
 /// `rdm.node_admin.node.update.via-inherited-row` span, its outcome `inherited`, `already-inherited` or
 /// `row-refused`; answers the refusal's words.
-async fn mark_inherited(storage: &dyn NodesStorage, me: &PathName, written: &crate::node_rows::WrittenRows, c: &Cutover, by: &rafka_mesh_entity::NodeId) -> Result<(), String> {
+async fn mark_inherited(storage: &dyn NodesStorage, me: &PathName, written: &crate::node_rows::WrittenRows, c: &Cutover, by: &rdm_core::NodeId) -> Result<(), String> {
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-inherited-row",
         node = %me,

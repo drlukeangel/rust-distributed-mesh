@@ -11,7 +11,7 @@
 //! with its own `EvidenceCapture` on the runtime it runs the estate on, in a directory of its own
 //! beside the estate's artifacts, and reads back that file and no other.
 
-use rafka_mesh_entity::NodeId;
+use rdm_core::NodeId;
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::disk_faults::DiskFull;
 use rafka_test_scenario::elections::advertised_fabric_primaries;

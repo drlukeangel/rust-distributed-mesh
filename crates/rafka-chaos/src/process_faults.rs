@@ -354,8 +354,8 @@ mod tests {
     #[test]
     fn the_oracle_agrees_with_the_products_own_token_and_domain() {
         let me = std::process::id();
-        assert_eq!(Some(start_token(me).unwrap()), rafka_mesh_entity::runtime::process_start_token(me));
-        assert_eq!(local_control_domain(), rafka_mesh_entity::runtime::process_control_domain().unwrap());
+        assert_eq!(Some(start_token(me).unwrap()), rdm_core::runtime::process_start_token(me));
+        assert_eq!(local_control_domain(), rdm_core::runtime::process_control_domain().unwrap());
     }
 
     use std::process::{Command, Stdio};

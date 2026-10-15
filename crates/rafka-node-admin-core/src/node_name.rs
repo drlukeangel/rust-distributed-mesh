@@ -4,9 +4,9 @@
 //! `node.connections.delete`, its drop written under the old name, before the name changes. The
 //! name it already holds is done whatever it holds.
 
-use rafka_mesh_entity::connections::{ConnectionKind, NodeConnection};
-use rafka_mesh_entity::{ConnectionId, PathName};
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::connections::{ConnectionKind, NodeConnection};
+use rdm_core::{ConnectionId, PathName};
+use rdm_core::status::StatusReply;
 
 /// What the subject of an `ApplyNodeName` decides.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,8 +70,8 @@ pub fn reply(decision: &NameApply) -> StatusReply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionState};
-    use rafka_mesh_entity::{ConnectionId, NodeId};
+    use rdm_core::connections::{ConnectionEnd, ConnectionState};
+    use rdm_core::{ConnectionId, NodeId};
 
     /// CONTRACT (R-CR1; proposal node-properties-own-commands.md §2.2 step 6: "`Busy { connections }`
     /// naming each connection it still holds"): the held name is done whatever the node holds; another

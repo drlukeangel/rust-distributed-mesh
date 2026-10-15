@@ -16,14 +16,14 @@
 //! a named id dropped silently, or the drop written under another name.
 
 use crate::common::admin_side_serving;
-use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, NodeConnection};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
+use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{ConnectionId, FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingRequest};
-use rafka_node_rpc_contract::status::{ConnectionScope, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingRequest};
+use rdm_core::status::{ConnectionScope, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
 use std::sync::{Arc, OnceLock};
@@ -58,7 +58,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let launch_of = |name: &PathName| {
             let dir = root.join(name.to_string());
             std::fs::create_dir_all(&dir).unwrap();
-            RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+            RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
             let launch = Launch {
                 fabric: "fabric1".into(),
@@ -75,7 +75,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
                 mesh_issuer: None,
-                connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+                connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);
             launch

@@ -7,8 +7,8 @@
 //! `NotReady`, never a handler run on a half-built node.
 
 use crate::server::{HandlerFault, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::protocol::NodeProtocol;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -7,11 +7,11 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{NotSentReason, ResolveFailure, RpcOutcome};
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{NotSentReason, ResolveFailure, RpcOutcome};
+use rdm_core::ping::{Ping, PingReply, PingRequest};
 use std::sync::Arc;
 
 async fn ping(c: &NodeRpcClient, t: &NodeTarget) -> RpcOutcome<PingReply> {

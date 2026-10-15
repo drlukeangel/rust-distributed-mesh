@@ -4,14 +4,14 @@
 //! gate of its own hook; the node is a real in-process rpc node.
 
 use crate::common::{admin_side_serving, AdminSide, Spans};
-use rafka_mesh_entity::digest::MeshDigest;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::digest::MeshDigest;
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState, RetryOn};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, PullServer, Row, TestHydrator};
 use rafka_node_rpc_testkit::node::{self, RunningNode};
 use std::sync::Arc;
@@ -43,7 +43,7 @@ async fn birth(status: MemberStatus) -> Birth {
     .await;
     let dir = std::env::temp_dir().join(format!("hydrate-before-ready-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),
@@ -60,7 +60,7 @@ async fn birth(status: MemberStatus) -> Birth {
         store_dir: dir.clone(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     admin.deployed(&launch, &key);
     Birth { admin, authority, launch, dir }
@@ -151,7 +151,7 @@ fn probe(d: &MeshDigest) -> StatusRequest {
 }
 
 fn delete_all(d: &MeshDigest) -> StatusRequest {
-    StatusRequest::DeleteConnections { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All }
+    StatusRequest::DeleteConnections { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All }
 }
 
 /// CONTRACT: a node whose hook is `Blocked` on its authority stays Pending: it publishes Pending

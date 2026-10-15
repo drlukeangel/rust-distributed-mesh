@@ -8,7 +8,7 @@
 //! ladder, so the ordinary tier is incomplete and the node-admin tier never starts. The resumed
 //! attempt sees the view as the first one left it: neither ordinary node is live any more.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter};
 use rafka_node_admin_core::fabric_builds::BuildMessage;
@@ -16,14 +16,14 @@ use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemp
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::mesh_delete::{await_mesh_deleted, MeshDeleteBook, MESH_DELETED_WAIT, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{ClaimFor, Claimed, NodeRows, RowRefused};
 use rafka_node_admin_core::status_rpc::Declared;
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::status::MeshState;
+use rdm_core::status::MeshState;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde_json::{json, Value};
@@ -247,7 +247,7 @@ fn node(name: &str) -> Node {
 }
 
 fn handle(name: &str, pid: u32) -> DeploymentHandle {
-    DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{name}"))).unwrap(), provider: ProviderKind::Process, pid: Some(pid), start: Some(1), container: None, domain: Some(DOMAIN.into()) }
+    DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60(&format!("dep-{name}"))).unwrap(), provider: ProviderKind::Process, pid: Some(pid), start: Some(1), container: None, domain: Some(DOMAIN.into()) }
 }
 
 /// The roster as a view holds it at admission: every live member of mesh2.
@@ -349,12 +349,12 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
@@ -504,12 +504,12 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-deleted-incomplete", build_id = %build_id.log(), operation = %outer);
@@ -592,12 +592,12 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-delete-completion", build_id = %build_id.log(), operation = %outer);
@@ -815,12 +815,12 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
@@ -964,12 +964,12 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_published_deleted_by
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let lost_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &lost_published, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let amended_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &amended_published, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -1790,12 +1790,12 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/rafka-rpc-node".into(),
             seeds: vec![("finalprimarykey".into(), "127.0.0.1:34000".parse().unwrap())],
-            launcher: rafka_mesh_entity::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: FINAL.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let cut = CutBuilds { inner: &builds, cut: Mutex::new(Some(("NodeDeleted", format!("node.delete:{FAILING}")))) };
         let cut_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &lost_departures, builds: &cut, template: &template, timeouts: Timeouts::default() };

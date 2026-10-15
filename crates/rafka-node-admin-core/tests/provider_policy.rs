@@ -10,7 +10,7 @@ use rafka_node_admin_core::deployment::provider::{FabricPolicy, PolicyRefusal};
 use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::status::StatusReply;
 use serde_json::Value;
 use std::sync::Arc;
 

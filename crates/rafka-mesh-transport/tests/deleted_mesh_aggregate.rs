@@ -3,7 +3,7 @@
 //! `via-member-state` (`Leaving, routable=false`), and hold the last admin departed for
 //! `DEPARTED_RETENTION` while keeping the final aggregate in `SnapshotReceiver` and `Forwarder`.
 
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rafka_mesh_transport::membership::Frame;
 use rafka_mesh_transport::snapshot::SnapshotReceiver;
 

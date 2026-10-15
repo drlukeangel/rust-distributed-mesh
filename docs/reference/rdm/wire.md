@@ -5,15 +5,15 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 
 | op | name | family | request | reply |
 |---|---|---|---|---|
-| `0x01` | `ping` | `Ping` | [`PingRequest`](#t-rafka_node_rpc_contract-ping-PingRequest) | [`PingReply`](#t-rafka_node_rpc_contract-ping-PingReply) |
-| `0x1A` | `forward` | `Forward` | [`ForwardRequest`](#t-rafka_node_rpc_contract-forward-ForwardRequest) | [`ForwardReply`](#t-rafka_node_rpc_contract-forward-ForwardReply) |
-| `0x1B` | `status` | `Status` | [`StatusRequest`](#t-rafka_node_rpc_contract-status-StatusRequest) | [`StatusReply`](#t-rafka_node_rpc_contract-status-StatusReply) |
-| `0x1C` | `build-claim` | `BuildClaim` | [`BuildClaimRequest`](#t-rafka_node_rpc_contract-build_claim-BuildClaimRequest) | [`BuildClaimReply`](#t-rafka_node_rpc_contract-build_claim-BuildClaimReply) |
-| `0x1D` | `join` | `Join` | [`JoinRequest`](#t-rafka_node_rpc_contract-join-JoinRequest) | [`JoinReply`](#t-rafka_node_rpc_contract-join-JoinReply) |
-| `0x1E` | `topology` | `Topology` | [`TopologyRequest`](#t-rafka_node_rpc_contract-topology-TopologyRequest) | [`TopologyReply`](#t-rafka_node_rpc_contract-topology-TopologyReply) |
-| `0x1F` | `build-facts` | `BuildFacts` | [`BuildFactsRequest`](#t-rafka_node_rpc_contract-build_facts-BuildFactsRequest) | [`BuildFactsReply`](#t-rafka_node_rpc_contract-build_facts-BuildFactsReply) |
-| `0x20` | `build` | `Build` | [`BuildRequest`](#t-rafka_node_rpc_contract-build-BuildRequest) | [`BuildReply`](#t-rafka_node_rpc_contract-build-BuildReply) |
-| `0x21` | `node-primary-update` | `NodePrimaryUpdate` | [`NodePrimaryUpdateRequest`](#t-rafka_node_rpc_contract-handover-NodePrimaryUpdateRequest) | [`NodePrimaryUpdateReply`](#t-rafka_node_rpc_contract-handover-NodePrimaryUpdateReply) |
+| `0x01` | `ping` | `Ping` | [`PingRequest`](#t-rdm_core-ping-PingRequest) | [`PingReply`](#t-rdm_core-ping-PingReply) |
+| `0x1A` | `forward` | `Forward` | [`ForwardRequest`](#t-rdm_core-forward-ForwardRequest) | [`ForwardReply`](#t-rdm_core-forward-ForwardReply) |
+| `0x1B` | `status` | `Status` | [`StatusRequest`](#t-rdm_core-status-StatusRequest) | [`StatusReply`](#t-rdm_core-status-StatusReply) |
+| `0x1C` | `build-claim` | `BuildClaim` | [`BuildClaimRequest`](#t-rdm_core-build_claim-BuildClaimRequest) | [`BuildClaimReply`](#t-rdm_core-build_claim-BuildClaimReply) |
+| `0x1D` | `join` | `Join` | [`JoinRequest`](#t-rdm_core-join-JoinRequest) | [`JoinReply`](#t-rdm_core-join-JoinReply) |
+| `0x1E` | `topology` | `Topology` | [`TopologyRequest`](#t-rdm_core-topology-TopologyRequest) | [`TopologyReply`](#t-rdm_core-topology-TopologyReply) |
+| `0x1F` | `build-facts` | `BuildFacts` | [`BuildFactsRequest`](#t-rdm_core-build_facts-BuildFactsRequest) | [`BuildFactsReply`](#t-rdm_core-build_facts-BuildFactsReply) |
+| `0x20` | `build` | `Build` | [`BuildRequest`](#t-rdm_core-build-BuildRequest) | [`BuildReply`](#t-rdm_core-build-BuildReply) |
+| `0x21` | `node-primary-update` | `NodePrimaryUpdate` | [`NodePrimaryUpdateRequest`](#t-rdm_core-handover-NodePrimaryUpdateRequest) | [`NodePrimaryUpdateReply`](#t-rdm_core-handover-NodePrimaryUpdateReply) |
 | `0x40` | `broker-data` | `BrokerData` | [`BrokerDataRequest`](#t-rafka_node_base-families-BrokerDataRequest) | [`BrokerDataReply`](#t-rafka_node_base-families-BrokerDataReply) |
 | `0x70` | `proof-store` | `ProofStore` | [`ProofRequest`](#t-rafka_node_rpc_testkit-proof_store-ProofRequest) | [`ProofReply`](#t-rafka_node_rpc_testkit-proof_store-ProofReply) |
 | `0x71` | `resolve-probe` | `ResolveProbe` | [`ResolveRequest`](#t-rafka_node_rpc_testkit-resolve_probe-ResolveRequest) | [`ResolveReply`](#t-rafka_node_rpc_testkit-resolve_probe-ResolveReply) |
@@ -24,7 +24,7 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 
 ## 0x01 `ping`
 
-`impl NodeProtocol for Ping` · `crates/rafka-node-rpc-contract/src/ping.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for Ping` · `crates/rdm-core/src/ping.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -37,11 +37,11 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 | `MAX_REQUEST_FRAME_BYTES` | `64 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024 + 64` |
 
-<a id="t-rafka_node_rpc_contract-ping-PingRequest"></a>
+<a id="t-rdm_core-ping-PingRequest"></a>
 
 ### `PingRequest`
 
-`crates/rafka-node-rpc-contract/src/ping.rs` · enum · 1 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/ping.rs` · enum · 1 variants · rdm-core
 
 A Ping call.
 
@@ -50,11 +50,11 @@ A Ping call.
 | 0 | **`Ping`** |  |  | Echo the payload. |
 | 0.0 | `payload` | `Vec<u8>` |  | The bytes to echo. |
 
-<a id="t-rafka_node_rpc_contract-ping-PingReply"></a>
+<a id="t-rdm_core-ping-PingReply"></a>
 
 ### `PingReply`
 
-`crates/rafka-node-rpc-contract/src/ping.rs` · enum · 7 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/ping.rs` · enum · 7 variants · rdm-core
 
 A Ping answer.
 
@@ -71,13 +71,13 @@ A Ping answer.
 | 4 | **`ConnectionsDeleting`** |  |  | The node is connections-deleting and takes no new work. |
 | 4.0 | `reason` | `String` |  | Why it refuses new work. |
 | 5 | **`Malformed`** |  |  | The request frame was malformed. |
-| 5.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 5.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 6 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 6.0 | `reason` | `String` |  | Why the call is refused. |
 
 ## 0x1A `forward`
 
-`impl NodeProtocol for Forward` · `crates/rafka-node-rpc-contract/src/forward.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for Forward` · `crates/rdm-core/src/forward.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -90,27 +90,27 @@ A Ping answer.
 | `MAX_REQUEST_FRAME_BYTES` | `MAX_CARRIED_BYTES + 256` |
 | `MAX_REPLY_FRAME_BYTES` | `MAX_CARRIED_BYTES + 256` |
 
-<a id="t-rafka_node_rpc_contract-forward-ForwardRequest"></a>
+<a id="t-rdm_core-forward-ForwardRequest"></a>
 
 ### `ForwardRequest`
 
-`crates/rafka-node-rpc-contract/src/forward.rs` · enum · 1 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/forward.rs` · enum · 1 variants · rdm-core
 
 A Forward call.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Forward`** |  |  | Make `inner_op` on `target` and hand its reply back. |
-| 0.0 | `target` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The exact final target's logical NodeId. |
+| 0.0 | `target` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The exact final target's logical NodeId. |
 | 0.1 | `inner_op` | `u8` |  | The inner call's op. |
 | 0.2 | `inner` | `Vec<u8>` |  | The inner call's request frame, as encoded for `inner_op`. |
 | 0.3 | `remaining_ms` | `u64` |  | The origin's remaining time budget for this call, in whole milliseconds, measured |
 
-<a id="t-rafka_node_rpc_contract-forward-ForwardReply"></a>
+<a id="t-rdm_core-forward-ForwardReply"></a>
 
 ### `ForwardReply`
 
-`crates/rafka-node-rpc-contract/src/forward.rs` · enum · 14 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/forward.rs` · enum · 14 variants · rdm-core
 
 A carrier's answer to a Forward call.
 
@@ -123,7 +123,7 @@ A carrier's answer to a Forward call.
 | 2 | **`InnerUnserved`** |  |  | The target does not serve the inner op. |
 | 2.0 | `op` | `u8` |  | The op the target does not serve. |
 | 3 | **`InnerRejectedStale`** |  |  | The carrier's resolver stopped naming the birth the inner call was dialled to, before the |
-| 3.0 | `target_node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The node the inner call addressed. |
+| 3.0 | `target_node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The node the inner call addressed. |
 | 4 | **`InnerIndeterminate`** |  |  | The inner call committed at the target and its outcome is unknown. |
 | 4.0 | `reason` | `String` |  | Why the outcome is unknown. |
 | 5 | **`NotForwardable`** |  |  | The inner protocol is not forwardable through this carrier. |
@@ -137,7 +137,7 @@ A carrier's answer to a Forward call.
 | 9 | **`ConnectionsDeleting`** |  |  | The carrier is connections-deleting and takes no new work. |
 | 9.0 | `reason` | `String` |  | Why the carrier refuses new work. |
 | 10 | **`Malformed`** |  |  | The request frame was malformed. |
-| 10.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 10.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 11 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 11.0 | `reason` | `String` |  | Why the call is refused. |
 | 12 | **`CarrierEdgeLost`** |  |  | The carrier made no inner call it could prove arrived: its own Direct edge to the final |
@@ -148,7 +148,7 @@ A carrier's answer to a Forward call.
 
 ## 0x1B `status`
 
-`impl NodeProtocol for Status` · `crates/rafka-node-rpc-contract/src/status.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for Status` · `crates/rdm-core/src/status.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -161,163 +161,163 @@ A carrier's answer to a Forward call.
 | `MAX_REQUEST_FRAME_BYTES` | `if MAX_CONFIG_REQUEST_BYTES>MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES }` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rafka_node_rpc_contract-status-StatusRequest"></a>
+<a id="t-rdm_core-status-StatusRequest"></a>
 
 ### `StatusRequest`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 30 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 30 variants · rdm-core
 
 A Status call.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`DeclareNodeState`** |  |  | `op() = "declare-node-state"` | Upward: the sender's own birth declares the lifecycle state it committed. |
-| 0.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The declaring birth's logical node. |
-| 0.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The declaring birth's incarnation. |
-| 0.2 | `state` | `NodeState` → [`NodeState`](#t-rafka_node_rpc_contract-status-NodeState) |  |  | The state the birth committed. |
+| 0.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The declaring birth's logical node. |
+| 0.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The declaring birth's incarnation. |
+| 0.2 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state the birth committed. |
 | 1 | **`DeclareMeshState`** |  |  | `op() = "declare-mesh-state"` | Upward: the mesh's current primary declares the Mesh's state to the fabric-primary. |
-| 1.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh declared. |
-| 1.1 | `state` | `MeshState` → [`MeshState`](#t-rafka_node_rpc_contract-status-MeshState) |  |  | The mesh's state. |
+| 1.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh declared. |
+| 1.1 | `state` | `MeshState` → [`MeshState`](#t-rdm_core-status-MeshState) |  |  | The mesh's state. |
 | 2 | **`ApplyNodeState`** |  |  | `op() = "apply-node-state"` | Downward: an authority tells the exact birth to enter `state`. |
-| 2.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth told to change state. |
-| 2.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 2.2 | `state` | `NodeState` → [`NodeState`](#t-rafka_node_rpc_contract-status-NodeState) |  |  | The state it is told to enter. |
+| 2.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth told to change state. |
+| 2.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 2.2 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state it is told to enter. |
 | 3 | **`ProbeNodeState`** |  |  | `op() = "probe-node-state"` | Downward: an authority asks the exact birth to reassert its presence and answer its |
-| 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth probed. |
-| 3.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth probed. |
+| 3.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 4 | **`ApplyMeshState`** |  |  | `op() = "apply-mesh-state"` | Downward: the fabric-primary applies a Mesh state at that mesh's bootstrap admin. |
-| 4.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh applied to. |
+| 4.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh applied to. |
 | 4.1 | `mesh_name` | `String` |  |  | The mesh's name. |
-| 4.2 | `state` | `MeshState` → [`MeshState`](#t-rafka_node_rpc_contract-status-MeshState) |  |  | The state applied. |
+| 4.2 | `state` | `MeshState` → [`MeshState`](#t-rdm_core-status-MeshState) |  |  | The state applied. |
 | 5 | **`ApplyFabricEvent`** |  |  | `op() = "apply-fabric-event"` | Downward: the fabric-primary applies a Fabric event at a mesh primary. |
-| 5.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the event belongs to. |
-| 5.1 | `event` | `FabricEvent` → [`FabricEvent`](#t-rafka_node_rpc_contract-status-FabricEvent) |  |  | The event applied. |
+| 5.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the event belongs to. |
+| 5.1 | `event` | `FabricEvent` → [`FabricEvent`](#t-rdm_core-status-FabricEvent) |  |  | The event applied. |
 | 6 | **`Reserved6`** |  |  | `op() = "reserved-6"` | Reserved position (R-CR4): never sent. A node's connections are deleted by |
-| 6.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
-| 6.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 6.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
+| 6.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 6.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 6.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 6.4 | `operation` | `String` |  |  | The operation. |
 | 7 | **`Reserved7`** |  |  | `op() = "reserved-7"` | Reserved position (R-CR4): never sent; a receiver refuses this by name. |
-| 7.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth reported. |
-| 7.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 7.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth reported. |
+| 7.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 7.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 7.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 7.4 | `operation` | `String` |  |  | The operation. |
 | 8 | **`StopNode`** |  |  | `op() = "stop-node"` | Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md): |
-| 8.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
-| 8.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 8.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
+| 8.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 8.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 8.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 8.4 | `operation` | `String` |  |  | The operation: `node.stop:<path>`. |
 | 9 | **`NodeLeft`** |  |  | `op() = "node-left"` | Reserved: a stopped birth reports `stopped` on the reply of its `StopNode` call, so this call is |
-| 9.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that is leaving. |
-| 9.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 9.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that is leaving. |
+| 9.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 9.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 9.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 9.4 | `operation` | `String` |  |  | The operation: `node.stop:<path>`. |
 | 10 | **`DeleteMesh`** |  |  | `op() = "delete-mesh"` | Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete |
-| 10.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh that leaves. |
+| 10.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh that leaves. |
 | 10.1 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 10.2 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 10.3 | `operation` | `String` |  |  | The operation: `mesh.delete:<mesh_id>`. |
 | 11 | **`MeshDeleted`** |  |  | `op() = "mesh-deleted"` | Upward: the still-running mesh-primary hands the fabric-primary the proof that every other |
-| 11.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh that leaves. |
+| 11.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh that leaves. |
 | 11.1 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 11.2 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 11.3 | `operation` | `String` |  |  | The operation: `mesh.delete:<mesh_id>`. |
-| 11.4 | `final_node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The final mesh-primary's node. |
-| 11.5 | `final_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The final mesh-primary's incarnation. |
-| 11.6 | `final_runtime` | `RuntimeFact` | `with = "rafka_mesh_entity::wire::runtime"` |  | The final mesh-primary's exact runtime, still running. |
+| 11.4 | `final_node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The final mesh-primary's node. |
+| 11.5 | `final_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The final mesh-primary's incarnation. |
+| 11.6 | `final_runtime` | `RuntimeFact` | `with = "crate::wire::runtime"` |  | The final mesh-primary's exact runtime, still running. |
 | 11.7 | `receipt_manifest` | `String` |  |  | A bounded reference (at most `MAX_RECEIPT_MANIFEST_BYTES`) to the other members' |
 | 12 | **`CommitState`** |  |  | `op() = "commit-state"` | Downward: the commanding authority tells the exact birth to publish what its scratchpad holds (`commit-state`; fabric-state-commit.md). The reply admits the command; completion is `Self::StateCommitted`. |
-| 12.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the round belongs to. |
-| 12.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
-| 12.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 12.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 12.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 12.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 12.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
 | 12.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
 | 12.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
 | 13 | **`StateCommitted`** |  |  | `op() = "state-committed"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for the state-commit round (`state-committed`) after its required scratchpad writes are stored. A check-in, never a node or mesh state. |
-| 13.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the round belongs to. |
-| 13.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
-| 13.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 13.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 13.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 13.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 13.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
 | 13.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
 | 13.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
 | 14 | **`OpenTraffic`** |  |  | `op() = "open-traffic"` | Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is `Self::TrafficOpened`. |
-| 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the round belongs to. |
-| 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
-| 14.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 14.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 14.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
 | 14.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
 | 14.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
 | 15 | **`TrafficOpened`** |  |  | `op() = "traffic-opened"` | Upward: the exact birth, or a mesh primary for its mesh, checks in for the open-traffic round (`traffic-opened`) after it completes traffic opening. |
-| 15.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the round belongs to. |
-| 15.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
-| 15.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 15.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric the round belongs to. |
+| 15.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
+| 15.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 15.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
 | 15.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
 | 15.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
 | 16 | **`StartNode`** |  |  | `op() = "start-node"` | Downward: the owning mesh-admin tells the parked exact birth to rejoin as itself |
-| 16.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
-| 16.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 16.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
+| 16.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 16.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 16.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 16.4 | `operation` | `String` |  |  | The operation: `node.start:<path>`. |
 | 17 | **`UpdateNodeConfig`** |  |  | `op() = "update-node-config"` | Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the |
-| 17.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose config is put. |
-| 17.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 17.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose config is put. |
+| 17.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 17.2 | `config` | `BTreeMap<String, String>` |  |  | The whole config: a put replaces, it never merges. |
 | 18 | **`ApplyNodeConfig`** |  |  | `op() = "apply-node-config"` | Downward: the birth's mesh-primary tells the exact birth its config; the birth holds it and carries |
-| 18.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth told. |
-| 18.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 18.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth told. |
+| 18.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 18.2 | `config` | `BTreeMap<String, String>` |  |  | The whole config. |
 | 19 | **`ApplyNodeName`** |  |  | `op() = "apply-node-name"` | Downward: the node's mesh-primary, having written the renamed row, tells the exact birth |
-| 19.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth told. |
-| 19.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 19.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth told. |
+| 19.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 19.2 | `name` | `String` |  |  | The `path.name` the row now holds. |
 | 20 | **`UpdateName`** |  |  | `op() = "node.name.update"` | Upward: `node.name.update` (proposal node-properties-own-commands.md §2; R13, R-CR1): a caller |
-| 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth renamed. |
-| 20.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth renamed. |
+| 20.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 20.2 | `name` | `String` |  |  | The new name, without its path (`2`, `2.old`, `9`). |
 | 21 | **`DeleteConnections`** |  |  | `op() = "delete-connections"` | `node.connections.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact |
-| 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose connections are cut. |
-| 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 21.2 | `scope` | `ConnectionScope` → [`ConnectionScope`](#t-rafka_node_rpc_contract-status-ConnectionScope) |  |  | Which connections. |
+| 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose connections are cut. |
+| 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 21.2 | `scope` | `ConnectionScope` → [`ConnectionScope`](#t-rdm_core-status-ConnectionScope) |  |  | Which connections. |
 | 22 | **`GetNodes`** |  |  | `op() = "node.get"` | `node.get` (node-rpc-envelope.md "Typed objects mapped to wire and execution owners"): a |
-| 22.0 | `select` | `NodeSelect` → [`NodeSelect`](#t-rafka_node_rpc_contract-status-NodeSelect) |  |  | Which nodes. |
+| 22.0 | `select` | `NodeSelect` → [`NodeSelect`](#t-rdm_core-status-NodeSelect) |  |  | Which nodes. |
 | 23 | **`GetMeshes`** |  |  | `op() = "mesh.get"` | `mesh.get`: a caller asks a node-admin for one mesh its view holds, by the mesh's minted id |
 | 23.0 | `mesh` | `Option<String>` |  |  | The mesh's minted id or name; `None` for every mesh of the fabric. |
 | 24 | **`GetFabric`** |  |  | `op() = "fabric.get"` | `fabric.get`: a caller asks a node-admin for the fabric as its view holds it, answered |
 | 25 | **`GetConnections`** |  |  | `op() = "node.connections.get"` | `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held |
-| 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth asked. |
-| 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth asked. |
+| 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 26 | **`CreateTags`** |  |  | `op() = "node.tags.create"` | `node.tags.create` (node-rpc-envelope.md node.tags; R-TG1): a caller asks the exact birth's |
-| 26.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose tags grow. |
-| 26.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 26.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose tags grow. |
+| 26.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 26.2 | `labels` | `BTreeSet<String>` |  |  | The labels added: one or a list, at most `MAX_NODE_TAGS`, each a label (`tag_refusal`). |
 | 27 | **`DeleteTags`** |  |  | `op() = "node.tags.delete"` | `node.tags.delete` (node-rpc-envelope.md node.tags; R-TG1): as `StatusRequest::CreateTags`, |
-| 27.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose tags shrink. |
-| 27.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 27.2 | `scope` | `TagScope` → [`TagScope`](#t-rafka_node_rpc_contract-status-TagScope) |  |  | Which labels. |
+| 27.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose tags shrink. |
+| 27.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 27.2 | `scope` | `TagScope` → [`TagScope`](#t-rdm_core-status-TagScope) |  |  | Which labels. |
 | 28 | **`JoinMesh`** |  |  | `op() = "node.mesh.join"` | Downward: the commanding authority tells the exact birth to join its mesh channel(s) |
-| 28.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
-| 28.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 28.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
+| 28.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 28.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 28.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 28.4 | `operation` | `String` |  |  | The operation: `join-mesh:<path.name>` or `node.start:<path.name>`. |
 | 29 | **`LeaveMesh`** |  |  | `op() = "node.mesh.leave"` | Downward: the commanding authority tells the exact birth to leave its mesh channel(s) |
-| 29.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
-| 29.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 29.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
+| 29.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 29.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 29.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 29.4 | `operation` | `String` |  |  | The operation: `leave-mesh:<path.name>` or `node.stop:<path.name>`. |
 
-<a id="t-rafka_node_rpc_contract-status-StatusReply"></a>
+<a id="t-rdm_core-status-StatusReply"></a>
 
 ### `StatusReply`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 51 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 51 variants · rdm-core
 
 The typed result of a Status call.
 
@@ -328,21 +328,21 @@ The typed result of a Status call.
 | 2 | **`Reserved2`** |  |  | `name() = "reserved-2"` | Reserved position (R-CR4): never sent. |
 | 2.0 | `in_flight` | `u64` |  |  | The work still in flight. |
 | 3 | **`Current`** |  |  | `name() = "current"` | The exact birth's own answer to a probe: it reasserted its presence, and this is its state. |
-| 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The answering birth's logical node. |
-| 3.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The answering birth's incarnation. |
-| 3.2 | `state` | `NodeState` → [`NodeState`](#t-rafka_node_rpc_contract-status-NodeState) |  |  | The birth's current state. |
+| 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
+| 3.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
+| 3.2 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The birth's current state. |
 | 4 | **`RejectedStaleIncarnation`** |  |  | `name() = "rejected-stale-incarnation"` | The receiver holds a newer incarnation of that NodeId, or holds it as departed. |
-| 4.0 | `held` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation held. |
+| 4.0 | `held` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation held. |
 | 5 | **`RejectedStaleMesh`** |  |  | `name() = "rejected-stale-mesh"` | The receiver holds another mesh id under that mesh name. |
-| 5.0 | `held` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh id held. |
+| 5.0 | `held` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh id held. |
 | 6 | **`RejectedStaleFabric`** |  |  | `name() = "rejected-stale-fabric"` | The receiver holds another fabric id. |
-| 6.0 | `held` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric id held. |
+| 6.0 | `held` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  | The fabric id held. |
 | 7 | **`RejectedNotAuthority`** |  |  | `name() = "rejected-not-authority"` | The receiver or sender is not the authority for the call. |
-| 7.0 | `why` | `NotAuthority` → [`NotAuthority`](#t-rafka_node_rpc_contract-status-NotAuthority) |  |  | Which authority condition failed. |
+| 7.0 | `why` | `NotAuthority` → [`NotAuthority`](#t-rdm_core-status-NotAuthority) |  |  | Which authority condition failed. |
 | 8 | **`RejectedInvalidNodeTransition`** |  |  | `name() = "rejected-invalid-node-transition"` | A node move backward along the legal order. |
-| 8.0 | `current` | `NodeState` → [`NodeState`](#t-rafka_node_rpc_contract-status-NodeState) |  |  | The state the node holds. |
+| 8.0 | `current` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state the node holds. |
 | 9 | **`RejectedInvalidMeshTransition`** |  |  | `name() = "rejected-invalid-mesh-transition"` | A mesh move backward along the legal order. |
-| 9.0 | `current` | `MeshState` → [`MeshState`](#t-rafka_node_rpc_contract-status-MeshState) |  |  | The state the mesh holds. |
+| 9.0 | `current` | `MeshState` → [`MeshState`](#t-rdm_core-status-MeshState) |  |  | The state the mesh holds. |
 | 10 | **`PeerUnresolved`** |  |  | `name() = "peer-unresolved"` | The peer the call needed could not be resolved. |
 | 10.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 11 | **`NotReady`** |  |  | `name() = "not-ready"` | The node is not ready to serve. |
@@ -352,7 +352,7 @@ The typed result of a Status call.
 | 13 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The node is connections-deleting and takes no new work. |
 | 13.0 | `reason` | `String` |  |  | Why the node refuses new work. |
 | 14 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 14.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 14.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 15 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 15.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 16 | **`RejectedUnmatchedCompletion`** |  |  | `name() = "rejected-unmatched-completion"` | A completion call (`node-drained`) names no open command of the receiver: the first field |
@@ -360,19 +360,19 @@ The typed result of a Status call.
 | 16.1 | `expected` | `String` |  |  | What the receiver holds for it. |
 | 16.2 | `reported` | `String` |  |  | What the completion reported. |
 | 17 | **`Stopped`** |  |  | `name() = "stopped"` | The reply of a `StopNode` call, sent when the stop is done (`node.stopped`): the birth's |
-| 17.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rafka_node_rpc_contract-status-ConnectionsReceipt) |  |  | What the stop's `node.connections.delete { All }` established. |
+| 17.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | What the stop's `node.connections.delete { All }` established. |
 | 18 | **`Started`** |  |  | `name() = "started"` | The reply of a `StartNode` call: the parked birth rejoined as itself. |
 | 19 | **`StartFailed`** |  |  | `name() = "start-failed"` | The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran. |
 | 19.0 | `step` | `String` |  |  | The step that failed: `node.join`, `node.topology` or `node.hydrate`. |
 | 19.1 | `reason` | `String` |  |  | Why it failed. |
 | 20 | **`CurrentParked`** |  |  | `name() = "current-parked"` | The exact birth's own answer to a probe while it is parked: `Leaving`, its process alive and |
-| 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The answering birth's logical node. |
-| 20.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The answering birth's incarnation. |
+| 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
+| 20.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
 | 21 | **`ConfigUpdated`** |  |  | `name() = "config-updated"` | The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact |
-| 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose config was put. |
-| 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 21.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose config was put. |
+| 21.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 22 | **`RejectedConfig`** |  |  | `name() = "rejected-config"` | The config put was refused: the cap it crossed. |
-| 22.0 | `over` | `ConfigOverCap` → [`ConfigOverCap`](#t-rafka_mesh_entity-digest-ConfigOverCap) |  |  | The keys and bytes of the refused config and the bounds. |
+| 22.0 | `over` | `ConfigOverCap` → [`ConfigOverCap`](#t-rdm_core-digest-ConfigOverCap) |  |  | The keys and bytes of the refused config and the bounds. |
 | 23 | **`ConfigRowRefused`** |  |  | `name() = "config-row-refused"` | The config put was not made: the nodes store refused the node's row, so nothing was told to |
 | 23.0 | `node` | `String` |  |  | The node's `path.name`, the row the store refused. |
 | 23.1 | `reason` | `String` |  |  | The store's refusal. |
@@ -381,19 +381,19 @@ The typed result of a Status call.
 | 24.1 | `answered` | `String` |  |  | The birth's reply to `apply-node-config` by name, or the call's end by name. |
 | 24.2 | `reason` | `String` |  |  | Its detail. |
 | 25 | **`Blocked`** |  |  | `name() = "blocked"` | The exact birth's own answer to a probe while its `hydrate_before_ready` hook is Blocked: the |
-| 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The answering birth's logical node. |
-| 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The answering birth's incarnation. |
+| 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
+| 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
 | 25.2 | `reason` | `String` |  |  | The hook's own blocker, in words. |
-| 25.3 | `retry_on` | `RetryOn` → [`RetryOn`](#t-rafka_node_rpc_contract-status-RetryOn) |  |  | The event the hook runs again on. |
+| 25.3 | `retry_on` | `RetryOn` → [`RetryOn`](#t-rdm_core-status-RetryOn) |  |  | The event the hook runs again on. |
 | 26 | **`NameUpdated`** |  |  | `name() = "name-updated"` | The reply of an `UpdateName` (`node.name.updated`): the mesh-primary moved the node's row to |
-| 26.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth renamed. |
-| 26.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 26.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth renamed. |
+| 26.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 27 | **`RejectedAdmittingConnections`** |  |  | `name() = "rejected-admitting-connections"` | The `UpdateName` was not made: the node admits connections (R-CR1). Its status is not |
-| 27.0 | `status` | `NodeStatus` → [`NodeStatus`](#t-rafka_node_rpc_contract-views-NodeStatus) |  |  | The node's status as its mesh-primary holds it (at the cut, when it holds one). |
-| 27.1 | `held_connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The connections the node still held after its last `node.connections.delete`, at most |
+| 27.0 | `status` | `NodeStatus` → [`NodeStatus`](#t-rdm_core-views-NodeStatus) |  |  | The node's status as its mesh-primary holds it (at the cut, when it holds one). |
+| 27.1 | `held_connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The connections the node still held after its last `node.connections.delete`, at most |
 | 28 | **`NameHeld`** |  |  | `name() = "name-held"` | The `UpdateName` was not made: another node holds the name (insert-and-fail on its key in |
 | 28.0 | `name` | `String` |  |  | The name claimed. |
-| 28.1 | `by` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The node that holds it. |
+| 28.1 | `by` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node that holds it. |
 | 29 | **`NodeRowRefused`** |  |  | `name() = "node-row-refused"` | The `UpdateName` was not made: the nodes store refused the claim or the put at the new key, so |
 | 29.0 | `node` | `String` |  |  | The node's `path.name`, the row the store refused. |
 | 29.1 | `reason` | `String` |  |  | The store's refusal. |
@@ -402,20 +402,20 @@ The typed result of a Status call.
 | 30.1 | `answered` | `String` |  |  | `release-pending`, or the birth's reply to `apply-node-name` by name, or the call's end by |
 | 30.2 | `reason` | `String` |  |  | Its detail. |
 | 31 | **`ConnectionsDeleted`** |  |  | `name() = "connections-deleted"` | `node.connections.deleted`: the cut is complete. Every connection named is accounted for by |
-| 31.0 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The open entries cut. |
-| 31.1 | `not_open` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The ids named that are no open entry of the birth: unknown, or already closed. |
-| 31.2 | `held` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The open entries the birth still holds. |
-| 31.3 | `receipt` | `Option<ConnectionsReceipt>` → [`ConnectionsReceipt`](#t-rafka_node_rpc_contract-status-ConnectionsReceipt) |  |  | For `All`, what the closure established; `None` for `Connections`. |
+| 31.0 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries cut. |
+| 31.1 | `not_open` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The ids named that are no open entry of the birth: unknown, or already closed. |
+| 31.2 | `held` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries the birth still holds. |
+| 31.3 | `receipt` | `Option<ConnectionsReceipt>` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | For `All`, what the closure established; `None` for `Connections`. |
 | 32 | **`RejectedConnectionScope`** |  |  | `name() = "rejected-connection-scope"` | The `DeleteConnections` scope names nothing the birth can cut (an empty list, or more ids |
 | 32.0 | `reason` | `String` |  |  | Why, by name. |
 | 33 | **`Nodes`** |  |  | `name() = "nodes"` | The answer to a `GetNodes`: the nodes the answering admin's view holds that the request |
-| 33.0 | `nodes` | `Vec<NodeView>` → [`NodeView`](#t-rafka_node_rpc_contract-views-NodeView) |  |  | The nodes. |
+| 33.0 | `nodes` | `Vec<NodeView>` → [`NodeView`](#t-rdm_core-views-NodeView) |  |  | The nodes. |
 | 34 | **`Meshes`** |  |  | `name() = "meshes"` | The answer to a `GetMeshes`: the mesh named, or every mesh the answering admin's view holds. |
-| 34.0 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rafka_node_rpc_contract-views-MeshView) |  |  | The meshes. |
+| 34.0 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rdm_core-views-MeshView) |  |  | The meshes. |
 | 35 | **`Fabric`** |  |  | `name() = "fabric"` | The answer to a `GetFabric`: the fabric as the answering admin's view holds it. |
-| 35.0 | `fabric` | `FabricView` → [`FabricView`](#t-rafka_node_rpc_contract-views-FabricView) |  |  | The fabric. |
+| 35.0 | `fabric` | `FabricView` → [`FabricView`](#t-rdm_core-views-FabricView) |  |  | The fabric. |
 | 36 | **`Connections`** |  |  | `name() = "connections"` | The answer to a `GetConnections`: the connections the exact birth holds as its own. |
-| 36.0 | `connections` | `ConnectionsView` → [`ConnectionsView`](#t-rafka_node_rpc_contract-views-ConnectionsView) |  |  | The connections. |
+| 36.0 | `connections` | `ConnectionsView` → [`ConnectionsView`](#t-rdm_core-views-ConnectionsView) |  |  | The connections. |
 | 37 | **`UnknownMesh`** |  |  | `name() = "unknown-mesh"` | The `GetMeshes` named a mesh the answering admin's view does not hold, by id or by name. |
 | 37.0 | `mesh` | `String` |  |  | The mesh as the request named it. |
 | 38 | **`ReadOverBound`** |  |  | `name() = "read-over-bound"` | A read's answer encodes past the Status reply bound: nothing of it is sent, and the reply |
@@ -423,11 +423,11 @@ The typed result of a Status call.
 | 38.1 | `bytes` | `u64` |  |  | The answer's encoded size, in bytes. |
 | 38.2 | `max` | `u64` |  |  | The Status reply bound, in bytes. |
 | 39 | **`RejectedStaleRound`** |  |  | `name() = "rejected-stale-round"` | A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the round the receiver holds for the |
-| 39.0 | `held` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rafka_node_rpc_contract-status-MeshDeleteRound) |  |  | The round the receiver holds for the mesh. |
-| 39.1 | `offered` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rafka_node_rpc_contract-status-MeshDeleteRound) |  |  | The round the call names. |
+| 39.0 | `held` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the receiver holds for the mesh. |
+| 39.1 | `offered` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the call names. |
 | 40 | **`RejectedConflictingRound`** |  |  | `name() = "rejected-conflicting-round"` | A `DeleteMesh` or `MeshDeleted` names a round of the mesh the receiver does not hold and that is |
-| 40.0 | `held` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rafka_node_rpc_contract-status-MeshDeleteRound) |  |  | The round the receiver holds for the mesh. |
-| 40.1 | `offered` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rafka_node_rpc_contract-status-MeshDeleteRound) |  |  | The round the call names. |
+| 40.0 | `held` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the receiver holds for the mesh. |
+| 40.1 | `offered` | `MeshDeleteRound` → [`MeshDeleteRound`](#t-rdm_core-status-MeshDeleteRound) |  |  | The round the call names. |
 | 41 | **`RejectedIncompleteManifest`** |  |  | `name() = "rejected-incomplete-manifest"` | A `MeshDeleted` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest |
 | 41.0 | `missing` | `u32` |  |  | How many roster births, the final primary aside, hold no exact Exited receipt. |
 | 41.1 | `without_exit` | `Vec<String>` |  |  | `<path.name> <incarnation>` of each such birth, at most `MAX_WITHOUT_EXIT_BIRTHS` of |
@@ -442,29 +442,29 @@ The typed result of a Status call.
 | 44.0 | `workflow` | `String` |  |  | The refused workflow and its subject, by name (`node.name.update <path.name>`); within |
 | 44.1 | `status` | `String` |  |  | The fabric's current status as the refusing admin holds it (`pending`, `state-sync`, |
 | 45 | **`TagsCreated`** |  |  | `name() = "tags-created"` | The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row |
-| 45.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose tags grew. |
-| 45.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 45.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose tags grew. |
+| 45.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 45.2 | `already_carried` | `BTreeSet<String>` |  |  | The labels the node already carried: ignored, nothing written for them |
 | 46 | **`TagsDeleted`** |  |  | `name() = "tags-deleted"` | The reply of a `DeleteTags` (`node.tags.deleted`): the mesh-primary wrote the node's row |
-| 46.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose tags shrank. |
-| 46.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 46.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose tags shrank. |
+| 46.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 46.2 | `not_carried` | `BTreeSet<String>` |  |  | The named labels the node did not carry: nothing was removed for them. |
 | 47 | **`RejectedName`** |  |  | `name() = "rejected-name"` | The `UpdateName` was not made: `name` is outside the name grammar (`name_refusal`), or the |
 | 47.0 | `reason` | `String` |  |  | Why, by name, naming the name; within `MAX_REFUSAL_REASON_BYTES`. |
 | 48 | **`BusyHoldingConnections`** |  |  | `name() = "busy-holding-connections"` | The exact birth's answer to `ApplyNodeName` or `LeaveMesh` while it holds connections (R-CR1; |
-| 48.0 | `connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | Each connection it holds, by the minted id of its open entry; at most |
+| 48.0 | `connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | Each connection it holds, by the minted id of its open entry; at most |
 | 49 | **`MeshJoined`** |  |  | `name() = "mesh-joined"` | `node.mesh.joined`: the exact birth joined its mesh channel(s) and published its first |
-| 49.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that joined. |
-| 49.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 49.2 | `joined` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rafka_node_rpc_contract-status-WhichMesh) |  |  | The mesh channels joined, in order. |
+| 49.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that joined. |
+| 49.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 49.2 | `joined` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rdm_core-status-WhichMesh) |  |  | The mesh channels joined, in order. |
 | 50 | **`MeshLeft`** |  |  | `name() = "mesh-left"` | `node.mesh.left`: the exact birth left its mesh channel(s), its endpoint still bound |
-| 50.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that left. |
-| 50.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
-| 50.2 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rafka_node_rpc_contract-status-WhichMesh) |  |  | The mesh channels left, in order. |
+| 50.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that left. |
+| 50.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 50.2 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rdm_core-status-WhichMesh) |  |  | The mesh channels left, in order. |
 
 ## 0x1C `build-claim`
 
-`impl NodeProtocol for BuildClaim` · `crates/rafka-node-rpc-contract/src/build_claim.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for BuildClaim` · `crates/rdm-core/src/build_claim.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -477,11 +477,11 @@ The typed result of a Status call.
 | `MAX_REQUEST_FRAME_BYTES` | `512` |
 | `MAX_REPLY_FRAME_BYTES` | `9216` |
 
-<a id="t-rafka_node_rpc_contract-build_claim-BuildClaimRequest"></a>
+<a id="t-rdm_core-build_claim-BuildClaimRequest"></a>
 
 ### `BuildClaimRequest`
 
-`crates/rafka-node-rpc-contract/src/build_claim.rs` · enum · 1 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build_claim.rs` · enum · 1 variants · rdm-core
 
 A BuildClaim call.
 
@@ -490,22 +490,22 @@ A BuildClaim call.
 | 0 | **`ClaimAttempt`** |  |  | `op() = "claim-attempt"` | The executor asks to take attempt `attempt` of Build `build_id`. |
 | 0.0 | `build_id` | `String` |  |  | The Build. |
 | 0.1 | `attempt` | `u32` |  |  | The attempt claimed. |
-| 0.2 | `executor_node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The claiming executor's node id. |
-| 0.3 | `executor_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The claiming executor's incarnation. |
+| 0.2 | `executor_node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The claiming executor's node id. |
+| 0.3 | `executor_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The claiming executor's incarnation. |
 | 0.4 | `mesh` | `Option<String>` |  |  | The lane the attempt is numbered in: `None` the fabric lane (a topology Build's |
 
-<a id="t-rafka_node_rpc_contract-build_claim-BuildClaimReply"></a>
+<a id="t-rdm_core-build_claim-BuildClaimReply"></a>
 
 ### `BuildClaimReply`
 
-`crates/rafka-node-rpc-contract/src/build_claim.rs` · enum · 11 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build_claim.rs` · enum · 11 variants · rdm-core
 
 The fabric primary's answer to a claim.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`Won`** |  |  | `name() = "won"` | The attempt is the executor's. `context` is the attempt's observability context. |
-| 0.0 | `context` | `CallContext` → [`CallContext`](#t-rafka_node_rpc_contract-context-CallContext) |  |  | The attempt's observability context. |
+| 0.0 | `context` | `CallContext` → [`CallContext`](#t-rdm_core-context-CallContext) |  |  | The attempt's observability context. |
 | 1 | **`Lost`** |  |  | `name() = "lost"` | The attempt is held by `holder` (a node-admin's path.name). |
 | 1.0 | `holder` | `String` |  |  | The node-admin holding the attempt. |
 | 2 | **`NotOpen`** |  |  | `name() = "not-open"` | The attempt is not the Build's next, or the Build is complete; `next` is the attempt that |
@@ -523,7 +523,7 @@ The fabric primary's answer to a claim.
 | 7 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The receiver is connections-deleting and takes no new work. |
 | 7.0 | `reason` | `String` |  |  | Why it refuses new work. |
 | 8 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 8.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 8.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 9 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 9.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 10 | **`BuildInProgress`** |  |  | `name() = "build-in-progress"` | Another attempt holds the mesh the attempt acts in (one attempt in flight per mesh, R-BI7): |
@@ -533,7 +533,7 @@ The fabric primary's answer to a claim.
 
 ## 0x1D `join`
 
-`impl NodeProtocol for Join` · `crates/rafka-node-rpc-contract/src/join.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for Join` · `crates/rdm-core/src/join.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -546,24 +546,24 @@ The fabric primary's answer to a claim.
 | `MAX_REQUEST_FRAME_BYTES` | `64 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `4 * 1024 * 1024` |
 
-<a id="t-rafka_node_rpc_contract-join-JoinRequest"></a>
+<a id="t-rdm_core-join-JoinRequest"></a>
 
 ### `JoinRequest`
 
-`crates/rafka-node-rpc-contract/src/join.rs` · enum · 1 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/join.rs` · enum · 1 variants · rdm-core
 
 A Join call.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`JoinNode`** |  |  | `op() = "join-node"` | The node reports its full digest, with the address it really bound. |
-| 0.0 | `digest` | `WireDigest` → [`WireDigest`](#t-rafka_mesh_entity-wire-WireDigest) |  |  | The node's full digest. |
+| 0.0 | `digest` | `WireDigest` → [`WireDigest`](#t-rdm_core-wire-WireDigest) |  |  | The node's full digest. |
 
-<a id="t-rafka_node_rpc_contract-join-JoinReply"></a>
+<a id="t-rdm_core-join-JoinReply"></a>
 
 ### `JoinReply`
 
-`crates/rafka-node-rpc-contract/src/join.rs` · enum · 11 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/join.rs` · enum · 11 variants · rdm-core
 
 The deploying node-admin's answer to a join.
 
@@ -586,21 +586,21 @@ The deploying node-admin's answer to a join.
 | 6 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The receiver is connections-deleting and takes no new work. |
 | 6.0 | `reason` | `String` |  |  | Why it refuses new work. |
 | 7 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 7.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 7.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 8 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 8.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 9 | **`DeploymentAbandoned`** |  |  | `name() = "deployment-abandoned"` | The receiver deployed exactly this birth and ended its deployment (the create stopped |
 | 9.0 | `build_id` | `String` |  |  | The Build whose create deployed the birth. |
 | 9.1 | `attempt` | `u32` |  |  | The attempt of that Build. |
-| 9.2 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The abandoned birth's node id. |
-| 9.3 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The abandoned birth's incarnation. |
+| 9.2 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The abandoned birth's node id. |
+| 9.3 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The abandoned birth's incarnation. |
 | 10 | **`CertRefused`** |  |  | `name() = "cert-refused"` | The receiver's cert signer refused to issue a member cert for exactly this birth, so the |
 | 10.0 | `name` | `String` |  |  | The signer's stable refusal name. |
 | 10.1 | `detail` | `String` |  |  | What the signer says about it. |
 
 ## 0x1E `topology`
 
-`impl NodeProtocol for Topology` · `crates/rafka-node-rpc-contract/src/topology.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for Topology` · `crates/rdm-core/src/topology.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -613,11 +613,11 @@ The deploying node-admin's answer to a join.
 | `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `8 * 1024` |
 
-<a id="t-rafka_node_rpc_contract-topology-TopologyRequest"></a>
+<a id="t-rdm_core-topology-TopologyRequest"></a>
 
 ### `TopologyRequest`
 
-`crates/rafka-node-rpc-contract/src/topology.rs` · enum · 1 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/topology.rs` · enum · 1 variants · rdm-core
 
 A topology read call.
 
@@ -625,13 +625,13 @@ A topology read call.
 |---|---|---|---|---|---|
 | 0 | **`GetTopology`** |  |  | `op() = "get-topology"` | `mesh = None` asks for every mesh the target holds. A held `since` for a mesh answers |
 | 0.0 | `mesh` | `Option<String>` |  |  | The mesh to read; `None` for every mesh the target holds. |
-| 0.1 | `since` | `Option<SourceVersion>` → [`SourceVersion`](#t-rafka_node_rpc_contract-topology-SourceVersion) |  |  | The source version the caller already holds, when any. |
+| 0.1 | `since` | `Option<SourceVersion>` → [`SourceVersion`](#t-rdm_core-topology-SourceVersion) |  |  | The source version the caller already holds, when any. |
 
-<a id="t-rafka_node_rpc_contract-topology-TopologyReply"></a>
+<a id="t-rdm_core-topology-TopologyReply"></a>
 
 ### `TopologyReply`
 
-`crates/rafka-node-rpc-contract/src/topology.rs` · enum · 14 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/topology.rs` · enum · 14 variants · rdm-core
 
 One frame of a topology read.
 
@@ -639,17 +639,17 @@ One frame of a topology read.
 |---|---|---|---|---|---|
 | 0 | **`Snapshot`** |  |  | `name() = "snapshot"` | One chunk of one mesh's snapshot. |
 | 0.0 | `mesh` | `String` |  |  | The source mesh's name. |
-| 0.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  |  | The publisher of the snapshot. |
+| 0.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  |  | The publisher of the snapshot. |
 | 0.2 | `topology_version` | `u64` |  |  | The snapshot's `topology_version`. |
 | 0.3 | `snapshot_id` | `u64` |  |  | The publisher's own snapshot counter, shared by every chunk of the snapshot. |
 | 0.4 | `chunk_index` | `u32` |  |  | This chunk's index within the snapshot. |
 | 0.5 | `chunk_count` | `u32` |  |  | The number of chunks in the snapshot. |
-| 0.6 | `digests` | `Vec<ProjectionEntry>` → [`ProjectionEntry`](#t-rafka_mesh_entity-wire-ProjectionEntry) |  |  | The members this chunk carries, each a member projection entry: its digest, then the |
-| 0.7 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  |  | The open lifecycle overlays this chunk carries. |
-| 0.8 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  |  | The retained proven departures this chunk carries. |
+| 0.6 | `digests` | `Vec<ProjectionEntry>` → [`ProjectionEntry`](#t-rdm_core-wire-ProjectionEntry) |  |  | The members this chunk carries, each a member projection entry: its digest, then the |
+| 0.7 | `in_flight` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  |  | The open lifecycle overlays this chunk carries. |
+| 0.8 | `departed` | `Vec<LifecycleOp>` → [`LifecycleOp`](#t-rdm_core-lifecycle-LifecycleOp) |  |  | The retained proven departures this chunk carries. |
 | 1 | **`Unchanged`** |  |  | `name() = "unchanged"` | The caller's `since` is the target's held source version for `mesh`. |
 | 1.0 | `mesh` | `String` |  |  | The source mesh's name. |
-| 1.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  |  | The publisher of the version held. |
+| 1.1 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  |  | The publisher of the version held. |
 | 1.2 | `topology_version` | `u64` |  |  | The version held. |
 | 2 | **`End`** |  |  | `name() = "end"` | The stream is complete; `meshes` counts the meshes answered, `Unchanged` included. |
 | 2.0 | `meshes` | `u32` |  |  | The number of meshes answered. |
@@ -664,25 +664,25 @@ One frame of a topology read.
 | 7 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The node is connections-deleting and takes no new work. |
 | 7.0 | `reason` | `String` |  |  | Why the node refuses new work. |
 | 8 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 8.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 8.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 9 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 9.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 10 | **`Started`** |  |  | `name() = "started"` | The stream begins: sent before the first snapshot of an accepted read. |
 | 11 | **`Stored`** |  |  | `name() = "stored"` | A mesh the target holds no gossiped snapshot of, from the map it stores: no version, so it is |
 | 11.0 | `mesh` | `String` |  |  | The mesh's name. |
-| 11.1 | `mesh_id` | `Option<MeshId>` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The id the target stored for the mesh, when it stored one. |
-| 11.2 | `nodes` | `Vec<StoredNode>` → [`StoredNode`](#t-rafka_node_rpc_contract-topology-StoredNode) |  |  | The births the target stored for the mesh. |
+| 11.1 | `mesh_id` | `Option<MeshId>` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The id the target stored for the mesh, when it stored one. |
+| 11.2 | `nodes` | `Vec<StoredNode>` → [`StoredNode`](#t-rdm_core-topology-StoredNode) |  |  | The births the target stored for the mesh. |
 | 12 | **`Seats`** |  |  | `name() = "seats"` | The record the target holds for one seat: a node entering the fabric learns who holds the |
-| 12.0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-Seat) |  |  | The seat the record is for. |
-| 12.1 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  |  | The seat's holder as the target records it. |
+| 12.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-Seat) |  |  | The seat the record is for. |
+| 12.1 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rdm_core-seat-SeatHolder) |  |  | The seat's holder as the target records it. |
 | 12.2 | `gone` | `bool` |  |  | Whether the target holds the holder's exact birth as proven gone. |
 | 13 | **`RafkaTime`** |  |  | `name() = "rafka-time"` | The rafka-time the target holds, and the seat it holds: one frame, sent after the `Seats` |
 | 13.0 | `ms` | `u64` |  |  | The target's rafka-time now, in milliseconds. |
-| 13.1 | `seat` | `Option<Seat>` → [`Seat`](#t-rafka_mesh_entity-seat-Seat) |  |  | The seat the target holds, from its own seat records: the fabric seat when it holds it, |
+| 13.1 | `seat` | `Option<Seat>` → [`Seat`](#t-rdm_core-seat-Seat) |  |  | The seat the target holds, from its own seat records: the fabric seat when it holds it, |
 
 ## 0x1F `build-facts`
 
-`impl NodeProtocol for BuildFacts` · `crates/rafka-node-rpc-contract/src/build_facts.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for BuildFacts` · `crates/rdm-core/src/build_facts.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -695,11 +695,11 @@ One frame of a topology read.
 | `MAX_REQUEST_FRAME_BYTES` | `1024` |
 | `MAX_REPLY_FRAME_BYTES` | `8 * 1024` |
 
-<a id="t-rafka_node_rpc_contract-build_facts-BuildFactsRequest"></a>
+<a id="t-rdm_core-build_facts-BuildFactsRequest"></a>
 
 ### `BuildFactsRequest`
 
-`crates/rafka-node-rpc-contract/src/build_facts.rs` · enum · 1 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build_facts.rs` · enum · 1 variants · rdm-core
 
 A BuildFacts call.
 
@@ -708,11 +708,11 @@ A BuildFacts call.
 | 0 | **`FetchBuildFacts`** |  |  | `op() = "fetch-build-facts"` | Every fact the target holds for `build_id`. |
 | 0.0 | `build_id` | `String` |  |  | The Build whose facts are fetched. |
 
-<a id="t-rafka_node_rpc_contract-build_facts-BuildFactsReply"></a>
+<a id="t-rdm_core-build_facts-BuildFactsReply"></a>
 
 ### `BuildFactsReply`
 
-`crates/rafka-node-rpc-contract/src/build_facts.rs` · enum · 10 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build_facts.rs` · enum · 10 variants · rdm-core
 
 One frame of a BuildFacts read.
 
@@ -739,14 +739,14 @@ One frame of a BuildFacts read.
 | 6 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | The target is connections-deleting and takes no new work. |
 | 6.0 | `reason` | `String` |  |  | Why it refuses new work. |
 | 7 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 7.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 7.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 8 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 8.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 9 | **`Started`** |  |  | `name() = "started"` | The stream begins: sent before the first chunk of an accepted read. |
 
 ## 0x20 `build`
 
-`impl NodeProtocol for Build` · `crates/rafka-node-rpc-contract/src/build.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for Build` · `crates/rdm-core/src/build.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -759,23 +759,23 @@ One frame of a BuildFacts read.
 | `MAX_REQUEST_FRAME_BYTES` | `256 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rafka_node_rpc_contract-build-BuildRequest"></a>
+<a id="t-rdm_core-build-BuildRequest"></a>
 
 ### `BuildRequest`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 4 variants · rdm-core
 
 A Build call.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`Create`** |  |  | `op() = "create"` | `build.create`: accept `submit` and stream the Build until it ends. |
-| 0.0 | `submit` | `BuildSubmit` → [`BuildSubmit`](#t-rafka_node_rpc_contract-build-BuildSubmit) |  |  | What is submitted. |
+| 0.0 | `submit` | `BuildSubmit` → [`BuildSubmit`](#t-rdm_core-build-BuildSubmit) |  |  | What is submitted. |
 | 1 | **`AttemptRun`** |  |  | `op() = "attempt.run"` | `build.attempt.run`: run attempt `attempt` of `build_id`, claimed for `executor`, on the |
 | 1.0 | `build_id` | `String` |  |  | The Build. |
 | 1.1 | `attempt` | `u32` |  |  | The attempt, already won by `executor` on the fabric-primary's log. |
 | 1.2 | `executor` | `String` |  |  | The executor the claim names (a node-admin's path.name). |
-| 1.3 | `context` | `CallContext` → [`CallContext`](#t-rafka_node_rpc_contract-context-CallContext) |  |  | The attempt's observability context, as the claim returned it. |
+| 1.3 | `context` | `CallContext` → [`CallContext`](#t-rdm_core-context-CallContext) |  |  | The attempt's observability context, as the claim returned it. |
 | 1.4 | `intent` | `Vec<Vec<u8>>` |  |  | The Build as the fabric-primary decided the claim on it: its acceptance and every attempt |
 | 1.5 | `operations` | `Vec<Vec<u8>>` |  |  | The operations the fabric-primary planned for this run, in plan order: the contiguous |
 | 1.6 | `hand_off_to` | `Option<String>` |  |  | The executor of the operation that follows this run, when the run is not the whole of |
@@ -784,11 +784,11 @@ A Build call.
 | 3 | **`Delete`** |  |  | `op() = "delete"` | `build.delete`: a finished Build leaves history. |
 | 3.0 | `build_id` | `String` |  |  | The Build. |
 
-<a id="t-rafka_node_rpc_contract-build-BuildReply"></a>
+<a id="t-rdm_core-build-BuildReply"></a>
 
 ### `BuildReply`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 26 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 26 variants · rdm-core
 
 One frame of a Build stream.
 
@@ -797,7 +797,7 @@ One frame of a Build stream.
 | 0 | **`Started`** |  |  | `name() = "started"` | The stream begins: the Build and the attempt it follows. |
 | 0.0 | `build_id` | `String` |  |  | The Build. |
 | 0.1 | `attempt` | `u32` |  |  | The attempt this stream follows (the one the call opened, claimed or attached to). |
-| 0.2 | `disposition` | `Disposition` → [`Disposition`](#t-rafka_node_rpc_contract-build-Disposition) |  |  | How the call came to the Build. |
+| 0.2 | `disposition` | `Disposition` → [`Disposition`](#t-rdm_core-build-Disposition) |  |  | How the call came to the Build. |
 | 1 | **`Step`** |  |  | `name() = "step"` | A step completed: sent only after its Complete receipt is durable on the executor that wrote it. |
 | 1.0 | `build_id` | `String` |  |  | The Build. |
 | 1.1 | `attempt` | `u32` |  |  | The attempt. |
@@ -813,7 +813,7 @@ One frame of a Build stream.
 | 3.0 | `build_id` | `String` |  |  | The Build. |
 | 3.1 | `chunk_index` | `u32` |  |  | This chunk's index. |
 | 3.2 | `chunk_count` | `u32` |  |  | The number of chunks. |
-| 3.3 | `steps` | `Vec<StepReceipt>` → [`StepReceipt`](#t-rafka_node_rpc_contract-build-StepReceipt) |  |  | The receipts in this chunk. |
+| 3.3 | `steps` | `Vec<StepReceipt>` → [`StepReceipt`](#t-rdm_core-build-StepReceipt) |  |  | The receipts in this chunk. |
 | 4 | **`Complete`** |  |  | `name() = "complete"` | Terminal: the Build converged. Completed steps were read and replayed, never run again. |
 | 4.0 | `build_id` | `String` |  |  | The Build. |
 | 4.1 | `attempt` | `u32` |  |  | The attempt that converged it. |
@@ -829,7 +829,7 @@ One frame of a Build stream.
 | 6.2 | `to` | `String` |  |  | The admin that executes the operation the attempt stopped at. |
 | 7 | **`Got`** |  |  | `name() = "got"` | Terminal of `Get`: the Build's header; the receipts came in `Steps` chunks. |
 | 7.0 | `build_id` | `String` |  |  | The Build. |
-| 7.1 | `phase` | `BuildPhase` → [`BuildPhase`](#t-rafka_node_rpc_contract-build-BuildPhase) |  |  | Where the Build is in its life. |
+| 7.1 | `phase` | `BuildPhase` → [`BuildPhase`](#t-rdm_core-build-BuildPhase) |  |  | Where the Build is in its life. |
 | 7.2 | `attempt` | `u32` |  |  | The current attempt. |
 | 7.3 | `executor` | `Option<String>` |  |  | The executor of the current attempt, when one is. |
 | 7.4 | `reason` | `String` |  |  | Why the current attempt exists. |
@@ -873,7 +873,7 @@ One frame of a Build stream.
 | 21 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | Refusal: the receiver is connections-deleting and takes no new work. |
 | 21.0 | `reason` | `String` |  |  | Why it refuses new work. |
 | 22 | **`Malformed`** |  |  | `name() = "malformed"` | Refusal: the request frame was malformed. |
-| 22.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 22.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 23 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | Refusal: the caller is not allowed this call. |
 | 23.0 | `reason` | `String` |  |  | Why the call is refused. |
 | 24 | **`SeatMoved`** |  |  | `name() = "seat-moved"` | Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a |
@@ -886,7 +886,7 @@ One frame of a Build stream.
 
 ## 0x21 `node-primary-update`
 
-`impl NodeProtocol for NodePrimaryUpdate` · `crates/rafka-node-rpc-contract/src/handover.rs` · rafka-node-rpc-contract
+`impl NodeProtocol for NodePrimaryUpdate` · `crates/rdm-core/src/handover.rs` · rdm-core
 
 | const | value |
 |---|---|
@@ -899,47 +899,47 @@ One frame of a Build stream.
 | `MAX_REQUEST_FRAME_BYTES` | `2048` |
 | `MAX_REPLY_FRAME_BYTES` | `1024` |
 
-<a id="t-rafka_node_rpc_contract-handover-NodePrimaryUpdateRequest"></a>
+<a id="t-rdm_core-handover-NodePrimaryUpdateRequest"></a>
 
 ### `NodePrimaryUpdateRequest`
 
-`crates/rafka-node-rpc-contract/src/handover.rs` · enum · 3 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/handover.rs` · enum · 3 variants · rdm-core
 
 The directed calls of node.primary.update.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`PrimaryUpdate`** |  |  | `op() = "primary-update"` | node.primary.update, the holder to the successor its pre-check named, after its one committed |
-| 0.0 | `seats` | `Vec<SeatUpdate>` → [`SeatUpdate`](#t-rafka_node_rpc_contract-handover-SeatUpdate) |  |  | Every seat the row moves (one, or both when the holder held both, Q1). |
+| 0.0 | `seats` | `Vec<SeatUpdate>` → [`SeatUpdate`](#t-rdm_core-handover-SeatUpdate) |  |  | Every seat the row moves (one, or both when the holder held both, Q1). |
 | 0.1 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
 | 0.2 | `attempt` | `u32` |  |  | That Build's attempt. |
 | 0.3 | `operation` | `String` |  |  | The update's operation identity: the row's key. |
 | 1 | **`UpdatePrimary`** |  |  | `op() = "update-primary"` | node.primary.update commanded from above: the commander to the holder of the seats named. |
 | 1.0 | `fabric` | `String` |  |  | The fabric. |
-| 1.1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rafka_mesh_entity-seat-transfer-HandoverBirth) |  |  | The exact birth the commander holds as the seats' holder. |
-| 1.2 | `seats` | `Vec<SeatRevision>` → [`SeatRevision`](#t-rafka_node_rpc_contract-handover-SeatRevision) |  |  | Every seat that moves, each with the revision the commander holds it at. |
+| 1.1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The exact birth the commander holds as the seats' holder. |
+| 1.2 | `seats` | `Vec<SeatRevision>` → [`SeatRevision`](#t-rdm_core-handover-SeatRevision) |  |  | Every seat that moves, each with the revision the commander holds it at. |
 | 1.3 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete moves the seats. |
 | 1.4 | `attempt` | `u32` |  |  | That Build's attempt. |
 | 1.5 | `operation` | `String` |  |  | The update's operation identity. |
 | 2 | **`UpdatePrimaryFromRow`** |  |  | `op() = "update-primary-from-row"` | node.primary.update of a cohort that is not node-admin, commanded by its mesh-primary, the |
 | 2.0 | `fabric` | `String` |  |  | The fabric. |
-| 2.1 | `seats` | `Vec<SeatUpdate>` → [`SeatUpdate`](#t-rafka_node_rpc_contract-handover-SeatUpdate) |  |  | The seat the row moves, its holder and successor births and its committed revision. |
+| 2.1 | `seats` | `Vec<SeatUpdate>` → [`SeatUpdate`](#t-rdm_core-handover-SeatUpdate) |  |  | The seat the row moves, its holder and successor births and its committed revision. |
 | 2.2 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
 | 2.3 | `attempt` | `u32` |  |  | That Build's attempt. |
 | 2.4 | `operation` | `String` |  |  | The update's operation identity: the row's key. |
 
-<a id="t-rafka_node_rpc_contract-handover-NodePrimaryUpdateReply"></a>
+<a id="t-rdm_core-handover-NodePrimaryUpdateReply"></a>
 
 ### `NodePrimaryUpdateReply`
 
-`crates/rafka-node-rpc-contract/src/handover.rs` · enum · 17 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/handover.rs` · enum · 17 variants · rdm-core
 
 The answer to a node.primary.update call.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`PrimaryUpdated`** |  |  | `name() = "primary-updated"` | node.primary.updated: the successor installed the committed row, every seat at its revision. |
-| 0.0 | `revisions` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  |  | The committed seats: each seat, its committed holder's exact birth and its revision. |
+| 0.0 | `revisions` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rdm_core-seat-transfer-CommittedSeat) |  |  | The committed seats: each seat, its committed holder's exact birth and its revision. |
 | 1 | **`RejectedConflict`** |  |  | `name() = "rejected-conflict"` | The operation's committed row names another payload: the row decides. |
 | 1.0 | `operation` | `String` |  |  | The operation in conflict. |
 | 2 | **`RejectedFabricNotReady`** |  |  | `name() = "rejected-fabric-not-ready"` | The initial fabric has not first reached ready-for-traffic (R-PB1): no seat moves. |
@@ -949,11 +949,11 @@ The answer to a node.primary.update call.
 | 4 | **`RejectedNotAuthority`** |  |  | `name() = "rejected-not-authority"` | The receiver holds no seat the command names. |
 | 4.0 | `reason` | `String` |  |  | What the receiver holds instead. |
 | 5 | **`RejectedStaleSeat`** |  |  | `name() = "rejected-stale-seat"` | A seat's revision is not the one the command named: the holder's pre-check of the call's revision. |
-| 5.0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-transfer-Seat) |  |  | The seat. |
+| 5.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  |  | The seat. |
 | 5.1 | `expected` | `u64` |  |  | The revision the call named. |
 | 5.2 | `current` | `u64` |  |  | The revision the holder holds. |
 | 6 | **`RejectedRevisionOverflow`** |  |  | `name() = "rejected-revision-overflow"` | A seat's revision cannot advance: it is at `u64::MAX`, so no row can commit at its next revision |
-| 6.0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-transfer-Seat) |  |  | The seat whose revision cannot advance. |
+| 6.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  |  | The seat whose revision cannot advance. |
 | 6.1 | `revision` | `u64` |  |  | The revision it is at. |
 | 7 | **`RejectedSourceFailed`** |  |  | `name() = "rejected-source-failed"` | What the receiver had to read or write to decide or commit the call failed: its `fabric.storage` |
 | 7.0 | `source` | `String` |  |  | What failed, named with its owner and row. |
@@ -967,7 +967,7 @@ The answer to a node.primary.update call.
 | 10 | **`NotReady`** |  |  | `name() = "not-ready"` | The receiver cannot decide yet. |
 | 10.0 | `reason` | `String` |  |  | What it waits for. |
 | 11 | **`Malformed`** |  |  | `name() = "malformed"` | The request frame was malformed. |
-| 11.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 11.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 12 | **`PeerUnresolved`** |  |  | `name() = "peer-unresolved"` | The peer the call needed could not be resolved. |
 | 12.0 | `reason` | `String` |  |  | Why. |
 | 13 | **`Busy`** |  |  | `name() = "busy"` | The receiver is at its admission bound. |
@@ -1038,7 +1038,7 @@ The replies of the `broker_data` family: the two successes and the typed Node RP
 | 5 | **`ConnectionsDeleting`** |  |  | The node is connections-deleting and takes no new work. |
 | 5.0 | `reason` | `String` |  | Why the node refuses new work. |
 | 6 | **`Malformed`** |  |  | The request frame was malformed. |
-| 6.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 6.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 7 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 7.0 | `reason` | `String` |  | Why the call is refused. |
 
@@ -1120,7 +1120,7 @@ A proof store answer.
 | 11 | **`ConnectionsDeleting`** |  |  | The node is connections-deleting and takes no new work. |
 | 11.0 | `reason` | `String` |  | Why it refuses new work. |
 | 12 | **`Malformed`** |  |  | The request frame was malformed. |
-| 12.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 12.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 13 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 13.0 | `reason` | `String` |  | Why the call is refused. |
 
@@ -1185,7 +1185,7 @@ A resolve probe answer.
 | 8 | **`ConnectionsDeleting`** |  |  |  | The node is connections-deleting and takes no new work. |
 | 8.0 | `reason` | `String` |  |  | Why it refuses new work. |
 | 9 | **`Malformed`** |  |  |  | The request frame was malformed. |
-| 9.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  |  | How the frame was malformed. |
+| 9.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 10 | **`Unauthorized`** |  |  |  | The caller is not allowed this call. |
 | 10.0 | `reason` | `String` |  |  | Why the call is refused. |
 
@@ -1216,7 +1216,7 @@ A declare probe call.
 |---|---|---|---|---|
 | 0 | **`Declare`** |  |  | Declare `state` for this node's own birth to `to`; the overrides are testkit-only. |
 | 0.0 | `to` | `DeclareTarget` → [`DeclareTarget`](#t-rafka_node_rpc_testkit-declare_probe-DeclareTarget) |  | The authority to declare to. |
-| 0.1 | `state` | `NodeState` → [`NodeState`](#t-rafka_node_rpc_contract-status-NodeState) |  | The state to declare. |
+| 0.1 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  | The state to declare. |
 | 0.2 | `node_id` | `Option<String>` |  | A node id to declare under instead of the node's own; testkit only. |
 | 0.3 | `incarnation` | `Option<String>` |  | An incarnation to declare under instead of the node's own; testkit only. |
 
@@ -1232,7 +1232,7 @@ A declare probe answer.
 |---|---|---|---|---|
 | 0 | **`Answered`** |  |  | The authority answered: the Node RPC outcome name and, for a Reply, the typed status reply. |
 | 0.0 | `outcome` | `String` |  | The Node RPC outcome name. |
-| 0.1 | `reply` | `Option<StatusReply>` → [`StatusReply`](#t-rafka_node_rpc_contract-status-StatusReply) |  | The typed status reply, when the call replied. |
+| 0.1 | `reply` | `Option<StatusReply>` → [`StatusReply`](#t-rdm_core-status-StatusReply) |  | The typed status reply, when the call replied. |
 | 0.2 | `reason` | `Option<String>` |  | Why the call did not reply. |
 | 1 | **`BadTarget`** |  |  | The target is refused. |
 | 1.0 | `reason` | `String` |  | Why the target is refused. |
@@ -1245,7 +1245,7 @@ A declare probe answer.
 | 5 | **`ConnectionsDeleting`** |  |  | The node is connections-deleting and takes no new work. |
 | 5.0 | `reason` | `String` |  | Why it refuses new work. |
 | 6 | **`Malformed`** |  |  | The request frame was malformed. |
-| 6.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 6.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 7 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 7.0 | `reason` | `String` |  | Why the call is refused. |
 
@@ -1320,10 +1320,10 @@ An originate door answer.
 | 2.1 | `refused` | `u32` |  | The number of writes the fault refused. |
 | 3 | **`Snapshot`** |  |  | What the node holds and owes. |
 | 3.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who answered. |
-| 3.1 | `own_active_proxies` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rafka_mesh_entity-connections-NodeConnection) |  | The node's active Proxy entries. |
-| 3.2 | `own_latest_directs` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rafka_mesh_entity-connections-NodeConnection) |  | The node's latest Direct entry per destination. |
+| 3.1 | `own_active_proxies` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The node's active Proxy entries. |
+| 3.2 | `own_latest_directs` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The node's latest Direct entry per destination. |
 | 3.3 | `active_len` | `usize` |  | The number of active Direct facts held that name a destination process still current. |
-| 3.4 | `owed` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rafka_mesh_entity-connections-NodeConnection) |  | The Proxy retirements the node owes now. |
+| 3.4 | `owed` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The Proxy retirements the node owes now. |
 | 3.5 | `fault_refused` | `u32` |  | The number of writes the fault has refused. |
 | 4 | **`BadDestination`** |  |  | The destination does not parse or does not resolve on this node. |
 | 4.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who answered. |
@@ -1337,7 +1337,7 @@ An originate door answer.
 | 8 | **`ConnectionsDeleting`** |  |  | The node is connections-deleting and takes no new work. |
 | 8.0 | `reason` | `String` |  | Why it refuses new work. |
 | 9 | **`Malformed`** |  |  | The request frame was malformed. |
-| 9.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 9.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 10 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 10.0 | `reason` | `String` |  | Why the call is refused. |
 | 11 | **`ProxyRecorded`** |  |  | The facts a `RecordProxy` wrote, with the births they name. |
@@ -1403,7 +1403,7 @@ A pull's answer.
 | 4 | **`ConnectionsDeleting`** |  |  | Connections-deleting. |
 | 4.0 | `reason` | `String` |  | Why. |
 | 5 | **`Malformed`** |  |  | The request frame was malformed. |
-| 5.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How. |
+| 5.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How. |
 | 6 | **`Unauthorized`** |  |  | Not allowed. |
 | 6.0 | `reason` | `String` |  | Why. |
 
@@ -1471,7 +1471,7 @@ A fault door answer.
 | 7 | **`ConnectionsDeleting`** |  |  | The node is deleting its connections (`node.connections.delete`) and takes no new call. |
 | 7.0 | `reason` | `String` |  | Why it refuses the call. |
 | 8 | **`Malformed`** |  |  | The request frame was malformed. |
-| 8.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rafka_node_rpc_contract-outcome-MalformedKind) |  | How the frame was malformed. |
+| 8.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  | How the frame was malformed. |
 | 9 | **`CallerRefused`** |  |  | The transport refused the caller this call. |
 | 9.0 | `reason` | `String` |  | Why the call is refused. |
 
@@ -1507,11 +1507,11 @@ Who answered.
 | 1 | `node` | `String` |  | The answering node's `path.name`. |
 | 2 | `incarnation_id` | `String` |  | The answering node's incarnation id. |
 
-<a id="t-rafka_node_rpc_contract-build-BuildChange"></a>
+<a id="t-rdm_core-build-BuildChange"></a>
 
 ### `BuildChange`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 13 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 13 variants · rdm-core
 
 What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 
@@ -1519,39 +1519,39 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 |---|---|---|---|---|
 | 0 | **`ReconcileFabric`** |  |  | The whole fabric's meshes and counts. |
 | 0.0 | `fabric` | `String` |  | The fabric's name. |
-| 0.1 | `meshes` | `Vec<MeshCounts>` → [`MeshCounts`](#t-rafka_node_rpc_contract-build-MeshCounts) |  | The desired meshes. |
+| 0.1 | `meshes` | `Vec<MeshCounts>` → [`MeshCounts`](#t-rdm_core-build-MeshCounts) |  | The desired meshes. |
 | 1 | **`ReconcileMesh`** |  |  | One mesh's counts (grow or shrink). |
-| 1.0 | `mesh` | `MeshCounts` → [`MeshCounts`](#t-rafka_node_rpc_contract-build-MeshCounts) |  | The mesh's desired counts. |
+| 1.0 | `mesh` | `MeshCounts` → [`MeshCounts`](#t-rdm_core-build-MeshCounts) |  | The mesh's desired counts. |
 | 2 | **`AddNode`** |  |  | One more node of `node_kind` in `mesh`. |
 | 2.0 | `mesh` | `String` |  | The mesh to add the node to. |
-| 2.1 | `node_kind` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  | The kind of node to add. |
+| 2.1 | `node_kind` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  | The kind of node to add. |
 | 3 | **`RemoveNode`** |  |  | Remove one node. |
-| 3.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node to remove. |
+| 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node to remove. |
 | 4 | **`CreateMesh`** |  |  | A new mesh with its counts. |
-| 4.0 | `mesh` | `MeshCounts` → [`MeshCounts`](#t-rafka_node_rpc_contract-build-MeshCounts) |  | The mesh's desired counts. |
+| 4.0 | `mesh` | `MeshCounts` → [`MeshCounts`](#t-rdm_core-build-MeshCounts) |  | The mesh's desired counts. |
 | 5 | **`RemoveMesh`** |  |  | Remove a mesh. |
 | 5.0 | `mesh` | `String` |  | The mesh to remove. |
 | 6 | **`Restart`** |  |  | Restart the live birth at `node` (the next attempt of the accepted Build). |
-| 6.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 6.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 7 | **`DeleteConnections`** |  |  | `node.connections.delete { All }` of the live birth at `node`; it keeps running. |
-| 7.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 7.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 8 | **`Stop`** |  |  | Stop the live birth at `node` with no implicit drain and no departure. |
-| 8.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 8.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 9 | **`Start`** |  |  | Start the parked birth at `node`: the same process rejoins as itself. |
-| 9.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 9.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 10 | **`Recover`** |  |  | Recover the node at `node` whose exact birth `(node_id, incarnation)` its mesh-primary proved |
-| 10.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node's `path.name`. |
-| 10.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The exited instance's node.id. |
-| 10.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The exited instance's incarnation. |
+| 10.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
+| 10.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The exited instance's node.id. |
+| 10.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The exited instance's incarnation. |
 | 11 | **`Recipe`** |  |  | A recipe: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's |
-| 11.0 | `steps` | `Vec<RecipeStep>` → [`RecipeStep`](#t-rafka_node_rpc_contract-build-RecipeStep) |  | The steps, in the order they run. |
+| 11.0 | `steps` | `Vec<RecipeStep>` → [`RecipeStep`](#t-rdm_core-build-RecipeStep) |  | The steps, in the order they run. |
 | 12 | **`DeleteFabric`** |  |  | Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each |
 
-<a id="t-rafka_node_rpc_contract-build-BuildPhase"></a>
+<a id="t-rdm_core-build-BuildPhase"></a>
 
 ### `BuildPhase`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 4 variants · rdm-core
 
 Where a Build is in its life.
 
@@ -1562,27 +1562,27 @@ Where a Build is in its life.
 | 2 | **`Complete`** |  |  | Every step is complete. |
 | 3 | **`Failed`** |  |  | The last attempt failed. |
 
-<a id="t-rafka_node_rpc_contract-build-BuildSubmit"></a>
+<a id="t-rdm_core-build-BuildSubmit"></a>
 
 ### `BuildSubmit`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 2 variants · rdm-core
 
 What `Create` asks.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Change`** |  |  | A new change to accept and drive. |
-| 0.0 | `0` | `BuildChange` → [`BuildChange`](#t-rafka_node_rpc_contract-build-BuildChange) |  |  |
+| 0.0 | `0` | `BuildChange` → [`BuildChange`](#t-rdm_core-build-BuildChange) |  |  |
 | 1 | **`Resubmit`** |  |  | A re-submit of a Build the caller already holds the id of: never a second Build. |
 | 1.0 | `build_id` | `String` |  | The Build. |
 | 1.1 | `from_attempt` | `u32` |  | The attempt the caller's first call opened: the stream carries the frames of this |
 
-<a id="t-rafka_node_rpc_contract-context-CallContext"></a>
+<a id="t-rdm_core-context-CallContext"></a>
 
 ### `CallContext`
 
-`crates/rafka-node-rpc-contract/src/context.rs` · struct · 4 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/context.rs` · struct · 4 fields · rdm-core
 
 The observability context one invocation carries.
 
@@ -1593,25 +1593,25 @@ The observability context one invocation carries.
 | 2 | `tracestate` | `Option<String>` |  | The W3C `tracestate`. |
 | 3 | `baggage` | `Option<String>` |  | The W3C `baggage`. |
 
-<a id="t-rafka_mesh_entity-seat-transfer-CommittedSeat"></a>
+<a id="t-rdm_core-seat-transfer-CommittedSeat"></a>
 
 ### `CommittedSeat`
 
-`crates/rafka-mesh-entity/src/seat.rs` · struct · 3 fields · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
 
 One seat a transfer committed: the seat, its committed holder's exact birth and the revision.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-transfer-Seat) |  | The seat that moved. |
-| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rafka_mesh_entity-seat-transfer-HandoverBirth) |  | Its committed holder. |
+| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat that moved. |
+| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | Its committed holder. |
 | 2 | `revision` | `u64` |  | The revision the transfer committed. |
 
-<a id="t-rafka_mesh_entity-digest-ConfigOverCap"></a>
+<a id="t-rdm_core-digest-ConfigOverCap"></a>
 
 ### `ConfigOverCap`
 
-`crates/rafka-mesh-entity/src/digest.rs` · struct · 4 fields · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · struct · 4 fields · rdm-core
 
 A config past its cap, naming the measure and the bound that was crossed.
 
@@ -1622,33 +1622,33 @@ A config past its cap, naming the measure and the bound that was crossed.
 | 2 | `max_keys` | `u32` |  | The key bound. |
 | 3 | `max_bytes` | `u32` |  | The byte bound. |
 
-<a id="t-rafka_mesh_entity-connections-ConnectionEnd"></a>
+<a id="t-rdm_core-connections-ConnectionEnd"></a>
 
 ### `ConnectionEnd`
 
-`crates/rafka-mesh-entity/src/connections.rs` · struct · 3 fields · rafka-mesh-entity
+`crates/rdm-core/src/connections.rs` · struct · 3 fields · rdm-core
 
 One end of an entry, or a Proxy's carrier: its path, logical node and process birth.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The end's `path.name`. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The end's logical node id. |
-| 2 | `incarnation` | `Option<IncarnationId>` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | `None` when the writer could not learn the process birth; such an end is never fencing |
+| 0 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The end's `path.name`. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The end's logical node id. |
+| 2 | `incarnation` | `Option<IncarnationId>` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | `None` when the writer could not learn the process birth; such an end is never fencing |
 
-<a id="t-rafka_mesh_entity-ids-ConnectionId"></a>
+<a id="t-rdm_core-ids-ConnectionId"></a>
 
 ### `ConnectionId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 One entry of a node's connections log (connections.md §1, node-identity-and-state.md §8: every
 
-<a id="t-rafka_mesh_entity-connections-ConnectionKind"></a>
+<a id="t-rdm_core-connections-ConnectionKind"></a>
 
 ### `ConnectionKind`
 
-`crates/rafka-mesh-entity/src/connections.rs` · enum · 2 variants · rafka-mesh-entity
+`crates/rdm-core/src/connections.rs` · enum · 2 variants · rdm-core
 
 An entry's kind.
 
@@ -1657,11 +1657,11 @@ An entry's kind.
 | 0 | **`Direct`** |  |  | A pooled connection between source and destination. |
 | 1 | **`Proxy`** |  |  | A proven two-hop path `source -> carrier -> destination`. |
 
-<a id="t-rafka_node_rpc_contract-status-ConnectionScope"></a>
+<a id="t-rdm_core-status-ConnectionScope"></a>
 
 ### `ConnectionScope`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
 Which of a birth's connections `node.connections.delete` cuts (R-CR3). Positional order is part
 
@@ -1669,13 +1669,13 @@ Which of a birth's connections `node.connections.delete` cuts (R-CR3). Positiona
 |---|---|---|---|---|---|
 | 0 | **`All`** |  |  | `name() = "all"` | Every connection, exactly the stop's cut: the gossip neighbours and the pooled peer |
 | 1 | **`Connections`** |  |  | `name() = "connections"` | The exact connections named by the minted id of their open entry, as `node.connections.get` |
-| 1.0 | `0` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  |  |
+| 1.0 | `0` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  |  |
 
-<a id="t-rafka_mesh_entity-connections-ConnectionState"></a>
+<a id="t-rdm_core-connections-ConnectionState"></a>
 
 ### `ConnectionState`
 
-`crates/rafka-mesh-entity/src/connections.rs` · enum · 3 variants · rafka-mesh-entity
+`crates/rdm-core/src/connections.rs` · enum · 3 variants · rdm-core
 
 An entry's state.
 
@@ -1685,11 +1685,11 @@ An entry's state.
 | 1 | **`Disconnected`** |  |  | The connection ended. |
 | 2 | **`Failed`** |  |  | This source failed to establish the Direct connection. Never proof the destination is dead. |
 
-<a id="t-rafka_node_rpc_contract-views-ConnectionView"></a>
+<a id="t-rdm_core-views-ConnectionView"></a>
 
 ### `ConnectionView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 8 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 8 fields · rdm-core
 
 One connection fact a node holds (`node.connections.get`).
 
@@ -1704,11 +1704,11 @@ One connection fact a node holds (`node.connections.get`).
 | 6 | `reason` | `Option<String>` | `default` | Why the connection is in its state, when known. |
 | 7 | `logged_at_ms` | `u64` | `default` | When the fact was observed, in rafka-time milliseconds. |
 
-<a id="t-rafka_node_rpc_contract-status-ConnectionsReceipt"></a>
+<a id="t-rdm_core-status-ConnectionsReceipt"></a>
 
 ### `ConnectionsReceipt`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
 What a `node.connections.delete { All }` established (node-connections-delete.md, "Receipt"): the
 
@@ -1718,17 +1718,17 @@ serde: `deny_unknown_fields`
 |---|---|---|---|---|---|
 | 0 | **`Established`** |  |  | `name() = "established"` | The eligible in-flight work reached zero and every open connection was closed. |
 | 0.0 | `in_flight` | `u64` |  |  | The in-flight count when the closure was admitted. |
-| 0.1 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The open entries closed. |
+| 0.1 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries closed. |
 | 1 | **`Deadline`** |  |  | `name() = "deadline"` | `RDM_CONNECTIONS_DELETE_DEADLINE_MS` passed with work still in flight. |
 | 1.0 | `last_in_flight` | `u64` |  |  | The last in-flight count observed before the bound. |
-| 1.1 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The open entries closed. |
-| 1.2 | `held` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | The open entries still held. |
+| 1.1 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries closed. |
+| 1.2 | `held` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries still held. |
 
-<a id="t-rafka_node_rpc_contract-views-ConnectionsView"></a>
+<a id="t-rdm_core-views-ConnectionsView"></a>
 
 ### `ConnectionsView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 3 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 3 fields · rdm-core
 
 The connection facts one node holds (`node.connections.get`).
 
@@ -1736,7 +1736,7 @@ The connection facts one node holds (`node.connections.get`).
 |---|---|---|---|---|
 | 0 | `node` | `String` |  | The answering node's `path.name`, the name it holds. |
 | 1 | `complete` | `bool` |  | Whether the node holds the complete set. |
-| 2 | `connections` | `Vec<ConnectionView>` → [`ConnectionView`](#t-rafka_node_rpc_contract-views-ConnectionView) |  | The facts. |
+| 2 | `connections` | `Vec<ConnectionView>` → [`ConnectionView`](#t-rdm_core-views-ConnectionView) |  | The facts. |
 
 <a id="t-rafka_node_rpc_testkit-fault_door-CutRow"></a>
 
@@ -1756,11 +1756,11 @@ One armed cut and what it held.
 | 5 | `held_for_ms` | `Option<u64>` |  | How long it has held, or held. |
 | 6 | `seen_while_held` | `u64` |  | Matching calls that arrived while another was held here. |
 
-<a id="t-rafka_node_rpc_contract-views-DataDirLost"></a>
+<a id="t-rdm_core-views-DataDirLost"></a>
 
 ### `DataDirLost`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 2 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 2 fields · rdm-core
 
 The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
 
@@ -1769,11 +1769,11 @@ The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited 
 | 0 | `path` | `String` |  | The absent data dir path. |
 | 1 | `since` | `u64` |  | When the absent data dir was first observed, ms since the Unix epoch. |
 
-<a id="t-rafka_node_rpc_contract-views-DataDirUnreadable"></a>
+<a id="t-rdm_core-views-DataDirUnreadable"></a>
 
 ### `DataDirUnreadable`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 2 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 2 fields · rdm-core
 
 The durable `data-dir-unreadable` fact on a birth's status row (R-FM2): the inherited data dir
 
@@ -1797,11 +1797,11 @@ The authority a declare probe names.
 | 1 | **`Path`** |  |  | Whoever holds this `path.name`. |
 | 1.0 | `0` | `String` |  |  |
 
-<a id="t-rafka_mesh_entity-connections-DirectRecovery"></a>
+<a id="t-rdm_core-connections-DirectRecovery"></a>
 
 ### `DirectRecovery`
 
-`crates/rafka-mesh-entity/src/connections.rs` · struct · 2 fields · rafka-mesh-entity
+`crates/rdm-core/src/connections.rs` · struct · 2 fields · rdm-core
 
 Where a Direct `Failed` entry sits in its reconnect series. `recovery_round` names one failure
 
@@ -1810,11 +1810,11 @@ Where a Direct `Failed` entry sits in its reconnect series. `recovery_round` nam
 | 0 | `recovery_round` | `u64` |  | The incident the recovery series belongs to, compared for equality only. |
 | 1 | `attempt_ordinal` | `u32` |  | This attempt's ordinal within the series, from 1. |
 
-<a id="t-rafka_node_rpc_contract-build-Disposition"></a>
+<a id="t-rdm_core-build-Disposition"></a>
 
 ### `Disposition`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 6 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 6 variants · rdm-core
 
 How a stream's call came to its Build.
 
@@ -1827,11 +1827,11 @@ How a stream's call came to its Build.
 | 4 | **`Started`** |  |  | `AttemptRun`: the recipient started the claimed attempt. |
 | 5 | **`Reattached`** |  |  | `AttemptRun`: the recipient holds the attempt's run; this stream attached to it. |
 
-<a id="t-rafka_mesh_entity-ids-EndpointId"></a>
+<a id="t-rdm_core-ids-EndpointId"></a>
 
 ### `EndpointId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · tuple struct · 1 fields · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · tuple struct · 1 fields · rdm-core
 
 The node's authenticated transport identity: its Iroh endpoint id (public key), under iroh's
 
@@ -1841,11 +1841,11 @@ serde: `transparent`
 |---|---|---|---|---|
 | 0 | `0` | `String` |  |  |
 
-<a id="t-rafka_node_rpc_contract-status-FabricEvent"></a>
+<a id="t-rdm_core-status-FabricEvent"></a>
 
 ### `FabricEvent`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
 A Fabric event the fabric-primary applies at a mesh primary.
 
@@ -1855,33 +1855,33 @@ A Fabric event the fabric-primary applies at a mesh primary.
 | 1 | **`ShutdownInitiated`** |  |  | `name() = "shutdown-initiated"` | A fabric shutdown was initiated by the named admin. |
 | 1.0 | `initiated_by` | `String` |  |  | The admin that initiated the shutdown. |
 
-<a id="t-rafka_mesh_entity-ids-FabricId"></a>
+<a id="t-rdm_core-ids-FabricId"></a>
 
 ### `FabricId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 The logical Fabric's identity, kept for the Fabric's lifetime.
 
-<a id="t-rafka_node_rpc_contract-views-FabricView"></a>
+<a id="t-rdm_core-views-FabricView"></a>
 
 ### `FabricView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 9 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 9 fields · rdm-core
 
 The fabric as the answering node-admin's view holds it (`fabric.get`).
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  | The fabric's minted id. |
+| 0 | `id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  | The fabric's minted id. |
 | 1 | `name` | `String` |  | The fabric's name. |
-| 2 | `status` | `ScopeStatus` → [`ScopeStatus`](#t-rafka_node_rpc_contract-views-ScopeStatus) |  | The fabric's lifecycle state. |
-| 3 | `provider` | `ProviderKind` → [`ProviderKind`](#t-rafka_node_rpc_contract-views-ProviderKind) |  | The provider that runs the fabric's nodes. |
-| 4 | `fabric_primary` | `Option<PathName>` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node-admin that is the fabric primary, when one is seated. |
+| 2 | `status` | `ScopeStatus` → [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) |  | The fabric's lifecycle state. |
+| 3 | `provider` | `ProviderKind` → [`ProviderKind`](#t-rdm_core-views-ProviderKind) |  | The provider that runs the fabric's nodes. |
+| 4 | `fabric_primary` | `Option<PathName>` → [`PathName`](#t-rdm_core-path-PathName) |  | The node-admin that is the fabric primary, when one is seated. |
 | 5 | `admin_api_base` | `Option<String>` |  | The control API base of the fabric primary. |
-| 6 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rafka_node_rpc_contract-views-MeshView) |  | The fabric's meshes. |
+| 6 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rdm_core-views-MeshView) |  | The fabric's meshes. |
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
-| 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rafka_node_rpc_contract-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
+| 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
 
 <a id="t-rafka_node_rpc_testkit-fault_door-FaultState"></a>
 
@@ -1897,11 +1897,11 @@ Every cut of one admin and the consequence counters.
 | 1 | `cuts` | `BTreeMap<String, CutRow>` → [`CutRow`](#t-rafka_node_rpc_testkit-fault_door-CutRow) |  | Every cut, by id. |
 | 2 | `receipts_seen` | `u64` |  | Every Build step receipt the Build decorator saw. |
 
-<a id="t-rafka_mesh_entity-digest-GossipStats"></a>
+<a id="t-rdm_core-digest-GossipStats"></a>
 
 ### `GossipStats`
 
-`crates/rafka-mesh-entity/src/digest.rs` · struct · 4 fields · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · struct · 4 fields · rdm-core
 
 One birth's view of its own mesh channel, sampled when it publishes its digest.
 
@@ -1912,25 +1912,25 @@ One birth's view of its own mesh channel, sampled when it publishes its digest.
 | 2 | `frames_sent` | `u64` |  | Membership frames this birth broadcast on its mesh channel since it started. |
 | 3 | `frames_received` | `u64` |  | Membership frames this birth decoded from its mesh channel since it started. |
 
-<a id="t-rafka_mesh_entity-seat-transfer-HandoverBirth"></a>
+<a id="t-rdm_core-seat-transfer-HandoverBirth"></a>
 
 ### `HandoverBirth`
 
-`crates/rafka-mesh-entity/src/seat.rs` · struct · 3 fields · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · struct · 3 fields · rdm-core
 
 An exact birth named by a handover or a seat transfer: its mesh, node and incarnation.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh the birth belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The birth's node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The birth's incarnation. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The birth's node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The birth's incarnation. |
 
-<a id="t-rafka_node_rpc_contract-views-HeldRunning"></a>
+<a id="t-rdm_core-views-HeldRunning"></a>
 
 ### `HeldRunning`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 2 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 2 fields · rdm-core
 
 The durable `held-running` fact on a birth's status row (R-FM1): the provider reported its
 
@@ -1990,19 +1990,19 @@ The call a cut held first, as the decorator offered it.
 | 10.1 | `announcement` | `String` |  | The announcement (`rafka_mesh_transport::membership::Withhold`). |
 | 10.2 | `channel` | `String` |  | The channel it is sent on. |
 
-<a id="t-rafka_mesh_entity-ids-IncarnationId"></a>
+<a id="t-rdm_core-ids-IncarnationId"></a>
 
 ### `IncarnationId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 One process birth of a logical node (`RuntimeIncarnationId`). Equality only: never ordered.
 
-<a id="t-rafka_mesh_entity-lifecycle-LifecycleOp"></a>
+<a id="t-rdm_core-lifecycle-LifecycleOp"></a>
 
 ### `LifecycleOp`
 
-`crates/rafka-mesh-entity/src/lifecycle.rs` · struct · 7 fields · rafka-mesh-entity
+`crates/rdm-core/src/lifecycle.rs` · struct · 7 fields · rdm-core
 
 One lifecycle operation on one exact birth, as its events name it.
 
@@ -2013,16 +2013,16 @@ serde: `deny_unknown_fields`
 | 0 | `build_id` | `String` |  | The Build the operation belongs to. |
 | 1 | `attempt` | `u32` |  | The attempt of the Build. |
 | 2 | `operation` | `String` |  | The operation's idempotency key (`node.delete:mesh2.rpc.2`), never a pipeline step. |
-| 3 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The logical node. |
-| 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the birth. |
-| 5 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node's `path.name`. |
+| 3 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The logical node. |
+| 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth. |
+| 5 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
 | 6 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry |
 
-<a id="t-rafka_node_rpc_contract-outcome-MalformedKind"></a>
+<a id="t-rdm_core-outcome-MalformedKind"></a>
 
 ### `MalformedKind`
 
-`crates/rafka-node-rpc-contract/src/outcome.rs` · enum · 3 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/outcome.rs` · enum · 3 variants · rdm-core
 
 How a request frame was malformed.
 
@@ -2032,11 +2032,11 @@ How a request frame was malformed.
 | 1 | **`UnknownVariant`** |  |  | A known op carrying an operation variant this build does not know. |
 | 2 | **`Corrupt`** |  |  | Undecodable bytes. |
 
-<a id="t-rafka_mesh_entity-digest-MemberStatus"></a>
+<a id="t-rdm_core-digest-MemberStatus"></a>
 
 ### `MemberStatus`
 
-`crates/rafka-mesh-entity/src/digest.rs` · enum · 4 variants · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · enum · 4 variants · rdm-core
 
 A member's status: set by its mesh-primary alone (states.md "Who sets each state") and carried to
 
@@ -2049,11 +2049,11 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Draining`** |  |  | The node takes no new work. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
-<a id="t-rafka_node_rpc_contract-build-MeshCounts"></a>
+<a id="t-rdm_core-build-MeshCounts"></a>
 
 ### `MeshCounts`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · struct · 6 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · struct · 6 fields · rdm-core
 
 One mesh's counts by kind, as a submitted change names them.
 
@@ -2066,11 +2066,11 @@ One mesh's counts by kind, as a submitted change names them.
 | 4 | `gateway` | `u32` |  | The number of gateways. |
 | 5 | `compute` | `u32` |  | The number of compute nodes. |
 
-<a id="t-rafka_node_rpc_contract-status-MeshDeleteRound"></a>
+<a id="t-rdm_core-status-MeshDeleteRound"></a>
 
 ### `MeshDeleteRound`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · struct · 3 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · struct · 3 fields · rdm-core
 
 The round of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it: its workflow identity
 
@@ -2080,19 +2080,19 @@ The round of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it: its w
 | 1 | `attempt` | `u32` |  | The Build attempt. |
 | 2 | `operation` | `String` |  | The operation key, `<op>:<mesh_id>`. |
 
-<a id="t-rafka_mesh_entity-ids-MeshId"></a>
+<a id="t-rdm_core-ids-MeshId"></a>
 
 ### `MeshId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 A mesh's identity: recovery keeps it, an intentional replacement mints
 
-<a id="t-rafka_node_rpc_contract-status-MeshState"></a>
+<a id="t-rdm_core-status-MeshState"></a>
 
 ### `MeshState`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
 A Mesh's status, as declared.
 
@@ -2103,56 +2103,56 @@ A Mesh's status, as declared.
 | 2 | **`Leaving`** |  |  | Leaving: it is closing. |
 | 3 | **`Dead`** |  |  | Dead: every member is gone. |
 
-<a id="t-rafka_node_rpc_contract-views-MeshView"></a>
+<a id="t-rdm_core-views-MeshView"></a>
 
 ### `MeshView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 6 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 6 fields · rdm-core
 
 One mesh as the answering node-admin's view holds it (`mesh.get`).
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `id` | `Option<MeshId>` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  | The mesh's minted id, once a member of the mesh has said which id it carries. |
+| 0 | `id` | `Option<MeshId>` → [`MeshId`](#t-rdm_core-ids-MeshId) |  | The mesh's minted id, once a member of the mesh has said which id it carries. |
 | 1 | `name` | `String` |  | The mesh's name. |
-| 2 | `status` | `ScopeStatus` → [`ScopeStatus`](#t-rafka_node_rpc_contract-views-ScopeStatus) |  | The mesh's lifecycle state. |
-| 3 | `primary_admin` | `Option<PathName>` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node-admin that is the mesh's primary, when one is seated. |
+| 2 | `status` | `ScopeStatus` → [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) |  | The mesh's lifecycle state. |
+| 3 | `primary_admin` | `Option<PathName>` → [`PathName`](#t-rdm_core-path-PathName) |  | The node-admin that is the mesh's primary, when one is seated. |
 | 4 | `admin_api_base` | `Option<String>` |  | The control API base of the mesh's primary. |
-| 5 | `nodes` | `Vec<PathName>` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The `path.name` of every node of the mesh. |
+| 5 | `nodes` | `Vec<PathName>` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` of every node of the mesh. |
 
-<a id="t-rafka_mesh_entity-connections-NodeConnection"></a>
+<a id="t-rdm_core-connections-NodeConnection"></a>
 
 ### `NodeConnection`
 
-`crates/rafka-mesh-entity/src/connections.rs` · struct · 9 fields · rafka-mesh-entity
+`crates/rdm-core/src/connections.rs` · struct · 9 fields · rdm-core
 
 One connection fact.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `id` | `crate::ConnectionId` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  | The entry's own minted id: every fact written is a new entry with a new id, never a copy of |
-| 1 | `source` | `ConnectionEnd` → [`ConnectionEnd`](#t-rafka_mesh_entity-connections-ConnectionEnd) |  | The node that holds the connection. |
-| 2 | `destination` | `ConnectionEnd` → [`ConnectionEnd`](#t-rafka_mesh_entity-connections-ConnectionEnd) |  | The node it reaches. |
-| 3 | `kind` | `ConnectionKind` → [`ConnectionKind`](#t-rafka_mesh_entity-connections-ConnectionKind) |  | Whether the entry is a Direct or a Proxy. |
-| 4 | `state` | `ConnectionState` → [`ConnectionState`](#t-rafka_mesh_entity-connections-ConnectionState) |  | The state of the entry. |
-| 5 | `carrier` | `Option<ConnectionEnd>` → [`ConnectionEnd`](#t-rafka_mesh_entity-connections-ConnectionEnd) |  | `Some` on a Proxy entry, `None` on a Direct one. |
-| 6 | `recovery` | `Option<DirectRecovery>` → [`DirectRecovery`](#t-rafka_mesh_entity-connections-DirectRecovery) |  | `Some` on a Direct `Failed` entry, `None` on every other. |
+| 0 | `id` | `crate::ConnectionId` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  | The entry's own minted id: every fact written is a new entry with a new id, never a copy of |
+| 1 | `source` | `ConnectionEnd` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | The node that holds the connection. |
+| 2 | `destination` | `ConnectionEnd` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | The node it reaches. |
+| 3 | `kind` | `ConnectionKind` → [`ConnectionKind`](#t-rdm_core-connections-ConnectionKind) |  | Whether the entry is a Direct or a Proxy. |
+| 4 | `state` | `ConnectionState` → [`ConnectionState`](#t-rdm_core-connections-ConnectionState) |  | The state of the entry. |
+| 5 | `carrier` | `Option<ConnectionEnd>` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | `Some` on a Proxy entry, `None` on a Direct one. |
+| 6 | `recovery` | `Option<DirectRecovery>` → [`DirectRecovery`](#t-rdm_core-connections-DirectRecovery) |  | `Some` on a Direct `Failed` entry, `None` on every other. |
 | 7 | `reason` | `Option<String>` |  | Why a drop or a failure happened; `None` on a connect. |
 | 8 | `logged_at_ms` | `u64` |  | When the fact was written (ms). |
 
-<a id="t-rafka_mesh_entity-ids-NodeId"></a>
+<a id="t-rdm_core-ids-NodeId"></a>
 
 ### `NodeId`
 
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
+`crates/rdm-core/src/ids.rs` · declared by `product_id!` · rdm-core
 
 Logical node identity: minted once, kept across restarts, never
 
-<a id="t-rafka_mesh_entity-path-NodeKind"></a>
+<a id="t-rdm_core-path-NodeKind"></a>
 
 ### `NodeKind`
 
-`crates/rafka-mesh-entity/src/path.rs` · enum · 5 variants · rafka-mesh-entity
+`crates/rdm-core/src/path.rs` · enum · 5 variants · rdm-core
 
 What a node is in its mesh. The kind is the second segment of its `path.name`.
 
@@ -2166,11 +2166,11 @@ serde: `rename_all = "snake_case"`
 | 3 | **`Gateway`** |  |  | `name() = "gateway"`<br>`segment() = "gateway"`<br>`node_type() = "gateway"` | A gateway. |
 | 4 | **`Compute`** |  |  | `name() = "compute"`<br>`segment() = "compute"`<br>`node_type() = "compute"` | A compute node. |
 
-<a id="t-rafka_mesh_entity-digest-NodeLoad"></a>
+<a id="t-rdm_core-digest-NodeLoad"></a>
 
 ### `NodeLoad`
 
-`crates/rafka-mesh-entity/src/digest.rs` · struct · 4 fields · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · struct · 4 fields · rdm-core
 
 One process's CPU and RAM, as its digest carries them: what is used and the ceiling it runs
 
@@ -2181,28 +2181,28 @@ One process's CPU and RAM, as its digest carries them: what is used and the ceil
 | 2 | `ram_used_bytes` | `u64` |  | Resident memory in use, in bytes. |
 | 3 | `ram_budget_bytes` | `u64` |  | The memory ceiling, in bytes. |
 
-<a id="t-rafka_node_rpc_contract-status-NodeSelect"></a>
+<a id="t-rdm_core-status-NodeSelect"></a>
 
 ### `NodeSelect`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 3 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 3 variants · rdm-core
 
 Which nodes `node.get` selects. Positional order is part of the wire schema.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`Id`** |  |  | `name() = "id"` | The node with this minted id. |
-| 0.0 | `0` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  |  |
+| 0.0 | `0` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  |  |
 | 1 | **`Mesh`** |  |  | `name() = "mesh"` | Every node of the mesh with this name. |
 | 1.0 | `0` | `String` |  |  |  |
 | 2 | **`Tags`** |  |  | `name() = "tags"` | Every node carrying the tag labels the filter names (R-TG1), read through the node store's |
-| 2.0 | `0` | `TagFilter` → [`TagFilter`](#t-rafka_node_rpc_contract-status-TagFilter) |  |  |  |
+| 2.0 | `0` | `TagFilter` → [`TagFilter`](#t-rdm_core-status-TagFilter) |  |  |  |
 
-<a id="t-rafka_mesh_entity-digest-NodeState"></a>
+<a id="t-rdm_core-digest-NodeState"></a>
 
 ### `NodeState`
 
-`crates/rafka-mesh-entity/src/digest.rs` · enum · 4 variants · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · enum · 4 variants · rdm-core
 
 The liveness a birth self-publishes on its heartbeat (node-identity-and-state.md §4,
 
@@ -2215,11 +2215,11 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Overloaded`** |  |  | Over its CPU or RAM budget. |
 | 3 | **`Degraded`** |  |  | It reaches a broker only through a peer or node-admin. |
 
-<a id="t-rafka_node_rpc_contract-status-NodeState"></a>
+<a id="t-rdm_core-status-NodeState"></a>
 
 ### `NodeState`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
 A node birth's lifecycle state, as declared.
 
@@ -2230,11 +2230,11 @@ A node birth's lifecycle state, as declared.
 | 2 | **`Draining`** |  |  | Draining: it takes no new work. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure. |
 
-<a id="t-rafka_node_rpc_contract-views-NodeStatus"></a>
+<a id="t-rdm_core-views-NodeStatus"></a>
 
 ### `NodeStatus`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · enum · 8 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · enum · 8 variants · rdm-core
 
 A node's lifecycle state as its node-admin's view holds it.
 
@@ -2251,26 +2251,26 @@ serde: `rename_all = "kebab-case"`
 | 6 | **`Dead`** |  |  | True offline: the mesh primary's connect found no path on two rounds a staleness floor |
 | 7 | **`Deleted`** |  |  | Deleted: identity and name released; only the node's row carries it. |
 
-<a id="t-rafka_node_rpc_contract-views-NodeView"></a>
+<a id="t-rdm_core-views-NodeView"></a>
 
 ### `NodeView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 24 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · struct · 24 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node's `path.name`. |
-| 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  | The node's kind. |
+| 0 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node's `path.name`. |
+| 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  | The node's kind. |
 | 2 | `mesh` | `String` |  | The name of the mesh the node belongs to. |
-| 3 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The node's minted id. |
+| 3 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The node's minted id. |
 | 4 | `endpoint_id` | `Option<String>` |  | The node's fabric endpoint id, once known. |
-| 5 | `incarnation_id` | `Option<IncarnationId>` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the node's current birth, once launched. |
+| 5 | `incarnation_id` | `Option<IncarnationId>` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the node's current birth, once launched. |
 | 6 | `deployment_id` | `Option<String>` |  | The deployment that runs the node, once created. |
-| 7 | `provider` | `Option<ProviderKind>` → [`ProviderKind`](#t-rafka_node_rpc_contract-views-ProviderKind) |  | The provider that runs the node. |
+| 7 | `provider` | `Option<ProviderKind>` → [`ProviderKind`](#t-rdm_core-views-ProviderKind) |  | The provider that runs the node. |
 | 8 | `data_dir` | `Option<String>` |  | The node's data directory. |
-| 9 | `status` | `NodeStatus` → [`NodeStatus`](#t-rafka_node_rpc_contract-views-NodeStatus) |  | The node's lifecycle state. |
+| 9 | `status` | `NodeStatus` → [`NodeStatus`](#t-rdm_core-views-NodeStatus) |  | The node's lifecycle state. |
 | 10 | `is_primary` | `bool` |  | Whether the node holds its mesh's primary seat. |
 | 11 | `is_fabric_primary` | `bool` |  | Whether the node holds the fabric-primary seat. |
 | 12 | `admin_api_base` | `Option<String>` |  | The control API base the node advertises, for a node-admin. |
@@ -2278,19 +2278,19 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 14 | `listeners` | `Vec<(String, std::net::SocketAddr)>` | `default` | The named listeners the node serves, each with its bound address. |
 | 15 | `declared` | `Option<String>` | `default` | The lifecycle state the birth declared to its authority, once applied. |
 | 16 | `parked` | `bool` | `default` | Stopped and parked: `leaving` with a live process, waiting for a start or a delete. |
-| 17 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rafka_mesh_entity-digest-NodeLoad) | `default` | The node's CPU and RAM from its latest digest, as the answering admin holds it. |
-| 18 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rafka_mesh_entity-digest-GossipStats) | `default` | The node's mesh-channel counts from its latest digest: heard, neighbours, frames. |
+| 17 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) | `default` | The node's CPU and RAM from its latest digest, as the answering admin holds it. |
+| 18 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) | `default` | The node's mesh-channel counts from its latest digest: heard, neighbours, frames. |
 | 19 | `tags` | `std::collections::BTreeSet<String>` | `default` | The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the |
 | 20 | `config` | `std::collections::BTreeMap<String, String>` | `default` | The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property |
-| 21 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rafka_node_rpc_contract-views-HeldRunning) | `default` | The durable `held-running` fact on this birth's status row (R-FM1), when the provider |
-| 22 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rafka_node_rpc_contract-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
-| 23 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rafka_node_rpc_contract-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
+| 21 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on this birth's status row (R-FM1), when the provider |
+| 22 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rdm_core-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
+| 23 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rdm_core-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
 
-<a id="t-rafka_node_rpc_contract-status-NotAuthority"></a>
+<a id="t-rdm_core-status-NotAuthority"></a>
 
 ### `NotAuthority`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 3 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 3 variants · rdm-core
 
 Why a declaration was not applied, by name.
 
@@ -2302,18 +2302,18 @@ Why a declaration was not applied, by name.
 | 1.0 | `sender` | `String` |  |  | The sender, as the receiver resolved it. |
 | 2 | **`SubjectUnknown`** |  |  | `as_str() = "subject-unknown"` | The receiver does not hold the subject at all. |
 
-<a id="t-rafka_mesh_entity-path-PathName"></a>
+<a id="t-rdm_core-path-PathName"></a>
 
 ### `PathName`
 
-`crates/rafka-mesh-entity/src/path.rs` · struct · 6 fields · rafka-mesh-entity
+`crates/rdm-core/src/path.rs` · struct · 6 fields · rdm-core
 
 A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh's name. |
-| 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  | The node's kind. |
+| 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  | The node's kind. |
 | 2 | `ordinal` | `u32` |  | The node's ordinal within its mesh and kind, from 1 (`0` when `label` carries a non-numeric free-text name). |
 | 3 | `label` | `String` |  | Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`. |
 | 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
@@ -2334,18 +2334,18 @@ The node a resolve probe names.
 | 1 | **`Path`** |  |  | Whoever holds this `path.name`. |
 | 1.0 | `0` | `String` |  |  |
 
-<a id="t-rafka_mesh_entity-wire-ProjectionEntry"></a>
+<a id="t-rdm_core-wire-ProjectionEntry"></a>
 
 ### `ProjectionEntry`
 
-`crates/rafka-mesh-entity/src/wire.rs` · struct · 2 fields · rafka-mesh-entity
+`crates/rdm-core/src/wire.rs` · struct · 2 fields · rdm-core
 
 One member of a mesh-primary's member projection as it travels (gossip.md §3.1 `Members`,
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `digest` | `WireDigest` → [`WireDigest`](#t-rafka_mesh_entity-wire-WireDigest) |  | The member's digest. |
-| 1 | `status` | `MemberStatus` → [`MemberStatus`](#t-rafka_mesh_entity-digest-MemberStatus) |  | The member's status, as its mesh-primary holds it. |
+| 0 | `digest` | `WireDigest` → [`WireDigest`](#t-rdm_core-wire-WireDigest) |  | The member's digest. |
+| 1 | `status` | `MemberStatus` → [`MemberStatus`](#t-rdm_core-digest-MemberStatus) |  | The member's status, as its mesh-primary holds it. |
 
 <a id="t-rafka_node_rpc_testkit-originate-ProofOp"></a>
 
@@ -2394,11 +2394,11 @@ Where a call executed, as the executing node knows it.
 | 3 | `incarnation_id` | `String` |  | The executing node's incarnation id. |
 | 4 | `op` | `ProofOp` → [`ProofOp`](#t-rafka_node_rpc_testkit-proof_store-ProofOp) |  | The operation executed. |
 
-<a id="t-rafka_node_rpc_contract-views-ProviderKind"></a>
+<a id="t-rdm_core-views-ProviderKind"></a>
 
 ### `ProviderKind`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · enum · 2 variants · rdm-core
 
 The deployment provider that runs a fabric's nodes.
 
@@ -2409,46 +2409,46 @@ serde: `rename_all = "snake_case"`
 | 0 | **`Process`** |  |  | Each node is an OS process. |
 | 1 | **`Container`** |  |  | Each node is a container. |
 
-<a id="t-rafka_mesh_entity-publisher-PublisherId"></a>
+<a id="t-rdm_core-publisher-PublisherId"></a>
 
 ### `PublisherId`
 
-`crates/rafka-mesh-entity/src/publisher.rs` · struct · 2 fields · rafka-mesh-entity
+`crates/rdm-core/src/publisher.rs` · struct · 2 fields · rdm-core
 
 A publisher's EXACT identity: its path name AND the birth that holds the seat. It is the epoch
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `node` | `String` |  | The publisher's node name. |
-| 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
+| 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
 
-<a id="t-rafka_node_rpc_contract-build-RecipeStep"></a>
+<a id="t-rdm_core-build-RecipeStep"></a>
 
 ### `RecipeStep`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 5 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 5 variants · rdm-core
 
 One step of a `BuildChange::Recipe`: one node primitive acting on the node a `path.name` names
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Create`** |  |  | node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name` |
-| 0.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The `path.name` the node is created at. |
+| 0.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` the node is created at. |
 | 1 | **`Stop`** |  |  | node.stop of the live node at `node`: it is stopped, its process and data kept. |
-| 1.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 1.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 2 | **`Update`** |  |  | node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the |
-| 2.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
-| 2.1 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The `path.name` it takes. |
+| 2.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+| 2.1 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The `path.name` it takes. |
 | 3 | **`Start`** |  |  | node.start of the stopped node at `node`: the same process rejoins under the name its row holds. |
-| 3.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 4 | **`Delete`** |  |  | node.delete of the node at `node`: its identity and name are released, its storage kept. |
-| 4.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
+| 4.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 
-<a id="t-rafka_node_rpc_contract-status-RetryOn"></a>
+<a id="t-rdm_core-status-RetryOn"></a>
 
 ### `RetryOn`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
 The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
 
@@ -2456,7 +2456,7 @@ The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks
 |---|---|---|---|---|---|
 | 0 | **`AuthorityChanged`** |  |  | `name() = "authority-changed"` | The authority's birth changed or departed. |
 | 1 | **`TargetReachable`** |  |  | `name() = "target-reachable"` | The named node became reachable (heard after silence, or first heard). |
-| 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The node waited for. |
+| 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The node waited for. |
 | 2 | **`AuthorityReady`** |  |  | `name() = "authority-ready"` | The authority published ReadyForTraffic. |
 | 3 | **`AuthorityAddressed`** |  |  | `name() = "authority-addressed"` | The authority addressed this node (it sent a down op). |
 
@@ -2473,11 +2473,11 @@ One row of the authority's state.
 | 0 | `version` | `u64` |  | The row's version: applying a version already held changes nothing. |
 | 1 | `value` | `String` |  | The row's value. |
 
-<a id="t-rafka_mesh_entity-runtime-RuntimeProvider"></a>
+<a id="t-rdm_core-runtime-RuntimeProvider"></a>
 
 ### `RuntimeProvider`
 
-`crates/rafka-mesh-entity/src/runtime.rs` · enum · 2 variants · rafka-mesh-entity
+`crates/rdm-core/src/runtime.rs` · enum · 2 variants · rdm-core
 
 Which provider realised the runtime.
 
@@ -2488,31 +2488,31 @@ serde: `rename_all = "kebab-case"`
 | 0 | **`Process`** |  |  | `as_str() = "process"` | A host process. |
 | 1 | **`Container`** |  |  | `as_str() = "container"` | A container. |
 
-<a id="t-rafka_node_rpc_contract-views-ScopeStatus"></a>
+<a id="t-rdm_core-views-ScopeStatus"></a>
 
 ### `ScopeStatus`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · enum · 7 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · enum · 7 variants · rdm-core
 
 The lifecycle state of a mesh or of a fabric.
 
 serde: `rename_all = "kebab-case"`
 
-| # | variant · field | type | serde | doc |
-|---|---|---|---|---|
-| 0 | **`Pending`** |  |  | Created and not yet ready for traffic. |
-| 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
-| 2 | **`Leaving`** |  |  | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
-| 3 | **`Dead`** |  |  | Dead: a mesh every one of whose births was proven exited; final. |
-| 4 | **`Degraded`** |  |  | Degraded: the fabric primary has decided a peer mesh is reborn. |
-| 5 | **`StateSync`** |  |  | A fabric state: every mesh is ready-for-traffic and the application does its work. |
-| 6 | **`StateCommit`** |  |  | A fabric state: the commit-state and open-traffic rounds run. |
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`Pending`** |  |  | `name() = "pending"` | Created and not yet ready for traffic. |
+| 1 | **`ReadyForTraffic`** |  |  | `name() = "ready-for-traffic"` | Ready: it takes traffic. |
+| 2 | **`Leaving`** |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
+| 3 | **`Dead`** |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
+| 4 | **`Degraded`** |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
+| 5 | **`StateSync`** |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
+| 6 | **`StateCommit`** |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic rounds run. |
 
-<a id="t-rafka_mesh_entity-seat-Seat"></a>
+<a id="t-rdm_core-seat-Seat"></a>
 
 ### `Seat`
 
-`crates/rafka-mesh-entity/src/seat.rs` · enum · 3 variants · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · enum · 3 variants · rdm-core
 
 A primary seat. The discriminants are the wire positions.
 
@@ -2521,13 +2521,13 @@ A primary seat. The discriminants are the wire positions.
 | 0 | **`MeshPrimary`** |  |  | `name() = "mesh-primary"` | The node-admin primary of one mesh (named by `SeatHolder::mesh`). |
 | 1 | **`FabricPrimary`** |  |  | `name() = "fabric-primary"` | The fabric primary: a mesh primary that also holds the fabric's control. |
 | 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of the holder's mesh's cohort of this node type, every type but `node_admin` |
-| 2.0 | `0` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  |  |  |
+| 2.0 | `0` | `NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  |  |
 
-<a id="t-rafka_mesh_entity-seat-transfer-Seat"></a>
+<a id="t-rdm_core-seat-transfer-Seat"></a>
 
 ### `Seat`
 
-`crates/rafka-mesh-entity/src/seat.rs` · enum · 3 variants · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · enum · 3 variants · rdm-core
 
 A seat as a transfer names it. The discriminants are the wire positions.
 
@@ -2538,69 +2538,69 @@ A seat as a transfer names it. The discriminants are the wire positions.
 | 1.0 | `mesh` | `String` |  |  | The mesh whose primary seat it is. |
 | 2 | **`Cohort`** |  |  | `name() = "mesh-primary"`<br>`name() = "rpc_node-primary"`<br>`name() = "broker-primary"`<br>`name() = "gateway-primary"`<br>`name() = "compute-primary"` | The primary of `mesh`'s cohort of node type `kind` (every type but `node_admin`). |
 | 2.0 | `mesh` | `String` |  |  | The mesh whose cohort it is. |
-| 2.1 | `kind` | `crate::path::NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  |  | The cohort's node type. |
+| 2.1 | `kind` | `crate::path::NodeKind` → [`NodeKind`](#t-rdm_core-path-NodeKind) |  |  | The cohort's node type. |
 
-<a id="t-rafka_mesh_entity-seat-SeatHolder"></a>
+<a id="t-rdm_core-seat-SeatHolder"></a>
 
 ### `SeatHolder`
 
-`crates/rafka-mesh-entity/src/seat.rs` · struct · 4 fields · rafka-mesh-entity
+`crates/rdm-core/src/seat.rs` · struct · 4 fields · rdm-core
 
 The holder of a seat: the exact birth, the mesh it belongs to, and the revision of the record.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh the holder belongs to. |
-| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The holder's node. |
-| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The holder's exact birth. |
+| 1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The holder's node. |
+| 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The holder's exact birth. |
 | 3 | `revision` | `u64` |  | The record's revision: a later revision supersedes an earlier one. |
 
-<a id="t-rafka_node_rpc_contract-handover-SeatRevision"></a>
+<a id="t-rdm_core-handover-SeatRevision"></a>
 
 ### `SeatRevision`
 
-`crates/rafka-node-rpc-contract/src/handover.rs` · struct · 2 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/handover.rs` · struct · 2 fields · rdm-core
 
 A seat the commander names in `NodePrimaryUpdateRequest::UpdatePrimary`, with the revision it holds
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-transfer-Seat) |  | The seat. |
+| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat. |
 | 1 | `expected_revision` | `u64` |  | The seat's current revision as the caller holds it. |
 
-<a id="t-rafka_node_rpc_contract-handover-SeatUpdate"></a>
+<a id="t-rdm_core-handover-SeatUpdate"></a>
 
 ### `SeatUpdate`
 
-`crates/rafka-node-rpc-contract/src/handover.rs` · struct · 4 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/handover.rs` · struct · 4 fields · rdm-core
 
 One seat the committed row moves, as `NodePrimaryUpdateRequest::PrimaryUpdate` carries it.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `seat` | `Seat` → [`Seat`](#t-rafka_mesh_entity-seat-transfer-Seat) |  | The seat's cohort: the mesh-primary seat of a mesh, or the fabric seat. |
-| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rafka_mesh_entity-seat-transfer-HandoverBirth) |  | The exact birth that held the seat and wrote the row. |
-| 2 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rafka_mesh_entity-seat-transfer-HandoverBirth) |  | The exact birth the row commits the seat to. |
+| 0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-transfer-Seat) |  | The seat's cohort: the mesh-primary seat of a mesh, or the fabric seat. |
+| 1 | `holder` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The exact birth that held the seat and wrote the row. |
+| 2 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The exact birth the row commits the seat to. |
 | 3 | `revision` | `u64` |  | The revision the row commits. |
 
-<a id="t-rafka_node_rpc_contract-topology-SourceVersion"></a>
+<a id="t-rdm_core-topology-SourceVersion"></a>
 
 ### `SourceVersion`
 
-`crates/rafka-node-rpc-contract/src/topology.rs` · struct · 2 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/topology.rs` · struct · 2 fields · rdm-core
 
 The source version a caller already holds for a mesh: the publisher is the epoch, so
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The source mesh's primary birth that published the version, the epoch of `topology_version`. |
+| 0 | `publisher` | `PublisherId` → [`PublisherId`](#t-rdm_core-publisher-PublisherId) |  | The source mesh's primary birth that published the version, the epoch of `topology_version`. |
 | 1 | `topology_version` | `u64` |  | The version held. |
 
-<a id="t-rafka_node_rpc_contract-build-StepReceipt"></a>
+<a id="t-rdm_core-build-StepReceipt"></a>
 
 ### `StepReceipt`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · struct · 4 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · struct · 4 fields · rdm-core
 
 One step receipt of a Build, as `Get` reads it.
 
@@ -2609,13 +2609,13 @@ One step receipt of a Build, as `Get` reads it.
 | 0 | `attempt` | `u32` |  | The attempt that wrote it. |
 | 1 | `operation` | `String` |  | The operation's idempotency key. |
 | 2 | `step` | `String` |  | The step. |
-| 3 | `result` | `StepResult` → [`StepResult`](#t-rafka_node_rpc_contract-build-StepResult) |  | How the step ended. |
+| 3 | `result` | `StepResult` → [`StepResult`](#t-rdm_core-build-StepResult) |  | How the step ended. |
 
-<a id="t-rafka_node_rpc_contract-build-StepResult"></a>
+<a id="t-rdm_core-build-StepResult"></a>
 
 ### `StepResult`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/build.rs` · enum · 2 variants · rdm-core
 
 How a step ended, as a receipt says it.
 
@@ -2625,27 +2625,27 @@ How a step ended, as a receipt says it.
 | 1 | **`Failed`** |  |  | The step failed. |
 | 1.0 | `reason` | `String` |  | Why it failed. |
 
-<a id="t-rafka_node_rpc_contract-topology-StoredNode"></a>
+<a id="t-rdm_core-topology-StoredNode"></a>
 
 ### `StoredNode`
 
-`crates/rafka-node-rpc-contract/src/topology.rs` · struct · 5 fields · rafka-node-rpc-contract
+`crates/rdm-core/src/topology.rs` · struct · 5 fields · rdm-core
 
 One node of a stored map: how to reach a birth the target stored, with no claim that it lives.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The node's minted id. |
+| 0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The node's minted id. |
 | 1 | `name` | `String` |  | The node's `path.name`. |
-| 2 | `endpoint_id` | `EndpointId` → [`EndpointId`](#t-rafka_mesh_entity-ids-EndpointId) |  | The node's fabric endpoint id. |
-| 3 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation the target stored. |
+| 2 | `endpoint_id` | `EndpointId` → [`EndpointId`](#t-rdm_core-ids-EndpointId) |  | The node's fabric endpoint id. |
+| 3 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation the target stored. |
 | 4 | `transport_addr` | `std::net::SocketAddr` |  | The address the target stored for the node's endpoint. |
 
-<a id="t-rafka_node_rpc_contract-status-TagFilter"></a>
+<a id="t-rdm_core-status-TagFilter"></a>
 
 ### `TagFilter`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
 Which tag labels a `node.get` filter requires (node-rpc-envelope.md, node.get: "all of the given
 
@@ -2656,11 +2656,11 @@ Which tag labels a `node.get` filter requires (node-rpc-envelope.md, node.get: "
 | 1 | **`Any`** |  |  | `name() = "any"` | The node carries at least one of these labels. |
 | 1.0 | `0` | `BTreeSet<String>` |  |  |  |
 
-<a id="t-rafka_node_rpc_contract-status-TagScope"></a>
+<a id="t-rdm_core-status-TagScope"></a>
 
 ### `TagScope`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
 Which of a node's tag labels `node.tags.delete` removes (node-rpc-envelope.md, node.tags: "the
 
@@ -2670,11 +2670,11 @@ Which of a node's tag labels `node.tags.delete` removes (node-rpc-envelope.md, n
 | 1 | **`Labels`** |  |  | `name() = "labels"` | The named labels: at least one, at most `MAX_NODE_TAGS`, each a label (`tag_refusal`). |
 | 1.0 | `0` | `BTreeSet<String>` |  |  |  |
 
-<a id="t-rafka_node_rpc_contract-status-WhichMesh"></a>
+<a id="t-rdm_core-status-WhichMesh"></a>
 
 ### `WhichMesh`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 2 variants · rdm-core
 
 Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
 
@@ -2683,34 +2683,34 @@ Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
 | 0 | **`Own`** |  |  | `name() = "own"` | The node's own mesh channel (`<fabric_id>/<mesh_id>`). |
 | 1 | **`Backbone`** |  |  | `name() = "backbone"` | The fabric's admin-backbone channel (`<fabric_id>/admin-backbone`), carried by a node-admin. |
 
-<a id="t-rafka_mesh_entity-wire-WireDigest"></a>
+<a id="t-rdm_core-wire-WireDigest"></a>
 
 ### `WireDigest`
 
-`crates/rafka-mesh-entity/src/wire.rs` · struct · 12 fields · rafka-mesh-entity
+`crates/rdm-core/src/wire.rs` · struct · 12 fields · rdm-core
 
 A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published liveness
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  |
-| 1 | `node` | `WireNode` → [`WireNode`](#t-rafka_mesh_entity-wire-WireNode) |  |  |
-| 2 | `node_state` | `NodeState` → [`NodeState`](#t-rafka_mesh_entity-digest-NodeState) |  |  |
+| 0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rdm_core-ids-FabricId) |  |  |
+| 1 | `node` | `WireNode` → [`WireNode`](#t-rdm_core-wire-WireNode) |  |  |
+| 2 | `node_state` | `NodeState` → [`NodeState`](#t-rdm_core-digest-NodeState) |  |  |
 | 3 | `admin_api_base` | `Option<String>` |  |  |
 | 4 | `digest_seq` | `u64` |  |  |
 | 5 | `emitted_at_rafka_ms` | `u64` |  |  |
 | 6 | `data_dir` | `Option<String>` |  |  |
-| 7 | `mesh_id` | `Option<MeshId>` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  |
+| 7 | `mesh_id` | `Option<MeshId>` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  |
 | 8 | `in_flight` | `Option<u64>` |  |  |
 | 9 | `config` | `BTreeMap<String, String>` |  |  |
-| 10 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rafka_mesh_entity-digest-NodeLoad) |  |  |
-| 11 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rafka_mesh_entity-digest-GossipStats) |  |  |
+| 10 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) |  |  |
+| 11 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) |  |  |
 
-<a id="t-rafka_mesh_entity-wire-WireLocator"></a>
+<a id="t-rdm_core-wire-WireLocator"></a>
 
 ### `WireLocator`
 
-`crates/rafka-mesh-entity/src/wire.rs` · enum · 2 variants · rafka-mesh-entity
+`crates/rdm-core/src/wire.rs` · enum · 2 variants · rdm-core
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
@@ -2720,32 +2720,32 @@ A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published
 | 1 | **`Container`** |  |  |  |
 | 1.0 | `id` | `String` |  |  |
 
-<a id="t-rafka_mesh_entity-wire-WireNode"></a>
+<a id="t-rdm_core-wire-WireNode"></a>
 
 ### `WireNode`
 
-`crates/rafka-mesh-entity/src/wire.rs` · struct · 7 fields · rafka-mesh-entity
+`crates/rdm-core/src/wire.rs` · struct · 7 fields · rdm-core
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  |
-| 1 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  |  |
-| 2 | `endpoint_id` | `EndpointId` → [`EndpointId`](#t-rafka_mesh_entity-ids-EndpointId) |  |  |
+| 0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  |
+| 1 | `name` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  |  |
+| 2 | `endpoint_id` | `EndpointId` → [`EndpointId`](#t-rdm_core-ids-EndpointId) |  |  |
 | 3 | `transport_addr` | `std::net::SocketAddr` |  |  |
-| 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  |
-| 5 | `supersedes` | `Option<IncarnationId>` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  |
-| 6 | `runtime` | `Option<WireRuntime>` → [`WireRuntime`](#t-rafka_mesh_entity-wire-WireRuntime) |  |  |
+| 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  |
+| 5 | `supersedes` | `Option<IncarnationId>` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  |
+| 6 | `runtime` | `Option<WireRuntime>` → [`WireRuntime`](#t-rdm_core-wire-WireRuntime) |  |  |
 
-<a id="t-rafka_mesh_entity-wire-WireRuntime"></a>
+<a id="t-rdm_core-wire-WireRuntime"></a>
 
 ### `WireRuntime`
 
-`crates/rafka-mesh-entity/src/wire.rs` · struct · 4 fields · rafka-mesh-entity
+`crates/rdm-core/src/wire.rs` · struct · 4 fields · rdm-core
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `deployment_id` | `String` |  |  |
-| 1 | `provider` | `RuntimeProvider` → [`RuntimeProvider`](#t-rafka_mesh_entity-runtime-RuntimeProvider) |  |  |
+| 1 | `provider` | `RuntimeProvider` → [`RuntimeProvider`](#t-rdm_core-runtime-RuntimeProvider) |  |  |
 | 2 | `control_domain` | `String` |  |  |
-| 3 | `locator` | `WireLocator` → [`WireLocator`](#t-rafka_mesh_entity-wire-WireLocator) |  |  |
+| 3 | `locator` | `WireLocator` → [`WireLocator`](#t-rdm_core-wire-WireLocator) |  |  |
 

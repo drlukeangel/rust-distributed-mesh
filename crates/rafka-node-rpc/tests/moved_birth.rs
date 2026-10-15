@@ -8,11 +8,11 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::ping::{Ping, PingReply, PingRequest};
 use std::net::SocketAddr;
 use std::sync::Arc;
 

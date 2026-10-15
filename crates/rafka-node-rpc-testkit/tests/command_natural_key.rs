@@ -15,13 +15,13 @@
 //! A cell that stops the birth runs in its own process (the process-wide parking flag).
 
 use crate::common::{admin_side_serving, admin_side_serving_as};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::node_commands::CommandKey;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, Mode, PullRequest, PullServer, TestHydrator};
 use rafka_node_rpc_testkit::node;
@@ -44,12 +44,12 @@ struct Birth {
 
 impl Birth {
     async fn up(cell: &str) -> Self {
-        Self::launched(cell, None, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
+        Self::launched(cell, None, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
     /// [`Self::up`], its `hydrate_before_ready` hook `hydrator` when one is given.
     async fn up_hydrating(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>) -> Self {
-        Self::launched(cell, hydrator, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
+        Self::launched(cell, hydrator, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
     /// [`Self::up`], launched with `deadline` as its `node.connections.delete { All }` bound.
@@ -62,7 +62,7 @@ impl Birth {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -248,10 +248,10 @@ impl HeldActions {
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::fabric_rounds::RoundActions for HeldActions {
-    async fn commit_state(&self, _node: &rafka_mesh_entity::PathName) -> Result<(), String> {
+    async fn commit_state(&self, _node: &rdm_core::PathName) -> Result<(), String> {
         self.run().await
     }
-    async fn open_traffic(&self, _node: &rafka_mesh_entity::PathName) -> Result<(), String> {
+    async fn open_traffic(&self, _node: &rdm_core::PathName) -> Result<(), String> {
         self.run().await
     }
 }
@@ -260,8 +260,8 @@ impl Birth {
     /// `admin` announces itself holder of `mesh1`'s primary seat at `revision`; resolves once this
     /// birth holds that record.
     async fn seat(&self, admin: &crate::common::AdminSide, revision: u64) {
-        let holder = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
-        admin.observer.membership.publish_lifecycle(&rafka_mesh_transport::membership::Frame::Seated { seat: rafka_mesh_entity::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
+        let holder = rdm_core::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
+        admin.observer.membership.publish_lifecycle(&rafka_mesh_transport::membership::Frame::Seated { seat: rdm_core::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
         let seats = self.running.membership.seats();
         let mut changed = seats.subscribe();
         tokio::time::timeout(Duration::from_secs(20), async {
@@ -451,7 +451,7 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
         let bound = Duration::from_millis(500);
         let birth = std::sync::Arc::new(Birth::up_bounded("connections-delete-bound", bound).await);
         let held = birth.hold_one_call().await;
-        let all = StatusRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        let all = StatusRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         let began = std::time::Instant::now();
         let reply = tokio::time::timeout(Duration::from_secs(10), birth.call(&all)).await.expect("the closure ends at its bound while the held call is in flight");
         let took = began.elapsed();

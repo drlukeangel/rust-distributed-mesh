@@ -8,7 +8,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;

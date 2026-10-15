@@ -13,7 +13,7 @@
 //! refused its mesh's status by name, and published a fresh `pending`.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Frame, Membership, MeshStatus};
 use serde_json::Value;
 use std::time::Duration;

@@ -340,8 +340,8 @@ impl NodeRows {
     /// the exited node's `node_type` on recovery).
     pub async fn claim_with_node_type(&self, name: &PathName, node_id: &NodeId, node_type: &str, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<(Claimed, String), RowRefused> {
         let me = self.held_name_now();
-        let normalized = rafka_node_rpc_contract::status::normalize_node_type(node_type);
-        if let Some(reason) = rafka_node_rpc_contract::status::node_type_refusal(&normalized) {
+        let normalized = rdm_core::status::normalize_node_type(node_type);
+        if let Some(reason) = rdm_core::status::node_type_refusal(&normalized) {
             return Err(RowRefused::Unwritten(format!("{me}: {reason}; nothing is claimed or written")));
         }
         let inherited_type = if of == ClaimFor::Recovery {
@@ -366,7 +366,7 @@ impl NodeRows {
     pub async fn update_node_type(&self, name: &PathName, node_id: &NodeId, requested_node_type: &str) -> Result<(), RowRefused> {
         let me = self.writer_check(&name.mesh, name).await?;
         let held_type = self.node_type_of(node_id, name);
-        Err(RowRefused::Unwritten(format!("{me}: {}", rafka_node_rpc_contract::status::node_type_update_refusal(&held_type, requested_node_type))))
+        Err(RowRefused::Unwritten(format!("{me}: {}", rdm_core::status::node_type_update_refusal(&held_type, requested_node_type))))
     }
 
     /// The `node_type` this writer holds for `node_id`, falling back to `fallback.node_type()`.
@@ -720,7 +720,7 @@ impl NodeRows {
         };
         let Some(incarnation) = birth.incarnation_id.clone() else { return };
         span.record("told", "config-door");
-        let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation, config: row.config };
+        let req = rdm_core::status::StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation, config: row.config };
         let (me, me_id, view, storage) = (me.clone(), self.me_id.clone(), now.clone(), self.storage.clone());
         tokio::spawn(tracing::Instrument::instrument(
             async move {

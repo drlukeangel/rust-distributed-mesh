@@ -9,7 +9,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,

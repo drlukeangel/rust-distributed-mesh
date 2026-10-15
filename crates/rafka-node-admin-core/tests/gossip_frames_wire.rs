@@ -10,8 +10,8 @@
 //! JSON frame included; a step output that has no wire shape is refused naming its Build,
 //! attempt and step while the facts around it still travel.
 
-use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_mesh_transport::chunking::MAX_MESSAGE_BYTES;
 use rafka_mesh_transport::membership::Frame;
 use rafka_mesh_transport::snapshot::{chunks_of, Full, PublisherId};
@@ -53,7 +53,7 @@ fn digest(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDigest 
             runtime,
         },
         status: MemberStatus::ReadyForTraffic,
-        node_state: rafka_mesh_entity::NodeState::Alive,
+        node_state: rdm_core::NodeState::Alive,
         admin_api_base: full.then(|| "http://127.0.0.1:7000".to_string()),
         digest_seq: 3 + ordinal as u64,
         emitted_at_rafka_ms: 1_000 + ordinal as u64,
@@ -73,20 +73,20 @@ fn heartbeat(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDige
 }
 
 fn process_runtime() -> RuntimeFact {
-    RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep1"), provider: RuntimeProvider::Process, control_domain: "host-a".into(), locator: RuntimeLocator::Process { pid: 4242, start: 987_654 } }
+    RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep1"), provider: RuntimeProvider::Process, control_domain: "host-a".into(), locator: RuntimeLocator::Process { pid: 4242, start: 987_654 } }
 }
 
 fn container_runtime() -> RuntimeFact {
-    RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep2"), provider: RuntimeProvider::Container, control_domain: "docker-a".into(), locator: RuntimeLocator::Container { id: "f".repeat(64) } }
+    RuntimeFact { deployment_id: rdm_core::fixture_crockford60("dep2"), provider: RuntimeProvider::Container, control_domain: "docker-a".into(), locator: RuntimeLocator::Container { id: "f".repeat(64) } }
 }
 
 fn op(operation: &str) -> LifecycleOp {
     LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
 }
 
-fn round_hook(verb: &str) -> rafka_mesh_entity::RoundHook {
+fn round_hook(verb: &str) -> rdm_core::RoundHook {
     let fabric_id = fabric();
-    rafka_mesh_entity::RoundHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3qcfk1kq47m9".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
+    rdm_core::RoundHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3qcfk1kq47m9".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
 }
 
 fn publisher() -> PublisherId {
@@ -147,13 +147,13 @@ fn frames() -> Vec<Frame> {
         Frame::NodeConnectionsDeleted { op: op("node.connections.delete:mesh2.rpc.2"), forwarded_by: None },
         Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
-        Frame::Seated { seat: rafka_mesh_entity::Seat::FabricPrimary, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 } },
-        Frame::Seated { seat: rafka_mesh_entity::Seat::MeshPrimary, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 } },
-        Frame::Concern { seat: rafka_mesh_entity::Seat::FabricPrimary, node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
-        Frame::NewFabricPrimary { holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
+        Frame::Seated { seat: rdm_core::Seat::FabricPrimary, holder: rdm_core::SeatHolder { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 } },
+        Frame::Seated { seat: rdm_core::Seat::MeshPrimary, holder: rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 } },
+        Frame::Concern { seat: rdm_core::Seat::FabricPrimary, node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
+        Frame::NewFabricPrimary { holder: rdm_core::SeatHolder { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
         Frame::PrimaryUpdated {
             op: op("node.stop:mesh2.admin.1"),
-            seats: [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary].into_iter().map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 5 })).collect(),
+            seats: [rdm_core::Seat::MeshPrimary, rdm_core::Seat::FabricPrimary].into_iter().map(|seat| rdm_core::seat::transfer::CommittedSeat::of(seat, &rdm_core::SeatHolder { mesh: "mesh2".into(), node_id: rdm_core::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 5 })).collect(),
         },
         Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
         Frame::StateCommitted { hook: round_hook("commit-state"), forwarded_by: Some("mesh2.admin.1".into()) },
@@ -209,7 +209,7 @@ fn facts() -> Vec<BuildFact> {
     out.push(action(Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     // A recipe (build.md §1; lifecycles/node-replace.md): its steps and the births it pinned.
     {
-        use rafka_node_rpc_contract::build::RecipeStep;
+        use rdm_core::build::RecipeStep;
         let node: rafka_node_admin_core::model::PathName = "mesh2.rpc.1".parse().unwrap();
         let pin = rafka_node_admin_core::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         out.push(BuildFact::Opened(AttemptOpened {
@@ -262,11 +262,11 @@ fn facts() -> Vec<BuildFact> {
     out.push(step(CreateStep::PrepareStorage.name(), Some(to_json(&EndpointId("abcd".into())))));
     out.push(step(
         CreateStep::DeployRuntime.name(),
-        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(), provider: ProviderKind::Process, pid: Some(4242), start: Some(99), container: None, domain: Some("host-a".into()) })),
+        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-1")).unwrap(), provider: ProviderKind::Process, pid: Some(4242), start: Some(99), container: None, domain: Some("host-a".into()) })),
     ));
     out.push(step(
         CreateStep::DeployRuntime.name(),
-        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-2")).unwrap(), provider: ProviderKind::Container, pid: None, start: None, container: Some("c".repeat(64)), domain: None })),
+        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-2")).unwrap(), provider: ProviderKind::Container, pid: None, start: None, container: Some("c".repeat(64)), domain: None })),
     ));
     let evidence = |data_dir: Option<&str>| {
         let mut v = json!({ "deployment_id": "an16er0436pg", "provider": "process", "provider_control_domain_fingerprint": "aa11", "runtime_locator_kind": "process-pid-start", "runtime_locator_fingerprint": "bb22" });

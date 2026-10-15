@@ -9,15 +9,15 @@
 //! not its birth's (`RejectedStaleIncarnation`). Testkit range only ([`TESTKIT_OPS`]); never a
 //! product binary.
 //!
-//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
+//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{NodeId, PathName};
+use rdm_core::launch::Launch;
+use rdm_core::{NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{NodeState, Status, StatusReply, StatusRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
+use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 
@@ -162,7 +162,7 @@ pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNode
                 Ok(id) => id,
                 Err(e) => return Ok(DeclareReply::BadTarget { reason: format!("node id: {e}") }),
             };
-            let incarnation = match rafka_mesh_entity::IncarnationId::parse(&incarnation.unwrap_or(own_inc)) {
+            let incarnation = match rdm_core::IncarnationId::parse(&incarnation.unwrap_or(own_inc)) {
                 Ok(id) => id,
                 Err(e) => return Ok(DeclareReply::BadTarget { reason: format!("incarnation: {e}") }),
             };

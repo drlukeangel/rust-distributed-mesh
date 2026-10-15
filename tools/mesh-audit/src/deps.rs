@@ -26,8 +26,8 @@ use std::process::Command;
 
 /// PRD §4 target packages plus the generic crates already in the workspace.
 pub const GENERIC_PACKAGES: &[&str] = &[
-    "rafka-node-rpc-contract",
-    "rafka-mesh-entity",
+    "rdm-core",
+    "rdm-core",
     "rafka-mesh-transport",
     "rafka-node-rpc",
     "rafka-node-admin-core",
@@ -38,8 +38,8 @@ pub const GENERIC_PACKAGES: &[&str] = &[
     "rafka-mesh-telemetry",
 ];
 
-pub const CONTRACT: &str = "rafka-node-rpc-contract";
-pub const MESH_ENTITY: &str = "rafka-mesh-entity";
+pub const CONTRACT: &str = "rdm-core";
+pub const MESH_ENTITY: &str = "rdm-core";
 
 /// Crates that may only reach RDM through public control/probe interfaces.
 pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rafka-test-scenario", "rafka-chaos"];
@@ -48,7 +48,7 @@ pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rafka-test-scenario", "rafka-
 pub const PUBLIC_INTERFACES: &[&str] = &[
     "rafka-chaos",
     "rafka-node-admin-client",
-    "rafka-node-rpc-contract",
+    "rdm-core",
     "rafka-node-rpc-testkit",
     "rafka-test-scenario",
     "rafka-mesh-telemetry",

@@ -1,0 +1,21 @@
+[package]
+name = "rdm-core"
+version = "0.1.0"
+edition = "2021"
+description = "RDM core: ids and identity, Fabric/Mesh/Node model, membership and RuntimeFact types, Node RPC contract, and op names (no transport or runtime)"
+publish = false
+autotests = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
+hex = { workspace = true }
+rand = { workspace = true }
+blake3 = "1"
+sha2 = "0.11"
+tracing = { workspace = true }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

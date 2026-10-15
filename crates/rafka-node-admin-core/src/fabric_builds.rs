@@ -169,7 +169,7 @@ fn refeed(
 }
 
 /// The fabric's Build topic.
-pub(crate) fn build_topic(fabric: &rafka_mesh_entity::FabricId) -> TopicId {
+pub(crate) fn build_topic(fabric: &rdm_core::FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-builds:{fabric}").as_bytes()).as_bytes())
 }
 
@@ -298,7 +298,7 @@ impl FabricBuildStateAdapter {
     pub async fn join(
         gossip: &Gossip,
         book: &rafka_mesh_transport::membership::LocationBook,
-        fabric: &rafka_mesh_entity::FabricId,
+        fabric: &rdm_core::FabricId,
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
         accepted: Arc<AcceptedStore>,
@@ -654,7 +654,7 @@ mod tests {
     /// operation's `Complete`, which still commits no output.
     #[test]
     fn a_stop_receipt_carries_its_birth_and_time_on_the_build_topic() {
-        let op = rafka_mesh_entity::LifecycleOp {
+        let op = rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 2,
             operation: "node.stop:mesh1.rpc.1".into(),
@@ -665,7 +665,7 @@ mod tests {
         };
         let receipt = |operation: &str| BuildStepReceipt {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt: 2,
             operation: operation.into(),
             step: "Complete".into(),
@@ -711,9 +711,9 @@ mod tests {
     /// steps from it.
     #[test]
     fn a_recipe_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
-        use rafka_node_rpc_contract::build::RecipeStep;
+        use rdm_core::build::RecipeStep;
         let node: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
-        let pin = crate::build::PinnedBirth { node_id: rafka_mesh_entity::NodeId::mint(), incarnation: rafka_mesh_entity::IncarnationId::mint() };
+        let pin = crate::build::PinnedBirth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
         let opened = crate::build_state::AttemptOpened {
             mesh: None,
             build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
@@ -745,10 +745,10 @@ mod tests {
     #[tokio::test]
     async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
         use futures_util::FutureExt as _;
-        use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
+        use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
-        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
-        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), revision: 2 };
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
+        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
             let changed = Some(seats.subscribe());
@@ -780,9 +780,9 @@ mod tests {
     /// name.
     #[tokio::test]
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
-        use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
+        use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
-        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(seats.subscribe());
             let (seats, me) = (seats.clone(), me.clone());
@@ -795,7 +795,7 @@ mod tests {
         let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), revision: 2 });
+            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

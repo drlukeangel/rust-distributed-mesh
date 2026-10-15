@@ -13,18 +13,18 @@
 
 use crate::calls::ended;
 use crate::{BuildId, CallEnd};
-use rafka_mesh_entity::PathName;
+use rdm_core::PathName;
 use rafka_node_rpc::stream::{ReplyStream, StreamFailure, StreamItem};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget};
-use rafka_node_rpc_contract::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
-use rafka_node_rpc_contract::codes::ResetCode;
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
+use rdm_core::codes::ResetCode;
+use rdm_core::outcome::{IndeterminateReason, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use rafka_node_rpc_contract::build::{BuildChange as Change, Disposition as StartDisposition, MeshCounts};
+pub use rdm_core::build::{BuildChange as Change, Disposition as StartDisposition, MeshCounts};
 
 /// The bound on connecting to the fabric-primary and writing the request. The stream after it has
 /// no deadline: the transport's own liveness ends a dead one.
@@ -359,9 +359,9 @@ pub struct BuildReceipts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{IncarnationId, NodeId};
+    use rdm_core::{IncarnationId, NodeId};
     use rafka_node_rpc::{HandlerFault, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-    use rafka_node_rpc_contract::catalog::OpOwner;
+    use rdm_core::catalog::OpOwner;
 
     /// CONTRACT (node-rpc-envelope.md "Build, op `0x20`": the caller "waits on the stream" of a
     /// `build.create`, and a frame the server wrote reaches it): a Build stream is the whole of the

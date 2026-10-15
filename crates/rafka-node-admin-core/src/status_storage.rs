@@ -15,7 +15,7 @@
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeStatus, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use async_trait::async_trait;
-use rafka_node_rpc_contract::status::{MeshState, NodeState};
+use rdm_core::status::{MeshState, NodeState};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -793,7 +793,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("status-storage-{}", MeshId::mint()));
         let (m, f) = (MeshId::mint(), FabricId::mint());
         {
-            let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
+            let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();
             // Written out of order: the later fact first, a lagging earlier one after it.
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::Pending }).await.unwrap();
@@ -801,7 +801,7 @@ mod tests {
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
         }
-        let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
+        let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(s.mesh_statuses().await.unwrap().get(&m), Some(&MeshState::ReadyForTraffic), "the greatest state wins whatever the write order");
         assert_eq!(s.fabric_events().await.unwrap().len(), 1, "one row per event key");
         std::fs::remove_dir_all(&dir).ok();

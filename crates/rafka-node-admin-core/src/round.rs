@@ -9,7 +9,7 @@
 //! primary, declare the Mesh ready to the fabric-primary. The fabric-primary clears `degraded`
 //! only on a fresh report from the CURRENT mesh primary's birth, never on a topology reading.
 //!
-//! The down op is [`ProbeNodeState`](rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState):
+//! The down op is [`ProbeNodeState`](rdm_core::status::StatusRequest::ProbeNodeState):
 //! the member re-publishes its presence and answers its state. A failed send is named in its span
 //! and answered by nobody: no member leaves the checklist by a timer, and a new primary re-sends.
 
@@ -18,7 +18,7 @@ use crate::admin::{PeerRecovery, Records};
 use crate::model::{IncarnationId, NodeKind, PathName};
 use crate::status_rpc::MeshReport;
 use crate::topology::Topology;
-use rafka_mesh_entity::{MemberStatus, MeshDigest};
+use rdm_core::{MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::{Announced, DigestBook};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::BTreeMap;
@@ -347,7 +347,7 @@ fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{FabricId, MeshNode};
+    use rdm_core::{FabricId, MeshNode};
 
     fn path(mesh: &str, kind: NodeKind, ord: u32) -> PathName {
         PathName::new(mesh, kind, ord)

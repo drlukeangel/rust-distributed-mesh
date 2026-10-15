@@ -9,13 +9,13 @@
 
 use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::{project, view_projector, GossipLifecycle, Records};
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
 use rafka_node_admin_core::model::{NodeStatus, PathName, ProviderKind};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
-use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
+use rdm_core::status::{StatusReply, StatusRequest};
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;

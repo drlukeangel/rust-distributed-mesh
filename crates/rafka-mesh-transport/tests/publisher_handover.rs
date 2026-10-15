@@ -12,7 +12,7 @@
 //! input because of who sent it.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
 use rafka_mesh_transport::snapshot::PublisherId;
 use serde_json::Value;

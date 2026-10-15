@@ -3,9 +3,9 @@
 //! another admin holds the member cert that admin's signer issued for exactly its birth, in its
 //! hydrate context and on its running handle.
 
-use rafka_mesh_entity::launch::{Launch, Launcher};
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::launch::{Launch, Launcher};
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::app_hydration::{Hydration, HydrationState};
 use rafka_node_admin_core::certs::CertChoice;
@@ -70,7 +70,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             (d.clone(), d.mesh_id.clone().expect("the root holds its mesh id"))
         };
         std::fs::create_dir_all(&joiner_dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&joiner_dir).unwrap();
         let key = rafka_node_rpc_testkit::node::load_or_mint_key(&joiner_dir).unwrap();
         let launch = Launch {
             fabric,
@@ -87,15 +87,15 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
-        let runtime = rafka_mesh_entity::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
+        let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
         let _ = root.runner.joins.expect(rafka_node_admin_core::join::Deployed {
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
             supersedes: None,
-            endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
+            endpoint_id: rdm_core::EndpointId(key.public().to_string()),
             runtime,
             data_dir: joiner_dir.display().to_string(),
             last_accepted_name: None,

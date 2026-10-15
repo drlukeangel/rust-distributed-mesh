@@ -12,12 +12,12 @@ use crate::pool::{DialError, DialSpec, Failpoint, Pool, PoolKey};
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
 use iroh::endpoint::{ReadError, ReadToEndError, VarInt, WriteError};
 use iroh::Endpoint;
-use rafka_mesh_entity::NodeId;
-use rafka_node_rpc_contract::codes::ResetCode;
-use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
-use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, Target, RequestHeader, MAX_VARINT_LEN};
-use rafka_node_rpc_contract::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::NodeId;
+use rdm_core::codes::ResetCode;
+use rdm_core::context::{dropped_as_str, CallContext};
+use rdm_core::framing::{decode_single_frame, encode_request, Target, RequestHeader, MAX_VARINT_LEN};
+use rdm_core::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -141,7 +141,7 @@ pub struct NodeRpcClient {
 /// early refusal that stopped the request before it finished.
 pub enum Decode<'a> {
     /// The request committed: the commit cut and the reply bytes.
-    Committed(rafka_node_rpc_contract::outcome::Committed, &'a [u8]),
+    Committed(rdm_core::outcome::Committed, &'a [u8]),
     /// The request stopped before it finished: the early refusal and the reply bytes, when any.
     Early(EarlyRefusal, Option<&'a [u8]>),
 }
@@ -169,7 +169,7 @@ pub(crate) struct Reach {
 
 /// A committed invocation: the commit proof and the reply direction.
 pub(crate) struct Opened {
-    pub(crate) committed: rafka_node_rpc_contract::outcome::Committed,
+    pub(crate) committed: rdm_core::outcome::Committed,
     pub(crate) recv: iroh::endpoint::RecvStream,
     pub(crate) evidence: CallEvidence,
     pub(crate) key: PoolKey,
@@ -270,7 +270,7 @@ impl NodeRpcClient {
 
     /// The endpoint the resolver names for the node `node` now, if it resolves: the key its pooled
     /// connections to that node are held under.
-    pub fn endpoint_of(&self, node: &rafka_mesh_entity::NodeId) -> Option<iroh::PublicKey> {
+    pub fn endpoint_of(&self, node: &rdm_core::NodeId) -> Option<iroh::PublicKey> {
         self.resolver.resolve(&NodeTarget::ExactNode(node.clone())).ok().map(|n| n.endpoint_id)
     }
 

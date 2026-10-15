@@ -13,10 +13,10 @@ use crate::build_state::{BuildFact, BuildStateAdapter};
 use crate::fabric_builds::{encode_chunks, BuildMessage};
 use rafka_node_rpc::stream::{ReplySink, NotStarted, StreamItem};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
-use rafka_node_rpc_contract::build_facts::{BuildFacts, BuildFactsReply, BuildFactsRequest};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::streaming::FrameKind;
+use rdm_core::build_facts::{BuildFacts, BuildFactsReply, BuildFactsRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::streaming::FrameKind;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::Instrument as _;
@@ -58,7 +58,7 @@ impl BuildFactsDoor {
                     span.record("outcome", "malformed-build-id");
                     tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the facts read is refused: its Build id is not a Crockford id"));
-                    return BuildFactsReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
+                    return BuildFactsReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt };
                 }
             };
             // One read of this admin's log: the stream is a snapshot of it.

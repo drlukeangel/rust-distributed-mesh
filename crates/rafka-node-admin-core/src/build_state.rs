@@ -879,7 +879,7 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
                     out.unrecognised.push(unrecognised("the step recorded no operation".into()));
                     continue;
                 }
-                Some(v) => match serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()) {
+                Some(v) => match serde_json::from_value::<rdm_core::LifecycleOp>(v.clone()) {
                     Ok(op) => op,
                     Err(e) => {
                         out.unrecognised.push(unrecognised(format!("its recorded operation is not a LifecycleOp this build reads: {e}")));
@@ -920,7 +920,7 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InFlight {
     /// The operations in flight.
-    pub ops: Vec<rafka_mesh_entity::LifecycleOp>,
+    pub ops: Vec<rdm_core::LifecycleOp>,
     /// Completed steps whose recorded operation cannot be read.
     pub unrecognised: Vec<UnrecognisedStep>,
     /// The restarts whose `node.restart:<path>` `Complete` is receipted, by `(build_id, attempt, operation)`:
@@ -2174,7 +2174,7 @@ impl BuildStateAdapter for FileJournal {
 mod tests {
     #[test]
     fn a_step_line_written_before_receipts_carried_output_still_decodes() {
-        let old = format!(r#"{{"fact":"step","build_id":"{}","attempt":1,"operation":"node.create:mesh1.rpc.1","step":"DeployRuntime","outcome":"complete"}}"#, rafka_mesh_entity::fixture_crockford60("b1"));
+        let old = format!(r#"{{"fact":"step","build_id":"{}","attempt":1,"operation":"node.create:mesh1.rpc.1","step":"DeployRuntime","outcome":"complete"}}"#, rdm_core::fixture_crockford60("b1"));
         let fact: BuildFact = serde_json::from_str(&old).unwrap();
         assert!(matches!(fact, BuildFact::Step(BuildStepReceipt { output: None, .. })));
         let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, "node.create:mesh1.rpc.1") };
@@ -2186,7 +2186,7 @@ mod tests {
 
     fn intent(id: &str) -> BuildAccepted {
         BuildAccepted {
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             topology: FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
             submitted_at_ms: 1,
@@ -2194,19 +2194,19 @@ mod tests {
     }
 
     fn opened(id: &str, attempt: u32, reason: AttemptReason) -> AttemptOpened {
-        AttemptOpened { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
+        AttemptOpened { mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
     }
 
     fn claim(id: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
-        BuildAttemptClaim { claimant: None, mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
+        BuildAttemptClaim { claimant: None, mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
     }
 
     fn step(id: &str, attempt: u32, op: &str) -> BuildStepReceipt {
-        BuildStepReceipt { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
     }
 
     fn attempt(id: &str, attempt: u32, outcome: AttemptOutcome) -> BuildAttemptReceipt {
-        BuildAttemptReceipt { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, outcome }
+        BuildAttemptReceipt { mesh: None, build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, outcome }
     }
 
     fn log() -> Vec<BuildFact> {
@@ -2227,12 +2227,12 @@ mod tests {
     fn the_fold_is_deterministic_and_idempotent() {
         let a = fold(&log());
         assert_eq!(a, fold(&log()));
-        let b1 = &a[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()];
+        let b1 = &a[&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()];
         assert_eq!(b1.state, BuildState::Complete);
         assert_eq!(b1.attempt, 2);
         assert_eq!(b1.executor.as_deref(), Some("mesh1.admin.2"), "the first claim of an attempt wins");
         assert_eq!(b1.steps.len(), 1);
-        assert_eq!(a[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b2")).unwrap()].state, BuildState::Pending);
+        assert_eq!(a[&BuildId::parse(&rdm_core::fixture_crockford60("b2")).unwrap()].state, BuildState::Pending);
         // Duplicating every fact changes nothing.
         let doubled: Vec<BuildFact> = log().into_iter().flat_map(|f| [f.clone(), f]).collect();
         assert_eq!(fold(&doubled), a);
@@ -2241,29 +2241,29 @@ mod tests {
     #[test]
     fn a_failed_attempt_leaves_the_build_failed_until_a_later_claim() {
         let v = fold(&log()[..4]);
-        let b1 = &v[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()];
+        let b1 = &v[&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()];
         assert_eq!(b1.state, BuildState::Failed);
         assert_eq!(b1.last_failure.as_deref(), Some("executor lost"));
         let v = fold(&log()[..5]);
-        assert_eq!(v[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()].state, BuildState::Running, "a successor's claim resumes the same build id");
+        assert_eq!(v[&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()].state, BuildState::Running, "a successor's claim resumes the same build id");
     }
 
     #[test]
     fn open_retire_and_restart_overlays_are_derived_from_the_build_facts() {
-        let op = |node: &str| rafka_mesh_entity::LifecycleOp {
-            build_id: rafka_mesh_entity::fixture_crockford60("b1"),
+        let op = |node: &str| rdm_core::LifecycleOp {
+            build_id: rdm_core::fixture_crockford60("b1"),
             attempt: 1,
             operation: format!("node.delete:{node}"),
-            node_id: rafka_mesh_entity::NodeId::mint(),
-            incarnation: rafka_mesh_entity::IncarnationId::mint(),
+            node_id: rdm_core::NodeId::mint(),
+            incarnation: rdm_core::IncarnationId::mint(),
             name: node.parse().unwrap(),
             event_at_rafka_ms: 1,
         };
         let (a, b) = (op("mesh1.rpc.1"), op("mesh1.rpc.2"));
-        let with = |operation: &str, step: &str, output: &rafka_mesh_entity::LifecycleOp| {
+        let with = |operation: &str, step: &str, output: &rdm_core::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
                 mesh: None,
-                build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+                build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
                 attempt: 1,
                 operation: operation.into(),
                 step: step.into(),
@@ -2285,7 +2285,7 @@ mod tests {
         // A restart is one operation (`node.restart:<path>`): its pre-event opens it, the stop of the
         // live process leaves it open, and only its `Complete`, after the start, closes it, whoever
         // reads the facts.
-        let c = rafka_mesh_entity::LifecycleOp { operation: "node.restart:mesh1.rpc.3".into(), name: "mesh1.rpc.3".parse().unwrap(), ..op("mesh1.rpc.3") };
+        let c = rdm_core::LifecycleOp { operation: "node.restart:mesh1.rpc.3".into(), name: "mesh1.rpc.3".parse().unwrap(), ..op("mesh1.rpc.3") };
         let mut facts = facts;
         facts.push(with("node.restart:mesh1.rpc.3", "NodeRestarting", &c));
         facts.push(with("node.restart:mesh1.rpc.3", "AwaitNodeLeft", &c));
@@ -2295,15 +2295,15 @@ mod tests {
         assert!(in_flight_ops(&facts, &fold(&facts)).unrecognised.is_empty());
         assert_eq!(
             in_flight_ops(&facts, &fold(&facts)).restarts_completed,
-            [(rafka_mesh_entity::fixture_crockford60("b1"), 1, "node.restart:mesh1.rpc.3".to_string())].into(),
+            [(rdm_core::fixture_crockford60("b1"), 1, "node.restart:mesh1.rpc.3".to_string())].into(),
             "the restart's Complete is named by Build, attempt and operation: it ends that restart's hold and no other"
         );
 
         // A Build is forgotten once the fold drops it on its `Forget`; a `Forget` of a Build still in
         // flight leaves it held, so it names nothing forgotten.
-        facts.push(BuildFact::Forget { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap() });
-        facts.push(BuildFact::Forget { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b9")).unwrap() });
-        assert_eq!(forgotten_builds(&facts, &fold(&facts)), [rafka_mesh_entity::fixture_crockford60("b9")].into(), "only a Build the fold no longer holds is forgotten");
+        facts.push(BuildFact::Forget { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap() });
+        facts.push(BuildFact::Forget { build_id: BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap() });
+        assert_eq!(forgotten_builds(&facts, &fold(&facts)), [rdm_core::fixture_crockford60("b9")].into(), "only a Build the fold no longer holds is forgotten");
     }
 
     /// CONTRACT (node-rpc-envelope.md: "Progress waits on no gossip"): a restart is open until its
@@ -2312,19 +2312,19 @@ mod tests {
     /// a `Converged` after a `Failed` ends nothing, and a verdict ends only its own attempt's restarts.
     #[test]
     fn a_restart_is_closed_by_its_attempts_converged_verdict_and_by_no_other_attempts() {
-        let restart = |node: &str, attempt: u32| rafka_mesh_entity::LifecycleOp {
-            build_id: rafka_mesh_entity::fixture_crockford60("b1"),
+        let restart = |node: &str, attempt: u32| rdm_core::LifecycleOp {
+            build_id: rdm_core::fixture_crockford60("b1"),
             attempt,
             operation: format!("node.restart:{node}"),
-            node_id: rafka_mesh_entity::NodeId::mint(),
-            incarnation: rafka_mesh_entity::IncarnationId::mint(),
+            node_id: rdm_core::NodeId::mint(),
+            incarnation: rdm_core::IncarnationId::mint(),
             name: node.parse().unwrap(),
             event_at_rafka_ms: 1,
         };
-        let pre_event = |op: &rafka_mesh_entity::LifecycleOp| {
+        let pre_event = |op: &rdm_core::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
                 mesh: None,
-                build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+                build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
                 attempt: op.attempt,
                 operation: op.operation.clone(),
                 step: "NodeRestarting".into(),
@@ -2341,7 +2341,7 @@ mod tests {
         facts.push(BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::Converged)));
         let read = in_flight_ops(&facts, &fold(&facts));
         assert_eq!(read.ops, vec![failed, later], "attempt 3's Converged ends its restart; attempt 2's first verdict is Failed and attempt 4 has none");
-        assert_eq!(read.attempts_converged, [(rafka_mesh_entity::fixture_crockford60("b1"), 3)].into(), "the converged attempts are named by Build and attempt");
+        assert_eq!(read.attempts_converged, [(rdm_core::fixture_crockford60("b1"), 3)].into(), "the converged attempts are named by Build and attempt");
     }
 
     /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row
@@ -2352,7 +2352,7 @@ mod tests {
         let step = |output: Option<serde_json::Value>| {
             BuildFact::Step(BuildStepReceipt {
                 mesh: None,
-                build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+                build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
                 attempt: 2,
                 operation: "node.delete:mesh1.rpc.1".into(),
                 step: "NodeDeleting".into(),
@@ -2361,7 +2361,7 @@ mod tests {
                 executor: None,
             })
         };
-        let old_shape = serde_json::json!({"build_id": rafka_mesh_entity::fixture_crockford60("b1"), "attempt": 2, "operation": "node.delete:mesh1.rpc.1", "event_at_ms": 1});
+        let old_shape = serde_json::json!({"build_id": rdm_core::fixture_crockford60("b1"), "attempt": 2, "operation": "node.delete:mesh1.rpc.1", "event_at_ms": 1});
         let facts = vec![BuildFact::Accepted(intent("b1")), step(Some(old_shape))];
         let read = in_flight_ops(&facts, &fold(&facts));
         assert!(read.ops.is_empty(), "an unreadable step opens no overlay");
@@ -2381,10 +2381,10 @@ mod tests {
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won);
         assert_eq!(m.claim_attempt(&claim("b1", 1, "b")).await.unwrap(), ClaimOutcome::Lost { holder: "a".into() });
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won, "re-claiming your own attempt is idempotent");
-        assert_eq!(m.claim_attempt(&claim("b9", 1, "a")).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b9")).unwrap())));
+        assert_eq!(m.claim_attempt(&claim("b9", 1, "a")).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
         let mut other = intent("b1");
         other.submitted_at_ms = 2;
-        assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap())));
+        assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap())));
         m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.list_active().await.unwrap().len(), 1);
     }
@@ -2401,7 +2401,7 @@ mod tests {
             BuildFact::Claim(claim("b7", 1, "a")),
             BuildFact::Accepted(intent("b7")),
         ];
-        let b = fold(&chain).remove(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b7")).unwrap()).unwrap();
+        let b = fold(&chain).remove(&BuildId::parse(&rdm_core::fixture_crockford60("b7")).unwrap()).unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Complete, 3, Some("c")));
     }
 
@@ -2411,25 +2411,25 @@ mod tests {
         m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won);
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-        assert_eq!(m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete);
+        assert_eq!(m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete);
         // A claim on a complete Build runs nothing and records nothing: a complete Build runs
         // again only once an attempt is opened on it.
         assert_eq!(m.claim_attempt(&claim("b1", 2, "a")).await.unwrap(), ClaimOutcome::NotOpen { next: None });
-        assert_eq!(m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
+        assert_eq!(m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
         // Two authorities proving the same drift open one attempt: the first opener wins.
         m.open_attempt(&opened("b1", 2, AttemptReason::ProvenDrift)).await.unwrap();
         let mut again = opened("b1", 2, AttemptReason::Restart);
         again.opened_by = "mesh1.admin.2".into();
         m.open_attempt(&again).await.unwrap();
-        let b = m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap();
+        let b = m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap();
         assert_eq!((b.state, b.attempt, b.reason, b.executor), (BuildState::Pending, 1, AttemptReason::ProvenDrift, None));
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1);
         assert_eq!(m.list_active().await.unwrap().len(), 1, "the reopened Build is active again");
         assert_eq!(m.claim_attempt(&claim("b1", 3, "b")).await.unwrap(), ClaimOutcome::NotOpen { next: Some(2) }, "only the next attempt");
         assert_eq!(m.claim_attempt(&claim("b1", 2, "b")).await.unwrap(), ClaimOutcome::Won);
-        let b = m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap();
+        let b = m.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Running, 2, Some("b")));
-        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b9")).unwrap())));
+        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rdm_core::fixture_crockford60("b9")).unwrap())));
     }
 
     /// Two openers that computed one attempt number from one settled Build: the first append holds it.
@@ -2455,7 +2455,7 @@ mod tests {
         let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
-                assert_eq!((build_id.to_string(), *attempt), (rafka_mesh_entity::fixture_crockford60("b1"), 2));
+                assert_eq!((build_id.to_string(), *attempt), (rdm_core::fixture_crockford60("b1"), 2));
                 assert!(held.contains("restart of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
                 assert!(wanted.contains("restart of mesh2.rpc.1"), "the refusal names what was asked: {wanted}");
             }
@@ -2496,7 +2496,7 @@ mod tests {
     async fn a_reader_of_the_journal_never_waits_behind_a_push_held_mid_derivation() {
         let dir = tmp();
         let j = Arc::new(FileJournal::open(&dir).await.unwrap());
-        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         j.publish_accepted(&intent("b1")).await.unwrap();
         j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
         let held_op = "node.restart:mesh1.rpc.9";
@@ -2546,15 +2546,15 @@ mod tests {
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "node.restart:mesh1.rpc.2")).await.unwrap();
             j.publish_accepted(&intent("b2")).await.unwrap();
-            (j.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap(), j.list_active().await.unwrap())
+            (j.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap(), j.list_active().await.unwrap())
         };
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap(), before.0);
+        assert_eq!(j.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap(), before.0);
         assert_eq!(j.list_active().await.unwrap(), before.1);
         assert_eq!(j.claim_attempt(&claim("b1", 1, "mesh1.admin.2")).await.unwrap(), ClaimOutcome::Lost { holder: "mesh1.admin.1".into() });
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let again = FileJournal::open(&dir).await.unwrap();
-        assert_eq!(again.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete);
+        assert_eq!(again.read_build(&BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2575,7 +2575,7 @@ mod tests {
         let dir = tmp();
         let journal = FileJournal::open(&dir).await.unwrap();
         for s in [&MemoryBuildStateAdapter::new() as &dyn BuildStateAdapter, &journal] {
-            let id = |b: &str| BuildId::parse(&rafka_mesh_entity::fixture_crockford60(b)).unwrap();
+            let id = |b: &str| BuildId::parse(&rdm_core::fixture_crockford60(b)).unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::None, "an empty store holds no current Build");
             s.publish_accepted(&accepted_at("b0", 10)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")), "an accepted Build is current, in progress");
@@ -2609,7 +2609,7 @@ mod tests {
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b1")));
         }
         let replayed = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(replayed.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()), "the journal's replay answers the same current Build");
+        assert_eq!(replayed.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap()), "the journal's replay answers the same current Build");
         assert_eq!(replayed.newest_accepted_at_ms().await.unwrap(), Some(30));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2628,7 +2628,7 @@ mod tests {
         b.absorb(&older).await;
         b.absorb(&newer).await;
         for s in [&a, &b] {
-            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("bnew")).unwrap()));
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rdm_core::fixture_crockford60("bnew")).unwrap()));
         }
     }
 
@@ -2641,7 +2641,7 @@ mod tests {
     #[tokio::test]
     async fn a_resubmit_after_a_failed_attempt_opens_a_new_run_and_a_hand_off_continues_its_run() {
         let m = MemoryBuildStateAdapter::new();
-        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }))]).await;
         let p = m.read_build(&b1).await.unwrap();
         assert_eq!(p.run_of(p.attempt_to_drive()), 1, "the hand-off's next attempt continues run 1");
@@ -2659,14 +2659,14 @@ mod tests {
     #[tokio::test]
     async fn a_failed_build_newer_than_the_current_one_is_drivable_and_an_older_one_is_not() {
         let s = MemoryBuildStateAdapter::new();
-        let id = |b: &str| BuildId::parse(&rafka_mesh_entity::fixture_crockford60(b)).unwrap();
+        let id = |b: &str| BuildId::parse(&rdm_core::fixture_crockford60(b)).unwrap();
         for (b, at, outcome) in [("b0", 10, AttemptOutcome::Failed { reason: "x".into() }), ("b1", 20, AttemptOutcome::Converged), ("b2", 30, AttemptOutcome::Failed { reason: "y".into() })] {
             s.publish_accepted(&accepted_at(b, at)).await.unwrap();
             s.claim_attempt(&claim(b, 1, "a")).await.unwrap();
             s.append_attempt_receipt(&attempt(b, 1, outcome)).await.unwrap();
         }
         let held = &s;
-        let p = |b: &'static str| async move { held.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60(b)).unwrap()).await.unwrap() };
+        let p = |b: &'static str| async move { held.read_build(&BuildId::parse(&rdm_core::fixture_crockford60(b)).unwrap()).await.unwrap() };
         assert!(drivable(&s, &p("b1").await).await.unwrap(), "the current Build");
         assert!(drivable(&s, &p("b2").await).await.unwrap(), "a failed Build accepted after the current one");
         assert!(!drivable(&s, &p("b0").await).await.unwrap(), "a failed Build older than the current one");
@@ -2695,19 +2695,19 @@ mod tests {
         // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
         let receipt = |build: &str, attempt: u32, operation: &str, step: &str| BuildStepReceipt {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(build)).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
             attempt,
             operation: format!("{operation}:{path}"),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: build.into(), attempt, operation: format!("{operation}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: build.into(), attempt, operation: format!("{operation}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
             }),
             executor: Some("mesh1.admin.1".into()),
         };
         let opened = |build: &str, attempt: u32| AttemptOpened {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(build)).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60(build)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
             action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }),
@@ -2729,17 +2729,17 @@ mod tests {
             assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "the path's create from before the deletion: not recovered");
             j.append_step_receipt(&receipt("b1", 3, "node.create", "Complete")).await.unwrap();
             j.append_step_receipt(&receipt("b1", 4, "node.create", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "own append: the first attempt that completed the recovery");
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "own append: the first attempt that completed the recovery");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
+        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
         assert_eq!(j.recovery_of(&"mesh1.rpc.2".parse().unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         // Gossip delivers in any order: the create's Complete heard first, the attempt's opening last.
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "node.create", "Complete"))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "node.delete", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
-        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
+        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2759,19 +2759,19 @@ mod tests {
         let (r, q) = (birth("mesh2.rpc.1"), birth("mesh1.rpc.1"));
         let receipt = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, operation: &str, step: &str| BuildStepReceipt {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{operation}:{}", b.0),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: rafka_mesh_entity::fixture_crockford60("b1"), attempt, operation: format!("{operation}:{}", b.0), node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: format!("{operation}:{}", b.0), node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1 }).unwrap()
             }),
             executor: Some("mesh2.admin.1".into()),
         };
         let open = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32| AttemptOpened {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
             action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone() }),
@@ -2780,7 +2780,7 @@ mod tests {
         };
         let failed = |n: u32, why: &str| attempt("b1", n, AttemptOutcome::Failed { reason: why.into() });
         let owed = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, reason: &str| OwedExit { path: b.0.clone(), node_id: b.1.clone(), incarnation: b.2.clone(), attempt, reason: reason.into() };
-        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let mut facts: Vec<BuildFact> = Vec::new();
         let dir = tmp();
         {
@@ -2812,7 +2812,7 @@ mod tests {
             }
             assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![owed(&r, 2, "node.create: PrepareStorage")], "the next open bounds the run; the other mesh's birth is not answered");
             assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh answers its own");
-            assert_eq!(j.exits_owed(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b2")).unwrap(), "mesh2").await.unwrap(), vec![], "another Build holds none");
+            assert_eq!(j.exits_owed(&BuildId::parse(&rdm_core::fixture_crockford60("b2")).unwrap(), "mesh2").await.unwrap(), vec![], "another Build holds none");
             for f in [BuildFact::Opened(open(&r, 4)), BuildFact::Claim(claim("b1", 4, "mesh2.admin.2"))] {
                 put(f).await;
             }
@@ -2857,13 +2857,13 @@ mod tests {
         let path: crate::model::PathName = "mesh2.rpc.2".parse().unwrap();
         let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{kind}:{path}"),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: rafka_mesh_entity::fixture_crockford60("b1"), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rdm_core::LifecycleOp { build_id: rdm_core::fixture_crockford60("b1"), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
             }),
             executor: Some("mesh2.admin.1".into()),
         };
@@ -2878,17 +2878,17 @@ mod tests {
             j.append_step_receipt(&receipt("node.delete", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
             j.append_step_receipt(&receipt("node.delete", 3, "NodeDeleted", &retired.0, &retired.1)).await.unwrap();
             j.append_step_receipt(&receipt("node.delete", 3, "Complete", &retired.0, &retired.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "own append: the first retire that deleted its birth");
-            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, format!("node.delete:{path}"))), "own append: the retire that deleted the birth");
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "own append: the first retire that deleted its birth");
+            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 3, format!("node.delete:{path}"))), "own append: the retire that deleted the birth");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "journal replay");
+        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "journal replay");
         assert_eq!(j.recovery_of(&"mesh2.rpc.1".parse().unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("node.delete", 2, "Complete", &replaced.0, &replaced.1))]).await;
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("node.delete", 2, "NodeDeleted", &replaced.0, &replaced.1))]).await;
-        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "absorbed, in either order");
+        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, format!("node.delete:{path}"))), "absorbed, in either order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2947,7 +2947,7 @@ mod tests {
     fn lane_open(id: &str, mesh: &str, attempt: u32, path: &str) -> AttemptOpened {
         AttemptOpened {
             mesh: Some(mesh.into()),
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
             action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }),
@@ -2958,7 +2958,7 @@ mod tests {
 
     /// A claim of `mesh`'s drift-lane attempt for `who`, decided by `who` (a mesh-primary claims its own).
     fn lane_claim(id: &str, mesh: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
-        BuildAttemptClaim { claimant: Some(who.into()), mesh: Some(mesh.into()), build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
+        BuildAttemptClaim { claimant: Some(who.into()), mesh: Some(mesh.into()), build_id: BuildId::parse(&rdm_core::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
     }
 
     /// CONTRACT (R-BI7 caveat 2, proposal Part C: "The claim key becomes `(build_id, mesh, attempt)`.
@@ -2994,7 +2994,7 @@ mod tests {
     async fn the_fold_reads_the_fabric_lane_and_each_drift_lane_apart() {
         let m = MemoryBuildStateAdapter::new();
         m.publish_accepted(&intent("b1")).await.unwrap();
-        let id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let mut fabric = claim("b1", 1, "mesh1.admin.1");
         fabric.claimant = Some("mesh1.admin.1".into());
         m.claim_attempt(&fabric).await.unwrap();
@@ -3028,7 +3028,7 @@ mod tests {
     /// line with them round-trips them.
     #[test]
     fn a_fact_line_written_before_lanes_decodes_as_the_fabric_lane() {
-        let id = rafka_mesh_entity::fixture_crockford60("b1");
+        let id = rdm_core::fixture_crockford60("b1");
         let old: BuildFact = serde_json::from_str(&format!(r#"{{"fact":"claim","build_id":"{id}","attempt":2,"executor":"mesh1.admin.1"}}"#)).unwrap();
         assert!(matches!(&old, BuildFact::Claim(c) if c.mesh.is_none() && c.claimant.is_none()), "{old:?}");
         let new = BuildFact::Claim(lane_claim("b1", "mesh2", 1, "mesh2.admin.1"));
@@ -3083,7 +3083,7 @@ mod tests {
         // shared store root, opens and runs a drift-lane attempt for mesh2 (written under
         // `meshes/mesh2/builds/build-journal.jsonl`), and the live `j_mesh1` plus a freshly opened
         // successor `j_successor` both read the fabric-lane and mesh2-lane facts from the store root.
-        let id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let root_mesh2 = crate::store_root::StoreRoot::at(root_pre.dir());
         let j_mesh2 = FileJournal::open_on_root(&root_mesh2, "mesh2").await.unwrap();
         assert_eq!(j_mesh2.read_build(&id).await.unwrap().attempt, 1);
@@ -3126,12 +3126,12 @@ mod tests {
         let elsewhere_node = crate::model::NodeId::mint();
         let elsewhere_inc = crate::model::IncarnationId::mint();
         book.seats.take(
-            rafka_mesh_entity::Seat::FabricPrimary,
-            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: elsewhere_node.clone(), incarnation: elsewhere_inc.clone(), revision: 1 },
+            rdm_core::Seat::FabricPrimary,
+            &rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: elsewhere_node.clone(), incarnation: elsewhere_inc.clone(), revision: 1 },
         );
         book.seats.take(
-            rafka_mesh_entity::Seat::MeshPrimary,
-            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: elsewhere_node, incarnation: elsewhere_inc, revision: 1 },
+            rdm_core::Seat::MeshPrimary,
+            &rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: elsewhere_node, incarnation: elsewhere_inc, revision: 1 },
         );
         let booting_me = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
         let booting_name: crate::model::PathName = "mesh1.admin.2".parse().unwrap();
@@ -3159,12 +3159,12 @@ mod tests {
         // source reports `holds_fabric == true` and `holds_mesh == true`, and `j_unseated` syncs the
         // journal it now owns.
         book.seats.take(
-            rafka_mesh_entity::Seat::FabricPrimary,
-            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: booting_me.0.clone(), incarnation: booting_me.1.clone(), revision: 2 },
+            rdm_core::Seat::FabricPrimary,
+            &rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: booting_me.0.clone(), incarnation: booting_me.1.clone(), revision: 2 },
         );
         book.seats.take(
-            rafka_mesh_entity::Seat::MeshPrimary,
-            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: booting_me.0, incarnation: booting_me.1, revision: 2 },
+            rdm_core::Seat::MeshPrimary,
+            &rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: booting_me.0, incarnation: booting_me.1, revision: 2 },
         );
         assert_eq!(
             j_unseated.current_build().await.unwrap(),

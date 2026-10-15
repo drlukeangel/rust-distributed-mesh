@@ -30,12 +30,7 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer};
 
-/// The diagnostic file's name in the node's log directory.
-pub const TRANSPORT_DIAG_FILE: &str = "transport-diag.log";
-
-/// The target of the node's own diagnostic lines (dial, accept, bind): routed to this sink only.
-/// It shares no prefix with the crates span export admits (`rafka`, `rshape`, `rdm`, `main`).
-pub const TRANSPORT_DIAG_TARGET: &str = "transport_diag";
+pub use rdm_core::TRANSPORT_DIAG_FILE;
 
 /// What the sink carries besides its own target: the iroh router's accept, the endpoint and its
 /// socket (bind, path selection, the direct addresses a dial replaced), the per-remote path state,

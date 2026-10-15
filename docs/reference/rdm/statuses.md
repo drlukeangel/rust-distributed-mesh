@@ -5,41 +5,24 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 
 | enum | crate | file |
 |---|---|---|
-| [`BuildState`](#t-rafka_node_admin_client-BuildState) | rafka-node-admin-client | `crates/rafka-node-admin-client/src/lib.rs` |
 | [`BuildState`](#t-rafka_node_admin_core-build_state-BuildState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/build_state.rs` |
-| [`ConnectionState`](#t-rafka_mesh_entity-connections-ConnectionState) | rafka-mesh-entity | `crates/rafka-mesh-entity/src/connections.rs` |
+| [`BuildState`](#t-rdm_core-dto-BuildState) | rdm-core | `crates/rdm-core/src/dto.rs` |
+| [`ConnectionState`](#t-rdm_core-connections-ConnectionState) | rdm-core | `crates/rdm-core/src/connections.rs` |
 | [`DeploymentStatus`](#t-rafka_node_admin_core-deployment-provider-DeploymentStatus) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/deployment/provider.rs` |
 | [`FabricState`](#t-rafka_node_admin_core-fabric_state-FabricState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/fabric_state.rs` |
 | [`HydrationState`](#t-rafka_node_admin_core-app_hydration-HydrationState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/app_hydration.rs` |
 | [`LifecycleState`](#t-rafka_node_admin_core-lifecycle-LifecycleState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/lifecycle.rs` |
-| [`MemberStatus`](#t-rafka_mesh_entity-digest-MemberStatus) | rafka-mesh-entity | `crates/rafka-mesh-entity/src/digest.rs` |
-| [`MeshState`](#t-rafka_node_rpc_contract-status-MeshState) | rafka-node-rpc-contract | `crates/rafka-node-rpc-contract/src/status.rs` |
-| [`NodeState`](#t-rafka_mesh_entity-digest-NodeState) | rafka-mesh-entity | `crates/rafka-mesh-entity/src/digest.rs` |
-| [`NodeState`](#t-rafka_node_rpc_contract-status-NodeState) | rafka-node-rpc-contract | `crates/rafka-node-rpc-contract/src/status.rs` |
-| [`NodeStatus`](#t-rafka_node_admin_core-model-NodeStatus) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/model.rs` |
-| [`NodeStatus`](#t-rafka_node_rpc_contract-views-NodeStatus) | rafka-node-rpc-contract | `crates/rafka-node-rpc-contract/src/views.rs` |
-| [`OpState`](#t-rafka_node_rpc_contract-catalog-OpState) | rafka-node-rpc-contract | `crates/rafka-node-rpc-contract/src/catalog.rs` |
-| [`OrderState`](#t-rafka_node_rpc_contract-streaming-OrderState) | rafka-node-rpc-contract | `crates/rafka-node-rpc-contract/src/streaming.rs` |
-| [`ScopeStatus`](#t-rafka_node_admin_core-model-ScopeStatus) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/model.rs` |
-| [`ScopeStatus`](#t-rafka_node_rpc_contract-views-ScopeStatus) | rafka-node-rpc-contract | `crates/rafka-node-rpc-contract/src/views.rs` |
+| [`MemberStatus`](#t-rdm_core-digest-MemberStatus) | rdm-core | `crates/rdm-core/src/digest.rs` |
+| [`MeshState`](#t-rdm_core-status-MeshState) | rdm-core | `crates/rdm-core/src/status.rs` |
+| [`NodeState`](#t-rdm_core-digest-NodeState) | rdm-core | `crates/rdm-core/src/digest.rs` |
+| [`NodeState`](#t-rdm_core-status-NodeState) | rdm-core | `crates/rdm-core/src/status.rs` |
+| [`NodeStatus`](#t-rdm_core-model-NodeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
+| [`NodeStatus`](#t-rdm_core-views-NodeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
+| [`OpState`](#t-rdm_core-catalog-OpState) | rdm-core | `crates/rdm-core/src/catalog.rs` |
+| [`OrderState`](#t-rdm_core-streaming-OrderState) | rdm-core | `crates/rdm-core/src/streaming.rs` |
+| [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
+| [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
 | [`SyncState`](#t-rafka_node_admin_core-wiring-SyncState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/wiring.rs` |
-
-<a id="t-rafka_node_admin_client-BuildState"></a>
-
-### `BuildState`
-
-`crates/rafka-node-admin-client/src/lib.rs` · enum · 4 variants · rafka-node-admin-client
-
-Where a Build is in its life.
-
-serde: `rename_all = "snake_case"`
-
-| # | variant · field | serde name | type | serde | doc |
-|---|---|---|---|---|---|
-| 0 | **`Pending`** | `pending` |  |  | Accepted and not yet executed. |
-| 1 | **`Running`** | `running` |  |  | An attempt is executing. |
-| 2 | **`Complete`** | `complete` |  |  | Every step is complete. |
-| 3 | **`Failed`** | `failed` |  |  | The current attempt failed. |
 
 <a id="t-rafka_node_admin_core-build_state-BuildState"></a>
 
@@ -58,11 +41,28 @@ serde: `rename_all = "snake_case"`
 | 2 | **`Complete`** | `complete` |  |  | Every step is complete. |
 | 3 | **`Failed`** | `failed` |  |  | The last attempt failed. |
 
-<a id="t-rafka_mesh_entity-connections-ConnectionState"></a>
+<a id="t-rdm_core-dto-BuildState"></a>
+
+### `BuildState`
+
+`crates/rdm-core/src/dto.rs` · enum · 4 variants · rdm-core
+
+Where a Build is in its life.
+
+serde: `rename_all = "snake_case"`
+
+| # | variant · field | serde name | type | serde | doc |
+|---|---|---|---|---|---|
+| 0 | **`Pending`** | `pending` |  |  | Accepted and not yet executed. |
+| 1 | **`Running`** | `running` |  |  | An attempt is executing. |
+| 2 | **`Complete`** | `complete` |  |  | Every step is complete. |
+| 3 | **`Failed`** | `failed` |  |  | The current attempt failed. |
+
+<a id="t-rdm_core-connections-ConnectionState"></a>
 
 ### `ConnectionState`
 
-`crates/rafka-mesh-entity/src/connections.rs` · enum · 3 variants · rafka-mesh-entity
+`crates/rdm-core/src/connections.rs` · enum · 3 variants · rdm-core
 
 An entry's state.
 
@@ -142,11 +142,11 @@ serde: `rename_all = "kebab-case"`
 | 4 | **`Dead`** | `dead` |  |  | Dead: it is gone. |
 | 5 | **`Retired`** | `retired` |  |  | Retired: it has been taken out of service. |
 
-<a id="t-rafka_mesh_entity-digest-MemberStatus"></a>
+<a id="t-rdm_core-digest-MemberStatus"></a>
 
 ### `MemberStatus`
 
-`crates/rafka-mesh-entity/src/digest.rs` · enum · 4 variants · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · enum · 4 variants · rdm-core
 
 A member's status: set by its mesh-primary alone (states.md "Who sets each state") and carried to
 
@@ -159,11 +159,11 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Draining`** | `draining` |  |  | The node takes no new work. |
 | 3 | **`Leaving`** | `leaving` |  |  | The node has announced its departure. |
 
-<a id="t-rafka_node_rpc_contract-status-MeshState"></a>
+<a id="t-rdm_core-status-MeshState"></a>
 
 ### `MeshState`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
 A Mesh's status, as declared.
 
@@ -174,11 +174,11 @@ A Mesh's status, as declared.
 | 2 | **`Leaving`** | `Leaving` |  |  | Leaving: it is closing. |
 | 3 | **`Dead`** | `Dead` |  |  | Dead: every member is gone. |
 
-<a id="t-rafka_mesh_entity-digest-NodeState"></a>
+<a id="t-rdm_core-digest-NodeState"></a>
 
 ### `NodeState`
 
-`crates/rafka-mesh-entity/src/digest.rs` · enum · 4 variants · rafka-mesh-entity
+`crates/rdm-core/src/digest.rs` · enum · 4 variants · rdm-core
 
 The liveness a birth self-publishes on its heartbeat (node-identity-and-state.md §4,
 
@@ -191,11 +191,11 @@ serde: `rename_all = "kebab-case"`
 | 2 | **`Overloaded`** | `overloaded` |  |  | Over its CPU or RAM budget. |
 | 3 | **`Degraded`** | `degraded` |  |  | It reaches a broker only through a peer or node-admin. |
 
-<a id="t-rafka_node_rpc_contract-status-NodeState"></a>
+<a id="t-rdm_core-status-NodeState"></a>
 
 ### `NodeState`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 4 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
 A node birth's lifecycle state, as declared.
 
@@ -206,11 +206,11 @@ A node birth's lifecycle state, as declared.
 | 2 | **`Draining`** | `Draining` |  |  | Draining: it takes no new work. |
 | 3 | **`Leaving`** | `Leaving` |  |  | Leaving: it has announced its departure. |
 
-<a id="t-rafka_node_admin_core-model-NodeStatus"></a>
+<a id="t-rdm_core-model-NodeStatus"></a>
 
 ### `NodeStatus`
 
-`crates/rafka-node-admin-core/src/model.rs` · enum · 8 variants · rafka-node-admin-core
+`crates/rdm-core/src/model.rs` · enum · 8 variants · rdm-core
 
 Node lifecycle status as published on views.
 
@@ -227,11 +227,11 @@ serde: `rename_all = "kebab-case"`
 | 6 | **`Dead`** | `dead` |  |  | True offline: half a floor after the mark the mesh primary's one QUIC connect found no path, |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: the node's identity and name are released. Only the node's row carries it, written |
 
-<a id="t-rafka_node_rpc_contract-views-NodeStatus"></a>
+<a id="t-rdm_core-views-NodeStatus"></a>
 
 ### `NodeStatus`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · enum · 8 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · enum · 8 variants · rdm-core
 
 A node's lifecycle state as its node-admin's view holds it.
 
@@ -248,11 +248,11 @@ serde: `rename_all = "kebab-case"`
 | 6 | **`Dead`** | `dead` |  |  | True offline: the mesh primary's connect found no path on two rounds a staleness floor |
 | 7 | **`Deleted`** | `deleted` |  |  | Deleted: identity and name released; only the node's row carries it. |
 
-<a id="t-rafka_node_rpc_contract-catalog-OpState"></a>
+<a id="t-rdm_core-catalog-OpState"></a>
 
 ### `OpState`
 
-`crates/rafka-node-rpc-contract/src/catalog.rs` · enum · 2 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/catalog.rs` · enum · 2 variants · rdm-core
 
 Whether an allocated op is served or reserved.
 
@@ -261,11 +261,11 @@ Whether an allocated op is served or reserved.
 | 0 | **`Live`** | (not serialized) |  |  | The op is served. |
 | 1 | **`Retired`** | (not serialized) |  |  | Reserved forever; never served, never reassigned. |
 
-<a id="t-rafka_node_rpc_contract-streaming-OrderState"></a>
+<a id="t-rdm_core-streaming-OrderState"></a>
 
 ### `OrderState`
 
-`crates/rafka-node-rpc-contract/src/streaming.rs` · enum · 3 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/streaming.rs` · enum · 3 variants · rdm-core
 
 Where a stream stands.
 
@@ -275,11 +275,11 @@ Where a stream stands.
 | 1 | **`Streaming`** | (not serialized) |  |  | The stream has begun and is not terminated. |
 | 2 | **`Done`** | (not serialized) |  |  | The stream is terminated. |
 
-<a id="t-rafka_node_admin_core-model-ScopeStatus"></a>
+<a id="t-rdm_core-model-ScopeStatus"></a>
 
 ### `ScopeStatus`
 
-`crates/rafka-node-admin-core/src/model.rs` · enum · 7 variants · rafka-node-admin-core
+`crates/rdm-core/src/model.rs` · enum · 7 variants · rdm-core
 
 Mesh and Fabric lifecycle status.
 
@@ -295,25 +295,25 @@ serde: `rename_all = "kebab-case"`
 | 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its day-0 and seed |
 | 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state round publishes what the scratchpads hold |
 
-<a id="t-rafka_node_rpc_contract-views-ScopeStatus"></a>
+<a id="t-rdm_core-views-ScopeStatus"></a>
 
 ### `ScopeStatus`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · enum · 7 variants · rafka-node-rpc-contract
+`crates/rdm-core/src/views.rs` · enum · 7 variants · rdm-core
 
 The lifecycle state of a mesh or of a fabric.
 
 serde: `rename_all = "kebab-case"`
 
-| # | variant · field | serde name | type | serde | doc |
-|---|---|---|---|---|---|
-| 0 | **`Pending`** | `pending` |  |  | Created and not yet ready for traffic. |
-| 1 | **`ReadyForTraffic`** | `ready-for-traffic` |  |  | Ready: it takes traffic. |
-| 2 | **`Leaving`** | `leaving` |  |  | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
-| 3 | **`Dead`** | `dead` |  |  | Dead: a mesh every one of whose births was proven exited; final. |
-| 4 | **`Degraded`** | `degraded` |  |  | Degraded: the fabric primary has decided a peer mesh is reborn. |
-| 5 | **`StateSync`** | `state-sync` |  |  | A fabric state: every mesh is ready-for-traffic and the application does its work. |
-| 6 | **`StateCommit`** | `state-commit` |  |  | A fabric state: the commit-state and open-traffic rounds run. |
+| # | variant · field | serde name | type | serde | labels | doc |
+|---|---|---|---|---|---|---|
+| 0 | **`Pending`** | `pending` |  |  | `name() = "pending"` | Created and not yet ready for traffic. |
+| 1 | **`ReadyForTraffic`** | `ready-for-traffic` |  |  | `name() = "ready-for-traffic"` | Ready: it takes traffic. |
+| 2 | **`Leaving`** | `leaving` |  |  | `name() = "leaving"` | Leaving: a mesh whose shutdown was accepted; it is not selected for new work. |
+| 3 | **`Dead`** | `dead` |  |  | `name() = "dead"` | Dead: a mesh every one of whose births was proven exited; final. |
+| 4 | **`Degraded`** | `degraded` |  |  | `name() = "degraded"` | Degraded: the fabric primary has decided a peer mesh is reborn. |
+| 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
+| 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic rounds run. |
 
 <a id="t-rafka_node_admin_core-wiring-SyncState"></a>
 

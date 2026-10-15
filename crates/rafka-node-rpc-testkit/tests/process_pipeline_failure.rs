@@ -8,7 +8,7 @@
 
 use crate::common;
 
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
@@ -22,7 +22,7 @@ struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
-    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
 }
 
 #[test]
@@ -38,12 +38,12 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             fabric_id: FabricId::mint(),
             executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         struct Never;
         #[async_trait::async_trait]

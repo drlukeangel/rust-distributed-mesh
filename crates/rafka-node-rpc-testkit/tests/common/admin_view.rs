@@ -5,11 +5,11 @@
 //! serves no HTTP: the probe reads nothing but Node RPC.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshNode, NodeId, PathName};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MeshNode, NodeId, PathName};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::status::{NodeSelect, Status, StatusReply, StatusRequest};
-use rafka_node_rpc_contract::views::{FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+use rdm_core::catalog::OpOwner;
+use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
+use rdm_core::views::{FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 

@@ -12,8 +12,7 @@ publish = false
 doctest = false
 
 [dependencies]
-rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
-rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rdm-core = { path = "../rdm-core" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit", default-features = false }

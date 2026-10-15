@@ -5,7 +5,7 @@
 //! The cell drives the restart pipeline over a recording provider, observer and lifecycle: nothing
 //! here depends on timing.
 
-use rafka_mesh_entity::{IncarnationId, LifecycleOp, NodeId};
+use rdm_core::{IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::pipeline::{
@@ -76,7 +76,7 @@ impl NodeObserver for StopsThenStarts {
             NodeCommand::Start if self.start_already_applied => CommandAdmission::AlreadyAdmitted {},
             NodeCommand::Start => CommandAdmission::Started {},
             NodeCommand::Stop if self.refuses_stop => CommandAdmission::Refused { reply: "RejectedStaleIncarnation".into() },
-            NodeCommand::Stop if self.answers_stopped => CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
+            NodeCommand::Stop if self.answers_stopped => CommandAdmission::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
             _ => CommandAdmission::Admitted {},
         }
     }
@@ -178,15 +178,15 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts::default(), Events::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
@@ -281,15 +281,15 @@ async fn a_restart_whose_reissued_start_is_already_applied_takes_no_new_join() {
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { answers_stopped: true, start_already_applied: true, ..StopsThenStarts::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
@@ -350,15 +350,15 @@ async fn a_restart_takes_its_stops_stopped_reply_as_the_left_reply() {
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { answers_stopped: true, ..StopsThenStarts::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
@@ -421,15 +421,15 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
     node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/restart-one-op".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { refuses_stop: true, ..StopsThenStarts::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
@@ -477,7 +477,7 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
 struct StartsWhole<'a> {
     joins: &'a rafka_node_admin_core::join::Joins,
     events: &'a Events,
-    digest: rafka_mesh_entity::MeshDigest,
+    digest: rdm_core::MeshDigest,
 }
 
 #[async_trait::async_trait]
@@ -533,15 +533,15 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
     node.data_dir = Some("/nonexistent/i143-s52/mesh1.rpc.1".into());
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        fabric_id: rdm_core::FabricId::mint(),
         executable: "/nonexistent/start-order".into(),
         seeds: vec![],
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-s52-start-order-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-s52-start-order-store-{}", NodeId::mint())),
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-s52-start-order".into()) };
     let runtime = handle.fact().expect("the handle names its exact runtime");
@@ -556,10 +556,10 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         last_accepted_name: Some(name.clone()),
         held: true,
     };
-    let digest = rafka_mesh_entity::MeshDigest {
+    let digest = rdm_core::MeshDigest {
         fabric_id: template.fabric_id.clone(),
-        node: rafka_mesh_entity::MeshNode { node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
-        status: rafka_mesh_entity::MemberStatus::Pending,
+        node: rdm_core::MeshNode { node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
+        status: rdm_core::MemberStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 9,

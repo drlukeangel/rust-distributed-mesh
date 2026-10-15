@@ -7,15 +7,15 @@
 //! `Found` / `Gone` / `Unknown` where they are decided. Testkit range only
 //! ([`TESTKIT_OPS`]); never a product binary.
 //!
-//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
+//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use crate::held_name::HeldName;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{NodeId, PathName};
+use rdm_core::launch::Launch;
+use rdm_core::{NodeId, PathName};
 use rafka_node_rpc::{LiveNodeResolver, NodeResolver, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, ResolveFailure};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{MalformedKind, ReplyKind, ResolveFailure};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

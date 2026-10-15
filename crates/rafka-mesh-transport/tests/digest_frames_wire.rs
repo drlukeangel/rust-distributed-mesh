@@ -5,7 +5,7 @@
 //! literals are derived from the postcard rules by hand. Never regenerate an expectation from the Rust
 //! serializer to make a schema change pass.
 
-use rafka_mesh_entity::{IncarnationId, MemberStatus, MeshDigest, PublisherId};
+use rdm_core::{IncarnationId, MemberStatus, MeshDigest, PublisherId};
 use rafka_mesh_transport::membership::Frame;
 
 fn bytes(hex: &str) -> Vec<u8> {
@@ -44,7 +44,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         assert_eq!(Frame::Digest { digest: digest(status) }.encode(), bytes(&heartbeat), "a {status} heartbeat");
     }
 
-    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p")).unwrap() };
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap() };
     let members = Frame::Members {
         mesh: "mesh1".into(),
         publisher: publisher.clone(),

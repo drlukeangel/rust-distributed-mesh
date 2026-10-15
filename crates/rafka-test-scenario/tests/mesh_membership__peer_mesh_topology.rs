@@ -10,7 +10,7 @@
 //! peer mesh from the backbone alone: it marks the mesh silent in the cut and learns it again
 //! after the heal.
 
-use rafka_mesh_entity::NodeKind;
+use rdm_core::NodeKind;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::{json, Value};

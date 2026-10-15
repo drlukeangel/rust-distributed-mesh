@@ -9,13 +9,13 @@
 //! yet end `NotBackedToday`, naming why; no request is invented for them.
 
 use crate::build_stream::{BuildCarrier, BuildReceipts, BuildStream};
-use crate::names::{BuildOp, FabricOp, MeshOp, NodeOp};
+use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
 use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricDesired, FabricView, MeshDesired, MeshView, NodeView};
-use rafka_mesh_entity::{NodeId, NodeKind, PathName};
+use rdm_core::{NodeId, NodeKind, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget};
-use rafka_node_rpc_contract::build::{BuildChange, MeshCounts};
-use rafka_node_rpc_contract::status::{NodeSelect, Status, StatusReply, StatusRequest};
+use rdm_core::build::{BuildChange, MeshCounts};
+use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
 
 fn counts(m: &MeshDesired) -> MeshCounts {
     MeshCounts { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
@@ -65,7 +65,7 @@ where
     Fut: std::future::Future<Output = Result<T, CallEnd>>,
 {
     let started = std::time::Instant::now();
-    let every = rafka_mesh_entity::cadence::gossip_interval() / 2;
+    let every = rdm_core::cadence::gossip_interval() / 2;
     loop {
         let last = match read().await {
             Ok(view) if holds(&view) => return Ok(view),
@@ -88,7 +88,7 @@ pub struct NodeSpec {
     pub kind: NodeKind,
 }
 
-pub use rafka_node_rpc_contract::status::TagFilter;
+pub use rdm_core::status::TagFilter;
 
 /// What `node.get` selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,7 +247,7 @@ impl Nodes {
     /// everything from its own held record; a name outside the name grammar is refused here,
     /// `RejectedName`, as the mesh-primary would refuse it, and nothing is sent.
     pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, name: &str) -> Result<StatusReply, CallEnd> {
-        if let Some(reason) = rafka_node_rpc_contract::status::name_refusal(name) {
+        if let Some(reason) = rdm_core::status::name_refusal(name) {
             let span = NodeOp::NameUpdate.span();
             span.record("outcome", "rejected-name");
             span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), reason = %reason, "the name is outside the name grammar; nothing is sent"));
@@ -261,7 +261,7 @@ impl Nodes {
     /// outside the label grammar, an empty list or more than a node carries are refused here,
     /// `RejectedTags`, and nothing is sent.
     pub async fn tags_create(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, labels: &std::collections::BTreeSet<String>) -> Result<StatusReply, CallEnd> {
-        if let Some(reason) = rafka_node_rpc_contract::status::create_tags_refusal(labels) {
+        if let Some(reason) = rdm_core::status::create_tags_refusal(labels) {
             return Ok(refused_before_sending(NodeOp::TagsCreate, &reason));
         }
         crate::NodeRpc::new(self.carrier.client()).tags_create(mesh_primary, route, birth, labels, &rafka_node_rpc::CallOptions::default()).await
@@ -270,7 +270,7 @@ impl Nodes {
     /// `node.tags.delete`: remove every label (`All`) or the named ones from the exact birth `birth`,
     /// as [`Self::tags_create`]; a `Labels` scope naming nothing or a non-label is refused here,
     /// `RejectedTags`, and nothing is sent.
-    pub async fn tags_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rafka_node_rpc_contract::status::TagScope) -> Result<StatusReply, CallEnd> {
+    pub async fn tags_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rdm_core::status::TagScope) -> Result<StatusReply, CallEnd> {
         if let Some(reason) = scope.refusal() {
             return Ok(refused_before_sending(NodeOp::TagsDelete, &reason));
         }
@@ -298,12 +298,12 @@ impl Nodes {
     /// node's mesh-primary `mesh_primary` over `route` (R-CR2, R-CR3; [`crate::NodeRpc::connections_delete`]).
     /// A scope that names nothing to cut is refused here by name, `RejectedConnectionScope`, and
     /// nothing is sent.
-    pub async fn connections_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rafka_node_rpc_contract::status::ConnectionScope) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
+    pub async fn connections_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rdm_core::status::ConnectionScope) -> Result<rdm_core::status::StatusReply, CallEnd> {
         if let Some(reason) = scope.refusal() {
             let span = NodeOp::ConnectionsDelete.span();
             span.record("outcome", "rejected-connection-scope");
             span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
-            return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason: format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str()) });
+            return Ok(rdm_core::status::StatusReply::RejectedConnectionScope { reason: format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str()) });
         }
         crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, birth, scope, &rafka_node_rpc::CallOptions::default()).await
     }
@@ -353,21 +353,21 @@ impl Nodes {
     /// workflow, run in order by RDM (build.md §1; lifecycles/node-replace.md). The caller owns the
     /// recipe. The stream is `Started`, then every step's events in step order, ending `Complete`
     /// or `Failed { step, reason }` naming the step that failed; a resume never runs a completed step.
-    pub async fn recipe(&self, steps: Vec<rafka_node_rpc_contract::build::RecipeStep>) -> Result<WorkflowStream, CallEnd> {
+    pub async fn recipe(&self, steps: Vec<rdm_core::build::RecipeStep>) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Recipe(steps.clone()), BuildChange::Recipe { steps }).await
     }
 
     /// `node.primary.update` (`0x21`, `lifecycles/node-primary-update.md` C1): command the holder at
     /// `holder` to move its mesh-primary seat (and the fabric-primary seat with it when it holds both)
     /// to its same-mesh successor.
-    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
     }
 
     /// `node.fabric-primary.update` (`0x21`, `lifecycles/node-primary-update.md` C2): command the
     /// fabric-primary holder at `holder` to move the fabric-primary seat (step 1 same-mesh successor
     /// first, step 2 outside mesh primary when no same-mesh successor is ReadyForTraffic).
-    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rafka_node_rpc_contract::handover::NodePrimaryUpdateReply, CallEnd> {
+    pub async fn fabric_primary_update(&self, fabric: &str, holder: &PathName, build_id: &BuildId, attempt: u32) -> Result<rdm_core::handover::NodePrimaryUpdateReply, CallEnd> {
         crate::NodeRpc::new(self.carrier.client()).fabric_primary_update(fabric, holder, build_id, attempt, &CallOptions::default()).await
     }
 }
@@ -506,7 +506,7 @@ mod tests {
     /// workflow `…via-workflow`, and an event's frame span is `…<event>.via-reply-frame`.
     #[test]
     fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
-        use crate::names::NodeEvent;
+        use rdm_core::names::NodeEvent;
         let (_g, spans) = capture_spans();
         for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete, NodeOp::PrimaryUpdate, NodeOp::FabricPrimaryUpdate] {
             drop(op.span());

@@ -1,0 +1,217 @@
+//! Generic one-hop carried execution (node-rpc.md §36.1; i143.e6.s4) on core op `0x1A`.
+//!
+//! The origin asks a carrier to make exactly one direct inner call to an exact final target. The
+//! request carries the target, the inner protocol op and the opaque inner request bytes; no origin
+//! identity rides in it, because the target authenticates the carrier, never a copied origin.
+//!
+//! The carrier verifies the inner protocol is forwardable, makes one direct inner call, never
+//! forwards again, and hands back the inner outcome without inventing domain semantics. The
+//! forward protocol itself is never forwardable.
+
+use crate::outcome::{MalformedKind, ReplyKind};
+use crate::protocol::NodeProtocol;
+use crate::NodeId;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+/// The Forward protocol: a carrier makes one inner call to an exact final target for a caller that
+/// cannot reach it directly.
+pub struct Forward;
+
+/// The largest inner request or reply a carrier hands across.
+pub(crate) const MAX_CARRIED_BYTES: usize = 1024 * 1024;
+
+/// What the carrier keeps back from the origin's remaining budget so its reply still reaches the
+/// origin inside that budget: the request's transit from origin to carrier (the origin measures
+/// before it writes), the carrier's work after its inner call ends (edge lookup, reply encoding),
+/// the reply's write and transit back, and the origin's read and decode. It is a bounded
+/// transport and serialization allowance, not a policy margin.
+pub const FORWARD_REPLY_RESERVE: Duration = Duration::from_millis(100);
+
+/// A Forward call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ForwardRequest {
+    /// Make `inner_op` on `target` and hand its reply back.
+    Forward {
+        /// The exact final target's logical NodeId.
+        target: NodeId,
+        /// The inner call's op.
+        inner_op: u8,
+        /// The inner call's request frame, as encoded for `inner_op`.
+        inner: Vec<u8>,
+        /// The origin's remaining time budget for this call, in whole milliseconds, measured
+        /// immediately before this frame is written to the carrier (after the carrier was
+        /// resolved and dialed). For an overall budget it is deadline minus now; for a split
+        /// budget it is the reply budget, which starts at the commit that follows the write. The
+        /// carrier bounds its one inner call by this minus [`FORWARD_REPLY_RESERVE`].
+        remaining_ms: u64,
+    },
+}
+
+/// A carrier's answer to a Forward call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ForwardReply {
+    /// The inner call reached the target, which answered: its reply payload, verbatim.
+    Forwarded {
+        /// The inner reply payload.
+        inner: Vec<u8>,
+    },
+    /// The carrier proved the inner call never committed at the target.
+    InnerNotSent {
+        /// Why the inner call never committed.
+        reason: String,
+    },
+    /// The target does not serve the inner op.
+    InnerUnserved {
+        /// The op the target does not serve.
+        op: u8,
+    },
+    /// The carrier's resolver stopped naming the birth the inner call was dialled to, before the
+    /// inner request went: never dispatched (no receiver refuses a call for the node id it names).
+    InnerRejectedStale {
+        /// The node the inner call addressed.
+        target_node_id: NodeId,
+    },
+    /// The inner call committed at the target and its outcome is unknown.
+    InnerIndeterminate {
+        /// Why the outcome is unknown.
+        reason: String,
+    },
+    /// The inner protocol is not forwardable through this carrier.
+    NotForwardable {
+        /// The inner op that is not forwardable.
+        op: u8,
+    },
+    /// The peer the call needed could not be resolved.
+    PeerUnresolved {
+        /// Why the peer could not be resolved.
+        reason: String,
+    },
+    /// The carrier is not ready to serve.
+    NotReady {
+        /// Why the carrier is not ready.
+        reason: String,
+    },
+    /// The carrier is at its admission bound.
+    Busy {
+        /// Which bound the carrier is at.
+        reason: String,
+    },
+    /// The carrier is connections-deleting and takes no new work.
+    ConnectionsDeleting {
+        /// Why the carrier refuses new work.
+        reason: String,
+    },
+    /// The request frame was malformed.
+    Malformed {
+        /// How the frame was malformed.
+        kind: MalformedKind,
+    },
+    /// The caller is not allowed this call.
+    Unauthorized {
+        /// Why the call is refused.
+        reason: String,
+    },
+    /// The carrier made no inner call it could prove arrived: its own Direct edge to the final
+    /// target is not Active (connections.md §8). `reason` names the carrier's latest Direct fact
+    /// toward the target. The origin retires its Proxy through this carrier with the structural
+    /// reason `carrier-edge-lost`.
+    CarrierEdgeLost {
+        /// The carrier's latest Direct fact toward the target.
+        reason: String,
+    },
+    /// The origin's remaining budget does not exceed [`FORWARD_REPLY_RESERVE`], so the carrier
+    /// made no inner call. Both are whole milliseconds.
+    NoInnerBudget {
+        /// The origin's remaining budget.
+        remaining_ms: u64,
+        /// The carrier's reply reserve.
+        reserve_ms: u64,
+    },
+}
+
+impl NodeProtocol for Forward {
+    const OP: u8 = 0x1A;
+    const NAME: &'static str = "forward";
+    const MAX_REQUEST_FRAME_BYTES: usize = MAX_CARRIED_BYTES + 256;
+    const MAX_REPLY_FRAME_BYTES: usize = MAX_CARRIED_BYTES + 256;
+    const FORWARDABLE: bool = false;
+    const REQUEST_VARIANTS: u32 = 1;
+    const REPLY_VARIANTS: u32 = 14;
+
+    type Request = ForwardRequest;
+    type Reply = ForwardReply;
+
+    fn classify_reply(reply: &ForwardReply) -> ReplyKind {
+        match reply {
+            ForwardReply::Forwarded { .. } => ReplyKind::Success,
+            ForwardReply::InnerNotSent { .. }
+            | ForwardReply::InnerUnserved { .. }
+            | ForwardReply::InnerRejectedStale { .. }
+            | ForwardReply::InnerIndeterminate { .. }
+            | ForwardReply::NotForwardable { .. }
+            | ForwardReply::CarrierEdgeLost { .. }
+            | ForwardReply::NoInnerBudget { .. } => ReplyKind::ProtocolRefusal,
+            ForwardReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
+            ForwardReply::NotReady { .. } => ReplyKind::NotReady,
+            ForwardReply::Busy { .. } => ReplyKind::Busy,
+            ForwardReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
+            ForwardReply::Malformed { kind } => ReplyKind::Malformed(*kind),
+            ForwardReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+        }
+    }
+
+    fn peer_unresolved(reason: String) -> ForwardReply {
+        ForwardReply::PeerUnresolved { reason }
+    }
+    fn not_ready(reason: String) -> ForwardReply {
+        ForwardReply::NotReady { reason }
+    }
+    fn busy(reason: String) -> ForwardReply {
+        ForwardReply::Busy { reason }
+    }
+    fn connections_deleting(reason: String) -> ForwardReply {
+        ForwardReply::ConnectionsDeleting { reason }
+    }
+    fn malformed(kind: MalformedKind) -> ForwardReply {
+        ForwardReply::Malformed { kind }
+    }
+    fn unauthorized(reason: String) -> ForwardReply {
+        ForwardReply::Unauthorized { reason }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_forward_protocol_is_never_itself_forwardable() {
+        assert!(!Forward::FORWARDABLE);
+        assert_eq!(Forward::OP, 0x1A);
+    }
+
+    #[test]
+    fn every_reply_variant_round_trips() {
+        let replies = [
+            ForwardReply::Forwarded { inner: vec![1] },
+            ForwardReply::InnerNotSent { reason: "r".into() },
+            ForwardReply::InnerUnserved { op: 7 },
+            ForwardReply::InnerRejectedStale { target_node_id: NodeId::mint() },
+            ForwardReply::InnerIndeterminate { reason: "r".into() },
+            ForwardReply::NotForwardable { op: 0x01 },
+            ForwardReply::PeerUnresolved { reason: "p".into() },
+            ForwardReply::NotReady { reason: "n".into() },
+            ForwardReply::Busy { reason: "b".into() },
+            ForwardReply::ConnectionsDeleting { reason: "d".into() },
+            ForwardReply::Malformed { kind: MalformedKind::Corrupt },
+            ForwardReply::Unauthorized { reason: "u".into() },
+            ForwardReply::CarrierEdgeLost { reason: "e".into() },
+            ForwardReply::NoInnerBudget { remaining_ms: 5, reserve_ms: 100 },
+        ];
+        assert_eq!(replies.len() as u32, Forward::REPLY_VARIANTS);
+        for r in replies {
+            assert_eq!(Forward::decode_reply(&Forward::encode_reply(&r).unwrap()).unwrap(), r);
+        }
+    }
+}

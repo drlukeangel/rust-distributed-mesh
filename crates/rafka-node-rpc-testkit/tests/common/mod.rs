@@ -15,7 +15,7 @@
 
 pub mod admin_view;
 
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::{FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
@@ -235,7 +235,7 @@ pub use rafka_node_rpc_testkit::rig::*;
 /// its node in a fabric past its first state-commit.
 pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
     let root = rafka_node_admin_core::store_root::StoreRoot::at(&store.join(fabric.to_string()));
-    let fabric_store = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &rafka_mesh_entity::IncarnationId::mint()).await.expect("the fabric store opens");
+    let fabric_store = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &rdm_core::IncarnationId::mint()).await.expect("the fabric store opens");
     rafka_node_admin_core::fabric_storage::FabricStorage::claim_identity(&fabric_store, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
 }
 
@@ -252,14 +252,14 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
         seeds: vec![admin.seed.clone()],
         launcher: admin.launcher.clone(),
-        env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())]
+        env: [(rdm_core::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())]
             .into_iter()
             .chain(ARTIFACT_DIR.with(|a| a.borrow().clone()).map(|d| ("RDM_EVIDENCE_DIR".to_string(), d.display().to_string())))
             .collect(),
         data_root,
         store_dir,
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
@@ -275,7 +275,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one rpc node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 1)])))].into() }
+    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.
@@ -420,19 +420,19 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     let fact = created.handle.fact().expect("the provider's handle names its runtime exactly");
     assert_eq!(fact.control_domain, provider.control_domain());
     let data_dir = std::path::PathBuf::from(created.node.data_dir.clone().expect("the node's data dir"));
-    assert_eq!(rafka_mesh_entity::RuntimeFact::read_record(&data_dir).unwrap().unwrap(), fact, "the record the runtime publishes");
+    assert_eq!(rdm_core::RuntimeFact::read_record(&data_dir).unwrap().unwrap(), fact, "the record the runtime publishes");
     match &fact.locator {
-        rafka_mesh_entity::RuntimeLocator::Container { id } => {
+        rdm_core::RuntimeLocator::Container { id } => {
             assert_eq!(id.len(), 64, "the immutable container id, not its name: {id}");
             // A (reusable) container name is no locator.
-            let named = rafka_mesh_entity::RuntimeFact { locator: rafka_mesh_entity::RuntimeLocator::Container { id: format!("rafka-{}", created.node.name) }, ..fact.clone() };
+            let named = rdm_core::RuntimeFact { locator: rdm_core::RuntimeLocator::Container { id: format!("rafka-{}", created.node.name) }, ..fact.clone() };
             assert!(matches!(adopt(&*provider, &named), Err(AdoptRefusal::Invalid { .. })));
         }
-        rafka_mesh_entity::RuntimeLocator::Process { pid, start } => {
-            assert_eq!(Some(*start), rafka_mesh_entity::runtime::process_start_token(*pid));
+        rdm_core::RuntimeLocator::Process { pid, start } => {
+            assert_eq!(Some(*start), rdm_core::runtime::process_start_token(*pid));
         }
     }
-    let elsewhere = rafka_mesh_entity::RuntimeFact { control_domain: format!("{}-another", fact.control_domain), ..fact.clone() };
+    let elsewhere = rdm_core::RuntimeFact { control_domain: format!("{}-another", fact.control_domain), ..fact.clone() };
     assert!(matches!(adopt(&*provider, &elsewhere), Err(AdoptRefusal::ForeignControlDomain { .. })), "a locator of another domain is refused");
     let adopted = adopt(&*provider, &fact).expect("the same domain adopts the published runtime");
     assert_eq!(provider.inspect(&adopted).await, DeploymentStatus::Running);
@@ -449,8 +449,8 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
 /// standalone a node's data-plane connection is one the testkit originates (connections.md "Two
 /// planes, two words"), and the cell's admin side is a destination it reaches.
 pub fn serve_ping(b: rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder {
-    use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-    b.serve::<Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: PingRequest| async move {
+    use rdm_core::ping::{Ping, PingReply, PingRequest};
+    b.serve::<Ping, _, _>(rdm_core::catalog::OpOwner::Core, |_peer, req: PingRequest| async move {
         let PingRequest::Ping { payload, .. } = req;
         Ok(PingReply::Pong { payload })
     })

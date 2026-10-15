@@ -2,9 +2,9 @@
 //! (`lifecycles/node-ready-for-traffic.md` step 1; `node-birth.md` step 6).
 
 use crate::common::{admin_side_deaf_to_joins};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
     cap.run(crate::common::Threads::Current, async move {
         let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
         let admin = admin_side_deaf_to_joins("127.0.0.1".parse().unwrap(), &fabric).await;
         let launch = Launch {
@@ -42,7 +42,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let started = node::start(&launch, |b, _| b).await;
         let outcome = match started {
@@ -72,7 +72,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
     cap.run(crate::common::Threads::Current, async move {
         let dir = std::env::temp_dir().join(format!("join-before-ready-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
             fabric_id: FabricId::mint(),
@@ -88,7 +88,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let started = node::start(&launch, |b, _| b).await;
         let _ = std::fs::remove_dir_all(&dir);

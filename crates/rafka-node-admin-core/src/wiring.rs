@@ -13,7 +13,7 @@ use crate::deployment::pipeline::LifecycleEvents;
 use crate::deployment::provider::DeploymentProvider;
 use crate::fabric_storage::FabricStorage;
 use crate::lifecycle::{LifecycleHook, LifecycleHookSpec};
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::context::CallContext;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ pub type ServeApp = Box<dyn FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateSyncRound {
     /// The fabric.
-    pub fabric_id: rafka_mesh_entity::FabricId,
+    pub fabric_id: rdm_core::FabricId,
     /// The accepted Build the round belongs to.
     pub build_id: String,
     /// The Build attempt that holds the round.

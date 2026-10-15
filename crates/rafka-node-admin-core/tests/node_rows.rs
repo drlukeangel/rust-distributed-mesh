@@ -551,7 +551,7 @@ fn a_node_lets_go_only_of_its_own_row() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("node-rows-claim-{}", NodeId::mint()));
-        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir, &rafka_node_admin_core::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap()))];
+        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir, &rafka_node_admin_core::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rafka_node_admin_core::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
             let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
@@ -752,16 +752,16 @@ mod writer {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-rows".into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
         // The Build the create runs for: a run over a Build its node holds no fact of is refused at its start.
-        let build_id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows")).unwrap();
+        let build_id = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows")).unwrap();
         let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
         rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -894,12 +894,12 @@ mod writer {
             fabric_id: FabricId::mint(),
             executable: "/nonexistent/node-rows".into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
@@ -929,7 +929,7 @@ mod writer {
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
             let builds = MemoryBuildStateAdapter::new();
-            let (build, other) = (BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-5")).unwrap(), BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-6")).unwrap());
+            let (build, other) = (BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-5")).unwrap(), BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-6")).unwrap());
             for id in [&build, &other] {
                 let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
                 rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
@@ -1051,12 +1051,12 @@ mod writer {
             fabric_id: FabricId::mint(),
             executable: executable.into(),
             seeds: vec![],
-            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             env: Default::default(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
@@ -1085,7 +1085,7 @@ mod writer {
         let (a_identity, b_err, found, spawned, row) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-lost-after-claim-{}", NodeId::mint()));
-            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-7")).unwrap();
+            let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-7")).unwrap();
             let (a_builds, b_builds) = (Arc::new(MemoryBuildStateAdapter::new()), MemoryBuildStateAdapter::new());
             for builds in [&*a_builds, &b_builds] {
                 let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1204,7 +1204,7 @@ mod writer {
         let (a_identity, b_err, terminated, spawned) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-by-the-lost-{}", NodeId::mint()));
-            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-8")).unwrap();
+            let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-8")).unwrap();
             let (a_builds, b_builds) = (Arc::new(MemoryBuildStateAdapter::new()), MemoryBuildStateAdapter::new());
             for builds in [&*a_builds, &b_builds] {
                 let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1313,7 +1313,7 @@ mod writer {
         let (a_identity, b_err, spawned) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-exited-{}", NodeId::mint()));
-            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-9")).unwrap();
+            let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-9")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.9", &data_root).await;
             let b_builds = MemoryBuildStateAdapter::new();
             let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1388,7 +1388,7 @@ mod writer {
         let (a_identity, b_err, spawned) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-exited-before-record-{}", NodeId::mint()));
-            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-11")).unwrap();
+            let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-11")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.11", &data_root).await;
             // A launched the birth and its process exited before it wrote its runtime record: the data
             // dir holds the provider's deployment record of A's deployment, naming a pid that is gone.
@@ -1437,7 +1437,7 @@ mod writer {
         let (a_identity, record, b_err, spawned, after, handle) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-running-{}", NodeId::mint()));
-            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-12")).unwrap();
+            let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-12")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.12", &data_root).await;
             // A launched the birth: its process runs, and the provider's launch record names it.
             let dir = data_root.join(format!("mesh1.rpc.12-{}", a_identity["node_id"].as_str().unwrap()));
@@ -1495,7 +1495,7 @@ mod writer {
         let (a_identity, b_err, terminated, spawned, row) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-joined-{}", NodeId::mint()));
-            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-10")).unwrap();
+            let build = BuildId::parse(&rdm_core::fixture_crockford60("build-node-rows-10")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.10", &data_root).await;
             let b_builds = MemoryBuildStateAdapter::new();
             let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1624,7 +1624,7 @@ fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_h
 ///    moving `north.new` -> `north` while inheriting config, tags and `node_type` from `north.old`).
 #[test]
 fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_through_create_get_stop_start_recovery_and_replace() {
-    use rafka_node_rpc_contract::status::{NodeSelect, StatusReply};
+    use rdm_core::status::{NodeSelect, StatusReply};
     let cap = capture();
     cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -1802,7 +1802,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
 ///    (`node_type`), leaving the node and its row untouched.
 #[test]
 fn node_update_of_node_type_and_invalid_node_type_are_refused_by_name() {
-    use rafka_node_rpc_contract::status::{normalize_node_type, node_type_refusal, node_type_update_refusal, DEFAULT_NODE_TYPE};
+    use rdm_core::status::{normalize_node_type, node_type_refusal, node_type_update_refusal, DEFAULT_NODE_TYPE};
     let cap = capture();
     cap.run(async {
         // 1. Empty string normalizes to "node"; valid identifiers pass; invalid values are refused naming "node_type".

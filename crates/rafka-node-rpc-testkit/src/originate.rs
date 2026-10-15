@@ -6,18 +6,18 @@
 //! writer records the facts, its storage is the one hydrated after a restart. Testkit range only
 //! ([`TESTKIT_OPS`]); never a product binary.
 //!
-//! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
+//! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use crate::faults::StorageFault;
 use crate::proof_store::{ProofReply, ProofRequest, ProofStore};
-use rafka_mesh_entity::connections::{resolve, CarrierPolicy, ConnectionState, NodeConnection};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{NodeKind, PathName};
+use rdm_core::connections::{resolve, CarrierPolicy, ConnectionState, NodeConnection};
+use rdm_core::launch::Launch;
+use rdm_core::{NodeKind, PathName};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
 use rafka_node_rpc::{CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
+use rdm_core::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -303,7 +303,7 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
 
 /// Serve the door with the carrier policy the serving application declares: a Proxy held for a
 /// destination is the effective route only through a carrier of `policy`'s kind
-/// (`rafka_mesh_entity::connections::resolve`). A shape whose carriers are not `rpc_node`s (a
+/// (`rdm_core::connections::resolve`). A shape whose carriers are not `rpc_node`s (a
 /// gateway carrying for a compute) declares its own kind here.
 pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy: CarrierPolicy) -> ServerBuilder {
     let (node_id, incarnation_id) = (launch.node_id.to_string(), launch.incarnation.to_string());
@@ -339,7 +339,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                         own_active_proxies: held.own_active_proxies().into_iter().cloned().collect(),
                         own_latest_directs: held.own_latest_directs().into_iter().cloned().collect(),
                         active_len: held.active_len(),
-                        owed: rafka_mesh_entity::reconnect::owed_retirements(&held, 0),
+                        owed: rdm_core::reconnect::owed_retirements(&held, 0),
                         fault_refused: seams.fault.refused(),
                     }
                 }
@@ -373,14 +373,14 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
     // A Proxy the resolution found invalid is retired by this source, as the caller of the seam.
     let retired = match call.retire {
         Some((proxy, why)) => {
-            let row = NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
+            let row = NodeConnection { id: rdm_core::ConnectionId::mint(), state: ConnectionState::Disconnected, reason: Some(why.to_string()), recovery: None, logged_at_ms: now_ms().max(proxy.logged_at_ms + 1), ..proxy };
             let _ = seams.connections.record(row).await;
             Some(why.to_string())
         }
         None => None,
     };
     let (route, carrier) = match &call.route {
-        rafka_mesh_entity::connections::EffectiveRoute::ViaPeer { carrier, .. } => ("via-peer".to_string(), Some(carrier.to_string())),
+        rdm_core::connections::EffectiveRoute::ViaPeer { carrier, .. } => ("via-peer".to_string(), Some(carrier.to_string())),
         other => (other.token().to_string(), None),
     };
     let (outcome, reply) = match call.outcome {
@@ -400,7 +400,7 @@ async fn call(by: &AnsweredBy, seams: &Seams, own: &PathName, destination: &str,
 }
 
 async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateReply {
-    use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+    use rdm_core::ping::{Ping, PingRequest};
     let path: PathName = match destination.parse() {
         Ok(p) => p,
         Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
@@ -414,7 +414,7 @@ async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateRep
 }
 
 async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier: &str, failed_attempts: u32) -> OriginateReply {
-    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind};
+    use rdm_core::connections::{ConnectionEnd, ConnectionKind};
     use rafka_node_rpc::ConnectionObserver;
     let bad = |reason: String| OriginateReply::BadDestination { by: by.clone(), reason };
     let mut ends = Vec::new();
@@ -435,7 +435,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
     seams.connections.observations_landed().await;
     let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
-        id: rafka_mesh_entity::ConnectionId::mint(),
+        id: rdm_core::ConnectionId::mint(),
         source: seams.connections.own(),
         destination: end(&dest),
         kind: ConnectionKind::Proxy,
@@ -465,15 +465,15 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionsHeld, EffectiveRoute};
-    use rafka_mesh_entity::{IncarnationId, NodeId};
+    use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionsHeld, EffectiveRoute};
+    use rdm_core::{IncarnationId, NodeId};
 
     fn end(kind: NodeKind, ordinal: u32, inc: &str) -> ConnectionEnd {
-        ConnectionEnd { name: PathName::new("mesh1", kind, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap()) }
+        ConnectionEnd { name: PathName::new("mesh1", kind, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap()) }
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-        NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+        NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
     }
 
     /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A

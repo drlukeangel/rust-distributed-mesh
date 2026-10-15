@@ -123,7 +123,7 @@ pub(crate) enum ViaPeerVerdict {
 /// `NoPath`, naming every carrier asked. A failure, a deadline included, proves nothing.
 pub(crate) async fn via_peer_verdict<P>(node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId, peers: Vec<(String, P)>) -> ViaPeerVerdict
 where
-    P: std::future::Future<Output = Option<rafka_node_rpc_contract::status::StatusReply>>,
+    P: std::future::Future<Output = Option<rdm_core::status::StatusReply>>,
 {
     use futures_util::StreamExt as _;
     let asked = peers.iter().map(|(carrier, _)| carrier.clone()).collect();
@@ -701,7 +701,7 @@ pub(crate) mod tests {
         const INTERVAL: Duration = Duration::from_millis(500);
 
         fn marked(id: &str) -> SilentNode {
-            SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: Some(crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0) }
+            SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0) }
         }
 
         /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
@@ -793,7 +793,7 @@ pub(crate) mod tests {
             let held = view.clone().write_owned().await;
             let read = Arc::new(AtomicBool::new(false));
             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
-            let birth = (NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-b")).unwrap());
+            let birth = (NodeId::mint(), IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-b")).unwrap());
             in_flight.lock().unwrap().insert(birth.clone());
             let follower = {
                 let (view, read) = (view.clone(), read.clone());
@@ -867,7 +867,7 @@ pub(crate) mod tests {
 
             let mut t = OfflineTickle::new();
             assert_eq!(tick(&mut t, PROBE_DELAY, vec![marked("b")]).await.tickled, vec!["b".to_string()]);
-            let reborn = SilentNode { incarnation: Some(crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-b-again")).unwrap()), ..marked("b") };
+            let reborn = SilentNode { incarnation: Some(crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-b-again")).unwrap()), ..marked("b") };
             sleep(INTERVAL).await;
             assert_eq!(tick(&mut t, PROBE_DELAY + 500, vec![reborn]).await.tickled, vec!["b".to_string()], "another birth at b's node id: its own round");
             assert_eq!(t.rounds(), (1, 0), "the old birth's round was dropped");
@@ -882,7 +882,7 @@ pub(crate) mod tests {
         //! every probe waits.
         use super::*;
         use crate::model::{IncarnationId, NodeId};
-        use rafka_node_rpc_contract::status::{NodeState, StatusReply};
+        use rdm_core::status::{NodeState, StatusReply};
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
         use std::time::Duration;
@@ -892,7 +892,7 @@ pub(crate) mod tests {
         const BUDGET: Duration = Duration::from_secs(10);
 
         fn birth() -> (NodeId, IncarnationId) {
-            (NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-the-silent-node")).unwrap())
+            (NodeId::mint(), IncarnationId::parse(&rdm_core::fixture_crockford60("inc-of-the-silent-node")).unwrap())
         }
 
         fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
@@ -1065,7 +1065,7 @@ pub(crate) mod tests {
     /// no receipt of, a receipt of another incarnation, or one heard within the floor carries none.
     #[test]
     fn the_silent_set_marks_each_birth_at_its_last_receipt_plus_the_floor() {
-        use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
+        use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
         let floor = std::time::Duration::from_secs(3);
         let digest = |name: &str| MeshDigest {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
@@ -1274,7 +1274,7 @@ pub(crate) mod tests {
         async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_mesh_status(row).await
         }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::record_store::StorageError> {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.mesh_statuses().await
         }
@@ -1357,7 +1357,7 @@ pub(crate) mod tests {
         let mut held = Node::allocated("mesh1.rpc.1".parse::<PathName>().unwrap());
         held.incarnation_id = Some(IncarnationId::mint());
         let store = ReadCounting::default();
-        let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), name: held.name.clone(), state: rafka_node_rpc_contract::status::NodeState::ReadyForTraffic };
+        let declared = crate::status_storage::NodeDeclaredRow { node_id: held.node_id.clone(), incarnation_id: held.incarnation_id.clone().unwrap(), name: held.name.clone(), state: rdm_core::status::NodeState::ReadyForTraffic };
         store.put_node_declared(&declared).await.unwrap();
 
         assert_eq!(put_silence_status(&store, &held, Some(NodeStatus::Dead)).await, Ok(true), "the silence row is put");
@@ -1383,7 +1383,7 @@ pub(crate) mod tests {
         async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_mesh_status(row).await
         }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<crate::model::MeshId, rdm_core::status::MeshState>, crate::record_store::StorageError> {
             self.inner.mesh_statuses().await
         }
         async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {

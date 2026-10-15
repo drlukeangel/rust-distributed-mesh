@@ -2,9 +2,9 @@
 //! so the chaos run starts from pieces known to work. Process provider; telemetry on through
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-use rafka_mesh_entity::NodeKind;
+use rdm_core::NodeKind;
 use rafka_node_admin_client::{BuildSpec, FabricDesired, MeshDesired, NodeStatus};
-use rafka_node_rpc_contract::build::BuildPhase;
+use rdm_core::build::BuildPhase;
 use rafka_test_scenario::estate::{Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault, Refusal};

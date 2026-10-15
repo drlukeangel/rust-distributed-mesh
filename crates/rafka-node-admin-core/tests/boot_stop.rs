@@ -1,8 +1,8 @@
 //! A node-admin process stopped while it boots (#3047): the stop is heard and the process exits
 //! through its telemetry drain, so its evidence file holds the boot and the stop.
 
-use rafka_mesh_entity::launch::{Launch, Launcher};
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::launch::{Launch, Launcher};
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use std::time::{Duration, Instant};
 
 /// CONTRACT: a launched `rafka-node-admin` that is held in its boot (no runtime record from its
@@ -32,7 +32,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         store_dir: data_dir.clone(),
         mesh_id: None,
         mesh_issuer: None,
-        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"))
         .envs(launch.to_env())

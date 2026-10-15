@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
-use rafka_mesh_entity::{FabricId, MeshDigest, MeshId, NodeState};
+use rdm_core::{FabricId, MeshDigest, MeshId, NodeState};
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, Estate, Owner};
@@ -133,7 +133,7 @@ impl Observer {
 fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
     nodes
         .iter()
-        .filter(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin)
+        .filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin)
         .filter_map(|n| {
             let key = n.endpoint_id.as_deref()?.parse::<iroh::PublicKey>().ok()?;
             Some(EndpointAddr::new(key).with_ip_addr(n.transport_addr?))

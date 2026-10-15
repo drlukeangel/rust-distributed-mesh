@@ -13,10 +13,10 @@
 use crate::model::{FabricId, IncarnationId, Node, NodeId, NodeStatus};
 use crate::status_declare::{eligible, Destination, Sent};
 use crate::topology::Topology;
-use rafka_mesh_entity::RoundHook;
+use rdm_core::RoundHook;
 use rafka_mesh_transport::membership::Frame;
 use crate::round::Missing;
-use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
+use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 use tokio::sync::watch;
@@ -99,7 +99,7 @@ impl FirstReady {
     /// in; `None` when it names none), hold the ready-for-traffic event of `fabric_id`. A read that fails
     /// is the caller's to refuse by name.
     pub async fn read_from(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, fabric_primary_mesh: Option<&str>) -> Result<(), crate::record_store::StorageError> {
-        let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
+        let ready = crate::status_rpc::event_key(&rdm_core::status::FabricEvent::ReadyForTraffic);
         let holds = |rows: &[crate::status_storage::FabricEventRow]| rows.iter().any(|row| row.fabric_id == *fabric_id && row.event == ready);
         if holds(&status.fabric_events().await?) {
             self.reach(READY_ROW_ON_ROOT);

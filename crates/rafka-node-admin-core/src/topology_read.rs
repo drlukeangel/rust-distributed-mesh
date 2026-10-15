@@ -9,16 +9,16 @@
 //! through the receiver the Mesh channel's snapshots install into
 //! ([`Membership::take_read_chunk`]): there is no second install path.
 
-use rafka_mesh_entity::wire::ProjectionEntry;
-use rafka_mesh_entity::{MeshDigest, PublisherId};
+use rdm_core::wire::ProjectionEntry;
+use rdm_core::{MeshDigest, PublisherId};
 use rafka_mesh_transport::membership::{Frame, Membership};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, SourceSnapshot, Taken};
 use rafka_node_rpc::stream::StreamItem;
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::streaming::FrameKind;
-use rafka_node_rpc_contract::topology::{SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::streaming::FrameKind;
+use rdm_core::topology::{SourceVersion, StoredNode, Topology, TopologyReply, TopologyRequest};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -41,7 +41,7 @@ pub struct TopologyDoor {
 }
 
 /// Whether the node holds a recorded seat holder's exact birth as proven gone.
-pub type GoneSource = Arc<dyn Fn(&rafka_mesh_entity::SeatHolder) -> bool + Send + Sync>;
+pub type GoneSource = Arc<dyn Fn(&rdm_core::SeatHolder) -> bool + Send + Sync>;
 
 /// What a node stores of the meshes it does not hold a snapshot of: the births it knows, and the id
 /// it stored for each mesh.
@@ -50,7 +50,7 @@ pub struct StoredMap {
     /// The births the target stored.
     pub nodes: Vec<StoredNode>,
     /// The mesh id the target stored for each mesh, by mesh name.
-    pub mesh_ids: std::collections::BTreeMap<String, rafka_mesh_entity::MeshId>,
+    pub mesh_ids: std::collections::BTreeMap<String, rdm_core::MeshId>,
 }
 
 /// The births a node stores, read when a mesh has no gossiped snapshot to answer from.
@@ -193,7 +193,7 @@ impl TopologyDoor {
                     snapshot_replies(s, self.next_snapshot_id())
                 };
                 for r in replies {
-                    bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                    bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                     if let Err(e) = sink.data(r).await {
                         span.record("outcome", format!("caller-gone: {e:?}").as_str());
                         return TopologyReply::End { meshes: answered };
@@ -206,7 +206,7 @@ impl TopologyDoor {
             for (m, nodes) in stored {
                 for chunk in nodes.chunks(STORED_PER_FRAME) {
                     let r = TopologyReply::Stored { mesh: m.clone(), mesh_id: stored_ids.get(&m).cloned(), nodes: chunk.to_vec() };
-                    bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                    bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                     if let Err(e) = sink.data(r).await {
                         span.record("outcome", format!("caller-gone: {e:?}").as_str());
                         return TopologyReply::End { meshes: answered };
@@ -216,14 +216,14 @@ impl TopologyDoor {
             }
             // The seat records this node holds: who holds the fabric seat, each mesh's and each other
             // cohort's, so the reader computes no seat before it knows them (ruling R-A2).
-            let mut records: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)> = self.membership.seats().meshes().into_values().map(|h| (rafka_mesh_entity::Seat::MeshPrimary, h)).collect();
-            records.extend(self.membership.seats().cohorts().into_iter().map(|((_, kind), h)| (rafka_mesh_entity::Seat::Cohort(kind), h)));
-            records.extend(self.membership.seats().fabric().map(|h| (rafka_mesh_entity::Seat::FabricPrimary, h)));
+            let mut records: Vec<(rdm_core::Seat, rdm_core::SeatHolder)> = self.membership.seats().meshes().into_values().map(|h| (rdm_core::Seat::MeshPrimary, h)).collect();
+            records.extend(self.membership.seats().cohorts().into_iter().map(|((_, kind), h)| (rdm_core::Seat::Cohort(kind), h)));
+            records.extend(self.membership.seats().fabric().map(|h| (rdm_core::Seat::FabricPrimary, h)));
             let seat_records = records.len() as u64;
             for (seat, holder) in records {
                 let gone = self.gone.as_ref().is_some_and(|g| g(&holder));
                 let r = TopologyReply::Seats { seat, holder, gone };
-                bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+                bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
                 if let Err(e) = sink.data(r).await {
                     span.record("outcome", format!("caller-gone: {e:?}").as_str());
                     return TopologyReply::End { meshes: answered };
@@ -234,13 +234,13 @@ impl TopologyDoor {
             let time_ms = self.time.try_now_ms().unwrap_or(time_ms);
             let seat = crate::rafka_time::seat_held(self.membership.seats(), &me.node.name.mesh, &me.node.node_id);
             let r = TopologyReply::RafkaTime { ms: time_ms, seat };
-            bytes += rafka_node_rpc_contract::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
+            bytes += rdm_core::protocol::encode(&r).map(|b| b.len() as u64).unwrap_or(0);
             if let Err(e) = sink.data(r).await {
                 span.record("outcome", format!("caller-gone: {e:?}").as_str());
                 return TopologyReply::End { meshes: answered };
             }
             span.record("rafka_time_ms", time_ms);
-            span.record("seat", seat.map_or("none", rafka_mesh_entity::Seat::name));
+            span.record("seat", seat.map_or("none", rdm_core::Seat::name));
             span.record("seats", seat_records);
             span.record("stored", stored_meshes);
             span.record("meshes", answered);
@@ -282,7 +282,7 @@ pub struct TopologyRead {
     /// installed and never the mesh's current topology.
     pub stored: Vec<StoredMesh>,
     /// The seat records the target holds, in the order it sent them.
-    pub seats: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder, bool)>,
+    pub seats: Vec<(rdm_core::Seat, rdm_core::SeatHolder, bool)>,
     /// The rafka-time the target served and the seat it held when it served it. Every accepted
     /// read carries it.
     pub rafka_time: Option<ServedTime>,
@@ -294,14 +294,14 @@ pub struct ServedTime {
     /// The target's rafka-time in milliseconds.
     pub ms: u64,
     /// The seat the target held, `None` for a replica.
-    pub seat: Option<rafka_mesh_entity::Seat>,
+    pub seat: Option<rdm_core::Seat>,
 }
 
 impl TopologyRead {
     /// Adopt the rafka-time this read was served with into `time`, by the rule of the puller
     /// `node_id` of `mesh` as its own seat records stand (the same [`crate::rafka_time::adopt_pulled`]
     /// every pull goes through). `served_by` is the target's `path.name`.
-    pub fn adopt_rafka_time(&self, time: &rafka_mesh_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rafka_mesh_entity::NodeId, served_by: &str) -> Result<rafka_mesh_transport::clock::Adopted, TimeNotAdopted> {
+    pub fn adopt_rafka_time(&self, time: &rafka_mesh_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rafka_mesh_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
         let puller = crate::rafka_time::Puller::of(membership.seats(), mesh, node_id);
         crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, seat: served.seat }).map_err(TimeNotAdopted::Refused)
@@ -332,7 +332,7 @@ pub struct StoredMesh {
     /// The mesh's name.
     pub mesh: String,
     /// The id the target stored for the mesh, when it stored one.
-    pub mesh_id: Option<rafka_mesh_entity::MeshId>,
+    pub mesh_id: Option<rdm_core::MeshId>,
     /// The births the target stored.
     pub nodes: Vec<StoredNode>,
 }

@@ -10,10 +10,10 @@
 //! never slower than 2 s, gossip.md §3.2), in a process of its own (the parking flag is
 //! process-wide).
 
-use rafka_mesh_entity::NodeId;
+use rdm_core::NodeId;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
-use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
+use rdm_core::status::{StatusReply, StatusRequest};
 use serde_json::{json, Value};
 use std::time::{Duration, UNIX_EPOCH};
 use tracing::Instrument;

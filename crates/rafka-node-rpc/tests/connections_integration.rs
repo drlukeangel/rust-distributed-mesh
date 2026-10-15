@@ -9,11 +9,11 @@
 
 use crate::common;
 use common::*;
-use rafka_mesh_entity::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
-use rafka_mesh_entity::reconnect::owed_retirements;
-use rafka_mesh_entity::{NodeKind, PathName};
+use rdm_core::connections::{CarrierPolicy, ConnectionKind, ConnectionState, ConnectionsHeld, EffectiveRoute};
+use rdm_core::reconnect::owed_retirements;
+use rdm_core::{NodeKind, PathName};
 use rafka_node_rpc::{Budget, CallOptions, ConnectedCall, PoolKey, RouteLeg};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::outcome::RpcOutcome;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -148,8 +148,8 @@ async fn a_fact_naming_a_superseded_birth_still_dials_the_current_one() {
     let own: PathName = "mesh1.admin.1".parse().unwrap();
     let mut held = held_for(&own);
     held.apply(edge(own_end(&own), end(&r.b), ConnectionKind::Direct, ConnectionState::Connected, None, 10)).unwrap();
-    let members = std::sync::Arc::new(rafka_mesh_entity::connections::StaticIncarnations::default());
-    members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rafka_mesh_entity::IncarnationId::mint());
+    let members = std::sync::Arc::new(rdm_core::connections::StaticIncarnations::default());
+    members.set(r.b.resolved.node_id.clone(), r.b.resolved.name.clone(), rdm_core::IncarnationId::mint());
     held.set_membership(members);
     let call = connected(&r, &held, &own, &r.b, b"reborn").await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });

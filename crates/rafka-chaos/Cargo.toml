@@ -12,4 +12,4 @@ tracing = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-rafka-mesh-entity = { path = "../rafka-mesh-entity" }
+rdm-core = { path = "../rdm-core" }

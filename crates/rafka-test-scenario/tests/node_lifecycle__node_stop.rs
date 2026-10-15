@@ -5,10 +5,10 @@
 //! node's `left` is the reply of the stop call, never a gossip frame; the mesh primary publishes
 //! `NodeStopped` from it. `node.start` makes that same process rejoin as itself.
 
-use rafka_mesh_entity::PathName;
+use rdm_core::PathName;
 use crate::build_log;
 use rafka_node_admin_client::{Frame, LaunchKind as NodeKind, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
-use rafka_node_rpc_contract::status::StatusReply;
+use rdm_core::status::StatusReply;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::Value;
@@ -315,9 +315,9 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
     assert_ne!(primary.name, path, "the stopped admin is not mesh1's primary");
-    let admins: Vec<NodeView> = mesh.iter().filter(|n| n.name != path && n.kind == rafka_mesh_entity::NodeKind::NodeAdmin).cloned().collect();
+    let admins: Vec<NodeView> = mesh.iter().filter(|n| n.name != path && n.kind == rdm_core::NodeKind::NodeAdmin).cloned().collect();
     assert!(admins.iter().any(|n| n.name != primary.name), "an admin that performs no rename: {admins:?}");
-    let rpc = mesh.iter().find(|n| n.kind == rafka_mesh_entity::NodeKind::RpcNode).cloned().expect("the rpc node");
+    let rpc = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::RpcNode).cloned().expect("the rpc node");
     let pid = estate.pid_of(path.to_string().as_str()).await;
 
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;

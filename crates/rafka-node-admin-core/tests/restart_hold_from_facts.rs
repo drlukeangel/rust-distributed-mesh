@@ -10,7 +10,7 @@
 //! own (the cadence is read once per process): nothing but the fact's own arrival can move the hold
 //! inside the bound. Each cell reads back the spans of its own `EvidenceCapture` and no other.
 
-use rafka_mesh_entity::{IncarnationId, LifecycleOp, NodeId};
+use rdm_core::{IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildStepReceipt, StepOutcome};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
@@ -36,7 +36,7 @@ fn delegated(cell: &str) -> bool {
     let stretched = std::ffi::OsStr::new(STRETCHED_MS);
     let parent = crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", Some(stretched)), ("RDM_BACKBONE_INTERVAL_MS", Some(stretched))]);
     if !parent {
-        assert_eq!(rafka_mesh_entity::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
+        assert_eq!(rdm_core::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
     }
     parent
 }

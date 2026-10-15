@@ -23,8 +23,8 @@ use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::FabricIdentity;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
-use rafka_mesh_entity::LifecycleOp;
+use rdm_core::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rdm_core::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -164,7 +164,7 @@ enum WireAction {
     Start { path: PathName, from_incarnation: IncarnationId },
     Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
     Delete { path: PathName, from_incarnation: IncarnationId },
-    Recipe { steps: Vec<rafka_node_rpc_contract::build::RecipeStep>, pinned: Vec<(PathName, crate::build::PinnedBirth)> },
+    Recipe { steps: Vec<rdm_core::build::RecipeStep>, pinned: Vec<(PathName, crate::build::PinnedBirth)> },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -335,9 +335,9 @@ pub(crate) enum WireCommandAdmission {
     NotSent { reason: String },
     Indeterminate { reason: String },
     Refused { reply: String },
-    Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt },
+    Stopped { receipt: rdm_core::status::ConnectionsReceipt },
     Started,
-    ConnectionsDeleted { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt },
+    ConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt },
     StartFailed { step: String, reason: String },
 }
 
@@ -829,7 +829,7 @@ mod tests {
     fn step_fact(operation: &str, step: &str, output: Value) -> BuildFact {
         BuildFact::Step(BuildStepReceipt {
             mesh: None,
-            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
             attempt: 3,
             operation: operation.into(),
             step: step.into(),
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn a_lifecycle_op_output_with_an_unknown_field_is_refused_by_name() {
-        let op = rafka_mesh_entity::LifecycleOp {
+        let op = rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 3,
             operation: "node.delete:mesh1.rpc.1".into(),

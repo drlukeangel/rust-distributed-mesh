@@ -71,9 +71,8 @@ fn rules_hold_on_the_rdm_tree() {
 fn clean_fixture_passes() {
     let f = Fixture::new(
         &[
-            ("rafka-node-rpc-contract", NONE),
-            ("rafka-mesh-entity", &[("rafka-node-rpc-contract", "")]),
-            ("rafka-node-admin-client", &[("rafka-node-rpc-contract", "")]),
+            ("rdm-core", NONE),
+            ("rafka-node-admin-client", &[("rdm-core", "")]),
             ("rafka-chaos", &[("rafka-node-admin-client", "")]),
         ],
         &[],
@@ -112,30 +111,30 @@ fn rule1_is_transitive_through_a_non_generic_member() {
 
 #[test]
 fn rule2_contract_on_iroh_fails() {
-    let f = Fixture::new(&[("rafka-node-rpc-contract", &[("bytes-ish", "")])], &[("bytes-ish", &[("iroh", "")]), ("iroh", NONE)]);
+    let f = Fixture::new(&[("rdm-core", &[("bytes-ish", "")])], &[("bytes-ish", &[("iroh", "")]), ("iroh", NONE)]);
     assert_eq!(
         check(&f),
         vec![Violation::ContractIroh {
             iroh: "iroh".into(),
-            path: vec!["rafka-node-rpc-contract".into(), "bytes-ish".into(), "iroh".into()],
+            path: vec!["rdm-core".into(), "bytes-ish".into(), "iroh".into()],
         }]
     );
 }
 
 #[test]
 fn rule2_ignores_a_dev_only_iroh() {
-    let f = Fixture::new(&[("rafka-node-rpc-contract", &[("iroh", "dev")])], &[("iroh", NONE)]);
+    let f = Fixture::new(&[("rdm-core", &[("iroh", "dev")])], &[("iroh", NONE)]);
     assert_eq!(check(&f), vec![]);
 }
 
 #[test]
 fn rule3_mesh_entity_on_application_ef_fails() {
-    let f = Fixture::new(&[("rafka-mesh-entity", &[("rafka-entity-framework", "")])], &[("rafka-entity-framework", NONE)]);
+    let f = Fixture::new(&[("rdm-core", &[("rafka-entity-framework", "")])], &[("rafka-entity-framework", NONE)]);
     let v = check(&f);
     assert!(
         v.contains(&Violation::MeshEntityApplicationEf {
             crate_name: "rafka-entity-framework".into(),
-            path: vec!["rafka-mesh-entity".into(), "rafka-entity-framework".into()],
+            path: vec!["rdm-core".into(), "rafka-entity-framework".into()],
         }),
         "{v:?}"
     );

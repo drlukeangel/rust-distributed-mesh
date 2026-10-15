@@ -8,7 +8,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
-use rafka_mesh_entity::{FabricId, LifecycleOp};
+use rdm_core::{FabricId, LifecycleOp};
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, RetireRequest, Timeouts};

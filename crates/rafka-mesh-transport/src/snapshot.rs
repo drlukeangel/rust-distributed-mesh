@@ -14,11 +14,11 @@
 //! ```
 
 use crate::membership::{pack, Frame, MAX_FRAME};
-use rafka_mesh_entity::{LifecycleOp, MeshDigest};
+use rdm_core::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
-pub use rafka_mesh_entity::PublisherId;
+pub use rdm_core::PublisherId;
 
 type OpKey = (String, u32, String);
 
@@ -35,7 +35,7 @@ pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = without_load(d);
     v.digest_seq = 0;
     v.emitted_at_rafka_ms = 0;
-    v.node_state = rafka_mesh_entity::NodeState::default();
+    v.node_state = rdm_core::NodeState::default();
     v
 }
 
@@ -786,7 +786,7 @@ impl Forwarder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::IncarnationId;
+    use rdm_core::IncarnationId;
 
     fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
         Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }

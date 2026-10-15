@@ -20,12 +20,12 @@
 //! with 0x73 originate and 0x72 snapshot on the roles that originate), so every observed outcome is
 //! the typed `RpcOutcome` of a real Node RPC call.
 
-use rafka_mesh_entity::NodeId;
+use rdm_core::NodeId;
 use rafka_node_admin_client::{BuildId, FabricDesired, LaunchKind, MeshDesired, PathName};
 use rafka_node_rpc::stream::StreamItem;
 use rafka_node_rpc::{Budget, CallOptions, NodeTarget};
-use rafka_node_rpc_contract::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit};
+use rdm_core::outcome::RpcOutcome;
 use rafka_test_scenario::container_faults;
 use rafka_test_scenario::elections::seats_as_expected;
 use rafka_test_scenario::estate::{binding_set_from_build_manifest, descends_from, named, wait_for, Estate, Owner, RUNTIME_IMAGE};
@@ -1893,10 +1893,10 @@ impl Run {
     /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
     async fn write_recipe(&mut self, f: &Formed, st: &Stable, what: &str, node: &str) -> String {
         use rafka_node_admin_client::Nodes;
-        use rafka_node_rpc_contract::build::RecipeStep;
+        use rdm_core::build::RecipeStep;
         let t0 = now_ms();
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
-        let path: rafka_mesh_entity::PathName = node.parse().unwrap();
+        let path: rdm_core::PathName = node.parse().unwrap();
         let recipe = vec![
             RecipeStep::Create { node: path.successor() },
             RecipeStep::Stop { node: path.clone() },
@@ -5163,7 +5163,7 @@ impl Observer {
         self._endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the observer binds an IPv4 socket").port()
     }
 
-    async fn join(fabric: &rafka_mesh_entity::FabricId, mesh: &rafka_mesh_entity::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
+    async fn join(fabric: &rdm_core::FabricId, mesh: &rdm_core::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
         use futures_lite::StreamExt as _;
         use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
         let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
@@ -5205,8 +5205,8 @@ async fn control_run(cell: &str, shape: Shape) {
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let fabric_view = fabric_now(&f.estate).await;
-    let fabric_id = rafka_mesh_entity::FabricId::parse(&s(&fabric_view["id"])).expect("the fabric id");
-    let mesh2_id = rafka_mesh_entity::MeshId::parse(&s(&fabric_view["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").expect("mesh2")["id"])).expect("the mesh2 id");
+    let fabric_id = rdm_core::FabricId::parse(&s(&fabric_view["id"])).expect("the fabric id");
+    let mesh2_id = rdm_core::MeshId::parse(&s(&fabric_view["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").expect("mesh2")["id"])).expect("the mesh2 id");
     let seeds: Vec<iroh::EndpointAddr> = st
         .nodes
         .iter()
@@ -5450,10 +5450,10 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     // to create, stop, rename or delete across the cut (R-D1).
     {
         use rafka_node_admin_client::{CallEnd, Nodes};
-        use rafka_node_rpc_contract::build::RecipeStep;
+        use rdm_core::build::RecipeStep;
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
         for target in [format!("{far_mesh}.gateway.1"), s(&far_secondary["name"]), s(&far_primary["name"])] {
-            let path: rafka_mesh_entity::PathName = target.parse().unwrap();
+            let path: rdm_core::PathName = target.parse().unwrap();
             let recipe = vec![
                 RecipeStep::Create { node: path.successor() },
                 RecipeStep::Stop { node: path.clone() },

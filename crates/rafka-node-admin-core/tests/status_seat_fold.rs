@@ -6,7 +6,7 @@ use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::status_storage::{FabricEventRow, FileStatusStorage, MeshStatusRow, NodeDeclaredRow, StatusStorage};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::status::{MeshState, NodeState};
+use rdm_core::status::{MeshState, NodeState};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -124,10 +124,10 @@ fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
 }
 
 /// The heartbeat `n`'s exact birth publishes: liveness only, no status (gossip.md §3.1).
-fn heartbeat(fabric_id: &FabricId, n: &Node) -> rafka_mesh_entity::MeshDigest {
-    rafka_mesh_entity::MeshDigest {
+fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
+    rdm_core::MeshDigest {
         fabric_id: fabric_id.clone(),
-        node: rafka_mesh_entity::MeshNode {
+        node: rdm_core::MeshNode {
             node_id: n.node_id.clone(),
             name: n.name.clone(),
             endpoint_id: EndpointId(format!("key-{}-{}", n.name, "x".repeat(40))),
@@ -136,7 +136,7 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rafka_mesh_entity::MeshDigest {
             supersedes: None,
             runtime: None,
         },
-        status: rafka_mesh_entity::MemberStatus::Pending,
+        status: rdm_core::MemberStatus::Pending,
         node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 7,
@@ -167,9 +167,9 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rafka_mesh_entity::MeshDigest {
 /// and the member stays Pending under the new primary for good.
 #[test]
 fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection() {
-    use rafka_mesh_entity::MemberStatus;
+    use rdm_core::MemberStatus;
     use rafka_mesh_transport::membership::{Backbone, Membership};
-    use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
+    use rdm_core::status::{StatusReply, StatusRequest};
     let cap = crate::mesh_delete_resume::capture();
     let (trace_id, after_take, rpc2_heard, projected, declared, after_declare) = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.status.update.via-seat-fold");
@@ -216,7 +216,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 assert!(membership.book.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the seat take");
                 let rpc2_heard = status(&rpc2);
                 let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.2", b.incarnation_id.clone().unwrap(), vec![]).await.unwrap();
-                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&membership).into_iter().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
+                let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&membership).into_iter().filter(|d| d.node.name.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rafka_node_admin_core::status_rpc::StatusAuthority {

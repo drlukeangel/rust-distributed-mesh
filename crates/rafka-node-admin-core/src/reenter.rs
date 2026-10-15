@@ -81,7 +81,7 @@ impl MapNode {
 }
 
 /// The births of one topology read, as the map a Ping reaches.
-pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rafka_mesh_entity::FabricId) -> Vec<MapNode> {
+pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &rdm_core::FabricId) -> Vec<MapNode> {
     read.installed
         .iter()
         .flat_map(|m| m.members.iter())
@@ -90,7 +90,7 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &ra
             // A digest says what the node last reported, not that it is alive: whoever answered
             // heard it at an age the digest does not carry. Every birth is therefore not yet
             // reached (the sweep's ping, or its own digest, says more), never ready.
-            let transition = (d.status != rafka_mesh_entity::MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(d.status));
+            let transition = (d.status != rdm_core::MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(d.status));
             MapNode {
                 transition,
                 ready: false,
@@ -194,9 +194,9 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
     if let Some(r) = n.resolved() {
         ctx.resolver.apply(r, None);
     }
-    let req = rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"entry-sweep".to_vec() };
+    let req = rdm_core::ping::PingRequest::Ping { payload: b"entry-sweep".to_vec() };
     let opts = CallOptions { budget: Budget::Overall(SWEEP_DEADLINE), ..CallOptions::default() };
-    let (out, _) = ctx.client.call::<rafka_node_rpc_contract::ping::Ping>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &opts).await;
+    let (out, _) = ctx.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(n.node_id.clone()), &req, &opts).await;
     if out.reply().is_some() {
         Ok(())
     } else {
@@ -302,7 +302,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::MemberStatus;
+    use rdm_core::MemberStatus;
 
     /// An own-mesh birth of the map as a topology read gives it: the status its source held.
     fn birth(name: &str, status: MemberStatus) -> MapNode {

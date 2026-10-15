@@ -124,9 +124,9 @@ pub(crate) async fn recorded_dirs(data_root: &std::path::Path, path: &PathName) 
 
 /// The runtime record `dir` holds (`None`: it holds none), read on the blocking pool; a record
 /// that cannot be read is an error naming the file.
-pub(crate) async fn runtime_record(dir: &std::path::Path) -> Result<Option<rafka_mesh_entity::RuntimeFact>, String> {
+pub(crate) async fn runtime_record(dir: &std::path::Path) -> Result<Option<rdm_core::RuntimeFact>, String> {
     let dir = dir.to_path_buf();
-    crate::record_store::blocking_io(move || rafka_mesh_entity::RuntimeFact::read_record(&dir).transpose()).await
+    crate::record_store::blocking_io(move || rdm_core::RuntimeFact::read_record(&dir).transpose()).await
 }
 
 #[cfg(test)]
@@ -160,14 +160,14 @@ mod tests {
     #[test]
     fn the_runtime_record_is_read_on_the_blocking_pool() {
         let dir = tempdir("fence-record");
-        let fact = rafka_mesh_entity::RuntimeFact {
-            deployment_id: rafka_mesh_entity::fixture_crockford60("dep-1"),
-            provider: rafka_mesh_entity::runtime::RuntimeProvider::Process,
+        let fact = rdm_core::RuntimeFact {
+            deployment_id: rdm_core::fixture_crockford60("dep-1"),
+            provider: rdm_core::runtime::RuntimeProvider::Process,
             control_domain: "process:test".into(),
-            locator: rafka_mesh_entity::runtime::RuntimeLocator::Process { pid: 1, start: 1 },
+            locator: rdm_core::runtime::RuntimeLocator::Process { pid: 1, start: 1 },
         };
         let bytes = serde_json::to_vec(&fact).unwrap();
-        let fifo = dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE);
+        let fifo = dir.join(rdm_core::runtime::RUNTIME_FILE);
         let (heard, read) = runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { runtime_record(&dir).await }));
         assert!(heard, "the runtime stopped while the record was read");
         assert_eq!(read.unwrap(), Some(fact));
@@ -178,9 +178,9 @@ mod tests {
     #[tokio::test]
     async fn an_unreadable_runtime_record_is_an_error_naming_the_file() {
         let dir = tempdir("fence-unreadable");
-        std::fs::create_dir_all(dir.join(rafka_mesh_entity::runtime::RUNTIME_FILE)).unwrap();
+        std::fs::create_dir_all(dir.join(rdm_core::runtime::RUNTIME_FILE)).unwrap();
         let err = runtime_record(&dir).await.expect_err("an unreadable record is not an absent one");
-        assert!(err.contains(rafka_mesh_entity::runtime::RUNTIME_FILE), "{err}");
+        assert!(err.contains(rdm_core::runtime::RUNTIME_FILE), "{err}");
     }
 
     struct Unreadable;

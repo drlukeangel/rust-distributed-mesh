@@ -17,7 +17,7 @@
 
 use crate::common::admin_view::{self, node};
 use iroh::protocol::ProtocolHandler;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
 
 /// The diagnostic file each process writes in its node log directory.

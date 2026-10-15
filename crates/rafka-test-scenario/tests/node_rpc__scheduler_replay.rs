@@ -14,11 +14,11 @@
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey};
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::{Budget, CallEvidence, CallOptions, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, RpcOutcome};
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::outcome::{IndeterminateReason, RpcOutcome};
+use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rafka_test_scenario::sim::{plan, Cut, Mode, Scheduler, Tap};
 use serde_json::{json, Value};
 use std::path::PathBuf;

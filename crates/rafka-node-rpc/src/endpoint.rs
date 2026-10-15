@@ -14,8 +14,8 @@ use tracing::instrument::WithSubscriber;
 /// unheard, `rafka_node_admin_core::investigate::Rungs::at`), so the second probe's dial fails
 /// before writing.
 pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
-    let idle = rafka_mesh_entity::cadence::staleness_floor();
-    let keep_alive = rafka_mesh_entity::cadence::gossip_interval() / 2;
+    let idle = rdm_core::cadence::staleness_floor();
+    let keep_alive = rdm_core::cadence::gossip_interval() / 2;
     iroh::endpoint::QuicTransportConfig::builder()
         .keep_alive_interval(keep_alive)
         .max_idle_timeout(Some(idle.try_into().expect("the staleness floor fits a QUIC idle timeout")))

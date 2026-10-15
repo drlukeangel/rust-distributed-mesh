@@ -4,7 +4,7 @@
 //! round that publishes it is woken by the change itself, not by the next anti-entropy tick.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership, StatusEvent};
 use serde_json::Value;
 use std::time::Duration;

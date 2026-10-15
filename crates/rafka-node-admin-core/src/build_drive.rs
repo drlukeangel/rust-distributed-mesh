@@ -33,9 +33,9 @@ use crate::executor::{lead_for, run_of, RunPlan};
 use crate::build::BuildOperation;
 use crate::model::{NodeKind, PathName};
 use crate::topology::Topology;
-use rafka_node_rpc_contract::build::BuildReply;
-use rafka_node_rpc_contract::build_claim::BuildClaimReply;
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::build::BuildReply;
+use rdm_core::build_claim::BuildClaimReply;
+use rdm_core::context::CallContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -115,9 +115,9 @@ pub struct PrecedingUpdate {
 /// seat's alone; of a node of any other type, its cohort seat's update; for a mesh retire, the fabric
 /// seat's under that mesh. None for any other operation.
 pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {
-    use rafka_node_rpc_contract::build::RecipeStep;
+    use rdm_core::build::RecipeStep;
     use crate::fabric_handover::update_operation;
-    use rafka_mesh_entity::Seat;
+    use rdm_core::Seat;
     let key = op.key();
     match op {
         BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(Seat::FabricPrimary, build_id.as_str(), run, &key), holder: None }],

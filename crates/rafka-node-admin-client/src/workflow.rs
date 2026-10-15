@@ -19,11 +19,11 @@
 //! themselves are untouched. It maps the receipts `build.get` reads to the frames they justify,
 //! for a caller that reattaches by reading rather than by re-submitting.
 
-use crate::names::{NodeEvent, NodeOp, NodeStep};
+use rdm_core::names::{NodeEvent, NodeOp, NodeStep};
 use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
 use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
-use rafka_mesh_entity::PathName;
-use rafka_node_rpc_contract::build::{RecipeStep, StepResult};
+use rdm_core::PathName;
+use rdm_core::build::{RecipeStep, StepResult};
 
 /// A frame of a workflow's reply stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,7 +489,7 @@ impl WorkflowStream {
 
     /// How the call came to its Build: a new one, an attach to a running one, the next attempt of a
     /// failed one, or a complete one (`AlreadyApplied`).
-    pub fn disposition(&self) -> rafka_node_rpc_contract::build::Disposition {
+    pub fn disposition(&self) -> rdm_core::build::Disposition {
         self.inner.disposition()
     }
 

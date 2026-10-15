@@ -14,13 +14,13 @@
 //! an admin that is not the fabric-primary and every Build crosses a real `build.attempt.run`.
 
 use iroh::SecretKey;
-use rafka_mesh_entity::{NodeKind, PathName};
+use rdm_core::{NodeKind, PathName};
 use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build_state::{BuildFact, StepOutcome};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
-use rafka_node_rpc_contract::build::{Build, BuildReply, BuildRequest, StepResult};
-use rafka_node_rpc_contract::context::CallContext;
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
+use rdm_core::context::CallContext;
+use rdm_core::outcome::RpcOutcome;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};

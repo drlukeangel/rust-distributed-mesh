@@ -8,7 +8,7 @@
 //! the source: the channel carried nothing before because the admin held no seat.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership};
 use serde_json::Value;
 use std::time::Duration;

@@ -51,15 +51,15 @@ fn a_stored_hex_deployment_id_is_refused_by_name() {
 /// `bid_xxxx-xxxx-xxxx`.
 #[test]
 fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans() {
-    use rafka_mesh_entity::ids::IdError;
-    use rafka_mesh_entity::Seat;
+    use rdm_core::ids::IdError;
+    use rdm_core::Seat;
     use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
     use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
     use rafka_node_admin_core::fabric_handover::update_operation;
     use rafka_node_admin_core::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
     use rafka_node_admin_core::topology::Topology;
-    use rafka_node_rpc_contract::build::{Build, BuildReply, Disposition};
-    use rafka_node_rpc_contract::NodeProtocol;
+    use rdm_core::build::{Build, BuildReply, Disposition};
+    use rdm_core::NodeProtocol;
 
     let dir = std::env::temp_dir().join(format!("rdm-rbi5a-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

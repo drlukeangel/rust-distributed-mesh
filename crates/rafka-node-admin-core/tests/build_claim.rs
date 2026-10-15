@@ -10,7 +10,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{EndpointId, IncarnationId, NodeId, NodeKind};
+use rdm_core::{EndpointId, IncarnationId, NodeId, NodeKind};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_claim::{self, AttemptContexts, ClaimDoor};
@@ -21,8 +21,8 @@ use rafka_node_admin_core::build_state::{
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::build_claim::BuildClaimReply;
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::build_claim::BuildClaimReply;
+use rdm_core::context::CallContext;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -51,7 +51,7 @@ fn birth(name: &str, fabric_primary: bool) -> Birth {
 
 fn view(nodes: Vec<Node>) -> Arc<RwLock<Topology>> {
     Arc::new(RwLock::new(Topology {
-        fabric: Fabric { id: rafka_mesh_entity::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        fabric: Fabric { id: rdm_core::FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes,
     }))
@@ -214,7 +214,7 @@ async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_an
 /// naming another birth of it is refused by name about that subject, and nothing is claimed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
-    use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimRequest};
+    use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
     let reborn_birth = birth("mesh1.admin.2", false);
     let (p, p_seat, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &reborn_birth).await;
@@ -226,7 +226,7 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
     let (out, _) = client.call::<BuildClaim>(&rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
     match out {
-        rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => match reply.value() {
+        rdm_core::outcome::RpcOutcome::Reply(reply) => match reply.value() {
             BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth"), "{reason}"),
             other => panic!("{other:?}"),
         },
@@ -242,7 +242,7 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
 /// (`PeerUnresolved`), and nothing is claimed. What must NOT happen: `Unauthorized` naming the caller.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_for_the_executor_it_names() {
-    use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimRequest};
+    use rdm_core::build_claim::{BuildClaim, BuildClaimRequest};
     let id = BuildId::mint();
     let executor = birth("mesh1.admin.2", false);
     let (p, p_seat, p_builds) = primary(&id, 1, Arc::new(AttemptContexts::in_memory()), &executor).await;
@@ -258,7 +258,7 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
         let target = rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone());
         async move {
             match client.call::<BuildClaim>(&target, &req, &rafka_node_rpc::CallOptions::default()).await.0 {
-                rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => reply.value().clone(),
+                rdm_core::outcome::RpcOutcome::Reply(reply) => reply.value().clone(),
                 other => panic!("{other:?}"),
             }
         }

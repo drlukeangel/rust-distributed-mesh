@@ -17,7 +17,7 @@ pub struct Workspace {
 pub struct Crate {
     /// Its package name (`rafka-node-rpc-contract`).
     pub package: String,
-    /// Its library ident as other crates name it (`rafka_node_rpc_contract`).
+    /// Its library ident as other crates name it (`rdm_core`).
     pub ident: String,
     /// Its `src/` files, sorted by path.
     pub files: Vec<SourceFile>,

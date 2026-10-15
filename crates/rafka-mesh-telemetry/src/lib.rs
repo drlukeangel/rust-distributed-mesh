@@ -21,7 +21,7 @@ pub mod export;
 pub mod logs;
 mod log_sink;
 mod transport_diag;
-pub use transport_diag::{TRANSPORT_DIAG_FILE, TRANSPORT_DIAG_TARGET};
+pub use rdm_core::{TRANSPORT_DIAG_FILE, TRANSPORT_DIAG_TARGET};
 pub mod watchdog;
 mod pipeline;
 mod evidence_capture;

@@ -15,10 +15,10 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, MeshId, NodeId};
+use rdm_core::{IncarnationId, MeshId, NodeId};
 use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Backbone, Membership};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_mesh_entity::PathName;
+use rdm_core::PathName;
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild, OwedExit};
 use rafka_node_admin_core::fabric_storage::FabricIdentity;

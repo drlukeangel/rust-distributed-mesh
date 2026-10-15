@@ -271,7 +271,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
             let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
-            let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
+            let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
             (later && reborn).then_some(b)
         }
@@ -514,7 +514,7 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     //   after it is continued, which a resume at the mark raced;
     // so halfway between `probe1` and `mark` less one gossip interval. Heard again at most one
     //   backbone interval after the resume, the fabric primary's t is then below probe 2's rung.
-    let (r, gossip, backbone) = (rungs(), rafka_mesh_entity::cadence::gossip_interval(), rafka_mesh_entity::cadence::backbone_gossip_interval());
+    let (r, gossip, backbone) = (rungs(), rdm_core::cadence::gossip_interval(), rdm_core::cadence::backbone_gossip_interval());
     let resume = (r.probe1 + r.mark - gossip) / 2;
     assert!(r.probe1 < resume && resume + gossip < r.mark && backbone + resume + backbone < r.probe2, "the cadence leaves no resume strictly between probe 1 and the cut-off with probe 2 still ahead: {r:?}, gossip {gossip:?}, backbone {backbone:?}");
     tokio::time::sleep(resume).await;

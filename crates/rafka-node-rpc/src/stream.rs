@@ -17,11 +17,11 @@ use crate::client::{CallEvidence, CallOptions, NodeRpcClient, Opened, Phase};
 use crate::resolve::NodeTarget;
 use crate::server::{BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
 use iroh::endpoint::{ReadError, RecvStream, SendStream, VarInt};
-use rafka_node_rpc_contract::catalog::{CatalogEntry, Shape, OpOwner};
-use rafka_node_rpc_contract::codes::ResetCode;
-use rafka_node_rpc_contract::framing::{decode_frame, encode_frame, FrameError};
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, NotSentReason, PreCommit, RpcOutcome};
-use rafka_node_rpc_contract::streaming::{FrameKind, FrameOrder, OrderState, StreamingProtocol};
+use rdm_core::catalog::{CatalogEntry, Shape, OpOwner};
+use rdm_core::codes::ResetCode;
+use rdm_core::framing::{decode_frame, encode_frame, FrameError};
+use rdm_core::outcome::{IndeterminateReason, NotSentReason, PreCommit, RpcOutcome};
+use rdm_core::streaming::{FrameKind, FrameOrder, OrderState, StreamingProtocol};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
@@ -234,8 +234,8 @@ where
             Ok(r) => r,
             Err(d) => {
                 let refusal = P::malformed(match d {
-                    rafka_node_rpc_contract::protocol::DecodeFailure::UnknownVariant => rafka_node_rpc_contract::outcome::MalformedKind::UnknownVariant,
-                    rafka_node_rpc_contract::protocol::DecodeFailure::Corrupt => rafka_node_rpc_contract::outcome::MalformedKind::Corrupt,
+                    rdm_core::protocol::DecodeFailure::UnknownVariant => rdm_core::outcome::MalformedKind::UnknownVariant,
+                    rdm_core::protocol::DecodeFailure::Corrupt => rdm_core::outcome::MalformedKind::Corrupt,
                 });
                 let end = StreamEnd::Final { kind: P::frame_kind(&refusal), payload: P::encode_reply(&refusal).unwrap_or_default() };
                 return Some((tracing::Span::none(), Box::pin(async move { end })));

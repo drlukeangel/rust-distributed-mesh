@@ -1,9 +1,9 @@
 //! The app's way to read rafka-time: the handle a running node hands back.
 
 use crate::common::{admin_side_on_rafka_time, TEST_MESH_ID};
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::runtime::RuntimeFact;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
@@ -22,7 +22,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = std::env::temp_dir().join(format!("rafka-time-handle-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let fabric = FabricId::mint();
         let admin = admin_side_on_rafka_time("127.0.0.1".parse().unwrap(), &fabric, AUTHORITY_REFERENCE_MS).await;
         let launch = Launch {
@@ -40,7 +40,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &node::load_or_mint_key(&dir).unwrap());
         let running = node::start(&launch, |b, _| b).await.expect("the admitted node starts");

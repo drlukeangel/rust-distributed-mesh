@@ -12,13 +12,13 @@
 //! is the birth's authority and never answers `NotAuthority` about itself.
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
-use rafka_mesh_entity::wire::WireDigest;
-use rafka_mesh_entity::{MeshDigest, RuntimeFact};
+use rdm_core::wire::WireDigest;
+use rdm_core::{MeshDigest, RuntimeFact};
 use crate::wire::JoinAnswer;
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::join::{Join, JoinReply, JoinRequest};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
+use rdm_core::catalog::OpOwner;
+use rdm_core::join::{Join, JoinReply, JoinRequest};
+use rdm_core::outcome::RpcOutcome;
 use std::collections::{HashMap, VecDeque};
 use tracing::Instrument as _;
 use std::future::Future;
@@ -471,10 +471,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rafka_mesh_entity::{MemberStatus, MeshNode};
+    use rdm_core::{MemberStatus, MeshNode};
 
     fn fact() -> RuntimeFact {
-        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap()
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap()
     }
 
     fn deployed() -> Deployed {
@@ -493,7 +493,7 @@ mod tests {
 
     fn digest_of(d: &Deployed) -> MeshDigest {
         MeshDigest {
-            fabric_id: rafka_mesh_entity::FabricId::mint(),
+            fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode {
                 node_id: d.node_id.clone(),
                 name: d.name.clone(),
@@ -608,7 +608,7 @@ mod tests {
     fn a_join_digest_with_another_runtime_or_data_dir_or_key_is_refused_by_its_field() {
         let dep = deployed();
         let mut other_fact = digest_of(&dep);
-        other_fact.node.runtime = Some(RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-2")).unwrap());
+        other_fact.node.runtime = Some(RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-2")).unwrap());
         assert_eq!(dep.verify(&other_fact).unwrap_err().field, "runtime");
         let mut dir = digest_of(&dep);
         dir.data_dir = Some("/elsewhere".into());

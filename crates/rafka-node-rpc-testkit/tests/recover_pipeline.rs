@@ -10,7 +10,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published, Spans};
-use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
+use rdm_core::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts};
@@ -266,7 +266,7 @@ async fn a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name
         .unwrap_or_else(|e| panic!("create: {e}"));
     rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
     rig.log.lock().unwrap().clear();
-    let other = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: rafka_mesh_entity::IncarnationId::mint(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 };
+    let other = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: rdm_core::IncarnationId::mint(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 };
     let build = publish_build(&rig.builds, add_node()).await;
     let err = pipeline
         .retire(&RetireRequest { build_id: build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(other.clone()) })

@@ -9,7 +9,7 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolder};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolder};
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
@@ -23,9 +23,9 @@ use rafka_node_admin_core::status_storage::MemoryStatusStorage;
 use rafka_node_admin_core::storage::MemoryNodesStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
+use rdm_core::catalog::OpOwner;
+use rdm_core::ping::{Ping, PingReply, PingRequest};
+use rdm_core::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -557,7 +557,7 @@ struct Held;
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_drive::Dispatcher for Held {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rdm_core::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
         std::future::pending().await
     }
 }
@@ -642,7 +642,7 @@ fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents
     });
     let (b, (build_id, attempt, disposition)) = resubmitted.expect("the new seat admits the re-submit by build_id from its incumbent's facts");
     assert_eq!(build_id, b.as_str(), "never a second Build");
-    assert_eq!((attempt, disposition), (1, rafka_node_rpc_contract::build::Disposition::Attached), "the re-submit attaches to the attempt it named");
+    assert_eq!((attempt, disposition), (1, rdm_core::build::Disposition::Attached), "the re-submit attaches to the attempt it named");
     let (held_attempt, held_executor) = held.expect("N's own log holds B once its incumbent's facts are absorbed");
     assert_eq!((held_attempt, held_executor.as_deref()), (1, Some("mesh1.admin.1")), "no new attempt is claimed: the same attempt, by the same executor");
     let spans = cap.spans();
@@ -1074,7 +1074,7 @@ fn a_primary_update_call_is_never_refused_for_the_birth_it_names() {
         // A command naming another birth of P: P holds mesh1's seat at 3, so it moves it.
         let mut other_birth = update_mesh_seat(&f.p, 3, "b1", op);
         if let Request::UpdatePrimary { holder, .. } = &mut other_birth {
-            holder.incarnation = IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("another-birth")).unwrap();
+            holder.incarnation = IncarnationId::parse(&rdm_core::fixture_crockford60("another-birth")).unwrap();
         }
         assert_eq!(send(&f.x, &f.p, other_birth).await, updated(committed_mesh(&f.n, 4)), "the command is judged by the seat P holds");
         // The call reaching M, which is not N's birth.
@@ -1345,7 +1345,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         // N's runtime, as recorded at its launch in P's nodes.storage: the exact runtime P's provider
         // inspects.
         let deployment = rafka_node_admin_core::model::DeploymentId::mint().to_string();
-        let runtime = rafka_mesh_entity::RuntimeFact { deployment_id: deployment.clone(), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "fabric-handover".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4242, start: 1 } };
+        let runtime = rdm_core::RuntimeFact { deployment_id: deployment.clone(), provider: rdm_core::RuntimeProvider::Process, control_domain: "fabric-handover".into(), locator: rdm_core::RuntimeLocator::Process { pid: 4242, start: 1 } };
         let row = rafka_node_admin_core::storage::RuntimeRow { node_id: f.n.resolved.node_id.clone(), name: f.n.resolved.name.clone(), incarnation_id: f.n.resolved.incarnation.clone(), runtime, data_dir: None };
         rafka_node_admin_core::storage::NodesStorage::put_runtime(&*f.p.nodes, &row).await.unwrap();
         // N installs from the row and never answers: its process dies there.
@@ -1396,7 +1396,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
 /// inspects. Returns its deployment.
 async fn n_runtime_recorded(f: &Seats) -> String {
     let deployment = rafka_node_admin_core::model::DeploymentId::mint().to_string();
-    let runtime = rafka_mesh_entity::RuntimeFact { deployment_id: deployment.clone(), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "fabric-handover".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4242, start: 1 } };
+    let runtime = rdm_core::RuntimeFact { deployment_id: deployment.clone(), provider: rdm_core::RuntimeProvider::Process, control_domain: "fabric-handover".into(), locator: rdm_core::RuntimeLocator::Process { pid: 4242, start: 1 } };
     let row = rafka_node_admin_core::storage::RuntimeRow { node_id: f.n.resolved.node_id.clone(), name: f.n.resolved.name.clone(), incarnation_id: f.n.resolved.incarnation.clone(), runtime, data_dir: None };
     rafka_node_admin_core::storage::NodesStorage::put_runtime(&*f.p.nodes, &row).await.unwrap();
     deployment
@@ -1688,7 +1688,7 @@ fn a_restore_of_the_mesh_seat_gives_back_the_mesh_rows_and_not_the_fabric_record
         stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
         stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
         stores.apply(WriteCutOff::Restore { reason: "mesh1's seat is mesh1.admin.1's again at epoch 5".into(), mesh_seat: true, fabric_seat: false }).await;
-        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic }).await.expect("the restored mesh seat writes its mesh's status rows");
+        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic }).await.expect("the restored mesh seat writes its mesh's status rows");
         match stores.fabric.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
             Err(e) => assert!(e.to_string().contains("node.primary.update:b1:1:node.stop:mesh1.admin.1"), "the fabric seat stays cut, naming the transfer: {e}"),
             Ok(claim) => panic!("a Fabric record write while the fabric seat is not this holder's: {claim:?}"),
@@ -1840,7 +1840,7 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
             fabric: std::sync::Arc::new(rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
             status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
-        let row = MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic };
+        let row = MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic };
         stores.apply(WriteCutOff::Set { reason: "node.primary.update:b1:node.stop:mesh1.admin.1".into(), mesh_seat: true, fabric_seat: false }).await;
         match stores.status.put_mesh_status(&row).await {
             Err(rafka_node_admin_core::record_store::StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.primary.update:b1:node.stop:mesh1.admin.1"), "{reason}"),
@@ -1866,7 +1866,7 @@ fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
     use rafka_node_admin_core::fabric_handover::SeatStores;
     use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage as _};
     use rafka_node_admin_core::storage::MeshStorage as _;
-    use rafka_node_rpc_contract::status::MeshState;
+    use rdm_core::status::MeshState;
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let d = std::env::temp_dir().join(format!("seat-stores-fabric-alone-{}", NodeId::mint()));
@@ -1919,7 +1919,7 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
             status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
         stores.mesh.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: rafka_node_admin_core::model::MeshId::mint(), name: "mesh1".into(), dead: false }).await.unwrap().unwrap();
-        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic }).await.unwrap();
+        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic }).await.unwrap();
         stores.fabric.claim_identity(&rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
         assert!(stores.mesh.mesh("mesh1").await.unwrap().is_some(), "the holder reads the Mesh row it holds");
         let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by node.primary.update:b1:node.stop:mesh1.admin.1";
@@ -1970,7 +1970,7 @@ fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_pri
             status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
         let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
-        let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::Dead };
+        let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rdm_core::status::MeshState::Dead };
         stores.nodes.put_node_row(&row).await.unwrap().expect("mesh2.rpc.1 is a free key");
         stores.status.put_mesh_status_of("mesh2", &dead).await.unwrap();
         assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), Some(row.clone()), "the holder reads the mesh2 Node row it holds");

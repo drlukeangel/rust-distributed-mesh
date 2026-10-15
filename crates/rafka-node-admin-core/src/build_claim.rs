@@ -27,9 +27,9 @@ use crate::model::{EndpointId, NodeId, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use crate::topology::Topology;
 use rafka_node_rpc::ServerBuilder;
-use rafka_node_rpc_contract::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
-use rafka_node_rpc_contract::catalog::OpOwner;
-use rafka_node_rpc_contract::context::CallContext;
+use rdm_core::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
+use rdm_core::catalog::OpOwner;
+use rdm_core::context::CallContext;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -288,7 +288,7 @@ impl ClaimDoor {
             Err(e) => {
                 tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, executor = %executor.name, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the claim is refused: its Build id is not a Crockford id"));
-                return BuildClaimReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
+                return BuildClaimReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt };
             }
         };
         self.claim_in(&executor.name.to_string(), &build_id, mesh.as_deref(), attempt).await

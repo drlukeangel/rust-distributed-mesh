@@ -6,8 +6,8 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
+use rdm_core::launch::Launch;
+use rdm_core::{FabricId, IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore};
 use crate::common::admin_view::{self, node};
@@ -40,7 +40,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             store_dir: data.clone(),
             mesh_id: None,
             mesh_issuer: None,
-            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
         let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))

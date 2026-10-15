@@ -3,15 +3,15 @@
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
-use rafka_mesh_entity::{IncarnationId, NodeId};
+use rdm_core::{IncarnationId, NodeId};
 use rafka_node_rpc::stream::{SinkError, StreamFailure, StreamItem};
 use opentelemetry_sdk::export::trace::SpanData;
 use rafka_node_rpc::{ServedBirth, CallOptions, HandlerFault, NodeRpcClient, NodeRpcServer, NodeTarget, ResolvedNode, ServerBuilder, ServerStats, StaticResolver};
-use rafka_node_rpc_contract::context::CallContext;
-use rafka_node_rpc_contract::catalog::{LedgerEntry, OpOwner, OpState};
-use rafka_node_rpc_contract::outcome::{IndeterminateReason, MalformedKind, ReplyKind};
-use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::streaming::{FrameKind, StreamingProtocol};
+use rdm_core::context::CallContext;
+use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
+use rdm_core::outcome::{IndeterminateReason, MalformedKind, ReplyKind};
+use rdm_core::protocol::NodeProtocol;
+use rdm_core::streaming::{FrameKind, StreamingProtocol};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
