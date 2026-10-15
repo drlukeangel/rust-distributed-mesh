@@ -1891,7 +1891,7 @@ absorbed s71 and s74. The first Node RPC frame is the target: landed 87df0a35 (2
 
 ### State
 
-landed this session: R-ML3 (fabric-recovery, mesh-investigation), R-PB1/R-PC1 (fabric-not-ready), stopped/deleted, R-TG2/R-TG3 tags, BuildChange::Recipe, HandedOff.to, the R-HB1 gossip rows, the R-RX docs; absorbed s8 and s32
+done (R-BI9 landed on `docs/architecture/build.md`: A7, A8, A9, A10, A11, A13 applied; A6 at :371 and A14 already on main; A12 packages table deferred to the crate layout's packages-table landing after the `rdm-` rename); earlier this session: R-ML3 (fabric-recovery, mesh-investigation), R-PB1/R-PC1 (fabric-not-ready), stopped/deleted, R-TG2/R-TG3 tags, BuildChange::Recipe, HandedOff.to, the R-HB1 gossip rows, the R-RX docs; absorbed s8 and s32. Nothing left in this block (A12 tracked under the crate layout step 9).
 
 ### Remaining
 
@@ -1902,14 +1902,132 @@ landed this session: R-ML3 (fabric-recovery, mesh-investigation), R-PB1/R-PC1 (f
 
 ### Acceptance criteria
 
-- [ ] R-BI9 (Luke 2026-10-15): build.md A7, A8, A9, A10, A11 and A13 land as the build proposal writes them, one docs landing; the dev re-verifies each line against main (A6 at :371 and A14 are already on the page) and records the exact diff here; A12 (packages table) deferred to the crate layout's packages-table landing after the `rdm-` rename
-- [ ] no architecture line contradicts a ruling
-- [ ] check-doc-symbols clean
-- [ ] The story bar holds (section story-bar).
+- [x] R-BI9 (Luke 2026-10-15): build.md A7, A8, A9, A10, A11 and A13 land as the build proposal writes them, one docs landing; the dev re-verifies each line against main (A6 at :371 and A14 are already on the page) and records the exact diff here; A12 (packages table) deferred to the crate layout's packages-table landing after the `rdm-` rename:
+  ```diff
+  --- a/docs/architecture/build.md
+  +++ b/docs/architecture/build.md
+  @@ -3 +3 @@
+  -This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md); this page's sections skip §7 and §8 so that §9 to §16 keep their numbers.
+  +This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md).
+  @@ -56 +56 @@ Allowed customer seams are:
+  -- implementations of the imported Fabric/Mesh/Nodes/Connections/Build storage interfaces;
+  +- implementations of the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6);
+  @@ -99 +99 @@ Rafka imports these RDM packages at one exact revision:
+  -| `rafka-mesh-entity` | the generic Mesh entity: exact-node identity, process incarnation, membership, endpoint-slot freshness, RuntimeFact and connection projections |
+  +| `rafka-mesh-entity` | the generic Mesh entity: exact-node identity, process incarnation, membership, endpoint freshness, RuntimeFact and connection projections |
+  @@ -102 +102 @@ Rafka imports these RDM packages at one exact revision:
+  -| `rafka-node-admin-core` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, LeadershipResolver, the fabric/mesh/nodes/connections/builds storage interfaces with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
+  +| `rafka-node-admin-core` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, LeadershipResolver, the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6) with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
+  @@ -128 +128 @@ submitted change
+  -The accepted topology names the exact logical slots/path.names that should exist, grouped by Mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
+  +The accepted topology names the exact path.names that should exist, grouped by mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
+  @@ -133,5 +133,5 @@ B.topology:
+  -    admin.1
+  -    admin.2
+  -    rpc.1
+  -    rpc.2
+  -    rpc.3
+  +    mesh1.admin.alpha
+  +    mesh1.admin.beta
+  +    mesh1.rpc.north
+  +    mesh1.rpc.south
+  +    mesh1.rpc.east
+  @@ -139 +139 @@ B.topology:
+  -submit: remove mesh1.rpc.2
+  +submit: remove mesh1.rpc.south
+  @@ -143,4 +143,4 @@ B'.topology:
+  -    admin.1
+  -    admin.2
+  -    rpc.1
+  -    rpc.3
+  +    mesh1.admin.alpha
+  +    mesh1.admin.beta
+  +    mesh1.rpc.north
+  +    mesh1.rpc.east
+  @@ -309 +309,3 @@ pub trait BuildStateAdapter: Send + Sync {
+  -    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError>;
+  +    async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError>;
+  +    async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
+  +    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError>;
+  @@ -310,0 +313,3 @@ pub trait BuildStateAdapter: Send + Sync {
+  +    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError>;
+  +    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError>;
+  +    async fn current(&self) -> Result<Option<BuildProjection>, BuildStateError>;
+  @@ -312,0 +318 @@ pub trait BuildStateAdapter: Send + Sync {
+  +    async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError>;
+  @@ -314,0 +321,6 @@ pub trait BuildStateAdapter: Send + Sync {
+  +    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
+  +    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
+  +    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str);
+  +    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError>;
+  +    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
+  +    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
+  @@ -318 +330 @@ pub trait BuildStateAdapter: Send + Sync {
+  -The exported semantic vocabulary is append/fold friendly:
+  +The exported semantic vocabulary (`BuildFact` variants) is append/fold friendly:
+  @@ -321 +333,2 @@ The exported semantic vocabulary is append/fold friendly:
+  -BuildIntentFact
+  +BuildAccepted
+  +AttemptOpened
+  @@ -325 +337,0 @@ BuildAttemptReceipt
+  -BuildCompletionFact
+  @@ -328 +340 @@ BuildCompletionFact
+  -These facts describe reconciliation execution. The current Build is read from them newest first (§4); they also record what happened while executing it. They are not a second topology authority and not the current-runtime store. Completed Build records remain valid history for recovery, API views, diagnostics, audit and chaos evidence.
+  +These facts describe reconciliation execution. The current Build is read from them newest first (§4, `current_build()` over the acceptance-order index, with `newest_accepted_at_ms()` as the acceptance high-water mark of every state and `recovery_of` answering the point read by exited birth); they also record what happened while executing it. They are not a second topology authority and not the current-runtime store. Completed Build records remain valid history for recovery, API views, diagnostics, audit and chaos evidence.
+  @@ -336 +348 @@ RDM proves the contract without inventing a broker-backed database:
+  -- optional local-file journal for same-node-admin restart, replay, and evidence artifacts.
+  +- local-file journal for same-node-admin restart, replay, and evidence artifacts.
+  @@ -347,2 +359,2 @@ Rafka must not persist one mutable Build row and increment `attempt` by read-mod
+  -BuildIntentFact
+  -    blind put once
+  +BuildAccepted
+  +    insert-and-fail on build_id
+  @@ -350,2 +362,5 @@ BuildIntentFact
+  -BuildAttemptClaim(build_id, attempt)
+  -    insert-and-fail claim
+  +AttemptOpened(build_id, mesh, attempt)
+  +    insert-and-fail on (build_id, mesh, attempt)
+  +
+  +BuildAttemptClaim(build_id, mesh, attempt)
+  +    insert-and-fail claim on (build_id, mesh, attempt)
+  @@ -360,0 +376,6 @@ current attempt
+  +
+  +current Build
+  +    current_build() over the acceptance-order index
+  +
+  +recovery index
+  +    recovery_of(path, node_id, incarnation)
+  @@ -392 +413 @@ No Build is current before it is recoverably durable.
+  -Control-plane state lives behind RDM's five storage interfaces: fabric, mesh, nodes, connections and status. In RDM's file adapter they open under one store root per fabric, `<store_dir>/<fabric_id>/{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, status/<mesh>/}`, where `<mesh>` is the mesh's logical name. Writers are the ladder: the fabric-primary writes `fabric/`, each mesh-primary its `meshes/<mesh>` and `nodes/<mesh>/`, each node its own `connections/<node>/`. Each node-admin also keeps its own Build journal (`builds.storage`). The generic code knows the interfaces, never a specific database; Rafka binds its system topics to them.
+  +Control-plane state lives behind the five storage interfaces, fabric, mesh, nodes, connections and status, on the fabric's shared store root, and the Build journal (`builds.storage`, `BuildStateAdapter`, on the fabric's shared store root per R-BI6). In RDM's file adapter they open under `<store_dir>/fabrics/<name>` and one store root per fabric, `<store_dir>/<fabric_id>/{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, status/<mesh>/}`, where `<mesh>` is the mesh's logical name. Writers are the ladder: the fabric-primary writes `fabric/` (and `fabric/builds/`), each mesh-primary its `meshes/<mesh>` (including `meshes/<mesh>/claims/` and `meshes/<mesh>/builds/`), `nodes/<mesh>/` and `status/<mesh>/`, each node its own `connections/<node>/`. The generic code knows the interfaces, never a specific database; Rafka binds its system topics to them.
+  @@ -394 +415 @@ Control-plane state lives behind RDM's five storage interfaces: fabric, mesh, no
+  -`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once. It carries no pointer to a Build (RDM's `FabricRecord` in `rafka-node-admin-core`).
+  +`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once; the fabric's name is claimed insert-and-fail at `<store_dir>/fabrics/<name>` above the per-fabric roots, and a deleted fabric releases it. It carries no pointer to a Build (RDM's `FabricRecord` in `rafka-node-admin-core`).
+  @@ -508 +529 @@ fabric-primary accepts Build B19:
+  -The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin, whose sequence is [node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent).
+  +The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin ([mesh-absent arm](lifecycles/node-create.md#mesh-absent)); that is what `mesh.create` names: there is no separate op.
+  @@ -528 +549 @@ fabric-primary accepts Build B20:
+  -mesh1 is deleted by `mesh.delete` and mesh3 comes into being with the `node.create` of its first node-admin. mesh3 always has a new MeshId; a MeshId is never reissued, even when the new mesh takes mesh1's name after mesh1's row is deleted. A dead mesh is never restarted: mesh3 is mesh.create of a new mesh, and it does not preserve mesh1's logical identity merely to reuse its slot/name.
+  +mesh1 is deleted by `mesh.delete` and mesh3 comes into being with the `node.create` of its first node-admin. mesh3 always has a new MeshId; a MeshId is never reissued, even when the new mesh takes mesh1's name after mesh1's row is deleted. A dead mesh is never restarted: mesh3 is the mesh-absent arm of `node.create` under a new MeshId, and it does not preserve mesh1's logical identity merely to reuse its name.
+  @@ -534 +555 @@ fabric-primary accepts Build B21:
+  -    mesh2 {rpc.1, rpc.2} -> mesh2 {rpc.1}
+  +    mesh2 {mesh2.rpc.north, mesh2.rpc.south} -> mesh2 {mesh2.rpc.north}
+  @@ -538,2 +559,2 @@ fabric-primary accepts Build B21:
+  -The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.rpc.2, which mesh2's primary
+  -executes under the fabric-primary's claim; the fabric-primary never commands mesh2.rpc.2 and never
+  +The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.rpc.south, which mesh2's primary
+  +executes under the fabric-primary's claim; the fabric-primary never commands mesh2.rpc.south and never
+  @@ -622 +643 @@ The RDM-generic proofs of this page's mechanisms:
+  -- elastic shape/grow/shrink tests assert accepted per-cohort counts or settled shape rather than requiring surviving ordinals to be contiguous; identity/leadership/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
+  +- elastic shape/grow/shrink tests assert accepted per-kind counts or settled shape rather than requiring surviving names to be contiguous; identity/leadership/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
+  ```
+- [x] no architecture line contradicts a ruling
+- [x] check-doc-symbols clean
+- [x] The story bar holds (section story-bar).
 
 ### Done when
 
-- [ ] Every acceptance criterion's cell is green and asserts its span; a gossip or mesh change carries its Jaeger flame from a live mesh; it lands only through the land script; this block's State names the landing sha and what is left.
+- [x] Every acceptance criterion's cell is green and asserts its span; a gossip or mesh change carries its Jaeger flame from a live mesh; it lands only through the land script; this block's State names the landing sha and what is left.
 
 **Epic metadata**
 
