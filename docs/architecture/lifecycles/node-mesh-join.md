@@ -91,7 +91,7 @@ The standalone command, from the mesh-primary to a node its tickle reached off i
     "JoinMesh": {
       "node_id": "k8pag1qx95gw",
       "incarnation": "0000000000000008",
-      "build_id": "bld-3f9a1c7e5b2d8046a1c3e5f7",
+      "build_id": "3f9a1c7e5b2d",
       "attempt": 3,
       "operation": "node.mesh.join:mesh1.rpc.1"
     }
@@ -152,7 +152,7 @@ The authority's unary reply, `Joined` with its answer decoded (on the wire `answ
         "provider": "process",
         "fabric": { "fabric_id": "fab4m8n2p6q1", "name": "lab" },
         "shutdown": null,
-        "build": { "build_id": "bld-3f9a1c7e5b2d8046a1c3e5f7", "attempt": 1 },
+        "build": { "build_id": "3f9a1c7e5b2d", "attempt": 1 },
         "rafka_time_ms": 1718290000042,
         "member_cert": "<cert bytes, opaque to RDM>",
         "name": "mesh1.rpc.1",

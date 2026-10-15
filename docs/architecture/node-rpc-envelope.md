@@ -361,7 +361,7 @@ postcard, not JSON): a StopNode on op `0x1B` (27).
     "StopNode": {
       "node_id": "k8pag1qx95gw",
       "incarnation": "0000000000000008",
-      "build_id": "bld-3f9a1c7e5b2d8046a1c3e5f7",
+      "build_id": "3f9a1c7e5b2d",
       "attempt": 1,
       "operation": "node.stop:mesh1.rpc.1"
     }
@@ -857,7 +857,7 @@ mesh-primary's exit; a separate node.delete, with the fabric-primary as executor
 
 Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_claim.rs::BuildClaimRequest`.
 
-Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail) and claims by insert-and-fail on `(build_id, mesh, attempt)`; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant, RejectedNotAuthority and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
+Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail) and claims by insert-and-fail on `(build_id, mesh, attempt)`; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
 
 ```rust
 pub enum BuildClaimRequest {
@@ -869,7 +869,6 @@ pub enum BuildClaimReply {
     Lost { holder: String },
     NotOpen { next: Option<u32> },
     NotClaimant { mesh: Option<String>, fabric_primary: Option<String>, mesh_primary: Option<String> },
-    RejectedNotAuthority { reason: String },
     BuildInProgress { current_build_id: String, mesh: String, held_by: Option<String> },
     PeerUnresolved { reason: String },
     NotReady { reason: String },

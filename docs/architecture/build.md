@@ -192,10 +192,10 @@ The node, mesh and fabric ids and the node's transport `endpoint_id` are defined
 [node-identity-and-state.md §2](node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids),
 [§2.7](node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it) and
 [§2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it); leadership
-ordering over them is [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). The
-control values this page introduces (BuildId, DeploymentId, transition ids, provider handles and
-control-domain values) are opaque and are not Crockford product ids
-(RDM's `BuildId` in `rafka-node-admin-core`).
+ordering over them is [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
+BuildId, DeploymentId and IncarnationId are minted like every other id, bare 12-character Crockford60
+(`rafka-mesh-entity/src/ids.rs`); there is one id type. Transition ids, provider handles and
+control-domain values are not ids: they are the provider's or the pipeline's own strings.
 
 ---
 

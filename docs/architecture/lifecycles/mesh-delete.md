@@ -111,7 +111,7 @@ command to the mesh-primary:
   "body": {
     "DeleteMesh": {
       "mesh_id": "msh9r3t6v2x8",
-      "build_id": "bld-7c2e9a4f1b6d3058e2a4c6f8",
+      "build_id": "7c2e9a4f1b6d",
       "attempt": 1,
       "operation": "mesh.delete:msh9r3t6v2x8"
     }
@@ -135,7 +135,7 @@ fabric-primary:
   "body": {
     "MeshDeleted": {
       "mesh_id": "msh9r3t6v2x8",
-      "build_id": "bld-7c2e9a4f1b6d3058e2a4c6f8",
+      "build_id": "7c2e9a4f1b6d",
       "attempt": 1,
       "operation": "mesh.delete:msh9r3t6v2x8",
       "final_node_id": "adm2b7d4f9h1",

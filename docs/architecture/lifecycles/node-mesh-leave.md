@@ -56,7 +56,7 @@ The command, from the mesh-primary to a member whose connections are deleted, op
     "LeaveMesh": {
       "node_id": "k8pag1qx95gw",
       "incarnation": "0000000000000008",
-      "build_id": "bld-3f9a1c7e5b2d8046a1c3e5f7",
+      "build_id": "3f9a1c7e5b2d",
       "attempt": 1,
       "operation": "node.stop:mesh1.rpc.1"
     }
