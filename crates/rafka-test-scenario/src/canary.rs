@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
-const NODE: &str = "mesh1.rpc.2";
+// The canary restarts the rpc cohort's primary seat holder (`is_primary == true`).
 
 fn ready(node: &Value) -> bool {
     node["status"] == "ready-for-traffic"
@@ -36,8 +36,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let birth_build = estate.reconcile(&shape).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
-    // 2. Put{key=41, value="before-restart"} to rpc.2 by ExactNode.
-    let before = estate.node_value(NODE).await;
+    // 2. Select the rpc cohort's primary seat holder (lowest node_id) and Put{key=41, value="before-restart"} by ExactNode.
+    let (node_holder, before) = estate.until_view("rpc cohort primary seat holder", SETTLE, |v| v.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.is_primary).map(|n| (n.name.to_string(), serde_json::to_value(n).unwrap()))).await; let node_name = node_holder.as_str();
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);
@@ -50,14 +50,14 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let incarnation_before = before["incarnation_id"].as_str().expect("incarnation_id").to_string();
     let deployment_before = before["deployment_id"].as_str().expect("deployment_id").to_string();
     estate.artifact("nodes-before.json", &json!(estate.node_values().await));
-    let process_before = runtime_of(&estate, NODE).await;
+    let process_before = runtime_of(&estate, node_name).await;
     let transport_before = before["transport_addr"].clone();
 
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 4. Restart through node.restart; it answers with a Build id and does no bespoke work.
-    let node: PathName = NODE.parse().unwrap();
-    let mut stream = estate.nodes_obj().await.restart(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart {NODE}: {e}"));
+    let node: PathName = node_name.parse().unwrap();
+    let mut stream = estate.nodes_obj().await.restart(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart {node_name}: {e}"));
     let restart_build = stream.accepted().build_id.to_string();
     assert_eq!(restart_build, birth_build, "a restart changes no topology: it is an attempt of the accepted Build");
     // The attempt is opened by the fabric-primary, the one admin the Build family answers at: build.get reads it there at once.
@@ -70,7 +70,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
 
     // The node is ready again (observed, not slept on), and no longer parked.
     let after = estate
-        .until_node(NODE, "rpc.2 ready after its restart", SETTLE, |n| {
+        .until_node(node_name, "rpc.2 ready after its restart", SETTLE, |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
             (ready(&n) && n["parked"] == false).then_some(n)
         })
@@ -86,7 +86,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
 
     // 6. The process never exited: it keeps its endpoint and its port.
     assert_eq!(after["transport_addr"], transport_before, "a restart keeps the transport port");
-    let process_after = runtime_of(&estate, NODE).await;
+    let process_after = runtime_of(&estate, node_name).await;
     assert_eq!(process_after, process_before, "the same process (or container) before and after the restart");
 
     // 7. The pre-restart value is still readable from the same node data dir, served by the new incarnation.
@@ -114,11 +114,11 @@ pub async fn restart_canary(owner: Owner) -> Value {
     // A span is exported once it ends, by each process's own exporter: the chain is exported when the
     // node's start (the rpc node's span), the restart call's request span and the restart's reconcile
     // (the executor's outermost span, ending after the node operation and every step under it) are.
-    let restart_op = format!("node.restart:{NODE}");
+    let restart_op = format!("node.restart:{node_name}");
     let spans = wait_for("restart span chain exported", SETTLE, || async {
         let spans = estate.spans();
-        let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == NODE && s["attributes"]["outcome"] == "started");
-        let called = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE);
+        let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == node_name && s["attributes"]["outcome"] == "started");
+        let called = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == node_name);
         let reconciled = named(&spans, "rdm.node_admin.build.update.via-reconcile")
             .into_iter()
             .any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)));
@@ -134,7 +134,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
         .expect("rdm.node_admin.build.create.via-node-rpc for the accepted Build");
     let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == node_name)
         .expect("rdm.node_admin.build.update.via-node-rpc for the restart call");
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
@@ -145,7 +145,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_ne!(reconcile["trace_id"], created["trace_id"], "the restart is not under the Build's original create span");
     let node_op = named(&spans, "rdm.node_admin.node.update.via-build")
         .into_iter()
-        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == node_name)
         .expect("rdm.node_admin.node.update.via-build for rpc.2");
     assert!(descends_from(&spans, node_op, rest), "node.update.via-build descends from the restart call's build.update.via-node-rpc");
     assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
@@ -153,7 +153,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let step = |name: &str| {
         named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
-            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && s["attributes"]["node"] == NODE && s["attributes"]["attempt"] == attempt.as_str())
+            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && s["attributes"]["node"] == node_name && s["attributes"]["attempt"] == attempt.as_str())
             .unwrap_or_else(|| panic!("the {name} step span of the restart attempt for rpc.2"))
     };
     for name in ["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady"] {
@@ -161,11 +161,11 @@ pub async fn restart_canary(owner: Owner) -> Value {
         assert_eq!(step(name)["attributes"]["outcome"], "complete", "{name}");
     }
     assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|s| s["attributes"]["build_id"] != restart_build.as_str() || s["attributes"]["attempt"] != attempt.as_str() || !matches!(s["attributes"]["step"].as_str(), Some("DeployRuntime" | "TerminateRuntime"))), "a restart deploys nothing and terminates nothing");
-    let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().find(|s| s["attributes"]["node"] == NODE).unwrap();
+    let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().find(|s| s["attributes"]["node"] == node_name).unwrap();
     assert!(descends_from(&spans, served, step("StartNode")), "the node's start descends from the StartNode step");
     estate.record_trace_url(rest["trace_id"].as_str().unwrap());
     let facts = json!({
-        "node": NODE,
+        "node": node_name,
         "node_id": node_id,
         "endpoint_id": after["endpoint_id"],
         "incarnation_before": incarnation_before,
