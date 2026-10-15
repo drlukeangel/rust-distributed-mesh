@@ -17,7 +17,32 @@
 
 # R-BI5a — `bid_xxxx-xxxx-xxxx` is a log rendering only (Luke 2026-10-14)
 
-**Ruling (Luke 2026-10-14: "bid_xxxx-xxxx-xxxx but only in logs otherwise we just use the raw-crockford as its a bigint storage value at 12").**
+**Ruling (Luke 2026-10-14: "bid_xxxx-xxxx-xxxx but only in logs otherwise we just use the raw-crockford as its a bigint storage value at 12"; agreed 2026-10-14 to build).**
 - On the wire, in every store row and in every page example a Build id is the bare 12-character Crockford60 (R-BI5): a 60-bit integer at 12 characters.
-- A log line or span may render it `bid_xxxx-xxxx-xxxx` (the same 12 characters in three groups of four) for the eye. Nothing parses that form, and nothing stores it.
-- Recorded, not built: no code renders the log form today; its PRD row sits under e12.s58 / e12.s76.
+- A log line or span renders it `bid_xxxx-xxxx-xxxx` (the same 12 characters in three groups of four, `BuildId::log()`) for the eye. Nothing parses that form (`BuildId::parse("bid_...")` refuses by name), and nothing stores it.
+
+# R-RX6 — the four A' attribution items in `e12.s53` stay as landed (Luke 2026-10-14, "i agree")
+
+**Docs of record:** `node-rpc.md` §14; `gossip.md` §3.1; `i143-prd.md` `e12.s53`.
+
+- The four places that read the transport-authenticated sender or the seat book to attribute an incoming message or sample are not receiver authorization and stay as landed:
+  1. round `heard_from` keyed on the sender (`status_rpc.rs:582`);
+  2. the `ReadyForTraffic` round report recorded under `Reporter::Birth(incarnation)` or `Reporter::Endpoint(peer)` (`status_rpc.rs:671`);
+  3. the probe wake `wake.addressed_by(sender, peer)` (`status_rpc.rs:1028`);
+  4. rafka-time lineage: `from_mesh_primary_digest` and `from_fabric_primary_members` admit a stamp only from the digest or aggregate whose own payload birth is the seat book's holder and `ReadyForTraffic` (`rafka-mesh-transport/src/discipline.rs:42-78`). That is content against committed record, not sender attribution.
+
+# R-SF1 — the staleness floor stays process-wide (Luke 2026-10-14, "i agree", option A)
+
+**Docs of record:** `i143-prd.md` `e12.s82` / `e12.s83`.
+
+- `cadence::staleness_floor()` (`rafka-mesh-entity/src/cadence.rs:56`) stays read once per process.
+- The four transport cells that need another floor keep running in their own subprocess with `RDM_STALENESS_MS` set through `own_process::delegated_with_env`: `channel_stopped.rs:69`, `gossip_stats.rs:77`, `peer_location_book.rs:148` (`60000 ms`), and `heartbeat_spans.rs:63` (`2000 ms`).
+- No floor parameter is added to `Membership::join`.
+
+# e12.s55 — the PRD row is the record (Luke 2026-10-14, "i agree")
+
+**Docs of record:** `i143-prd.md` `e12.s55`.
+
+- Leave the `e12.s55` PRD row as the record for parked post-beta `R-HB3` (`digest_seq` as evidence on four `0x1B` replies) and file no issue.
+- Replace the dead `#3085` tracking reference in the `e12.s55` header with `Tracking issue: none (the #3085 reference never resolved; parked post-beta, this row is the record)`.
+
