@@ -15,9 +15,10 @@ use crate::topology::Topology;
 use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
 use rafka_mesh_entity::{GossipStats, NodeLoad};
 use crate::storage::NodesStorage;
+use crate::status_storage::StatusStorage;
 use rafka_mesh_entity::NodeId;
 use rafka_node_rpc_contract::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
-use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -84,6 +85,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         gossip,
         tags,
         config: n.config.clone(),
+        held_running: None,
     }
 }
 
@@ -133,10 +135,19 @@ async fn tags_of(storage: &dyn NodesStorage, n: &Node) -> Result<BTreeSet<String
     Ok(row.filter(|r| r.node_id == n.node_id).map(|r| r.tags).unwrap_or_default())
 }
 
+async fn held_running_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<HeldRunning> {
+    if n.status == crate::model::NodeStatus::ReadyForTraffic {
+        return None;
+    }
+    let (s, inc) = (status_storage?, n.incarnation_id.as_ref()?);
+    let row = s.node_held_running_of(&n.mesh, &n.node_id, inc).await.ok().flatten()?;
+    Some(HeldRunning { since: row.since, verdicts: row.verdicts })
+}
+
 /// The births `view` holds that `chosen` selects, sorted by `path.name`, each with what `loads`
 /// carries for it and the tags its row carries: every birth the view holds, replaced predecessors
 /// included.
-async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, chosen: &Chosen<'_>) -> Result<Vec<NodeView>, ReadFailed> {
+async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, chosen: &Chosen<'_>) -> Result<Vec<NodeView>, ReadFailed> {
     let births: Vec<&Node> = view
         .births()
         .filter(|n| match chosen {
@@ -148,7 +159,9 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
     let mut out = Vec::with_capacity(births.len());
     for n in births {
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        out.push(node_view(n, load, gossip, tags_of(storage, n).await?));
+        let mut v = node_view(n, load, gossip, tags_of(storage, n).await?);
+        v.held_running = held_running_of(status_storage, n).await;
+        out.push(v);
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
@@ -160,6 +173,11 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
 /// that fails is `RejectedSourceFailed` naming the read. Its span names what was asked, the filter,
 /// its labels, how many index reads were made and how many nodes were answered.
 pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, select: &NodeSelect) -> StatusReply {
+    nodes_answer_with_status(me, view, loads, storage, None, select).await
+}
+
+/// [`nodes_answer`] with `status_storage` supplying each birth's durable `held-running` fact (R-FM1).
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, select: &NodeSelect) -> StatusReply {
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
         node = %me,
@@ -188,7 +206,7 @@ pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage
                 }
             }
         };
-        match nodes(view, &loads(), storage, &chosen).await {
+        match nodes(view, &loads(), storage, status_storage, &chosen).await {
             Ok(nodes) => {
                 let count = nodes.len();
                 span.record("nodes", count as u64);
@@ -239,6 +257,7 @@ pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
         admin_api_base: f.admin_api_base,
         meshes: f.meshes.into_iter().map(mesh_view).collect(),
         build_id,
+        held_running: None,
     }
 }
 
@@ -333,7 +352,21 @@ pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Optio
 /// `fabric.get` answered by the node-admin `me`: the fabric its `view` holds, with `build_id`, its
 /// fabric record's `Fabric.build_id`. The span names the meshes and the Build answered.
 pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>) -> StatusReply {
-    let fabric = fabric(view, build_id);
+    fabric_answer_with_held(me, view, build_id, None)
+}
+
+/// [`fabric_answer`] with `status_storage` supplying the fabric-primary's durable `held-running` fact (R-FM1).
+pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, status_storage: &dyn StatusStorage) -> StatusReply {
+    let held = match view.fabric_primary() {
+        Some(fp) => held_running_of(Some(status_storage), fp).await,
+        None => None,
+    };
+    fabric_answer_with_held(me, view, build_id, held)
+}
+
+fn fabric_answer_with_held(me: &PathName, view: &Topology, build_id: Option<String>, held_running: Option<HeldRunning>) -> StatusReply {
+    let mut fabric = fabric(view, build_id);
+    fabric.held_running = held_running;
     let (count, build) = (fabric.meshes.len(), fabric.build_id.clone().unwrap_or_default());
     let reply = StatusReply::within_reply_bound(StatusReply::Fabric { fabric }, "fabric.get");
     match &reply {

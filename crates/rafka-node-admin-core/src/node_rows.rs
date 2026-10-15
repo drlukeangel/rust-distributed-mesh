@@ -311,7 +311,17 @@ impl NodeRows {
         let mut guard = ClaimGuard { span: span.clone(), done: false };
         let r = tracing::Instrument::instrument(
             async {
-                let me = self.writer_check(&name.mesh, name).await?;
+                let me = if of == ClaimFor::Recovery && name.kind == NodeKind::NodeAdmin {
+                    let t = self.view.read().await;
+                    if t.holds_fabric_seat(&self.me_id) {
+                        self.held_name_in(&t)
+                    } else {
+                        drop(t);
+                        self.writer_check(&name.mesh, name).await?
+                    }
+                } else {
+                    self.writer_check(&name.mesh, name).await?
+                };
                 span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
                 self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span, "writer-check").await
@@ -490,6 +500,7 @@ impl NodeRows {
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
+        let fabric_recovery = record.kind == NodeKind::NodeAdmin && record.exit_proven;
         if self.written.row_of(&record.node_id).is_some_and(|r| r.config.is_empty() && r.tags.is_empty()) {
             if let Ok(Some(stored)) = self.storage.node_row_at(&record.name).await {
                 if stored.node_id == record.node_id && (!stored.config.is_empty() || !stored.tags.is_empty()) {
@@ -500,9 +511,9 @@ impl NodeRows {
         let (config, config_from) = self.known_config(record);
         let tags = match self.known_tags(record).await {
             Ok(tags) => tags,
-            Err(e) => return self.deleted_row(&record.name, &record.node_id, Err(e), operation).await,
+            Err(e) => return self.deleted_row(&record.name, &record.node_id, Err(e), operation, fabric_recovery).await,
         };
-        self.deleted_row(&record.name, &record.node_id, Ok(Some((config, tags, config_from))), operation).await
+        self.deleted_row(&record.name, &record.node_id, Ok(Some((config, tags, config_from))), operation, fabric_recovery).await
     }
 
     /// The tags of the row `record`'s node is written with: the ones this writer holds for it, else
@@ -523,13 +534,13 @@ impl NodeRows {
     /// written with a config the writer does not know. One `via-node-row` span.
     pub async fn deleted_birth(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<(), RowRefused> {
         let known = self.written.row_of(node_id).map(|r| (r.config, r.tags, "writer-record"));
-        self.deleted_row(name, node_id, Ok(known), operation).await
+        self.deleted_row(name, node_id, Ok(known), operation, false).await
     }
 
     /// The `Deleted` row of `node_id` at `name`, written from what the writer knows of it: its
     /// config and tags (the row keeps both, as it keeps the record), or the refusal that names why
     /// it knows neither. The store tombstones every tags index row of its labels with the write.
-    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Result<Option<(BTreeMap<String, String>, std::collections::BTreeSet<String>, &'static str)>, RowRefused>, operation: &str) -> Result<(), RowRefused> {
+    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Result<Option<(BTreeMap<String, String>, std::collections::BTreeSet<String>, &'static str)>, RowRefused>, operation: &str, fabric_recovery: bool) -> Result<(), RowRefused> {
         let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
@@ -549,7 +560,17 @@ impl NodeRows {
         }
         let r = tracing::Instrument::instrument(
             async {
-                let me = self.writer_check(&name.mesh, name).await?;
+                let me = if fabric_recovery {
+                    let t = self.view.read().await;
+                    if t.holds_fabric_seat(&self.me_id) {
+                        self.held_name_in(&t)
+                    } else {
+                        drop(t);
+                        self.writer_check(&name.mesh, name).await?
+                    }
+                } else {
+                    self.writer_check(&name.mesh, name).await?
+                };
                 span.record("node", me.to_string().as_str());
                 let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{me}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know")));

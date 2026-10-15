@@ -165,6 +165,34 @@ impl NodeExitRow {
     }
 }
 
+/// The durable `held-running` fact on a birth's status row (R-FM1): the provider reported its
+/// exact runtime `Running` while the birth is silent. Keyed by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeHeldRunningRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// When the first `Running` verdict was observed, ms since the Unix epoch.
+    pub since: u64,
+    /// How many `Running` verdicts have been observed for this birth during the hold.
+    pub verdicts: u64,
+}
+
+impl NodeHeldRunningRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id)
+    }
+
+    /// The key of the birth `(node_id, incarnation_id)`'s held-running row.
+    pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
+        format!("{node_id}--{}", incarnation_id.as_str())
+    }
+}
+
 /// The durable record of the status facts this admin holds.
 #[async_trait]
 pub trait StatusStorage: Send + Sync {
@@ -205,6 +233,20 @@ pub trait StatusStorage: Send + Sync {
     async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError>;
     /// A blind put of the exit-proof row `row` among the status rows of the mesh named `mesh`.
     async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError>;
+    /// The `held-running` row of the birth `(node_id, incarnation_id)` among the status rows of the
+    /// mesh named `mesh` (this store's own or another's): a point read of its key (R-FM1).
+    async fn node_held_running_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
+        Ok(None)
+    }
+    /// A blind put of the `held-running` row `row` among the status rows of the mesh named `mesh` (R-FM1).
+    async fn put_node_held_running_of(&self, _mesh: &str, _row: &NodeHeldRunningRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// Remove the `held-running` row of the birth `(node_id, incarnation_id)` among the status rows
+    /// of the mesh named `mesh` (R-FM1).
+    async fn remove_node_held_running_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
@@ -232,6 +274,8 @@ pub struct MemoryStatusStorage {
     meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
     /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
+    /// The held-running rows of each mesh named through the `_of` reads and puts, by row key.
+    held_running_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeHeldRunningRow>>>,
     /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
     /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
     events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
@@ -330,6 +374,21 @@ impl StatusStorage for MemoryStatusStorage {
         self.exits_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
+    async fn node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
+        let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
+        Ok(self.held_running_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+    }
+    async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
+        self.held_running_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
+        if let Some(rows) = self.held_running_named.lock().unwrap().get_mut(mesh) {
+            rows.remove(&key);
+        }
+        Ok(())
+    }
 }
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
@@ -337,12 +396,14 @@ const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
 const NODE_DECLARED_FORMAT: &str = "node-declared/3";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 const NODE_EXIT_FORMAT: &str = "node-exit/1";
+const NODE_HELD_RUNNING_FORMAT: &str = "node-held-running/1";
 
 /// One row per file under `status/<mesh>/` of the fabric's store root (`crate::store_root`):
 /// `meshes/<mesh_id>-<state>.json`, `fabric/<fabric_id>-<hex of the event key>.json`,
-/// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json` and
-/// `exits/<node_id>--<incarnation>.json`. The mesh's seat holder writes them (node-identity-and-state.md
-/// §4.3); every admin of the mesh reads the same rows.
+/// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json`,
+/// `exits/<node_id>--<incarnation>.json` and `held-running/<node_id>--<incarnation>.json`. The
+/// mesh's seat holder writes them (node-identity-and-state.md §4.3); every admin of the mesh reads
+/// the same rows.
 #[derive(Debug)]
 pub struct FileStatusStorage {
     meshes: FileRecords,
@@ -350,6 +411,7 @@ pub struct FileStatusStorage {
     declared: FileRecords,
     silence: FileRecords,
     exits: FileRecords,
+    held_running: FileRecords,
     /// This store's own mesh: its rows are the fields above.
     mesh: String,
     root: crate::store_root::StoreRoot,
@@ -373,6 +435,7 @@ impl FileStatusStorage {
             declared: root.records(&base, "declared", writer).await?,
             silence: root.records(&base, "silence", writer).await?,
             exits: root.records(&base, "exits", writer).await?,
+            held_running: root.records(&base, "held-running", writer).await?,
             mesh: mesh.to_string(),
             root: root.clone(),
             writer: writer.clone(),
@@ -383,8 +446,8 @@ impl FileStatusStorage {
 
     /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
     /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 5] {
-        [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits]
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 6] {
+        [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits, &self.held_running]
     }
 
     /// The `dir` status rows (`meshes`, `exits`, `fabric`) of another mesh `mesh` on the shared root, opened
@@ -515,6 +578,26 @@ impl StatusStorage for FileStatusStorage {
             return self.put_node_exit(row).await;
         }
         self.other(mesh, "exits").await?.write(&row.key(), NODE_EXIT_FORMAT, row).await
+    }
+    async fn node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
+        let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.held_running.read(&key, NODE_HELD_RUNNING_FORMAT).await;
+        }
+        self.other(mesh, "held-running").await?.read(&key, NODE_HELD_RUNNING_FORMAT).await
+    }
+    async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.held_running.write(&row.key(), NODE_HELD_RUNNING_FORMAT, row).await;
+        }
+        self.other(mesh, "held-running").await?.write(&row.key(), NODE_HELD_RUNNING_FORMAT, row).await
+    }
+    async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.held_running.remove(&key).await;
+        }
+        self.other(mesh, "held-running").await?.remove(&key).await
     }
 }
 

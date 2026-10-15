@@ -226,7 +226,7 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     let _ = std::fs::write(root.join("fabric_id"), &fabric_id);
     env.push(("RDM_FABRIC_ID", fabric_id.clone()));
     env.push(("RDM_NODE_ADMIN_API_BIND", format!("{ip}:20000")));
-    for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG"] {
+    for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG", "RDM_HUNG_HOLD_FLOORS"] {
         if let Ok(v) = std::env::var(k) {
             env.push((k, v));
         }

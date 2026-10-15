@@ -49,6 +49,27 @@ use tokio::sync::RwLock;
 
 /// The digest key carrying a node-admin's mesh id.
 
+/// The environment variable configuring the hold duration (in staleness floors) before a
+/// `held-running` member or mesh-primary is terminated and recovered (`R-FM1`, default 10).
+pub const ENV_HUNG_HOLD_FLOORS: &str = "RDM_HUNG_HOLD_FLOORS";
+
+/// Default hold duration in staleness floors (`R-FM1`: 10 staleness floors = 5 min at 30 s).
+pub const DEFAULT_HUNG_HOLD_FLOORS: u64 = 10;
+
+/// Configured hold floors for `held-running` (`RDM_HUNG_HOLD_FLOORS`, default 10).
+pub fn hung_hold_floors() -> u64 {
+    std::env::var(ENV_HUNG_HOLD_FLOORS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(DEFAULT_HUNG_HOLD_FLOORS)
+}
+
+/// Configured hold duration in milliseconds (`hung_hold_floors() * staleness_floor()`).
+pub fn hung_hold_ms() -> u64 {
+    hung_hold_floors().saturating_mul(rafka_mesh_entity::cadence::staleness_floor().as_millis() as u64)
+}
+
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
@@ -157,7 +178,7 @@ impl AdminConfig {
                 Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV]
+        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_HUNG_HOLD_FLOORS]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -694,6 +715,45 @@ impl Records {
         node.node_id = NodeId::parse(&t.node_id).map_err(|e| format!("the Exited receipt of {} {} names no node id ({:?}): {e}", t.node, t.incarnation_id, t.node_id))?;
         node.incarnation_id = Some(IncarnationId::parse(&t.incarnation_id).map_err(|e| format!("the Exited receipt of {} {} names no incarnation: {e}", t.node, t.incarnation_id))?);
         self.put_exit(&node, t.exit_code, "terminal-receipt").await
+    }
+
+    /// Record a `held-running` verdict for `node` (`R-FM1`): on first verdict sets `since = now_ms`
+    /// and `verdicts = 1`; on subsequent verdicts preserves `since` and increments `verdicts`.
+    pub async fn record_held_running(&self, node: &Node, now_ms: u64) -> Option<crate::status_storage::NodeHeldRunningRow> {
+        let storage = self.status.get()?.storage().clone();
+        let inc = node.incarnation_id.clone()?;
+        let prev = storage.node_held_running_of(&node.mesh, &node.node_id, &inc).await.ok().flatten();
+        let (since, verdicts) = match prev {
+            Some(r) => (r.since, r.verdicts.saturating_add(1)),
+            None => (now_ms, 1),
+        };
+        let row = crate::status_storage::NodeHeldRunningRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc, since, verdicts };
+        let _ = storage.put_node_held_running_of(&node.mesh, &row).await;
+        tracing::info_span!(
+            "rdm.node_admin.node.update.via-held-running",
+            node = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %row.incarnation_id.as_str(),
+            since = row.since as i64,
+            verdicts = row.verdicts as i64,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| tracing::info!("recorded held-running verdict"));
+        Some(row)
+    }
+
+    /// Clear any `held-running` row for `node` (`R-FM1`).
+    pub async fn clear_held_running(&self, node: &Node) {
+        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
+        let Some(inc) = node.incarnation_id.as_ref() else { return };
+        let _ = storage.remove_node_held_running_of(&node.mesh, &node.node_id, inc).await;
+    }
+
+    /// Read the durable `held-running` row of `node` among its mesh's status rows (`R-FM1`).
+    pub async fn held_running_row_of(&self, node: &Node) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, String> {
+        let Some(inc) = node.incarnation_id.as_ref() else { return Ok(None) };
+        let Some(status) = self.status.get() else { return Ok(None) };
+        status.storage().node_held_running_of(&node.mesh, &node.node_id, inc).await.map_err(|e| e.to_string())
     }
 
     /// The membership book whose seat records the exit read covers (set once, at start).
@@ -1942,6 +2002,13 @@ pub enum Inspected {
     NotExited(String),
 }
 
+impl Inspected {
+    /// True when the provider inspection explicitly reported the runtime `Running` (`R-FM1`).
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::NotExited(why) if why.contains("Running"))
+    }
+}
+
 impl RecoverySubmitter {
     /// The name this admin currently holds in its membership digest book, or its boot name before its
     /// birth is in the book.
@@ -1994,31 +2061,67 @@ impl RecoverySubmitter {
     pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &ExitVerdicts) -> Inspected {
         let outcome = self.inspect(n).await;
         let row = self.record_verdict(n, &outcome, verdicts).await;
-        if let Inspected::Exited(code, source) = &outcome {
-            if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
-                let exit_proof_row = match &row {
-                    Ok(stands) => stands.to_string(),
-                    Err(e) => e.clone(),
-                };
-                let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-                tracing::info_span!(
-                    "rdm.node_admin.build.reject.via-exit-inside-workflow",
-                    node = %n.name,
-                    node_id = %n.node_id,
-                    incarnation_id = %incarnation,
-                    submitter = %self.held_name(),
-                    announced,
-                    operation = %operation,
-                    build_id = %build_id,
-                    attempt,
-                    exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
-                    exit_proof = *source,
-                    exit_proof_row = %exit_proof_row,
-                )
-                .in_scope(|| tracing::info!("the birth's exit belongs to the workflow that announced its removal: it is no drift, and no recovery is submitted"));
-            } else if let Err(e) = self.submit(n, *code, source, row).await {
-                tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
+        match &outcome {
+            Inspected::Exited(code, source) => {
+                if let Some(inc) = n.incarnation_id.as_ref() {
+                    let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, inc).await;
+                }
+                if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
+                    let exit_proof_row = match &row {
+                        Ok(stands) => stands.to_string(),
+                        Err(e) => e.clone(),
+                    };
+                    let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+                    tracing::info_span!(
+                        "rdm.node_admin.build.reject.via-exit-inside-workflow",
+                        node = %n.name,
+                        node_id = %n.node_id,
+                        incarnation_id = %incarnation,
+                        submitter = %self.held_name(),
+                        announced,
+                        operation = %operation,
+                        build_id = %build_id,
+                        attempt,
+                        exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
+                        exit_proof = *source,
+                        exit_proof_row = %exit_proof_row,
+                    )
+                    .in_scope(|| tracing::info!("the birth's exit belongs to the workflow that announced its removal: it is no drift, and no recovery is submitted"));
+                } else if let Err(e) = self.submit(n, *code, source, row).await {
+                    tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
+                }
             }
+            Inspected::NotExited(_) if outcome.is_running() => {
+                if self.removal_announced(n).await.is_none() {
+                    if let Some(inc) = n.incarnation_id.clone() {
+                        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                        let prev = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await.ok().flatten();
+                        let (since, count) = match prev {
+                            Some(r) => (r.since, r.verdicts.saturating_add(1)),
+                            None => (now_ms, 1),
+                        };
+                        let held_row = crate::status_storage::NodeHeldRunningRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), since, verdicts: count };
+                        let _ = self.status_storage.put_node_held_running_of(&n.mesh, &held_row).await;
+                        tracing::info_span!(
+                            "rdm.node_admin.node.update.via-held-running",
+                            node = %n.name,
+                            node_id = %n.node_id,
+                            incarnation_id = %inc.as_str(),
+                            since = since as i64,
+                            verdicts = count as i64,
+                            "otel.kind" = "internal",
+                        )
+                        .in_scope(|| tracing::info!("recorded held-running verdict"));
+                        let hold_ms = hung_hold_ms();
+                        if count > 1 && now_ms.saturating_sub(since) >= hold_ms {
+                            if let Err(e) = self.submit(n, None, "held-running-expired", Ok("held-running")).await {
+                                tracing::info!(node = %n.name, error = %e, "the held-running recovery submit ended without the recovery; the next tick submits again");
+                            }
+                        }
+                    }
+                }
+            }
+            Inspected::NotExited(_) => {}
         }
         outcome
     }
@@ -4085,6 +4188,21 @@ impl AdminRunner {
         if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
             t.env.insert(rafka_mesh_entity::launch::ENV_MESH_ID.into(), id.to_string());
         }
+        if mesh != self.held_name().mesh {
+            let peers: Vec<(String, SocketAddr)> = self
+                .topology
+                .read()
+                .await
+                .members()
+                .filter(|n| n.mesh == mesh && n.status == NodeStatus::ReadyForTraffic)
+                .filter_map(|n| Some((n.endpoint_id.as_ref()?.0.clone(), n.transport_addr?)))
+                .collect();
+            for p in peers {
+                if !t.seeds.contains(&p) {
+                    t.seeds.push(p);
+                }
+            }
+        }
         Ok(t)
     }
 
@@ -4334,9 +4452,35 @@ impl AdminRunner {
             .records
             .exit_row_of(&exited)
             .await
-            .map_err(|e| format!("node.delete:{node}: the exit-proof row of birth {} at {} could not be read by {me}: {e}", from.node_id, from.incarnation.as_str()))?
-            .ok_or_else(|| format!("node.delete:{node}: {me} reads no exit-proof row for birth {} at {} among {}'s status rows: only a proven exit is deleted as a crashed target", from.node_id, from.incarnation.as_str(), node.mesh))?;
-        self.delete_crashed(builds, build_id, attempt, node, from, exit).await
+            .map_err(|e| format!("node.delete:{node}: the exit-proof row of birth {} at {} could not be read by {me}: {e}", from.node_id, from.incarnation.as_str()))?;
+        if let Some(exit) = exit {
+            return self.delete_crashed(builds, build_id, attempt, node, from, exit).await;
+        }
+        let held = self
+            .records
+            .held_running_row_of(&exited)
+            .await
+            .map_err(|e| format!("node.delete:{node}: the held-running row of birth {} at {} could not be read by {me}: {e}", from.node_id, from.incarnation.as_str()))?;
+        if held.is_some() {
+            return self.delete_hung(builds, build_id, attempt, node, from).await;
+        }
+        Err(format!("node.delete:{node}: {me} reads no exit-proof row for birth {} at {} among {}'s status rows: only a proven exit is deleted as a crashed target", from.node_id, from.incarnation.as_str(), node.mesh))
+    }
+
+    /// `node.delete` of a hung target `from` at `node` whose `held-running` hold expired (`R-FM1`):
+    /// runs `TerminateRuntime` first, records the provider's exit proof and clears `held-running`,
+    /// then completes `NodeDeleting -> NodeDeleted -> RemoveTopologyMembership`.
+    async fn delete_hung(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), String> {
+        let (exited, handle) = self.exited_birth("node.delete", node, from).await?;
+        let template = self.template_for(node.kind, &node.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: exited, handle, exit: None };
+        self.pipeline_with(&template, builds).delete_hung(&req, &*self.records).await.map_err(|e| e.to_string())?;
+        let held = self.handles.lock().unwrap().get(node).is_some_and(|(n, _)| n.node_id == from.node_id && n.incarnation_id.as_ref() == Some(&from.incarnation));
+        if held {
+            self.handles.lock().unwrap().remove(node);
+        }
+        self.refresh_view().await;
+        Ok(())
     }
 
     /// node.delete of the crashed target `from` at `node` on the exit-proof row `exit` in hand
@@ -6786,20 +6930,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // topology shows PendingReconnect, half a floor after the mark: a ping (op 1), and when it
                                     // answers the status kick (op 27); when it does not, the same kick through a live node of its
                                     // mesh on the ViaPeer route. The node's status lands on its row in nodes.storage and in the view.
+                                    let recovery = RecoverySubmitter {
+                                        me: name.clone(),
+                                        topology: control.topology.clone(),
+                                        book: book.clone(),
+                                        provider: runner.provider.clone(),
+                                        nodes_storage: nodes_storage.clone(),
+                                        status_storage: status_storage.clone(),
+                                        door: build_slot.clone(),
+                                        builds: control.builds.clone(),
+                                    };
                                     {
-                                        let (topology, records, status_storage, runner, me, me_id, mesh) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone());
-                                        // The recovery of a TRUE OFFLINE member of this mesh (node-recovery.md): the provider's
-                                        // exact-exit proof, the exit-proof row, the submit to the fabric-primary.
-                                        let recovery = RecoverySubmitter {
-                                            me: name.clone(),
-                                            topology: control.topology.clone(),
-                                            book: book.clone(),
-                                            provider: runner.provider.clone(),
-                                            nodes_storage: nodes_storage.clone(),
-                                            status_storage: status_storage.clone(),
-                                            door: build_slot.clone(),
-                                            builds: control.builds.clone(),
-                                        };
+                                        let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
                                         let park = park_gate.clone();
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
                                         tasks.push(tokio::spawn(async move {
@@ -6846,6 +6988,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let kick_of = |n: &Node, incarnation: &crate::model::IncarnationId| rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
                                                 let own_id = me_id.clone();
                                                 let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
+                                                for ((nid, _), v) in verdicts.lock().unwrap().iter() {
+                                                    if v.is_running() {
+                                                        tickle.reprobe(nid.to_string());
+                                                    }
+                                                }
                                                 let report = tickle
                                                     .tick(
                                                         now_ms,
@@ -6953,9 +7100,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                     }
                                                     write(id, Some(NodeStatus::Dead), &mut written).await;
                                                 }
-                                                for id in &report.returned {
+                                                for id in report.returned.iter().chain(report.reachable_silent.iter()) {
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                     write(id, None, &mut written).await;
+                                                    if let Some(n) = watched.get(id) {
+                                                        records.clear_held_running(n).await;
+                                                    } else if let Some(n) = view.births().find(|n| n.node_id.as_str() == id) {
+                                                        records.clear_held_running(n).await;
+                                                    }
                                                 }
                                                 retire_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
                                                 // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
@@ -7019,6 +7171,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
                                             republish: republish.clone(),
                                             builds: builds.clone(),
+                                            recovery: Some(recovery.clone()),
                                         };
                                         // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
                                         tasks.push(tokio::spawn(crate::seat_watch::run(watch)));

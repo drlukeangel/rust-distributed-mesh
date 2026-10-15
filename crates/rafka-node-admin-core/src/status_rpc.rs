@@ -625,7 +625,7 @@ impl StatusAuthority {
             // The reads: answered from what this admin holds, changing nothing.
             StatusRequest::GetNodes { select } => {
                 return match self.loads.as_ref() {
-                    Some(loads) => crate::views::nodes_answer(&me_name, &view, loads, &*self.nodes_storage, select).await,
+                    Some(loads) => crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), select).await,
                     None => StatusReply::NotReady { reason: format!("{me_name} reads no digest book; {} is refused", req.op()) },
                 };
             }
@@ -637,7 +637,7 @@ impl StatusAuthority {
                     // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
                     // a read that fails is named, never answered as no Build.
                     return match self.builds.current_build().await {
-                        Ok(current) => crate::views::fabric_answer(&me_name, &view, current.into_build_id().map(|b| b.to_string())),
+                        Ok(current) => crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage).await,
                         Err(e) => StatusReply::source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
                 }

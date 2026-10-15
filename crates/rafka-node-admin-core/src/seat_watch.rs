@@ -153,13 +153,17 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
         }
     }
 
-    // What this admin sees itself: a silent seat holder of its own mesh, and any silent node-admin
-    // of the mesh that holds the fabric seat (a standby, or a candidate looking from outside).
+    // What this admin sees itself: a silent seat holder of its own mesh, any silent node-admin
+    // of the mesh that holds the fabric seat (a standby, or a candidate looking from outside),
+    // and, when this admin holds the fabric seat, any silent primary node-admin of a peer mesh
+    // (R-FM1: the fabric-primary runs the hung-runtime hold and recovery for a hung mesh-primary).
     let fabric_mesh = view.members().find(|n| n.is_fabric_primary).map(|n| n.mesh.clone());
+    let holds_fabric = view.holds_fabric_seat(&me_birth.0);
     for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect && n.node_id != me_birth.0) {
         let own_holder = &n.mesh == mesh && (n.is_primary || n.is_fabric_primary);
         let incumbent = fabric_mesh.as_ref() == Some(&n.mesh);
-        if !(own_holder || incumbent) {
+        let peer_primary = holds_fabric && n.is_primary;
+        if !(own_holder || incumbent || peer_primary) {
             continue;
         }
         let Some(b) = birth(n) else { continue };
@@ -377,6 +381,8 @@ pub struct Watch {
     pub republish: crate::status_rpc::Republish,
     /// This admin's Build log: its committed facts are handed on when the fabric seat's record names another birth.
     pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
+    /// The recovery submitter, used when the fabric-primary's hold on a hung peer-mesh primary expires (R-FM1).
+    pub recovery: Option<crate::admin::RecoverySubmitter>,
 }
 
 /// Run the watch: a pass at each Concern heard and at the gossip interval (the cadence the view
@@ -408,6 +414,10 @@ pub async fn run(w: Watch) {
         turn = Some(w.gate.turn("seat-watch").await);
         let heard = w.membership.concerns().drain();
         let view = w.topology.read().await.clone();
+        // Any node-admin in the view whose digest has returned (`ReadyForTraffic`) ends its hold (R-FM1).
+        for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
+            w.records.clear_held_running(n).await;
+        }
         let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
         let plan = plan(&view, &me, &me_birth, &heard, &mut said);
         for (node_id, incarnation) in plan.concerns {
@@ -462,6 +472,30 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
+            match &finding {
+                Finding::Answered | Finding::AnsweredViaPeer { .. } => {
+                    w.records.clear_held_running(&node).await;
+                }
+                Finding::Running => {
+                    // R-FM1: a hung fabric-primary is marked held-running by peer mesh-primaries and
+                    // same-mesh standbys and is never terminated; a hung mesh-primary is held-running
+                    // by the fabric-primary, which submits its recovery Build once the hold expires.
+                    if node.is_fabric_primary || view.holds_fabric_seat(&me_birth.0) {
+                        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                        if let Some(held) = w.records.record_held_running(&node, now_ms).await {
+                            if !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0) && held.verdicts > 1 && now_ms.saturating_sub(held.since) >= crate::admin::hung_hold_ms() {
+                                if let Some(recovery) = &w.recovery {
+                                    let _ = recovery.submit(&node, None, "held-running-expired", Ok("held-running")).await;
+                                }
+                            }
+                        }
+                    }
+                }
+                Finding::Exited { .. } => {
+                    w.records.clear_held_running(&node).await;
+                }
+                Finding::Unproven { .. } => {}
+            }
             let proven = if let Finding::Exited { code } = &finding {
                 // The verified loss is recorded durably: the holder's exit-proof row is what every
                 // projection reads as its proven loss.

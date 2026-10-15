@@ -577,6 +577,7 @@ mod tests {
             gossip: None,
             tags: Default::default(),
             config: Default::default(),
+            held_running: None,
         }
     }
 

@@ -197,6 +197,9 @@ pub(crate) struct OfflineTickle {
     observer: String,
     /// The admin's stop gate: a stop's park retires the rounds in flight.
     gate: crate::stop_gate::StopGate,
+    /// Node ids held TRUE OFFLINE whose runtime still runs (`held-running`) and are due another
+    /// probe round on this tick (R-FM1).
+    reprobe: HashSet<String>,
 }
 
 impl Drop for OfflineTickle {
@@ -220,6 +223,12 @@ impl OfflineTickle {
         tickle.observer = observer;
         tickle.gate = gate;
         tickle
+    }
+
+    /// Schedule another probe round on the next tick for a `TRUE OFFLINE` birth whose runtime
+    /// still runs (`held-running`, R-FM1).
+    pub fn reprobe(&mut self, id: String) {
+        self.reprobe.insert(id);
     }
 
     #[cfg(test)]
@@ -310,9 +319,11 @@ impl OfflineTickle {
         if holds_seat {
             self.hold_down.retain(|id, _| silent_ids.contains(id));
             self.settled.retain(|id| silent_ids.contains(id));
+            self.reprobe.retain(|id| silent_ids.contains(id));
         } else {
             self.hold_down.clear();
             self.settled.clear();
+            self.reprobe.clear();
         }
         // The window runs from the mark the admin's book holds for the birth (node-recovery.md step 2:
         // "Half a floor after the mark"); a birth with no mark is first seen at this tick.
@@ -340,6 +351,7 @@ impl OfflineTickle {
             match end {
                 RoundEnd::Direct => {
                     self.hold_down.remove(&id);
+                    self.offline.remove(&id);
                     self.settled.insert(id.clone());
                     let seen = observe(id.clone()).await;
                     tracing::info_span!(
@@ -358,6 +370,7 @@ impl OfflineTickle {
                 RoundEnd::ViaPeer { error: e, verdict, verdict_at_ms } => match verdict {
                     ViaPeerVerdict::Answered { via } => {
                         self.hold_down.remove(&id);
+                        self.offline.remove(&id);
                         self.settled.insert(id.clone());
                         tracing::info_span!("rdm.node_admin.node.resolve.via-peer-tickle-answered", node_id = %id, path = %path, via = %via, error = %e, observer = %self.observer, first_seen_ms = seen_at as i64, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!(node_id = %id, via = %via, error = %e, "offline tickle failed direct but answered via peer — unreachable from me, no record"));
@@ -368,7 +381,9 @@ impl OfflineTickle {
                             .in_scope(|| tracing::warn!(node_id = %id, reason = %reason, error = %e, "via-peer candidates unreadable — no status change, hold-down left as it was"));
                     }
                     ViaPeerVerdict::NoPath { asked } => {
-                        if let Some(no_path_since) = self.hold_down.remove(&id) {
+                        if self.offline.contains(&id) {
+                            self.settled.insert(id.clone());
+                        } else if let Some(no_path_since) = self.hold_down.remove(&id) {
                             self.settled.insert(id.clone());
                             self.offline.insert(id.clone());
                             let seen = observe(id.clone()).await;
@@ -403,7 +418,8 @@ impl OfflineTickle {
             // The mark (or, with none, the instant this admin first saw the node silent): a seat taken
             // mid-window tickles on it.
             let seen_at = self.first_seen.get(&id).copied().unwrap_or(now_ms);
-            if now_ms.saturating_sub(seen_at) < probe_delay_ms || self.settled.contains(&id) {
+            let reprobe = self.reprobe.remove(&id);
+            if now_ms.saturating_sub(seen_at) < probe_delay_ms || (self.settled.contains(&id) && !reprobe) {
                 continue;
             }
             let birth = (id.clone(), incarnation);

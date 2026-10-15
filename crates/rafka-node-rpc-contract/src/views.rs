@@ -63,6 +63,16 @@ pub enum ProviderKind {
     Container,
 }
 
+/// The durable `held-running` fact on a birth's status row (R-FM1): the provider reported its
+/// exact runtime `Running` while the birth is silent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldRunning {
+    /// When the first `Running` verdict was observed, ms since the Unix epoch.
+    pub since: u64,
+    /// How many `Running` verdicts have been observed for this birth during the hold.
+    pub verdicts: u64,
+}
+
 /// One node as the answering node-admin's view holds it (`node.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeView {
@@ -118,6 +128,10 @@ pub struct NodeView {
     /// the live copy. RDM never reads it.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
+    /// The durable `held-running` fact on this birth's status row (R-FM1), when the provider
+    /// reported its exact runtime `Running` while silent.
+    #[serde(default)]
+    pub held_running: Option<HeldRunning>,
 }
 
 impl NodeView {
@@ -175,6 +189,10 @@ pub struct FabricView {
     /// fabric-primary): the Build whose topology the fabric accepted, as the answering node-admin's
     /// fabric record holds it; `None` while it holds no accepted Build.
     pub build_id: Option<String>,
+    /// The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching
+    /// admins observed its exact runtime `Running` while silent.
+    #[serde(default)]
+    pub held_running: Option<HeldRunning>,
 }
 
 /// One connection fact a node holds (`node.connections.get`).

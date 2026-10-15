@@ -1841,7 +1841,7 @@ The logical Fabric's identity, kept for the Fabric's lifetime.
 
 ### `FabricView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 8 fields · rafka-node-rpc-contract
+`crates/rafka-node-rpc-contract/src/views.rs` · struct · 9 fields · rafka-node-rpc-contract
 
 The fabric as the answering node-admin's view holds it (`fabric.get`).
 
@@ -1855,6 +1855,7 @@ The fabric as the answering node-admin's view holds it (`fabric.get`).
 | 5 | `admin_api_base` | `Option<String>` |  | The control API base of the fabric primary. |
 | 6 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rafka_node_rpc_contract-views-MeshView) |  | The fabric's meshes. |
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
+| 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rafka_node_rpc_contract-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
 
 <a id="t-rafka_node_rpc_testkit-fault_door-FaultState"></a>
 
@@ -1898,6 +1899,19 @@ An exact birth named by a handover or a seat transfer: its mesh, node and incarn
 | 0 | `mesh` | `String` |  | The mesh the birth belongs to. |
 | 1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The birth's node. |
 | 2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The birth's incarnation. |
+
+<a id="t-rafka_node_rpc_contract-views-HeldRunning"></a>
+
+### `HeldRunning`
+
+`crates/rafka-node-rpc-contract/src/views.rs` · struct · 2 fields · rafka-node-rpc-contract
+
+The durable `held-running` fact on a birth's status row (R-FM1): the provider reported its
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `since` | `u64` |  | When the first `Running` verdict was observed, ms since the Unix epoch. |
+| 1 | `verdicts` | `u64` |  | How many `Running` verdicts have been observed for this birth during the hold. |
 
 <a id="t-rafka_node_rpc_testkit-fault_door-Hit"></a>
 
@@ -2215,7 +2229,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 21 fields · rafka-node-rpc-contract
+`crates/rafka-node-rpc-contract/src/views.rs` · struct · 22 fields · rafka-node-rpc-contract
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2242,6 +2256,7 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 18 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rafka_mesh_entity-digest-GossipStats) | `default` | The node's mesh-channel counts from its latest digest: heard, neighbours, frames. |
 | 19 | `tags` | `std::collections::BTreeSet<String>` | `default` | The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the |
 | 20 | `config` | `std::collections::BTreeMap<String, String>` | `default` | The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property |
+| 21 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rafka_node_rpc_contract-views-HeldRunning) | `default` | The durable `held-running` fact on this birth's status row (R-FM1), when the provider |
 
 <a id="t-rafka_node_rpc_contract-status-NotAuthority"></a>
 

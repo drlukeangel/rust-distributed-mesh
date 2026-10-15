@@ -383,6 +383,7 @@ impl CurrentRuntimeAdoption {
 
     fn publish_on_disk(mut self, publish: impl FnOnce(&RuntimeFact, String)) -> Result<RuntimeFact, PipelineError> {
         let (f, dir) = (self.fact().clone(), self.data_dir.display().to_string());
+        let _ = f.write_record(&self.data_dir);
         self.step(AdoptStep::PublishRuntimeFactAndCurrentRuntimeMetadata, |_| {
             publish(&f, dir.clone());
             Ok((None, RuntimeEvidence { data_dir: Some(dir.clone()), ..RuntimeEvidence::of(&f) }))
@@ -1980,6 +1981,69 @@ impl DeploymentPipeline<'_> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
         self.retire_steps(req).instrument(span).await
+    }
+
+    /// Delete a hung birth whose `held-running` hold expired (R-FM1): the first step is
+    /// `TerminateRuntime` on the exact runtime (graceful then forced), which produces the `Exited`
+    /// proof and records the durable exit-proof row; no RPC command (`drain-node` / `stop-node`) is
+    /// sent to the hung process. If `TerminateRuntime` cannot prove exit, the Build fails at
+    /// `TerminateRuntime` with the named reason and `held-running` stays.
+    pub(crate) async fn delete_hung(&self, req: &RetireRequest, records: &crate::admin::Records) -> Result<TerminalReceipt, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
+        self.delete_hung_steps(req, records).instrument(span).await
+    }
+
+    async fn delete_hung_steps(&self, req: &RetireRequest, records: &crate::admin::Records) -> Result<TerminalReceipt, PipelineError> {
+        let name = &req.node.name;
+        let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
+        let mut node = req.node.clone();
+        let handle = &req.handle;
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth") })?;
+        let terminal = self.terminate_step(&mut run, &node, handle).await?;
+        let exit = records
+            .put_exit(&node, terminal.exit_code, "terminate-runtime")
+            .await
+            .map_err(|reason| PipelineError { step: RetireStep::TerminateRuntime.name(), reason })?;
+        records.clear_held_running(&node).await;
+        node.exit_proven = true;
+        let op = LifecycleOp {
+            build_id: req.build_id.to_string(),
+            attempt: req.attempt,
+            operation: run.operation.clone(),
+            node_id: node.node_id.clone(),
+            incarnation,
+            name: name.clone(),
+            event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
+        };
+        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+        self.lifecycle.deleting(&op).await;
+        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
+        let op = self
+            .step(&mut run, RetireStep::NodeDeleted.name(), async {
+                tracing::info_span!(
+                    "rdm.node_admin.node.delete.via-exit-proof",
+                    build_id = %req.build_id.log(),
+                    attempt = req.attempt,
+                    node = %name,
+                    node_id = %exit.node_id,
+                    incarnation_id = %exit.incarnation_id.as_str(),
+                    exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
+                    proof = %exit.proof,
+                    observed_at_ms = exit.observed_at_ms,
+                )
+                .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
+                self.deleted_row(&node, op.clone()).await
+            })
+            .await?;
+        self.lifecycle.deleted(&op).await;
+        self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
+            self.sink.remove_birth(name, &op.node_id, &op.incarnation);
+            Ok(())
+        })
+        .await?;
+        self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
+        Ok(terminal)
     }
 
     async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {

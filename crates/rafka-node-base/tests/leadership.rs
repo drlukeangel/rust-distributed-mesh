@@ -27,6 +27,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         gossip: None,
         tags: Default::default(),
         config: Default::default(),
+        held_running: None,
     }
 }
 

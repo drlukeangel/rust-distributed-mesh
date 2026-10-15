@@ -132,14 +132,14 @@ fn replies_match_the_frozen_fifty_one_variant_wire_schema() {
             concat!(
                 "2101",
                 "0b6d657368312e7270632e31", "01", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
-                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64",
+                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64", "00",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
         (
-            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b")
-            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162"),
+            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | held_running None
+            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None } },
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00"),
         ),
         (
             Connections {
@@ -263,6 +263,7 @@ fn node_view() -> NodeView {
         gossip: Some(rafka_mesh_entity::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
         tags: ["red".to_string()].into(),
         config: [("tier".to_string(), "gold".to_string())].into(),
+        held_running: None,
     }
 }
 

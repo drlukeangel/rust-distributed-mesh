@@ -713,7 +713,15 @@ impl ControlPlane {
             let t = self.topology.read().await.clone();
             // A node-admin is node-recovered by its mesh's live primary (mesh-recovery.md:8-9); one
             // with no other live admin in its mesh is that mesh's lost mesh-primary: mesh recovery.
-            let recoverer = if path.kind == crate::model::NodeKind::NodeAdmin {
+            // A hung mesh-primary whose held-running hold expired is recovered by the fabric-primary
+            // (R-FM1: the seat never moves before the exit proof; once TerminateRuntime proves exit,
+            // R-EL1 seats the successor on that proof).
+            let hung_mesh_primary = path.kind == crate::model::NodeKind::NodeAdmin
+                && t.cohort_primary(&path.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == path && !p.exit_proven)
+                && self.ready_rows.node_held_running_of(&path.mesh, &node_id, &incarnation).await.ok().flatten().is_some();
+            let recoverer = if hung_mesh_primary {
+                t.fabric_primary().map(|n| n.name.clone())
+            } else if path.kind == crate::model::NodeKind::NodeAdmin {
                 let Some(recoverer) = crate::executor::node_admin_recoverer(&path, &t) else {
                     let reject = BuildReject::NodeAdminNotNodeRecovered { node: path.to_string() };
                     outer.in_scope(|| reject_span(route, &reject));

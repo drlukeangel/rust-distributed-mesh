@@ -1124,7 +1124,7 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
     // The ladder: silent at the floor, one tickle half a floor later, TRUE OFFLINE at least one floor
     // after the first no-path, then the inspection on that tick.
     let floor = rafka_mesh_transport::membership::staleness_floor();
-    let inspected = wait_for(&format!("{node}'s mesh-primary inspects its exact runtime"), floor * 3 + Duration::from_secs(30), || async {
+    let inspected = wait_for(&format!("{node}'s mesh-primary inspects its exact runtime"), crate::node_recovery_due(), || async {
         let spans = estate.spans();
         named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned()
     })
@@ -1186,8 +1186,7 @@ async fn a_hung_member_held_past_the_hold_is_terminated_and_recovered() {
     let held = rt.apply(Fault::Stop).expect("the exact runtime is held");
     assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
 
-    let floor = rafka_mesh_transport::membership::staleness_floor();
-    let held_view = until_node_where(&estate, &node, &format!("{node} surfaces held_running on node.get before terminate"), floor * 4 + Duration::from_secs(30), |n| {
+    let held_view = until_node_where(&estate, &node, &format!("{node} surfaces held_running on node.get before terminate"), crate::node_recovery_due(), |n| {
         n["node_id"] == before["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
     })
     .await;
@@ -1222,14 +1221,14 @@ async fn a_hung_member_held_past_the_hold_is_terminated_and_recovered() {
         .find(|sp| sp["attributes"]["node"] == node.as_str())
         .cloned()
         .expect("exit proof span in the recovery trace");
-    assert!(!s(&proof_span["attributes"]["exit_proof"]).is_empty(), "exit_proof is recorded durably: {proof_span}");
+    assert!(!s(&proof_span["attributes"]["proof"]).is_empty(), "exit_proof is recorded durably: {proof_span}");
     eprintln!(
         "R-FM1 member cell: {node} (birth {}) held_running={} then recovered by {mesh_primary} at attempt {attempt} of {mesh} lane of {birth_build}: trace {} | TerminateRuntime receipt {:?} | exit_proof {} | new birth {}",
         s(&before["node_id"]),
         held_view["held_running"],
         s(&recovery["trace_id"]),
         terminate["step"],
-        s(&proof_span["attributes"]["exit_proof"]),
+        s(&proof_span["attributes"]["proof"]),
         s(&after["node_id"]),
     );
     let _ = (created, term_span);
@@ -1264,8 +1263,7 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
     let held = rt.apply(Fault::Stop).expect("mesh2's primary runtime is held");
     assert_eq!(held.state_after, Some('T'), "the OS holds mesh2's primary runtime: {held:?}");
 
-    let floor = rafka_mesh_transport::membership::staleness_floor();
-    let held_view = until_node_where(&estate, &mp_name, &format!("{mp_name} surfaces held_running on node.get"), floor * 4 + Duration::from_secs(30), |n| {
+    let held_view = until_node_where(&estate, &mp_name, &format!("{mp_name} surfaces held_running on node.get"), crate::node_recovery_due(), |n| {
         n["node_id"] == mp["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
     })
     .await;
@@ -1296,9 +1294,9 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
         .find(|sp| sp["attributes"]["node"] == mp_name.as_str() && sp["attributes"]["node_id"] == mp["node_id"])
         .cloned()
         .expect("exit proof span for hung mesh-primary");
-    let seat_span = named(&spans, "rdm.node_admin.node.primary.update.via-election")
+    let seat_span = named(&spans, "rdm.mesh.election.resolve.via-mesh-primary")
         .into_iter()
-        .find(|sp| sp["attributes"]["node"] == standby.as_str() && sp["attributes"]["outcome"] == "won")
+        .find(|sp| sp["attributes"]["winner_path"] == standby.as_str())
         .cloned()
         .expect("R-EL1 election span seating standby after exit proof");
     assert!(start(&proof_span) <= end(&seat_span), "R-EL1 seats the successor only on the exit proof: proof={proof_span} seat={seat_span}");
@@ -1308,7 +1306,7 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
         held_view["held_running"],
         s(&recovery["trace_id"]),
         terminate["step"],
-        s(&proof_span["attributes"]["exit_proof"]),
+        s(&proof_span["attributes"]["proof"]),
         s(&seat_span["span_id"]),
         s(&after["node_id"]),
     );
@@ -1344,7 +1342,7 @@ async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
     assert_eq!(held.state_after, Some('T'), "the OS holds the fabric-primary runtime: {held:?}");
 
     let floor = rafka_mesh_transport::membership::staleness_floor();
-    let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {watcher}"), floor * 5 + Duration::from_secs(30), |n| {
+    let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {watcher}"), crate::node_recovery_due(), |n| {
         n["node_id"] == fp["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
     })
     .await;

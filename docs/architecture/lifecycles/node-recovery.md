@@ -51,18 +51,41 @@ timer of its own:
    Dead is observer-inferred and is never itself a reason to act.
 3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment
    backend that launched the runtime) about the exact runtime recorded at launch. Exited
-   is the proof, recorded durably. Still running is no proof, however long the silence:
-   the node is hung or unreachable, not gone, and nothing is recovered.
+   is the proof, recorded durably. `Unknown` or an unreadable runtime row proves nothing
+   and opens no hold. When the provider reports `Running` for the exact runtime handle,
+   the mesh-primary records the durable status-row fact `held-running { since, verdicts }`
+   (surfaced on `node.get`, never as a gossip `MemberStatus`: the gossip wire is untouched)
+   and opens the hold (step 4).
+4. **Hung runtime hold and terminate (`R-FM1`).** During the hold (`RDM_HUNG_HOLD_FLOORS`
+   staleness floors, default 10 = 300 s at the 30 s floor), the mesh-primary keeps running
+   the investigation ladder every tick; an answer from the exact birth or its returning
+   digest ends the hold and clears `held-running` (`reachable-silent` / `offline-returned`,
+   no action). When the hold expires with the provider still reporting `Running`, the
+   mesh-primary submits the recovery Build for that birth whose first step is
+   `TerminateRuntime { node_id, incarnation, handle }`: the provider's
+   `terminate(handle, Graceful)` then `Forced` after the stop grace on the exact runtime
+   handle recorded at launch, recording `exit_proof` durably and clearing `held-running`,
+   then continuing ordinary recovery in the same attempt (a new `node.id` at the same
+   `path.name`). A terminate the provider refuses or cannot prove ends the attempt
+   `Failed { step: TerminateRuntime, reason }` by name; the fact stays and a person decides.
+   For a hung mesh-primary, the fabric-primary runs the same hold and submits the same
+   Build; for a hung fabric-primary, watching admins record `held-running` (surfaced on
+   `node.get` and `fabric.get`) and publish `Concern` as today, and nothing below it
+   commands its termination.
 
 ## Numbered end-to-end sequence
 
-1. The mesh-primary proves the exit (above) and opens the recovery attempt itself, keyed on
-   the exited birth `(node.id, incarnation)`, and claims it on its mesh's rows. A repeat answers
+1. The mesh-primary proves the exit (or the `held-running` hold expires with the provider
+   still reporting `Running`, above) and opens the recovery attempt itself, keyed on
+   the target birth `(node.id, incarnation)`, and claims it on its mesh's rows (or, for a
+   hung mesh-primary, the fabric-primary opens and claims it). A repeat answers
    AlreadyApplied or BuildInProgress from the mesh's own rows, never a second recovery.
-2. The mesh-primary runs the attempt through its own executor in its mesh's lane.
-3. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the exited instance, as a
-   crashed target: no RPC to the dead process and no stop frames; node.deleted comes from the
-   recorded exit proof.
+2. The claimant runs the attempt through its own executor in the target mesh's lane.
+3. [node.delete](node-delete.md#numbered-end-to-end-sequence) of the target instance: for an
+   already-exited target, as a crashed target with no RPC to the dead process and no stop
+   frames; for a hung target whose `held-running` hold expired (`R-FM1`), `TerminateRuntime`
+   runs first on the exact runtime handle, records the provider's exit proof durably and
+   clears `held-running`, and `node.deleted` follows from that recorded exit proof.
 4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir:
    it loads the endpoint key from that data dir and binds port 0, with a new node.id,
    incarnation and port. Its config is seeded from the deleted row at that path.name.

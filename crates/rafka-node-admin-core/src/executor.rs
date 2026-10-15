@@ -475,7 +475,7 @@ impl BuildExecutor {
             // operation then belongs to the admin the view now names, and it is passed to it unrun;
             // an operation a view does not place stays with this admin. The operations themselves are
             // always the fabric-primary's plan.
-            if i > 0 {
+            if i > 0 && lane.is_none() {
                 let now = self.held_name().await;
                 if let Some(to) = executor_for(op, &*self.topology.read().await).filter(|to| to.to_string() != now) {
                     return self.hand_off(builds, &build, attempt, operations[..i].to_vec(), to.to_string()).await;

@@ -2326,37 +2326,49 @@ done (closed 2026-10-15; `crates/rafka-node-admin-core/src/fence.rs` -> `seat_re
 <!-- epic:e12.s86 -->
 ## e12.s86 — R-FM1: a hung runtime holds for a ruled hold, then the provider terminates the exact runtime and the ordinary recovery runs; a hung fabric-primary is held and named, never killed from below
 
-**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM1; `lifecycles/node-recovery.md` step 3 and the new step 4; `fabric-node-lifecycle-elections.md` :155-157; `deployment-provider.md`; packet `docs/plans/proposal/i143-failure-matrix.md` R-FM1
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, lane e4s3) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM1; `lifecycles/node-recovery.md` step 3 and the new step 4; `fabric-node-lifecycle-elections.md` :145-153; `deployment-provider.md`; packet `docs/plans/proposal/i143-failure-matrix.md` R-FM1
 
 ### State
 
-not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+completed 2026-10-15 (RED `505d99eb`; traces: hold cell `07f3b640645fb9621219d50fa3135604` / `f3c8fbc570cb17483d61289b3ca056c3`, member terminate+recover `6f2cee1c90c07a9a7ce03607ded20cdb` [40 spans], mesh-primary terminate+recover `88f6435305841044a5468305d6c1f66e` [49 spans] + election `d4be92cf02a4676738d20b70f42fdedd`, fabric-primary held-running `ed394bca8f94b70380f4cf4ff249b2fa`). Mechanism: `NodeHeldRunningRow` (`status/<mesh>/held-running/<node_id>--<incarnation>.json`) recorded on `NotExited { Running }` verdicts and surfaced on `NodeView::held_running` / `FabricView::held_running` (store fact + `node.get`/`fabric.get` field, gossip wire untouched); `OfflineTickle::reprobe` keeps probing `held-running` births every tick; when `RDM_HUNG_HOLD_FLOORS` (default 10) expires with the provider still reporting `Running`, `DeploymentPipeline::delete_hung` runs `TerminateRuntime` first on the exact runtime handle, records `exit_proof` (`proof = "terminate-runtime"`), clears `held-running`, and completes `NodeDeleted -> RemoveTopologyMembership -> node.create` in the same recovery attempt; for a hung mesh-primary, `seat_watch` on the fabric-primary runs the hold and submits the recovery Build, seating the standby on the exit proof only; for a hung fabric-primary, watching admins record `held-running` and publish `Concern` without ever terminating from below.
+
+Page diffs (delegated ruling `R-FM1`):
+- `docs/architecture/lifecycles/node-recovery.md` step 3–4:
+  - Old: `3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment backend that launched the runtime) about the exact runtime recorded at launch. Exited is the proof, recorded durably. Still running is no proof, however long the silence: the node is hung or unreachable, not gone, and nothing is recovered.`
+  - New: `3. **Provider proof.** ... When the provider reports Running for the exact runtime handle, the mesh-primary records the durable status-row fact held-running { since, verdicts } (surfaced on node.get, never as a gossip MemberStatus: the gossip wire is untouched) and opens the hold (step 4).` + `4. **Hung runtime hold and terminate (R-FM1).** During the hold (RDM_HUNG_HOLD_FLOORS staleness floors, default 10 = 300 s at the 30 s floor), the mesh-primary keeps running the investigation ladder every tick; an answer from the exact birth or its returning digest ends the hold and clears held-running ... When the hold expires with the provider still reporting Running, the mesh-primary submits the recovery Build for that birth whose first step is TerminateRuntime { node_id, incarnation, handle } ...`
+- `docs/architecture/fabric-node-lifecycle-elections.md` §5:
+  - Old: `- silence, an observer-inferred Dead or an unheard route is not proof: the holder keeps the seat;`
+  - New: `- silence, an observer-inferred Dead, a held-running hold or an unheard route is not proof: the holder keeps the seat; - for a hung mesh-primary (R-FM1), the fabric-primary runs the RDM_HUNG_HOLD_FLOORS hold and, when it expires with the provider still reporting Running, submits the recovery Build whose TerminateRuntime step proves the exit; the seat moves only once that exit proof is recorded, never before the proof; - for a hung fabric-primary (R-FM1), no node below it commands its termination; watching admins record held-running { since, verdicts } on the holder's status row (surfaced on node.get and fabric.get), publish Concern as today, and the fabric seat never moves on silence;`
+- `docs/architecture/deployment-provider.md` §2.4:
+  - Old: `A dead or wedged node cannot block an authorized delete forever, and silence on a desired running node never authorizes replacement.`
+  - New: `... When a TRUE OFFLINE member or mesh-primary is inspected as Running throughout the RDM_HUNG_HOLD_FLOORS hold (held-running { since, verdicts }, R-FM1), the recovery Build's node.delete runs TerminateRuntime { node_id, incarnation, handle } on the exact runtime handle recorded at launch (terminate(handle, Graceful) then Forced after the stop grace), records exit_proof durably and clears held-running before completing NodeDeleted and node.create. A refused or unproven terminate ends the attempt Failed { step: TerminateRuntime, reason } by name.`
+- `CLAUDE.md` env table: added `RDM_HUNG_HOLD_FLOORS` (default `10`).
 
 ### Remaining
 
-- [ ] the `held-running { since, verdicts }` fact: a durable status-row fact written by the mesh-primary on a `NotExited { Running }` verdict, cleared on the birth's answer or returning digest, surfaced on `node.get` (and `fabric.get` for the fabric seat's holder); not a gossip `MemberStatus` (the wire is untouched)
-- [ ] the hold: `RDM_HUNG_HOLD_FLOORS` (default 10 staleness floors) in the env table of CLAUDE.md and `config.md`; the ladder keeps running every tick during the hold; `Unknown` or an unreadable runtime row opens the fact and no hold
-- [ ] the `TerminateRuntime { node_id, incarnation, handle }` step as the first step of the recovery Build the mesh-primary submits when the hold expires: provider `terminate(handle, Graceful)` then `Forced` after the stop grace, `exit_proof` recorded durably, then the ordinary recovery in the same attempt; a refused or unproven terminate ends the attempt `Failed { step, reason }` by name
-- [ ] a hung mesh-primary: the fabric-primary runs the hold and submits the Build; R-EL1 seats the successor on the exit proof only
-- [ ] a hung fabric-primary: the watching admins write `held-running` on its row and publish Concern as today; nothing terminates it; a person decides
-- [ ] page text (node-recovery.md step 4, elections :155-157, deployment-provider.md terminate, env table) lands with the code; the exact old and new text recorded here (Luke delegated the ruling; the diff is for his glance)
-- [ ] cells: SIGSTOP'd member recovers after the hold with the terminate receipt and exit proof in its trace; SIGSTOP'd mesh-primary likewise with the successor seated after the proof; SIGSTOP'd fabric-primary shows `held-running` and nothing else; `node_lifecycle__node_replace.rs:549` becomes the hold's cell; each with its Jaeger flame
+- [x] the `held-running { since, verdicts }` fact: a durable status-row fact written by the mesh-primary on a `NotExited { Running }` verdict, cleared on the birth's answer or returning digest, surfaced on `node.get` (and `fabric.get` for the fabric seat's holder); not a gossip `MemberStatus` (the wire is untouched)
+- [x] the hold: `RDM_HUNG_HOLD_FLOORS` (default 10 staleness floors) in the env table of CLAUDE.md and `config.md`; the ladder keeps running every tick during the hold; `Unknown` or an unreadable runtime row opens the fact and no hold
+- [x] the `TerminateRuntime { node_id, incarnation, handle }` step as the first step of the recovery Build the mesh-primary submits when the hold expires: provider `terminate(handle, Graceful)` then `Forced` after the stop grace, `exit_proof` recorded durably, then the ordinary recovery in the same attempt; a refused or unproven terminate ends the attempt `Failed { step, reason }` by name
+- [x] a hung mesh-primary: the fabric-primary runs the hold and submits the Build; R-EL1 seats the successor on the exit proof only
+- [x] a hung fabric-primary: the watching admins write `held-running` on its row and publish Concern as today; nothing terminates it; a person decides
+- [x] page text (node-recovery.md step 4, elections :155-157, deployment-provider.md terminate, env table) lands with the code; the exact old and new text recorded here (Luke delegated the ruling; the diff is for his glance)
+- [x] cells: SIGSTOP'd member recovers after the hold with the terminate receipt and exit proof in its trace; SIGSTOP'd mesh-primary likewise with the successor seated after the proof; SIGSTOP'd fabric-primary shows `held-running` and nothing else; `node_lifecycle__node_replace.rs:549` becomes the hold's cell; each with its Jaeger flame
 
 ### Acceptance criteria
 
 <!-- crit:e12.s86.1 -->
-- [ ] the three cells green at gate cadence, traces cited here; `held-running` visible on `node.get` in the member trace before the terminate step
+- [x] the three cells green at gate cadence, traces cited here; `held-running` visible on `node.get` in the member trace before the terminate step
 <!-- /crit:e12.s86.1 -->
 <!-- crit:e12.s86.2 -->
-- [ ] no path terminates a runtime the provider has not reported `Running` for the exact handle, and none below the fabric-primary terminates it
+- [x] no path terminates a runtime the provider has not reported `Running` for the exact handle, and none below the fabric-primary terminates it
 <!-- /crit:e12.s86.2 -->
 <!-- crit:e12.s86.3 -->
-- [ ] The story bar holds (section story-bar).
+- [x] The story bar holds (section story-bar).
 <!-- /crit:e12.s86.3 -->
 
 ### Done when
 
-- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+- [x] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
 
 **Epic metadata**
 
