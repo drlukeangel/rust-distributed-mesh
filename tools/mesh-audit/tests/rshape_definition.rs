@@ -31,7 +31,13 @@ const UI_DIR: &str = "demo/admin-ui";
 const BINS: [&str; 4] = ["rshape-node-admin", "rshape-compute", "rshape-gateway", "rshape-broker"];
 /// The RDM packages a consumer may import: the public node composition surface and what it
 /// resolves to. Anything else named `rafka-*` is a business crate.
-const APPROVED_RDM: [&str; 10] = [
+const APPROVED_RDM: [&str; 16] = [
+    "rdm-core",
+    "rdm-transport",
+    "rdm-client",
+    "rdm-node",
+    "rdm-admin",
+    "rdm-test",
     "rafka-node-base",
     "rafka-node-admin-core",
     "rafka-mesh-transport",

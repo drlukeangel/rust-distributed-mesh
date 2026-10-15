@@ -579,6 +579,19 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
         let primary: Vec<String> = view.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).collect();
         assert_eq!(primary, vec![na2_name.clone()], "{} names {na2_name} mesh2's primary once the stop is complete", admin.name);
     }
+    let wait_until = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < wait_until {
+        let live_spans = estate.spans();
+        let all_heard = before.iter().filter(|n| n.name != p.name && n.name != na2.name && n.name.to_string() != fp).all(|n| {
+            let heard = named(&live_spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().any(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "successor").contains(&na2_id) && matches!(attr(sp, "outcome").as_str(), "held" | "same"));
+            let seated = named(&live_spans, "rdm.mesh.seat.update.via-announcement").into_iter().any(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "seat") == "mesh-primary" && attr(sp, "holder").contains(&na2_id) && matches!(attr(sp, "outcome").as_str(), "held" | "same"));
+            heard || seated
+        });
+        if all_heard {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 
     estate.stop().await;
     let spans = estate.spans();

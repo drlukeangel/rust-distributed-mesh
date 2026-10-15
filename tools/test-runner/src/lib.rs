@@ -78,7 +78,7 @@ const GATE_RELEASE_ONLY: &[&str] = &[
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[
-    "rafka-mesh-audit", "rdm-core", "rdm-transport", "rdm-admin", "rdm-test", "rdm-node",
+    "rdm-mesh-audit", "rdm-core", "rdm-transport", "rdm-admin", "rdm-test", "rdm-node",
 ];
 /// Stems that need a container runtime (the gate's `container-proof` job).
 const CONTAINER_STEMS: &[&str] = &["container_proof", "container_kill"];
@@ -94,7 +94,7 @@ const E11: &[(&str, &str)] = &[
     ("rdm-node", "leadership"),
     ("rdm-transport", "pool"),
     ("rdm-test", "shared_dial"),
-    ("rafka-mesh-audit", "dependency_rules"),
+    ("rdm-mesh-audit", "dependency_rules"),
 ];
 
 fn now_ms() -> u64 {

@@ -5,13 +5,13 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 
 | enum | crate | file |
 |---|---|---|
-| [`BuildState`](#t-rafka_node_admin_core-build_state-BuildState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/build_state.rs` |
+| [`BuildState`](#t-rdm_admin-build_state-BuildState) | rdm-admin | `crates/rdm-admin/src/build_state.rs` |
 | [`BuildState`](#t-rdm_core-dto-BuildState) | rdm-core | `crates/rdm-core/src/dto.rs` |
 | [`ConnectionState`](#t-rdm_core-connections-ConnectionState) | rdm-core | `crates/rdm-core/src/connections.rs` |
-| [`DeploymentStatus`](#t-rafka_node_admin_core-deployment-provider-DeploymentStatus) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/deployment/provider.rs` |
-| [`FabricState`](#t-rafka_node_admin_core-fabric_state-FabricState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/fabric_state.rs` |
-| [`HydrationState`](#t-rafka_node_admin_core-app_hydration-HydrationState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/app_hydration.rs` |
-| [`LifecycleState`](#t-rafka_node_admin_core-lifecycle-LifecycleState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/lifecycle.rs` |
+| [`DeploymentStatus`](#t-rdm_admin-deployment-provider-DeploymentStatus) | rdm-admin | `crates/rdm-admin/src/deployment/provider.rs` |
+| [`FabricState`](#t-rdm_admin-fabric_state-FabricState) | rdm-admin | `crates/rdm-admin/src/fabric_state.rs` |
+| [`HydrationState`](#t-rdm_node-app_hydration-HydrationState) | rdm-node | `crates/rdm-node/src/app_hydration.rs` |
+| [`LifecycleState`](#t-rdm_admin-lifecycle-LifecycleState) | rdm-admin | `crates/rdm-admin/src/lifecycle.rs` |
 | [`MemberStatus`](#t-rdm_core-digest-MemberStatus) | rdm-core | `crates/rdm-core/src/digest.rs` |
 | [`MeshState`](#t-rdm_core-status-MeshState) | rdm-core | `crates/rdm-core/src/status.rs` |
 | [`NodeState`](#t-rdm_core-digest-NodeState) | rdm-core | `crates/rdm-core/src/digest.rs` |
@@ -22,13 +22,13 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 | [`OrderState`](#t-rdm_core-streaming-OrderState) | rdm-core | `crates/rdm-core/src/streaming.rs` |
 | [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
 | [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
-| [`SyncState`](#t-rafka_node_admin_core-wiring-SyncState) | rafka-node-admin-core | `crates/rafka-node-admin-core/src/wiring.rs` |
+| [`SyncState`](#t-rdm_admin-wiring-SyncState) | rdm-admin | `crates/rdm-admin/src/wiring.rs` |
 
-<a id="t-rafka_node_admin_core-build_state-BuildState"></a>
+<a id="t-rdm_admin-build_state-BuildState"></a>
 
 ### `BuildState`
 
-`crates/rafka-node-admin-core/src/build_state.rs` · enum · 4 variants · rafka-node-admin-core
+`crates/rdm-admin/src/build_state.rs` · enum · 4 variants · rdm-admin
 
 Where a Build is in its life.
 
@@ -72,11 +72,11 @@ An entry's state.
 | 1 | **`Disconnected`** | `Disconnected` |  |  | The connection ended. |
 | 2 | **`Failed`** | `Failed` |  |  | This source failed to establish the Direct connection. Never proof the destination is dead. |
 
-<a id="t-rafka_node_admin_core-deployment-provider-DeploymentStatus"></a>
+<a id="t-rdm_admin-deployment-provider-DeploymentStatus"></a>
 
 ### `DeploymentStatus`
 
-`crates/rafka-node-admin-core/src/deployment/provider.rs` · enum · 3 variants · rafka-node-admin-core
+`crates/rdm-admin/src/deployment/provider.rs` · enum · 3 variants · rdm-admin
 
 What a provider knows of a runtime.
 
@@ -87,11 +87,11 @@ What a provider knows of a runtime.
 | 1.0 | `code` |  | `Option<i32>` |  | The exit code, when its record proves one. |
 | 2 | **`Unknown`** | (not serialized) |  |  | The runtime's state cannot be told. |
 
-<a id="t-rafka_node_admin_core-fabric_state-FabricState"></a>
+<a id="t-rdm_admin-fabric_state-FabricState"></a>
 
 ### `FabricState`
 
-`crates/rafka-node-admin-core/src/fabric_state.rs` · enum · 4 variants · rafka-node-admin-core
+`crates/rdm-admin/src/fabric_state.rs` · enum · 4 variants · rdm-admin
 
 The state of the fabric: the value of a FabricStatus frame.
 
@@ -102,11 +102,11 @@ The state of the fabric: the value of a FabricStatus frame.
 | 2 | **`StateCommit`** | (not serialized) |  |  | `as_str() = "state-commit"` | The application answered state-synced; the scratchpads are published and traffic is opened. |
 | 3 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | Both rounds completed. |
 
-<a id="t-rafka_node_admin_core-app_hydration-HydrationState"></a>
+<a id="t-rdm_node-app_hydration-HydrationState"></a>
 
 ### `HydrationState`
 
-`crates/rafka-node-admin-core/src/app_hydration.rs` · enum · 5 variants · rafka-node-admin-core
+`crates/rdm-node/src/app_hydration.rs` · enum · 5 variants · rdm-node
 
 Where one birth's hook stands.
 
@@ -123,11 +123,11 @@ Where one birth's hook stands.
 | 3.0 | `0` |  | `String` |  |  |
 | 4 | **`Retired`** | (not serialized) |  |  | The birth was retired before the hook passed. |
 
-<a id="t-rafka_node_admin_core-lifecycle-LifecycleState"></a>
+<a id="t-rdm_admin-lifecycle-LifecycleState"></a>
 
 ### `LifecycleState`
 
-`crates/rafka-node-admin-core/src/lifecycle.rs` · enum · 6 variants · rafka-node-admin-core
+`crates/rdm-admin/src/lifecycle.rs` · enum · 6 variants · rdm-admin
 
 A node, mesh or fabric status a transition moves between.
 
@@ -315,11 +315,11 @@ serde: `rename_all = "kebab-case"`
 | 5 | **`StateSync`** | `state-sync` |  |  | `name() = "state-sync"` | A fabric state: every mesh is ready-for-traffic and the application does its work. |
 | 6 | **`StateCommit`** | `state-commit` |  |  | `name() = "state-commit"` | A fabric state: the commit-state and open-traffic rounds run. |
 
-<a id="t-rafka_node_admin_core-wiring-SyncState"></a>
+<a id="t-rdm_admin-wiring-SyncState"></a>
 
 ### `SyncState`
 
-`crates/rafka-node-admin-core/src/wiring.rs` · enum · 2 variants · rafka-node-admin-core
+`crates/rdm-admin/src/wiring.rs` · enum · 2 variants · rdm-admin
 
 The `sync_state` choice. A configuration with none is refused at start by name: an application
 
@@ -335,5 +335,5 @@ Every `pub const` string in RDM's non-test source whose value is a serde name or
 
 | const | value | file | doc |
 |---|---|---|---|
-| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rafka-mesh-transport/src/membership.rs` | The mesh status a `Frame::MeshStatus` carries for a ready-for-traffic mesh (states.md: a mesh is |
-| `STATE_SYNC_CUT` | `state-sync` | `crates/rafka-node-rpc-testkit/src/test_app.rs` | The fault cut a `hold` application parks its answers at. |
+| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/membership.rs` | The mesh status a `Frame::MeshStatus` carries for a ready-for-traffic mesh (states.md: a mesh is |
+| `STATE_SYNC_CUT` | `state-sync` | `crates/rdm-test/src/test_app.rs` | The fault cut a `hold` application parks its answers at. |

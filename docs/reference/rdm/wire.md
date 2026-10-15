@@ -14,13 +14,13 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 | `0x1F` | `build-facts` | `BuildFacts` | [`BuildFactsRequest`](#t-rdm_core-build_facts-BuildFactsRequest) | [`BuildFactsReply`](#t-rdm_core-build_facts-BuildFactsReply) |
 | `0x20` | `build` | `Build` | [`BuildRequest`](#t-rdm_core-build-BuildRequest) | [`BuildReply`](#t-rdm_core-build-BuildReply) |
 | `0x21` | `node-primary-update` | `NodePrimaryUpdate` | [`NodePrimaryUpdateRequest`](#t-rdm_core-handover-NodePrimaryUpdateRequest) | [`NodePrimaryUpdateReply`](#t-rdm_core-handover-NodePrimaryUpdateReply) |
-| `0x40` | `broker-data` | `BrokerData` | [`BrokerDataRequest`](#t-rafka_node_base-families-BrokerDataRequest) | [`BrokerDataReply`](#t-rafka_node_base-families-BrokerDataReply) |
-| `0x70` | `proof-store` | `ProofStore` | [`ProofRequest`](#t-rafka_node_rpc_testkit-proof_store-ProofRequest) | [`ProofReply`](#t-rafka_node_rpc_testkit-proof_store-ProofReply) |
-| `0x71` | `resolve-probe` | `ResolveProbe` | [`ResolveRequest`](#t-rafka_node_rpc_testkit-resolve_probe-ResolveRequest) | [`ResolveReply`](#t-rafka_node_rpc_testkit-resolve_probe-ResolveReply) |
-| `0x72` | `declare-probe` | `DeclareProbe` | [`DeclareRequest`](#t-rafka_node_rpc_testkit-declare_probe-DeclareRequest) | [`DeclareReply`](#t-rafka_node_rpc_testkit-declare_probe-DeclareReply) |
-| `0x73` | `originate` | `Originate` | [`OriginateRequest`](#t-rafka_node_rpc_testkit-originate-OriginateRequest) | [`OriginateReply`](#t-rafka_node_rpc_testkit-originate-OriginateReply) |
-| `0x74` | `hydrate-pull` | `HydratePull` | [`PullRequest`](#t-rafka_node_rpc_testkit-hydrate_probe-PullRequest) | [`PullReply`](#t-rafka_node_rpc_testkit-hydrate_probe-PullReply) |
-| `0x75` | `fault-door` | `FaultDoor` | [`FaultRequest`](#t-rafka_node_rpc_testkit-fault_door-FaultRequest) | [`FaultReply`](#t-rafka_node_rpc_testkit-fault_door-FaultReply) |
+| `0x40` | `broker-data` | `BrokerData` | [`BrokerDataRequest`](#t-rdm_test-families-BrokerDataRequest) | [`BrokerDataReply`](#t-rdm_test-families-BrokerDataReply) |
+| `0x70` | `proof-store` | `ProofStore` | [`ProofRequest`](#t-rdm_test-proof_store-ProofRequest) | [`ProofReply`](#t-rdm_test-proof_store-ProofReply) |
+| `0x71` | `resolve-probe` | `ResolveProbe` | [`ResolveRequest`](#t-rdm_test-resolve_probe-ResolveRequest) | [`ResolveReply`](#t-rdm_test-resolve_probe-ResolveReply) |
+| `0x72` | `declare-probe` | `DeclareProbe` | [`DeclareRequest`](#t-rdm_test-declare_probe-DeclareRequest) | [`DeclareReply`](#t-rdm_test-declare_probe-DeclareReply) |
+| `0x73` | `originate` | `Originate` | [`OriginateRequest`](#t-rdm_test-originate-OriginateRequest) | [`OriginateReply`](#t-rdm_test-originate-OriginateReply) |
+| `0x74` | `hydrate-pull` | `HydratePull` | [`PullRequest`](#t-rdm_test-hydrate_probe-PullRequest) | [`PullReply`](#t-rdm_test-hydrate_probe-PullReply) |
+| `0x75` | `fault-door` | `FaultDoor` | [`FaultRequest`](#t-rdm_test-fault_door-FaultRequest) | [`FaultReply`](#t-rdm_test-fault_door-FaultReply) |
 
 ## 0x01 `ping`
 
@@ -982,7 +982,7 @@ The answer to a node.primary.update call.
 
 ## 0x40 `broker-data`
 
-`impl NodeProtocol for BrokerData` · `crates/rafka-node-base/src/families.rs` · rafka-node-base
+`impl NodeProtocol for BrokerData` · `crates/rdm-test/src/families.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -995,11 +995,11 @@ The answer to a node.primary.update call.
 | `MAX_REQUEST_FRAME_BYTES` | `64 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rafka_node_base-families-BrokerDataRequest"></a>
+<a id="t-rdm_test-families-BrokerDataRequest"></a>
 
 ### `BrokerDataRequest`
 
-`crates/rafka-node-base/src/families.rs` · enum · 2 variants · rafka-node-base
+`crates/rdm-test/src/families.rs` · enum · 2 variants · rdm-test
 
 The requests of the `broker_data` family.
 
@@ -1011,11 +1011,11 @@ The requests of the `broker_data` family.
 | 1 | **`Read`** |  |  | Read what `key` holds. |
 | 1.0 | `key` | `String` |  | The key to read. |
 
-<a id="t-rafka_node_base-families-BrokerDataReply"></a>
+<a id="t-rdm_test-families-BrokerDataReply"></a>
 
 ### `BrokerDataReply`
 
-`crates/rafka-node-base/src/families.rs` · enum · 8 variants · rafka-node-base
+`crates/rdm-test/src/families.rs` · enum · 8 variants · rdm-test
 
 The replies of the `broker_data` family: the two successes and the typed Node RPC refusals.
 
@@ -1044,7 +1044,7 @@ The replies of the `broker_data` family: the two successes and the typed Node RP
 
 ## 0x70 `proof-store`
 
-`impl NodeProtocol for ProofStore` · `crates/rafka-node-rpc-testkit/src/proof_store.rs` · rafka-node-rpc-testkit
+`impl NodeProtocol for ProofStore` · `crates/rdm-test/src/proof_store.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -1057,11 +1057,11 @@ The replies of the `broker_data` family: the two successes and the typed Node RP
 | `MAX_REQUEST_FRAME_BYTES` | `MAX_KEY_BYTES + 2 * MAX_VALUE_BYTES + 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `MAX_VALUE_BYTES + 2048` |
 
-<a id="t-rafka_node_rpc_testkit-proof_store-ProofRequest"></a>
+<a id="t-rdm_test-proof_store-ProofRequest"></a>
 
 ### `ProofRequest`
 
-`crates/rafka-node-rpc-testkit/src/proof_store.rs` · enum · 4 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/proof_store.rs` · enum · 4 variants · rdm-test
 
 A proof store call.
 
@@ -1079,37 +1079,37 @@ A proof store call.
 | 3.1 | `expected` | `Option<Vec<u8>>` |  | The value the key must hold; `None` when it must be absent. |
 | 3.2 | `new` | `Option<Vec<u8>>` |  | The value to store; `None` deletes the key. |
 
-<a id="t-rafka_node_rpc_testkit-proof_store-ProofReply"></a>
+<a id="t-rdm_test-proof_store-ProofReply"></a>
 
 ### `ProofReply`
 
-`crates/rafka-node-rpc-testkit/src/proof_store.rs` · enum · 14 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/proof_store.rs` · enum · 14 variants · rdm-test
 
 A proof store answer.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Value`** |  |  | The value of the key. |
-| 0.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 0.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 0.1 | `value` | `Vec<u8>` |  | The value held. |
 | 1 | **`Absent`** |  |  | The key is absent. |
-| 1.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 1.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 2 | **`Stored`** |  |  | The value was stored. |
-| 2.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 2.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 3 | **`Deleted`** |  |  | The key was deleted. |
-| 3.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 3.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 4 | **`Swapped`** |  |  | The swap was made. |
-| 4.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 4.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 5 | **`Mismatch`** |  |  | The held value differs from the expected one. |
-| 5.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 5.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 5.1 | `current` | `Option<Vec<u8>>` |  | The value held, `None` when absent. |
 | 6 | **`TooLarge`** |  |  | A key or value over its limit; nothing was read or written. |
-| 6.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 6.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 6.1 | `field` | `String` |  | The field over its limit. |
 | 6.2 | `limit` | `u32` |  | The limit. |
 | 6.3 | `got` | `u32` |  | The size received. |
 | 7 | **`StoreFailed`** |  |  | The store file could not be read or written; nothing changed. |
-| 7.0 | `at` | `Provenance` → [`Provenance`](#t-rafka_node_rpc_testkit-proof_store-Provenance) |  | Where the call executed. |
+| 7.0 | `at` | `Provenance` → [`Provenance`](#t-rdm_test-proof_store-Provenance) |  | Where the call executed. |
 | 7.1 | `reason` | `String` |  | Why the store failed. |
 | 8 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
 | 8.0 | `reason` | `String` |  | Why the peer could not be resolved. |
@@ -1126,7 +1126,7 @@ A proof store answer.
 
 ## 0x71 `resolve-probe`
 
-`impl NodeProtocol for ResolveProbe` · `crates/rafka-node-rpc-testkit/src/resolve_probe.rs` · rafka-node-rpc-testkit
+`impl NodeProtocol for ResolveProbe` · `crates/rdm-test/src/resolve_probe.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -1139,42 +1139,42 @@ A proof store answer.
 | `MAX_REQUEST_FRAME_BYTES` | `1024` |
 | `MAX_REPLY_FRAME_BYTES` | `2048` |
 
-<a id="t-rafka_node_rpc_testkit-resolve_probe-ResolveRequest"></a>
+<a id="t-rdm_test-resolve_probe-ResolveRequest"></a>
 
 ### `ResolveRequest`
 
-`crates/rafka-node-rpc-testkit/src/resolve_probe.rs` · enum · 1 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/resolve_probe.rs` · enum · 1 variants · rdm-test
 
 A resolve probe call.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Resolve`** |  |  | Resolve `target` on the executing node. |
-| 0.0 | `target` | `ProbeTarget` → [`ProbeTarget`](#t-rafka_node_rpc_testkit-resolve_probe-ProbeTarget) |  | The target to resolve. |
+| 0.0 | `target` | `ProbeTarget` → [`ProbeTarget`](#t-rdm_test-resolve_probe-ProbeTarget) |  | The target to resolve. |
 
-<a id="t-rafka_node_rpc_testkit-resolve_probe-ResolveReply"></a>
+<a id="t-rdm_test-resolve_probe-ResolveReply"></a>
 
 ### `ResolveReply`
 
-`crates/rafka-node-rpc-testkit/src/resolve_probe.rs` · enum · 11 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/resolve_probe.rs` · enum · 11 variants · rdm-test
 
 A resolve probe answer.
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
 | 0 | **`Found`** |  |  | `resolution() = "found"` | The target resolved. |
-| 0.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-resolve_probe-AnsweredBy) |  |  | Who answered. |
+| 0.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
 | 0.1 | `node_id` | `String` |  |  | The resolved node's id. |
 | 0.2 | `name` | `String` |  |  | The resolved node's `path.name`. |
 | 0.3 | `incarnation_id` | `String` |  |  | The resolved node's incarnation. |
 | 1 | **`Gone`** |  |  | `resolution() = "gone"` | The node departed and does not return. |
-| 1.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-resolve_probe-AnsweredBy) |  |  | Who answered. |
+| 1.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
 | 2 | **`Unknown`** |  |  | `resolution() = "unknown"` | No node by that target was ever known. |
-| 2.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-resolve_probe-AnsweredBy) |  |  | Who answered. |
+| 2.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
 | 3 | **`Unavailable`** |  |  | `resolution() = "unavailable"` | The node is known and cannot be reached now. |
-| 3.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-resolve_probe-AnsweredBy) |  |  | Who answered. |
+| 3.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
 | 4 | **`BadTarget`** |  |  | `resolution() = "bad-target"` | The target does not parse. |
-| 4.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-resolve_probe-AnsweredBy) |  |  | Who answered. |
+| 4.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-resolve_probe-AnsweredBy) |  |  | Who answered. |
 | 4.1 | `reason` | `String` |  |  | Why the target is refused. |
 | 5 | **`PeerUnresolved`** |  |  |  | The peer the call needed could not be resolved. |
 | 5.0 | `reason` | `String` |  |  | Why the peer could not be resolved. |
@@ -1191,7 +1191,7 @@ A resolve probe answer.
 
 ## 0x72 `declare-probe`
 
-`impl NodeProtocol for DeclareProbe` · `crates/rafka-node-rpc-testkit/src/declare_probe.rs` · rafka-node-rpc-testkit
+`impl NodeProtocol for DeclareProbe` · `crates/rdm-test/src/declare_probe.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -1204,27 +1204,27 @@ A resolve probe answer.
 | `MAX_REQUEST_FRAME_BYTES` | `1024` |
 | `MAX_REPLY_FRAME_BYTES` | `2048` |
 
-<a id="t-rafka_node_rpc_testkit-declare_probe-DeclareRequest"></a>
+<a id="t-rdm_test-declare_probe-DeclareRequest"></a>
 
 ### `DeclareRequest`
 
-`crates/rafka-node-rpc-testkit/src/declare_probe.rs` · enum · 1 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/declare_probe.rs` · enum · 1 variants · rdm-test
 
 A declare probe call.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Declare`** |  |  | Declare `state` for this node's own birth to `to`; the overrides are testkit-only. |
-| 0.0 | `to` | `DeclareTarget` → [`DeclareTarget`](#t-rafka_node_rpc_testkit-declare_probe-DeclareTarget) |  | The authority to declare to. |
+| 0.0 | `to` | `DeclareTarget` → [`DeclareTarget`](#t-rdm_test-declare_probe-DeclareTarget) |  | The authority to declare to. |
 | 0.1 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  | The state to declare. |
 | 0.2 | `node_id` | `Option<String>` |  | A node id to declare under instead of the node's own; testkit only. |
 | 0.3 | `incarnation` | `Option<String>` |  | An incarnation to declare under instead of the node's own; testkit only. |
 
-<a id="t-rafka_node_rpc_testkit-declare_probe-DeclareReply"></a>
+<a id="t-rdm_test-declare_probe-DeclareReply"></a>
 
 ### `DeclareReply`
 
-`crates/rafka-node-rpc-testkit/src/declare_probe.rs` · enum · 8 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/declare_probe.rs` · enum · 8 variants · rdm-test
 
 A declare probe answer.
 
@@ -1251,7 +1251,7 @@ A declare probe answer.
 
 ## 0x73 `originate`
 
-`impl NodeProtocol for Originate` · `crates/rafka-node-rpc-testkit/src/originate.rs` · rafka-node-rpc-testkit
+`impl NodeProtocol for Originate` · `crates/rdm-test/src/originate.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -1264,11 +1264,11 @@ A declare probe answer.
 | `MAX_REQUEST_FRAME_BYTES` | `4096` |
 | `MAX_REPLY_FRAME_BYTES` | `65536` |
 
-<a id="t-rafka_node_rpc_testkit-originate-OriginateRequest"></a>
+<a id="t-rdm_test-originate-OriginateRequest"></a>
 
 ### `OriginateRequest`
 
-`crates/rafka-node-rpc-testkit/src/originate.rs` · enum · 7 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/originate.rs` · enum · 7 variants · rdm-test
 
 An originate door call.
 
@@ -1276,7 +1276,7 @@ An originate door call.
 |---|---|---|---|---|
 | 0 | **`Call`** |  |  | Call `destination` (a path) with `op`, over this node's held projection. |
 | 0.0 | `destination` | `String` |  | The `path.name` to call. |
-| 0.1 | `op` | `ProofOp` → [`ProofOp`](#t-rafka_node_rpc_testkit-originate-ProofOp) |  | The proof-store operation to make. |
+| 0.1 | `op` | `ProofOp` → [`ProofOp`](#t-rdm_test-originate-ProofOp) |  | The proof-store operation to make. |
 | 1 | **`ArmFault`** |  |  | Refuse the next `refuse_index` index writes and `refuse_history` history appends, after |
 | 1.0 | `refuse_index` | `u32` |  | The number of index writes to refuse. |
 | 1.1 | `refuse_history` | `u32` |  | The number of history appends to refuse. |
@@ -1292,41 +1292,41 @@ An originate door call.
 | 6 | **`StopTransport`** |  |  | Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription |
 | 6.0 | `reason` | `String` |  | The reason the transport stopped. |
 
-<a id="t-rafka_node_rpc_testkit-originate-OriginateReply"></a>
+<a id="t-rdm_test-originate-OriginateReply"></a>
 
 ### `OriginateReply`
 
-`crates/rafka-node-rpc-testkit/src/originate.rs` · enum · 14 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/originate.rs` · enum · 14 variants · rdm-test
 
 An originate door answer.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Called`** |  |  | The call was made. |
-| 0.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who made the call. |
+| 0.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who made the call. |
 | 0.1 | `destination_node_id` | `String` |  | The destination's node id. |
 | 0.2 | `route` | `String` |  | The effective route's token: `via-peer`, `direct`, `direct-unknown` or `no-active-route`. |
 | 0.3 | `carrier` | `Option<String>` |  | The carrier the route used, when it used one. |
 | 0.4 | `retired` | `Option<String>` |  | The own Proxy the resolution found invalid, and why, if any. |
 | 0.5 | `outcome` | `String` |  | The call's outcome name. |
-| 0.6 | `reply` | `Option<ProofReply>` → [`ProofReply`](#t-rafka_node_rpc_testkit-proof_store-ProofReply) |  | The proof-store reply, when the call replied. |
+| 0.6 | `reply` | `Option<ProofReply>` → [`ProofReply`](#t-rdm_test-proof_store-ProofReply) |  | The proof-store reply, when the call replied. |
 | 0.7 | `pooled` | `Vec<String>` |  | The source's pooled connections after the call, by target path. |
 | 1 | **`FaultArmed`** |  |  | The storage fault was armed. |
-| 1.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who armed it. |
+| 1.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who armed it. |
 | 1.1 | `refuse_index` | `u32` |  | Index writes still to refuse. |
 | 1.2 | `refuse_history` | `u32` |  | History appends still to refuse. |
 | 2 | **`FaultReleased`** |  |  | The storage fault was released. |
-| 2.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who released it. |
+| 2.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who released it. |
 | 2.1 | `refused` | `u32` |  | The number of writes the fault refused. |
 | 3 | **`Snapshot`** |  |  | What the node holds and owes. |
-| 3.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who answered. |
+| 3.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who answered. |
 | 3.1 | `own_active_proxies` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The node's active Proxy entries. |
 | 3.2 | `own_latest_directs` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The node's latest Direct entry per destination. |
 | 3.3 | `active_len` | `usize` |  | The number of active Direct facts held that name a destination process still current. |
 | 3.4 | `owed` | `Vec<NodeConnection>` → [`NodeConnection`](#t-rdm_core-connections-NodeConnection) |  | The Proxy retirements the node owes now. |
 | 3.5 | `fault_refused` | `u32` |  | The number of writes the fault has refused. |
 | 4 | **`BadDestination`** |  |  | The destination does not parse or does not resolve on this node. |
-| 4.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who answered. |
+| 4.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who answered. |
 | 4.1 | `reason` | `String` |  | Why the destination is refused. |
 | 5 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
 | 5.0 | `reason` | `String` |  | Why the peer could not be resolved. |
@@ -1341,23 +1341,23 @@ An originate door answer.
 | 10 | **`Unauthorized`** |  |  | The caller is not allowed this call. |
 | 10.0 | `reason` | `String` |  | Why the call is refused. |
 | 11 | **`ProxyRecorded`** |  |  | The facts a `RecordProxy` wrote, with the births they name. |
-| 11.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who recorded the facts. |
+| 11.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who recorded the facts. |
 | 11.1 | `destination_node_id` | `String` |  | The destination's node id. |
 | 11.2 | `destination_incarnation` | `String` |  | The destination incarnation the facts name. |
 | 11.3 | `carrier_node_id` | `String` |  | The carrier's node id. |
 | 11.4 | `carrier_incarnation` | `String` |  | The carrier incarnation the facts name. |
 | 11.5 | `failed_attempts` | `u32` |  | The Direct Failed observations recorded. |
 | 12 | **`Dialed`** |  |  | The answer of a `Dial`: the typed outcome name of the one Ping. |
-| 12.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who dialled. |
+| 12.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who dialled. |
 | 12.1 | `destination_node_id` | `String` |  | The destination's node id. |
 | 12.2 | `outcome` | `String` |  | The Ping's outcome name. |
 | 13 | **`TransportStopMarked`** |  |  | The transport stop is marked; the process is exiting. |
-| 13.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rafka_node_rpc_testkit-originate-AnsweredBy) |  | Who marked the stop. |
+| 13.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who marked the stop. |
 | 13.1 | `reason` | `String` |  | The reason recorded. |
 
 ## 0x74 `hydrate-pull`
 
-`impl NodeProtocol for HydratePull` · `crates/rafka-node-rpc-testkit/src/hydrate_probe.rs` · rafka-node-rpc-testkit
+`impl NodeProtocol for HydratePull` · `crates/rdm-test/src/hydrate_probe.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -1370,11 +1370,11 @@ An originate door answer.
 | `MAX_REQUEST_FRAME_BYTES` | `256` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rafka_node_rpc_testkit-hydrate_probe-PullRequest"></a>
+<a id="t-rdm_test-hydrate_probe-PullRequest"></a>
 
 ### `PullRequest`
 
-`crates/rafka-node-rpc-testkit/src/hydrate_probe.rs` · enum · 1 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/hydrate_probe.rs` · enum · 1 variants · rdm-test
 
 A pull.
 
@@ -1382,18 +1382,18 @@ A pull.
 |---|---|---|---|---|
 | 0 | **`Pull`** |  |  | Every row this authority holds. |
 
-<a id="t-rafka_node_rpc_testkit-hydrate_probe-PullReply"></a>
+<a id="t-rdm_test-hydrate_probe-PullReply"></a>
 
 ### `PullReply`
 
-`crates/rafka-node-rpc-testkit/src/hydrate_probe.rs` · enum · 7 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/hydrate_probe.rs` · enum · 7 variants · rdm-test
 
 A pull's answer.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Rows`** |  |  | The rows, complete. |
-| 0.0 | `rows` | `Vec<Row>` → [`Row`](#t-rafka_node_rpc_testkit-hydrate_probe-Row) |  | The rows in version order. |
+| 0.0 | `rows` | `Vec<Row>` → [`Row`](#t-rdm_test-hydrate_probe-Row) |  | The rows in version order. |
 | 1 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
 | 1.0 | `reason` | `String` |  | Why. |
 | 2 | **`NotReady`** |  |  | The authority's own hook has not passed. |
@@ -1409,7 +1409,7 @@ A pull's answer.
 
 ## 0x75 `fault-door`
 
-`impl NodeProtocol for FaultDoor` · `crates/rafka-node-rpc-testkit/src/fault_door.rs` · rafka-node-rpc-testkit
+`impl NodeProtocol for FaultDoor` · `crates/rdm-test/src/fault_door.rs` · rdm-test
 
 | const | value |
 |---|---|
@@ -1422,11 +1422,11 @@ A pull's answer.
 | `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rafka_node_rpc_testkit-fault_door-FaultRequest"></a>
+<a id="t-rdm_test-fault_door-FaultRequest"></a>
 
 ### `FaultRequest`
 
-`crates/rafka-node-rpc-testkit/src/fault_door.rs` · enum · 3 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/fault_door.rs` · enum · 3 variants · rdm-test
 
 A fault door call.
 
@@ -1439,11 +1439,11 @@ A fault door call.
 | 1.0 | `id` | `String` |  | The cut's id. |
 | 2 | **`State`** |  |  | Every cut the admin holds and what each held. |
 
-<a id="t-rafka_node_rpc_testkit-fault_door-FaultReply"></a>
+<a id="t-rdm_test-fault_door-FaultReply"></a>
 
 ### `FaultReply`
 
-`crates/rafka-node-rpc-testkit/src/fault_door.rs` · enum · 10 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/fault_door.rs` · enum · 10 variants · rdm-test
 
 A fault door answer.
 
@@ -1459,7 +1459,7 @@ A fault door answer.
 | 1.2 | `was_held` | `bool` |  | It held a call when released. |
 | 1.3 | `held_ms` | `Option<u64>` |  | How long it held. |
 | 2 | **`State`** |  |  | Every cut and the counters. |
-| 2.0 | `0` | `FaultState` → [`FaultState`](#t-rafka_node_rpc_testkit-fault_door-FaultState) |  |  |
+| 2.0 | `0` | `FaultState` → [`FaultState`](#t-rdm_test-fault_door-FaultState) |  |  |
 | 3 | **`Refused`** |  |  | The door refused the call by name: the id is armed already, or no cut is armed under it. |
 | 3.0 | `reason` | `String` |  | Why. |
 | 4 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
@@ -1479,11 +1479,11 @@ A fault door answer.
 
 Every workspace struct and enum a request or reply field names, followed through their own fields, sorted by name. A type outside the workspace (`String`, `u64`, `BTreeMap`) is not listed.
 
-<a id="t-rafka_node_rpc_testkit-originate-AnsweredBy"></a>
+<a id="t-rdm_test-originate-AnsweredBy"></a>
 
 ### `AnsweredBy`
 
-`crates/rafka-node-rpc-testkit/src/originate.rs` · struct · 3 fields · rafka-node-rpc-testkit
+`crates/rdm-test/src/originate.rs` · struct · 3 fields · rdm-test
 
 Who answered.
 
@@ -1493,11 +1493,11 @@ Who answered.
 | 1 | `node` | `String` |  | The answering node's `path.name`. |
 | 2 | `incarnation_id` | `String` |  | The answering node's incarnation id. |
 
-<a id="t-rafka_node_rpc_testkit-resolve_probe-AnsweredBy"></a>
+<a id="t-rdm_test-resolve_probe-AnsweredBy"></a>
 
 ### `AnsweredBy`
 
-`crates/rafka-node-rpc-testkit/src/resolve_probe.rs` · struct · 3 fields · rafka-node-rpc-testkit
+`crates/rdm-test/src/resolve_probe.rs` · struct · 3 fields · rdm-test
 
 Who answered.
 
@@ -1738,11 +1738,11 @@ The connection facts one node holds (`node.connections.get`).
 | 1 | `complete` | `bool` |  | Whether the node holds the complete set. |
 | 2 | `connections` | `Vec<ConnectionView>` → [`ConnectionView`](#t-rdm_core-views-ConnectionView) |  | The facts. |
 
-<a id="t-rafka_node_rpc_testkit-fault_door-CutRow"></a>
+<a id="t-rdm_test-fault_door-CutRow"></a>
 
 ### `CutRow`
 
-`crates/rafka-node-rpc-testkit/src/fault_door.rs` · struct · 7 fields · rafka-node-rpc-testkit
+`crates/rdm-test/src/fault_door.rs` · struct · 7 fields · rdm-test
 
 One armed cut and what it held.
 
@@ -1752,7 +1752,7 @@ One armed cut and what it held.
 | 1 | `armed` | `bool` |  | Not released yet. |
 | 2 | `held` | `bool` |  | It holds a call now (or, for a condition, it is in force). |
 | 3 | `released` | `bool` |  | Released: it holds nothing more. |
-| 4 | `hit` | `Option<Hit>` → [`Hit`](#t-rafka_node_rpc_testkit-fault_door-Hit) |  | The first call it held. |
+| 4 | `hit` | `Option<Hit>` → [`Hit`](#t-rdm_test-fault_door-Hit) |  | The first call it held. |
 | 5 | `held_for_ms` | `Option<u64>` |  | How long it has held, or held. |
 | 6 | `seen_while_held` | `u64` |  | Matching calls that arrived while another was held here. |
 
@@ -1782,11 +1782,11 @@ The durable `data-dir-unreadable` fact on a birth's status row (R-FM2): the inhe
 | 0 | `path` | `String` |  | The broken data dir path. |
 | 1 | `cause` | `String` |  | Why `node-key` could not be loaded from the data dir. |
 
-<a id="t-rafka_node_rpc_testkit-declare_probe-DeclareTarget"></a>
+<a id="t-rdm_test-declare_probe-DeclareTarget"></a>
 
 ### `DeclareTarget`
 
-`crates/rafka-node-rpc-testkit/src/declare_probe.rs` · enum · 2 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/declare_probe.rs` · enum · 2 variants · rdm-test
 
 The authority a declare probe names.
 
@@ -1883,18 +1883,18 @@ The fabric as the answering node-admin's view holds it (`fabric.get`).
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
 | 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
 
-<a id="t-rafka_node_rpc_testkit-fault_door-FaultState"></a>
+<a id="t-rdm_test-fault_door-FaultState"></a>
 
 ### `FaultState`
 
-`crates/rafka-node-rpc-testkit/src/fault_door.rs` · struct · 3 fields · rafka-node-rpc-testkit
+`crates/rdm-test/src/fault_door.rs` · struct · 3 fields · rdm-test
 
 Every cut of one admin and the consequence counters.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `node` | `String` |  | The admin's `path.name`. |
-| 1 | `cuts` | `BTreeMap<String, CutRow>` → [`CutRow`](#t-rafka_node_rpc_testkit-fault_door-CutRow) |  | Every cut, by id. |
+| 1 | `cuts` | `BTreeMap<String, CutRow>` → [`CutRow`](#t-rdm_test-fault_door-CutRow) |  | Every cut, by id. |
 | 2 | `receipts_seen` | `u64` |  | Every Build step receipt the Build decorator saw. |
 
 <a id="t-rdm_core-digest-GossipStats"></a>
@@ -1939,11 +1939,11 @@ The durable `held-running` fact on a birth's status row (R-FM1): the provider re
 | 0 | `since` | `u64` |  | When the first `Running` verdict was observed, ms since the Unix epoch. |
 | 1 | `verdicts` | `u64` |  | How many `Running` verdicts have been observed for this birth during the hold. |
 
-<a id="t-rafka_node_rpc_testkit-fault_door-Hit"></a>
+<a id="t-rdm_test-fault_door-Hit"></a>
 
 ### `Hit`
 
-`crates/rafka-node-rpc-testkit/src/fault_door.rs` · enum · 11 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/fault_door.rs` · enum · 11 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -1987,7 +1987,7 @@ The call a cut held first, as the decorator offered it.
 | 9.1 | `reads_from` | `String` |  | The admin the read goes to: the one that answered the join. |
 | 10 | **`Announcement`** |  |  | A final aggregate or leadership announcement about to be sent on a channel. |
 | 10.0 | `node` | `String` |  | The announcing node. |
-| 10.1 | `announcement` | `String` |  | The announcement (`rafka_mesh_transport::membership::Withhold`). |
+| 10.1 | `announcement` | `String` |  | The announcement (`rdm_transport::membership::Withhold`). |
 | 10.2 | `channel` | `String` |  | The channel it is sent on. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
@@ -2319,11 +2319,11 @@ A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.ol
 | 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
 | 5 | `new` | `bool` |  | The path is the `.new` name of a successor that has not yet taken the name. |
 
-<a id="t-rafka_node_rpc_testkit-resolve_probe-ProbeTarget"></a>
+<a id="t-rdm_test-resolve_probe-ProbeTarget"></a>
 
 ### `ProbeTarget`
 
-`crates/rafka-node-rpc-testkit/src/resolve_probe.rs` · enum · 2 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/resolve_probe.rs` · enum · 2 variants · rdm-test
 
 The node a resolve probe names.
 
@@ -2347,11 +2347,11 @@ One member of a mesh-primary's member projection as it travels (gossip.md §3.1 
 | 0 | `digest` | `WireDigest` → [`WireDigest`](#t-rdm_core-wire-WireDigest) |  | The member's digest. |
 | 1 | `status` | `MemberStatus` → [`MemberStatus`](#t-rdm_core-digest-MemberStatus) |  | The member's status, as its mesh-primary holds it. |
 
-<a id="t-rafka_node_rpc_testkit-originate-ProofOp"></a>
+<a id="t-rdm_test-originate-ProofOp"></a>
 
 ### `ProofOp`
 
-`crates/rafka-node-rpc-testkit/src/originate.rs` · enum · 2 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/originate.rs` · enum · 2 variants · rdm-test
 
 A proof-store operation the originating node makes.
 
@@ -2363,11 +2363,11 @@ A proof-store operation the originating node makes.
 | 1.0 | `key` | `Vec<u8>` |  |  | The key to write. |
 | 1.1 | `value` | `Vec<u8>` |  |  | The value to write. |
 
-<a id="t-rafka_node_rpc_testkit-proof_store-ProofOp"></a>
+<a id="t-rdm_test-proof_store-ProofOp"></a>
 
 ### `ProofOp`
 
-`crates/rafka-node-rpc-testkit/src/proof_store.rs` · enum · 4 variants · rafka-node-rpc-testkit
+`crates/rdm-test/src/proof_store.rs` · enum · 4 variants · rdm-test
 
 The operation a request or a reply concerns.
 
@@ -2378,11 +2378,11 @@ The operation a request or a reply concerns.
 | 2 | **`Delete`** |  |  | `as_str() = "delete"` | Delete. |
 | 3 | **`CompareAndSwap`** |  |  | `as_str() = "compare-and-swap"` | Compare and swap. |
 
-<a id="t-rafka_node_rpc_testkit-proof_store-Provenance"></a>
+<a id="t-rdm_test-proof_store-Provenance"></a>
 
 ### `Provenance`
 
-`crates/rafka-node-rpc-testkit/src/proof_store.rs` · struct · 5 fields · rafka-node-rpc-testkit
+`crates/rdm-test/src/proof_store.rs` · struct · 5 fields · rdm-test
 
 Where a call executed, as the executing node knows it.
 
@@ -2392,7 +2392,7 @@ Where a call executed, as the executing node knows it.
 | 1 | `node` | `String` |  | The executing node's `path.name`. |
 | 2 | `mesh` | `String` |  | The executing node's mesh. |
 | 3 | `incarnation_id` | `String` |  | The executing node's incarnation id. |
-| 4 | `op` | `ProofOp` → [`ProofOp`](#t-rafka_node_rpc_testkit-proof_store-ProofOp) |  | The operation executed. |
+| 4 | `op` | `ProofOp` → [`ProofOp`](#t-rdm_test-proof_store-ProofOp) |  | The operation executed. |
 
 <a id="t-rdm_core-views-ProviderKind"></a>
 
@@ -2460,11 +2460,11 @@ The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks
 | 2 | **`AuthorityReady`** |  |  | `name() = "authority-ready"` | The authority published ReadyForTraffic. |
 | 3 | **`AuthorityAddressed`** |  |  | `name() = "authority-addressed"` | The authority addressed this node (it sent a down op). |
 
-<a id="t-rafka_node_rpc_testkit-hydrate_probe-Row"></a>
+<a id="t-rdm_test-hydrate_probe-Row"></a>
 
 ### `Row`
 
-`crates/rafka-node-rpc-testkit/src/hydrate_probe.rs` · struct · 2 fields · rafka-node-rpc-testkit
+`crates/rdm-test/src/hydrate_probe.rs` · struct · 2 fields · rdm-test
 
 One row of the authority's state.
 

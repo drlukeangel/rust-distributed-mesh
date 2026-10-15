@@ -850,7 +850,7 @@
         {
           "name": "rshape_consumer_imports_exact_candidate_without_private_paths",
           "source": "tools/mesh-audit/tests/rshape_definition.rs",
-          "command": "cargo test -p rafka-mesh-audit --test main rshape_definition::rshape_consumer_imports_exact_candidate_without_private_paths -- --exact",
+          "command": "cargo test -p rdm-mesh-audit --test main rshape_definition::rshape_consumer_imports_exact_candidate_without_private_paths -- --exact",
           "dir": "target/i143-rshape/i143-rshape-consumer-import-static/rshape_consumer_imports_exact_candidate_without_private_paths"
         }
       ]
@@ -862,7 +862,7 @@
         {
           "name": "rshape_definition_covers_every_scenario_without_business_dependencies",
           "source": "tools/mesh-audit/tests/rshape_definition.rs",
-          "command": "cargo test -p rafka-mesh-audit --test main rshape_definition::rshape_definition_covers_every_scenario_without_business_dependencies -- --exact",
+          "command": "cargo test -p rdm-mesh-audit --test main rshape_definition::rshape_definition_covers_every_scenario_without_business_dependencies -- --exact",
           "dir": "target/i143-rshape/i143-rshape-definition-static/rshape_definition_covers_every_scenario_without_business_dependencies"
         }
       ]

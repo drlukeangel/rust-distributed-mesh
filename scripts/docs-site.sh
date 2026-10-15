@@ -35,8 +35,8 @@ done
 GENERATED=(docs/reference/rdm docs/SUMMARY.md)
 
 echo "docs-site: regenerating ${GENERATED[*]} in $RV2 from $RDM"
-if ! (cd "$RDM" && cargo run -q -p rafka-docgen -- --root "$RDM" --out "$RV2/docs/reference/rdm" --summary "$RV2/docs"); then
-    echo "docs-site: rafka-docgen failed" >&2
+if ! (cd "$RDM" && cargo run -q -p rdm-docgen -- --root "$RDM" --out "$RV2/docs/reference/rdm" --summary "$RV2/docs"); then
+    echo "docs-site: rdm-docgen failed" >&2
     exit 2
 fi
 
