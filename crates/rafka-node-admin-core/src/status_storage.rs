@@ -193,6 +193,63 @@ impl NodeHeldRunningRow {
     }
 }
 
+/// The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
+/// absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth
+/// `Exited`. Keyed by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDataDirLostRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The absent data dir path.
+    pub path: String,
+    /// When the absent data dir was first observed, ms since the Unix epoch.
+    pub since: u64,
+}
+
+impl NodeDataDirLostRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id)
+    }
+
+    /// The key of the birth `(node_id, incarnation_id)`'s data-dir-lost row.
+    pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
+        format!("{node_id}--{}", incarnation_id.as_str())
+    }
+}
+
+/// The durable `data-dir-unreadable` fact on a birth's status row (R-FM2): the inherited data dir
+/// exists on disk, but `node-key` is missing, unreadable, or corrupt. Keyed by the exact birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDataDirUnreadableRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The broken data dir path.
+    pub path: String,
+    /// Why `node-key` could not be loaded from the data dir.
+    pub cause: String,
+}
+
+impl NodeDataDirUnreadableRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id)
+    }
+
+    /// The key of the birth `(node_id, incarnation_id)`'s data-dir-unreadable row.
+    pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
+        format!("{node_id}--{}", incarnation_id.as_str())
+    }
+}
+
 /// The durable record of the status facts this admin holds.
 #[async_trait]
 pub trait StatusStorage: Send + Sync {
@@ -247,6 +304,37 @@ pub trait StatusStorage: Send + Sync {
     async fn remove_node_held_running_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         Ok(())
     }
+    /// The `data-dir-lost` row of the birth `(node_id, incarnation_id)` among the status rows of
+    /// the mesh named `mesh` (R-FM2).
+    async fn node_data_dir_lost_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        Ok(None)
+    }
+    /// Every `data-dir-lost` row held among the status rows of the mesh named `mesh` (R-FM2).
+    async fn node_data_dir_lost_in_mesh(&self, _mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
+        Ok(Vec::new())
+    }
+    /// A blind put of the `data-dir-lost` row `row` among the status rows of the mesh named `mesh` (R-FM2).
+    async fn put_node_data_dir_lost_of(&self, _mesh: &str, _row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// The `data-dir-unreadable` row of the birth `(node_id, incarnation_id)` among the status rows
+    /// of the mesh named `mesh` (R-FM2).
+    async fn node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(None)
+    }
+    /// Every `data-dir-unreadable` row held among the status rows of the mesh named `mesh` (R-FM2).
+    async fn node_data_dir_unreadable_in_mesh(&self, _mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(Vec::new())
+    }
+    /// A blind put of the `data-dir-unreadable` row `row` among the status rows of the mesh named `mesh` (R-FM2).
+    async fn put_node_data_dir_unreadable_of(&self, _mesh: &str, _row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// Remove the `data-dir-unreadable` row of the birth `(node_id, incarnation_id)` among the
+    /// status rows of the mesh named `mesh` (R-FM2).
+    async fn remove_node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
@@ -276,6 +364,10 @@ pub struct MemoryStatusStorage {
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
     /// The held-running rows of each mesh named through the `_of` reads and puts, by row key.
     held_running_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeHeldRunningRow>>>,
+    /// The data-dir-lost rows of each mesh named through the `_of` reads and puts, by row key.
+    data_dir_lost_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
+    /// The data-dir-unreadable rows of each mesh named through the `_of` reads and puts, by row key.
+    data_dir_unreadable_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirUnreadableRow>>>,
     /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
     /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
     events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
@@ -389,6 +481,35 @@ impl StatusStorage for MemoryStatusStorage {
         }
         Ok(())
     }
+    async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);
+        Ok(self.data_dir_lost_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+    }
+    async fn node_data_dir_lost_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
+        Ok(self.data_dir_lost_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    }
+    async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+        self.data_dir_lost_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
+        Ok(self.data_dir_unreadable_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+    }
+    async fn node_data_dir_unreadable_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(self.data_dir_unreadable_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    }
+    async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+        self.data_dir_unreadable_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
+        if let Some(rows) = self.data_dir_unreadable_named.lock().unwrap().get_mut(mesh) {
+            rows.remove(&key);
+        }
+        Ok(())
+    }
 }
 
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
@@ -397,11 +518,15 @@ const NODE_DECLARED_FORMAT: &str = "node-declared/3";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 const NODE_EXIT_FORMAT: &str = "node-exit/1";
 const NODE_HELD_RUNNING_FORMAT: &str = "node-held-running/1";
+const NODE_DATA_DIR_LOST_FORMAT: &str = "node-data-dir-lost/1";
+const NODE_DATA_DIR_UNREADABLE_FORMAT: &str = "node-data-dir-unreadable/1";
 
 /// One row per file under `status/<mesh>/` of the fabric's store root (`crate::store_root`):
 /// `meshes/<mesh_id>-<state>.json`, `fabric/<fabric_id>-<hex of the event key>.json`,
 /// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json`,
-/// `exits/<node_id>--<incarnation>.json` and `held-running/<node_id>--<incarnation>.json`. The
+/// `exits/<node_id>--<incarnation>.json`, `held-running/<node_id>--<incarnation>.json`,
+/// `data-dir-lost/<node_id>--<incarnation>.json` and
+/// `data-dir-unreadable/<node_id>--<incarnation>.json`. The
 /// mesh's seat holder writes them (node-identity-and-state.md §4.3); every admin of the mesh reads
 /// the same rows.
 #[derive(Debug)]
@@ -412,6 +537,8 @@ pub struct FileStatusStorage {
     silence: FileRecords,
     exits: FileRecords,
     held_running: FileRecords,
+    data_dir_lost: FileRecords,
+    data_dir_unreadable: FileRecords,
     /// This store's own mesh: its rows are the fields above.
     mesh: String,
     root: crate::store_root::StoreRoot,
@@ -436,6 +563,8 @@ impl FileStatusStorage {
             silence: root.records(&base, "silence", writer).await?,
             exits: root.records(&base, "exits", writer).await?,
             held_running: root.records(&base, "held-running", writer).await?,
+            data_dir_lost: root.records(&base, "data-dir-lost", writer).await?,
+            data_dir_unreadable: root.records(&base, "data-dir-unreadable", writer).await?,
             mesh: mesh.to_string(),
             root: root.clone(),
             writer: writer.clone(),
@@ -446,8 +575,17 @@ impl FileStatusStorage {
 
     /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
     /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 6] {
-        [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits, &self.held_running]
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 8] {
+        [
+            &self.meshes,
+            &self.fabric,
+            &self.declared,
+            &self.silence,
+            &self.exits,
+            &self.held_running,
+            &self.data_dir_lost,
+            &self.data_dir_unreadable,
+        ]
     }
 
     /// The `dir` status rows (`meshes`, `exits`, `fabric`) of another mesh `mesh` on the shared root, opened
@@ -598,6 +736,51 @@ impl StatusStorage for FileStatusStorage {
             return self.held_running.remove(&key).await;
         }
         self.other(mesh, "held-running").await?.remove(&key).await
+    }
+    async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.data_dir_lost.read(&key, NODE_DATA_DIR_LOST_FORMAT).await;
+        }
+        self.other(mesh, "data-dir-lost").await?.read(&key, NODE_DATA_DIR_LOST_FORMAT).await
+    }
+    async fn node_data_dir_lost_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.data_dir_lost.list(NODE_DATA_DIR_LOST_FORMAT).await;
+        }
+        self.other(mesh, "data-dir-lost").await?.list(NODE_DATA_DIR_LOST_FORMAT).await
+    }
+    async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.data_dir_lost.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await;
+        }
+        self.other(mesh, "data-dir-lost").await?.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await
+    }
+    async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.data_dir_unreadable.read(&key, NODE_DATA_DIR_UNREADABLE_FORMAT).await;
+        }
+        self.other(mesh, "data-dir-unreadable").await?.read(&key, NODE_DATA_DIR_UNREADABLE_FORMAT).await
+    }
+    async fn node_data_dir_unreadable_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.data_dir_unreadable.list(NODE_DATA_DIR_UNREADABLE_FORMAT).await;
+        }
+        self.other(mesh, "data-dir-unreadable").await?.list(NODE_DATA_DIR_UNREADABLE_FORMAT).await
+    }
+    async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.data_dir_unreadable.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await;
+        }
+        self.other(mesh, "data-dir-unreadable").await?.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await
+    }
+    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.data_dir_unreadable.remove(&key).await;
+        }
+        self.other(mesh, "data-dir-unreadable").await?.remove(&key).await
     }
 }
 

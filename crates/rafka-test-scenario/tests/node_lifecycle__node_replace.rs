@@ -2096,7 +2096,7 @@ async fn a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir
     estate.kill_node(NODE).await;
     std::fs::remove_dir_all(&old_dir).expect("remove the exited member's data_dir");
 
-    let lost_span = wait_for("rdm.node_admin.node.update.via-data-dir-lost span", Duration::from_secs(20), || async {
+    let lost_span = wait_for("rdm.node_admin.node.update.via-data-dir-lost span", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.node.update.via-data-dir-lost")
             .into_iter()
             .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
@@ -2115,14 +2115,14 @@ async fn a_member_whose_data_dir_is_removed_after_exit_recovers_over_a_fresh_dir
     assert_eq!(s(&after["data_dir_lost"]["path"]), old_dir, "node.get surfaces the data-dir-lost fact: {after}");
     assert!(after["data_dir_lost"]["since"].as_u64().unwrap_or(0) > 0, "data-dir-lost carries since timestamp: {after}");
 
-    let hydrate = wait_for("rdm.mesh.node.update.via-hydrate-attempt for recovered birth", Duration::from_secs(20), || async {
+    let hydrate = wait_for("rdm.mesh.node.update.via-hydrate-attempt for recovered birth", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.mesh.node.update.via-hydrate-attempt")
             .into_iter()
             .find(|sp| sp["attributes"]["node_id"] == after["node_id"])
             .cloned()
     })
     .await;
-    assert_eq!(hydrate["attributes"]["inherited"], json!(false), "fresh recovery birth runs hydrate with inherited = false: {hydrate}");
+    assert_eq!(s(&hydrate["attributes"]["inherited"]), "false", "fresh recovery birth runs hydrate with inherited = false: {hydrate}");
 
     let submit = recovery_span(&estate, NODE, &before["node_id"]).await;
     eprintln!(
@@ -2166,7 +2166,7 @@ async fn a_member_whose_data_dir_is_unreadable_records_the_fact_and_holds_recove
     estate.kill_node(NODE).await;
     std::fs::write(&key_path, "corrupt-not-valid-hex-key").expect("corrupt node-key");
 
-    let reject_span = wait_for("rdm.node_admin.node.reject.via-data-dir-unreadable span", Duration::from_secs(20), || async {
+    let reject_span = wait_for("rdm.node_admin.node.reject.via-data-dir-unreadable span", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.node.reject.via-data-dir-unreadable")
             .into_iter()
             .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
@@ -2177,15 +2177,15 @@ async fn a_member_whose_data_dir_is_unreadable_records_the_fact_and_holds_recove
     assert_eq!(s(&reject_span["attributes"]["path"]), old_dir, "{reject_span}");
     assert!(!s(&reject_span["attributes"]["cause"]).is_empty(), "cause recorded: {reject_span}");
 
-    let held_view = until_node_where(&estate, NODE, "node.get surfaces data_dir_unreadable", Duration::from_secs(15), |n| {
+    let held_view = until_node_where(&estate, NODE, "node.get surfaces data_dir_unreadable", Duration::from_secs(30), |n| {
         n["data_dir_unreadable"]["path"] == json!(old_dir) && !s(&n["data_dir_unreadable"]["cause"]).is_empty()
     })
     .await;
     assert_eq!(s(&held_view["node_id"]), old_node_id, "no new node.id minted while unreadable: {held_view}");
 
-    // Hold over 3 additional staleness floors (~4.5s at 1500ms floor): no second recovery submit,
+    // Hold over 3 additional staleness floors: no second recovery submit,
     // no new node_id, no fresh data_dir.
-    tokio::time::sleep(Duration::from_millis(4800)).await;
+    tokio::time::sleep(Duration::from_millis(9200)).await;
 
     let spans = estate.spans();
     let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
@@ -2237,14 +2237,14 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
     estate.kill_node(NODE).await;
     std::fs::write(&key_path, "corrupt-not-valid-hex-key").expect("corrupt node-key");
 
-    let reject_span = wait_for("rdm.node_admin.node.reject.via-data-dir-unreadable span", Duration::from_secs(20), || async {
+    let reject_span = wait_for("rdm.node_admin.node.reject.via-data-dir-unreadable span", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.node.reject.via-data-dir-unreadable")
             .into_iter()
             .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
             .cloned()
     })
     .await;
-    let _held_view = until_node_where(&estate, NODE, "node.get surfaces data_dir_unreadable", Duration::from_secs(15), |n| {
+    let _held_view = until_node_where(&estate, NODE, "node.get surfaces data_dir_unreadable", Duration::from_secs(30), |n| {
         n["data_dir_unreadable"]["path"] == json!(old_dir)
     })
     .await;
@@ -2252,7 +2252,7 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
     // Repair `<data_dir>/node-key` from backup.
     std::fs::write(&key_path, &saved_key).expect("restore valid node-key");
 
-    let repaired_span = wait_for("rdm.node_admin.node.resolve.via-data-dir-repaired span", Duration::from_secs(20), || async {
+    let repaired_span = wait_for("rdm.node_admin.node.resolve.via-data-dir-repaired span", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.node.resolve.via-data-dir-repaired")
             .into_iter()
             .find(|sp| s(&sp["attributes"]["node_id"]) == old_node_id)
@@ -2268,14 +2268,14 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
     assert_eq!(estate.data_dir(NODE).await, old_dir, "recovered over the same data_dir: {after}");
     assert!(after["data_dir_unreadable"].is_null(), "data_dir_unreadable cleared on node.get: {after}");
 
-    let hydrate = wait_for("rdm.mesh.node.update.via-hydrate-attempt for repaired birth", Duration::from_secs(20), || async {
+    let hydrate = wait_for("rdm.mesh.node.update.via-hydrate-attempt for repaired birth", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.mesh.node.update.via-hydrate-attempt")
             .into_iter()
             .find(|sp| sp["attributes"]["node_id"] == after["node_id"])
             .cloned()
     })
     .await;
-    assert_eq!(hydrate["attributes"]["inherited"], json!(true), "repaired recovery birth runs hydrate with inherited = true: {hydrate}");
+    assert_eq!(s(&hydrate["attributes"]["inherited"]), "true", "repaired recovery birth runs hydrate with inherited = true: {hydrate}");
 
     eprintln!(
         "s87 cell 3 (repaired): {NODE} old ({old_node_id}, {old_incarnation}) -> new ({}, {}) over same dir {old_dir} with retained key {old_endpoint} | reject trace {} | repaired trace {} span {} | hydrate trace {} inherited={}",

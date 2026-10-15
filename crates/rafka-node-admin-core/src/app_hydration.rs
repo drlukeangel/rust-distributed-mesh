@@ -139,6 +139,8 @@ pub struct HydrateCtx {
     pub member_cert: Option<Vec<u8>>,
     /// Which attempt this is, from 1.
     pub attempt: u32,
+    /// Whether this birth's data dir was inherited from a previous birth (R-FM2).
+    pub inherited: bool,
 }
 
 impl HydrateCtx {
@@ -492,7 +494,10 @@ impl HookDriver {
             parent: &self.boot,
             "rdm.mesh.node.update.via-hydrate-attempt",
             node = %self.ctx.birth.name,
+            node_id = %self.ctx.birth.node_id,
+            incarnation_id = %self.ctx.birth.incarnation.as_str(),
             attempt = n,
+            inherited = self.ctx.inherited,
             authority = %match &self.ctx.authority { Authority::Accepted(a) => a.name.to_string(), Authority::None(why) => format!("none: {}", why.reason()) },
             outcome = tracing::field::Empty,
             retry_on = tracing::field::Empty,

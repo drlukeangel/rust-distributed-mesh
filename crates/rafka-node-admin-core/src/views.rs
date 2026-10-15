@@ -18,7 +18,7 @@ use crate::storage::NodesStorage;
 use crate::status_storage::StatusStorage;
 use rafka_mesh_entity::NodeId;
 use rafka_node_rpc_contract::status::{NodeSelect, StatusReply, StatusRequest, TagFilter};
-use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -146,6 +146,27 @@ async fn held_running_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -
     Some(HeldRunning { since: row.since, verdicts: row.verdicts })
 }
 
+async fn data_dir_lost_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<DataDirLost> {
+    let s = status_storage?;
+    if let Some(inc) = n.incarnation_id.as_ref() {
+        if let Some(row) = s.node_data_dir_lost_of(&n.mesh, &n.node_id, inc).await.ok().flatten() {
+            return Some(DataDirLost { path: row.path, since: row.since });
+        }
+    }
+    let rows = s.node_data_dir_lost_in_mesh(&n.mesh).await.ok()?;
+    let row = rows.into_iter().filter(|r| r.name == n.name).max_by_key(|r| r.since)?;
+    Some(DataDirLost { path: row.path, since: row.since })
+}
+
+async fn data_dir_unreadable_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<DataDirUnreadable> {
+    if n.status == crate::model::NodeStatus::ReadyForTraffic {
+        return None;
+    }
+    let (s, inc) = (status_storage?, n.incarnation_id.as_ref()?);
+    let row = s.node_data_dir_unreadable_of(&n.mesh, &n.node_id, inc).await.ok().flatten()?;
+    Some(DataDirUnreadable { path: row.path, cause: row.cause })
+}
+
 /// The births `view` holds that `chosen` selects, sorted by `path.name`, each with what `loads`
 /// carries for it and the tags its row carries: every birth the view holds, replaced predecessors
 /// included.
@@ -163,7 +184,42 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
         let mut v = node_view(n, load, gossip, tags_of(storage, n).await?);
         v.held_running = held_running_of(status_storage, n).await;
+        v.data_dir_lost = data_dir_lost_of(status_storage, n).await;
+        v.data_dir_unreadable = data_dir_unreadable_of(status_storage, n).await;
         out.push(v);
+    }
+    if let Some(s) = status_storage {
+        let meshes: Vec<String> = match chosen {
+            Chosen::Mesh(m) => vec![m.to_string()],
+            _ => view.fabric_view().meshes.into_iter().map(|m| m.name).collect(),
+        };
+        for mesh in meshes {
+            let Ok(unreadable) = s.node_data_dir_unreadable_in_mesh(&mesh).await else { continue };
+            for r in unreadable {
+                let matches_chosen = match chosen {
+                    Chosen::Id(id) => &r.node_id == *id,
+                    Chosen::Mesh(m) => r.name.mesh == *m,
+                    Chosen::Ids(ids) => ids.contains(&r.node_id),
+                };
+                if !matches_chosen || out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
+                    continue;
+                }
+                let row = storage.node_row_at(&r.name).await.ok().flatten();
+                let mut n = Node::allocated(r.name.clone());
+                n.node_id = r.node_id.clone();
+                n.incarnation_id = Some(r.incarnation_id.clone());
+                n.provider = Some(view.fabric.provider);
+                n.data_dir = Some(r.path.clone());
+                n.status = crate::model::NodeStatus::Dead;
+                if let Some(ref nr) = row {
+                    n.config = nr.config.clone();
+                }
+                let tags = row.map(|nr| nr.tags).unwrap_or_default();
+                let mut v = node_view(&n, None, None, tags);
+                v.data_dir_unreadable = Some(DataDirUnreadable { path: r.path, cause: r.cause });
+                out.push(v);
+            }
+        }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)

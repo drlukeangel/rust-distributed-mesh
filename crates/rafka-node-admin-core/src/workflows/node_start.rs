@@ -360,7 +360,10 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         Err(why) => Authority::None(*why),
     };
     let HookParts { birth, hydration, events, cancel, state, runs, after } = parts;
-    let ctx = HydrateCtx { start_kind: kind, birth, authority, client: client.clone(), membership: membership.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0 };
+    let inherited = matches!(kind, StartKind::AfterStop)
+        || matches!(authority, Authority::None(NoAuthority::InheritedRoot | NoAuthority::Recovery))
+        || std::env::var("RDM_INHERITED_DATA_DIR").ok().as_deref() == Some("1");
+    let ctx = HydrateCtx { start_kind: kind, birth, authority, client: client.clone(), membership: membership.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
     let driver = hydration.driver(ctx, events, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.

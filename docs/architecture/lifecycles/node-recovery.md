@@ -22,9 +22,9 @@ crashed mesh, on exact provider exit proof.)
 | Trigger | Exact provider proof only. Silence, a failed tickle and TRUE OFFLINE are not proof |
 | Execution | The mesh-primary opens the recovery as the next attempt of the current Build in its mesh's lane, claims it on its mesh's rows and runs it; no call to the fabric-primary, which learns it from the Build topic |
 | Steps | node.delete of the exited instance, node.create at the same path.name over the inherited data dir; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
-| Retained | path.name, placement, inherited data dir, endpoint key, config (seeded from the deleted row) |
-| New | node.id, incarnation, OS-assigned port and exact runtime |
-| App part | The new node's start runs `hydrate_before_ready` with start_kind FirstStart and an inherited data dir; Rafka runs broker resync there |
+| Retained | path.name, placement, inherited data dir and endpoint key (unless the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), config (seeded from the deleted row) |
+| New | node.id, incarnation, OS-assigned port, exact runtime, and (when the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`) a newly allocated data dir and endpoint key |
+| App part | The new node's start runs `hydrate_before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated data dir after `RDM_DATA_DIR_GONE_FLOORS` (`R-FM2`); Rafka runs broker resync there |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |
 
 ## Detection and proof
@@ -86,11 +86,15 @@ timer of its own:
    frames; for a hung target whose `held-running` hold expired (`R-FM1`), `TerminateRuntime`
    runs first on the exact runtime handle, records the provider's exit proof durably and
    clears `held-running`, and `node.deleted` follows from that recorded exit proof.
-4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir:
-   it loads the endpoint key from that data dir and binds port 0, with a new node.id,
+4. [node.create](node-create.md) at the same path.name, its spec naming the old data dir
+   (or a newly allocated data dir when the old data dir was proven gone past
+   `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`): it loads the endpoint key from the kept data dir
+   (or mints a new endpoint key in the fresh data dir) and binds port 0, with a new node.id,
    incarnation and port. Its config is seeded from the deleted row at that path.name.
-5. Create runs the whole [start](node-start.md#end-to-end-sequence) with FirstStart and an
-   inherited data dir, Rafka's broker resync inside its hook, and ends node.created.
+5. Create runs the whole [start](node-start.md#end-to-end-sequence) with FirstStart and
+   `inherited = true` over the kept data dir (or `inherited = false` over a newly allocated
+   data dir after `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), Rafka's broker resync inside its
+   hook, and ends node.created.
 
 ## Command, completion and gossip messages
 
@@ -131,6 +135,32 @@ Failures and stream certainty follow the
 mesh-primary is the submitter that resubmits by `build_id`. An exit during a workflow
 belongs to that workflow: its Build ends Failed, and the mesh-primary's next tick finds the
 member still proven exited and submits the recovery.
+
+### Lost data dir (`R-FM2`)
+
+Gone versus broken is decided from the filesystem error on the inherited `data_dir`, never
+guessed. An absent directory path (`NotFound` on the directory itself) is **gone**; an
+existing directory on disk whose `node-key` is missing, unreadable, or corrupt (`NotFound`
+on `node-key` inside an existing directory, `EIO`, `EACCES`, or decode failure) is
+**broken**:
+
+- **Gone (arm A).** When the exited birth's `data_dir` is absent across
+  `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2 = 60 s at the 30 s floor, to ride
+  out a remount), the mesh-primary records `data-dir-lost { path, since }` durably on the
+  exited birth (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and
+  never as a gossip `MemberStatus`), and the recovery Build creates the node at the same
+  `path.name` over a newly allocated `data_dir` beside the old path with a newly minted
+  endpoint key (the old key is never re-minted) and `hydrate_before_ready` with
+  `inherited = false`.
+- **Broken (arm B).** On the first `PrepareStorage` failure over an existing but unreadable
+  `data_dir`, the executor records `data-dir-unreadable { path, cause }` durably on the
+  exited birth (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `node.get`
+  and never as a gossip `MemberStatus`), and the mesh-primary's due rule holds that
+  recovery (not due while the fact stands) instead of resubmitting every tick. RDM deletes
+  nothing on disk. When `<data_dir>/node-key` is repaired and reads again, the next tick
+  clears `data-dir-unreadable` (`rdm.node_admin.node.resolve.via-data-dir-repaired`) and
+  completes recovery over the kept `data_dir` with its retained endpoint key
+  (`inherited = true`).
 
 ## Observability contract
 

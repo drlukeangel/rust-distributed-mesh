@@ -70,6 +70,28 @@ pub fn hung_hold_ms() -> u64 {
     hung_hold_floors().saturating_mul(rafka_mesh_entity::cadence::staleness_floor().as_millis() as u64)
 }
 
+/// The environment variable configuring the hold duration (in staleness floors) before an absent
+/// inherited `data_dir` on a proven-exited member is declared lost and recovered over a newly
+/// allocated `data_dir` (`R-FM2`, default 2).
+pub const ENV_DATA_DIR_GONE_FLOORS: &str = "RDM_DATA_DIR_GONE_FLOORS";
+
+/// Default hold duration in staleness floors (`R-FM2`: 2 staleness floors = 60 s at 30 s).
+pub const DEFAULT_DATA_DIR_GONE_FLOORS: u64 = 2;
+
+/// Configured hold floors for an absent inherited `data_dir` (`RDM_DATA_DIR_GONE_FLOORS`, default 2).
+pub fn data_dir_gone_floors() -> u64 {
+    std::env::var(ENV_DATA_DIR_GONE_FLOORS)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(DEFAULT_DATA_DIR_GONE_FLOORS)
+}
+
+/// Configured hold duration in milliseconds (`data_dir_gone_floors() * staleness_floor()`).
+pub fn data_dir_gone_hold_ms() -> u64 {
+    data_dir_gone_floors().saturating_mul(rafka_mesh_entity::cadence::staleness_floor().as_millis() as u64)
+}
+
 /// Everything a node-admin reads from its environment.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
@@ -178,7 +200,7 @@ impl AdminConfig {
                 Some(validated.map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?)
             }
         };
-        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_HUNG_HOLD_FLOORS]
+        let passthrough = ["RDM_EVIDENCE_DIR", "RUST_LOG", "OTEL_EXPORTER_OTLP_ENDPOINT", "RDM_CONTAINER_SUBNET_POOL", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", crate::stopped_gc::ENV, ENV_HUNG_HOLD_FLOORS, ENV_DATA_DIR_GONE_FLOORS]
             .iter()
             .filter_map(|k| get(k).map(|v| (k.to_string(), v)))
             .collect();
@@ -1967,6 +1989,11 @@ pub(crate) struct RecoverySubmitter {
     /// This admin's Build state: the fabric's Build facts as its own log holds them. The tick reads
     /// from it which exited births of its mesh are owed a submit ([`RecoverySubmitter::owed_submits`]).
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
+    /// Parent directory under which birth data directories are allocated (`<data_root>/<name>-<node_id>`).
+    pub data_root: PathBuf,
+    /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
+    /// `(first_seen_ms, consecutive_rounds)`.
+    pub gone_dirs: Arc<Mutex<HashMap<(NodeId, IncarnationId), (u64, u64)>>>,
 }
 
 /// What a loop that proves exits last recorded per birth `(node_id, incarnation)`: the mesh primary's
@@ -2014,6 +2041,26 @@ impl RecoverySubmitter {
     /// birth is in the book.
     pub(crate) fn held_name(&self) -> PathName {
         self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+    }
+
+    /// Resolve `node`'s inherited `data_dir` when known (`R-FM2`): from `node.data_dir`, its digest in
+    /// `self.book`, its durable runtime row in `self.nodes_storage`, or `<data_root>/<name>-<node_id>`.
+    pub(crate) async fn birth_data_dir(&self, node: &Node) -> Option<PathBuf> {
+        if let Some(d) = node.data_dir.as_deref() {
+            return Some(PathBuf::from(d));
+        }
+        if let Some(d) = self.book.get(node.node_id.as_str()).and_then(|(dg, _)| dg.data_dir.map(PathBuf::from)) {
+            return Some(d);
+        }
+        if let Some(inc) = node.incarnation_id.as_ref() {
+            if let Some(d) = self.nodes_storage.runtime(&node.node_id, inc).await.ok().flatten().and_then(|r| r.data_dir.map(PathBuf::from)) {
+                return Some(d);
+            }
+        }
+        if !self.data_root.as_os_str().is_empty() {
+            return Some(self.data_root.join(format!("{}-{}", node.name, node.node_id)));
+        }
+        None
     }
 
     /// The provider's exact-exit proof of `node`'s birth: the runtime fact the book's digest of that
@@ -2087,8 +2134,66 @@ impl RecoverySubmitter {
                         exit_proof_row = %exit_proof_row,
                     )
                     .in_scope(|| tracing::info!("the birth's exit belongs to the workflow that announced its removal: it is no drift, and no recovery is submitted"));
-                } else if let Err(e) = self.submit(n, *code, source, row).await {
-                    tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
+                } else {
+                    if let (Some(inc), Some(dir)) = (n.incarnation_id.clone(), self.birth_data_dir(n).await) {
+                        if let Some(unreadable) = self.status_storage.node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await.ok().flatten() {
+                            match crate::deployment::pipeline::inspect_transport_key(&dir) {
+                                Ok(_) => {
+                                    let _ = self.status_storage.remove_node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await;
+                                    tracing::info_span!(
+                                        "rdm.node_admin.node.resolve.via-data-dir-repaired",
+                                        node = %n.name,
+                                        node_id = %n.node_id,
+                                        incarnation_id = %inc.as_str(),
+                                        path = %unreadable.path,
+                                        "otel.kind" = "internal",
+                                    )
+                                    .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
+                                }
+                                Err(_) => return outcome,
+                            }
+                        } else if self.status_storage.node_data_dir_lost_of(&n.mesh, &n.node_id, &inc).await.ok().flatten().is_none() {
+                            match crate::deployment::pipeline::inspect_transport_key(&dir) {
+                                Err(crate::deployment::pipeline::InheritedDirError::Gone(_)) => {
+                                    let now_ms = local_now_ms();
+                                    let (since, count) = {
+                                        let mut gone = self.gone_dirs.lock().unwrap();
+                                        let entry = gone.entry((n.node_id.clone(), inc.clone())).or_insert((now_ms, 0));
+                                        entry.1 = entry.1.saturating_add(1);
+                                        *entry
+                                    };
+                                    let hold_ms = data_dir_gone_hold_ms();
+                                    if count < 2 || now_ms.saturating_sub(since) < hold_ms {
+                                        return outcome;
+                                    }
+                                    let lost_row = crate::status_storage::NodeDataDirLostRow {
+                                        node_id: n.node_id.clone(),
+                                        name: n.name.clone(),
+                                        incarnation_id: inc.clone(),
+                                        path: dir.display().to_string(),
+                                        since,
+                                    };
+                                    let _ = self.status_storage.put_node_data_dir_lost_of(&n.mesh, &lost_row).await;
+                                    tracing::info_span!(
+                                        "rdm.node_admin.node.update.via-data-dir-lost",
+                                        node = %n.name,
+                                        node_id = %n.node_id,
+                                        incarnation_id = %inc.as_str(),
+                                        path = %dir.display(),
+                                        since = since as i64,
+                                        "otel.kind" = "internal",
+                                    )
+                                    .in_scope(|| tracing::info!("inherited data dir absent past gone-floors hold; recovering over a fresh data dir"));
+                                }
+                                Ok(_) | Err(crate::deployment::pipeline::InheritedDirError::Broken(_)) => {
+                                    self.gone_dirs.lock().unwrap().remove(&(n.node_id.clone(), inc));
+                                }
+                            }
+                        }
+                    }
+                    if let Err(e) = self.submit(n, *code, source, row).await {
+                        tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
+                    }
                 }
             }
             Inspected::NotExited(_) if outcome.is_running() => {
@@ -2233,13 +2338,37 @@ impl RecoverySubmitter {
                 return Vec::new();
             }
         };
-        match self.builds.exits_owed(&build_id, mesh).await {
+        let owed = match self.builds.exits_owed(&build_id, mesh).await {
             Ok(owed) => owed,
             Err(e) => {
                 unreadable("builds.storage", &build_id.as_str(), e.to_string());
-                Vec::new()
+                return Vec::new();
+            }
+        };
+        let mut ready = Vec::with_capacity(owed.len());
+        for o in owed {
+            if let Some(held) = self.status_storage.node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation).await.ok().flatten() {
+                match crate::deployment::pipeline::inspect_transport_key(std::path::Path::new(&held.path)) {
+                    Ok(_) => {
+                        let _ = self.status_storage.remove_node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation).await;
+                        tracing::info_span!(
+                            "rdm.node_admin.node.resolve.via-data-dir-repaired",
+                            node = %o.path,
+                            node_id = %o.node_id,
+                            incarnation_id = %o.incarnation.as_str(),
+                            path = %held.path,
+                            "otel.kind" = "internal",
+                        )
+                        .in_scope(|| tracing::info!("repaired unreadable inherited data dir"));
+                        ready.push(o);
+                    }
+                    Err(_) => continue,
+                }
+            } else {
+                ready.push(o);
             }
         }
+        ready
     }
 
     /// The submit of an exited birth whose node workflow stopped at a Failed attempt (node-recovery.md
@@ -4540,8 +4669,39 @@ impl AdminRunner {
         // template's seed): it is handed the durable runtime rows before it runs, as every admin
         // birth is.
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
-        let created = pipeline.create_with(&req, before_ready, Some(Box::pin(self.fence_exited(&fenced)))).await.map_err(|e| e.to_string())?;
+        let lost = match self.records.status.get() {
+            Some(fold) => fold.storage().node_data_dir_lost_of(&node.mesh, &from.node_id, &from.incarnation).await.ok().flatten().is_some(),
+            None => false,
+        };
+        let created = if lost {
+            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: None, held_runtimes };
+            pipeline.create_recovery_with(&req, before_ready, Some(Box::pin(self.fence_exited(&fenced)))).await.map_err(|e| e.to_string())?
+        } else {
+            if let Err(crate::deployment::pipeline::InheritedDirError::Broken(ref cause)) = crate::deployment::pipeline::inspect_transport_key(&data_dir) {
+                if let Some(fold) = self.records.status.get() {
+                    let row = crate::status_storage::NodeDataDirUnreadableRow {
+                        node_id: from.node_id.clone(),
+                        name: node.clone(),
+                        incarnation_id: from.incarnation.clone(),
+                        path: data_dir.display().to_string(),
+                        cause: cause.clone(),
+                    };
+                    let _ = fold.storage().put_node_data_dir_unreadable_of(&node.mesh, &row).await;
+                }
+                tracing::info_span!(
+                    "rdm.node_admin.node.reject.via-data-dir-unreadable",
+                    node = %node,
+                    node_id = %from.node_id,
+                    incarnation_id = %from.incarnation.as_str(),
+                    path = %data_dir.display(),
+                    cause = %cause,
+                    "otel.kind" = "internal",
+                )
+                .in_scope(|| tracing::info!("inherited data dir is broken; holding recovery until repaired"));
+            }
+            let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
+            pipeline.create_with(&req, before_ready, Some(Box::pin(self.fence_exited(&fenced)))).await.map_err(|e| e.to_string())?
+        };
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -6939,6 +7099,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         status_storage: status_storage.clone(),
                                         door: build_slot.clone(),
                                         builds: control.builds.clone(),
+                                        data_root: cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone()),
+                                        gone_dirs: Arc::default(),
                                     };
                                     {
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
@@ -8586,6 +8748,8 @@ mod tests {
             status_storage: status.clone(),
             door: Default::default(),
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
+            data_root: PathBuf::new(),
+            gone_dirs: Arc::default(),
         };
         (recovery, status, member)
     }
@@ -8739,6 +8903,8 @@ mod tests {
             status_storage: status.clone(),
             door: Default::default(),
             builds,
+            data_root: PathBuf::new(),
+            gone_dirs: Arc::default(),
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");

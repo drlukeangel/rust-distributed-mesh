@@ -974,8 +974,8 @@ e12.s82 #3123  open: the builder block `e12.s82` below (python3 scripts/prd.py b
 e12.s83 (issue to generate)  open: the builder block `e12.s83` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s83)
 e12.s84 (issue to generate)  R-CY1: the canary red read and fixed (Root 1: cohort seat holder restart runs `node.primary.update` under `restart.attempt` ending `handed-off` and executes the restart steps under `reconcile.attempt = restart.attempt + 1`; RED 368d110a, landed 69752953, gate 39 s; trace `ef78ccae756293f65263737ffab36200`)
 e12.s85 (issue to generate)  layout pre-step: `fence.rs` -> `seat_revision.rs`, `departed_status.rs` -> `deleted_status.rs`, and the 32 `i143_acceptance_*.rs` files renamed into their crates' test binaries with 100% discovery parity and 0 stem violations
-e12.s86 (issue to generate)  open: the builder block `e12.s86` below (R-FM1: a hung runtime holds, then the provider terminates the exact runtime)
-e12.s87 (issue to generate)  open: the builder block `e12.s87` below (R-FM2: a lost data dir is recovered over a fresh dir; a broken one is held and named)
+e12.s86 (issue to generate)  R-FM1: hung runtime hold (`RDM_HUNG_HOLD_FLOORS`, default 10), `TerminateRuntime` first step of recovery Build, and `held-running` store fact (`NodeView`/`FabricView`, gossip wire untouched; RED 505d99eb, landed 549493fe, gate 59 s; traces `07f3b640645fb9621219d50fa3135604`, `6f2cee1c90c07a9a7ce03607ded20cdb`, `88f6435305841044a5468305d6c1f66e`, `ed394bca8f94b70380f4cf4ff249b2fa`)
+e12.s87 (issue to generate)  R-FM2: gone vs broken inherited `data_dir` (`RDM_DATA_DIR_GONE_FLOORS`, default 2; `data-dir-lost` and `data-dir-unreadable` store facts + `node.get` fields, gossip wire untouched; RED 5068c55d; traces `3afc5ad0a17c48afa65aebd97fa550b4`, `b969d8fa8549ea89be5403ec5c232a8b`, `1d467f78873ef57f1d928f6e156e24d2`, `d7f84fcf6d32c35ceb719b6db6263a9c`, `3398e9d6a778824a3336aa83c29442ac`, `af93811d9ec896682b5c0ec249c0a3bd`, `2302862bb508b7b0584913877b8b491d`)
 e12.s49 #3078  mesh.delete ends at mesh.deleted: the fabric-primary's leave completes at the
                validated handoff; the final admin stays alive publishing MeshStatus Dead; its
                end is a separate node.delete (fabric-primary executor, exit proof, row Deleted,
@@ -2330,7 +2330,7 @@ done (closed 2026-10-15; `crates/rafka-node-admin-core/src/fence.rs` -> `seat_re
 
 ### State
 
-completed 2026-10-15 (RED `505d99eb`; traces: hold cell `07f3b640645fb9621219d50fa3135604` / `f3c8fbc570cb17483d61289b3ca056c3`, member terminate+recover `6f2cee1c90c07a9a7ce03607ded20cdb` [40 spans], mesh-primary terminate+recover `88f6435305841044a5468305d6c1f66e` [49 spans] + election `d4be92cf02a4676738d20b70f42fdedd`, fabric-primary held-running `ed394bca8f94b70380f4cf4ff249b2fa`). Mechanism: `NodeHeldRunningRow` (`status/<mesh>/held-running/<node_id>--<incarnation>.json`) recorded on `NotExited { Running }` verdicts and surfaced on `NodeView::held_running` / `FabricView::held_running` (store fact + `node.get`/`fabric.get` field, gossip wire untouched); `OfflineTickle::reprobe` keeps probing `held-running` births every tick; when `RDM_HUNG_HOLD_FLOORS` (default 10) expires with the provider still reporting `Running`, `DeploymentPipeline::delete_hung` runs `TerminateRuntime` first on the exact runtime handle, records `exit_proof` (`proof = "terminate-runtime"`), clears `held-running`, and completes `NodeDeleted -> RemoveTopologyMembership -> node.create` in the same recovery attempt; for a hung mesh-primary, `seat_watch` on the fabric-primary runs the hold and submits the recovery Build, seating the standby on the exit proof only; for a hung fabric-primary, watching admins record `held-running` and publish `Concern` without ever terminating from below.
+completed 2026-10-15 (RED `505d99eb`, landed `549493fe`, gate 59 s; traces: hold cell `07f3b640645fb9621219d50fa3135604` / `f3c8fbc570cb17483d61289b3ca056c3`, member terminate+recover `6f2cee1c90c07a9a7ce03607ded20cdb` [40 spans], mesh-primary terminate+recover `88f6435305841044a5468305d6c1f66e` [49 spans] + election `d4be92cf02a4676738d20b70f42fdedd`, fabric-primary held-running `ed394bca8f94b70380f4cf4ff249b2fa`). Mechanism: `NodeHeldRunningRow` (`status/<mesh>/held-running/<node_id>--<incarnation>.json`) recorded on `NotExited { Running }` verdicts and surfaced on `NodeView::held_running` / `FabricView::held_running` (store fact + `node.get`/`fabric.get` field, gossip wire untouched); `OfflineTickle::reprobe` keeps probing `held-running` births every tick; when `RDM_HUNG_HOLD_FLOORS` (default 10) expires with the provider still reporting `Running`, `DeploymentPipeline::delete_hung` runs `TerminateRuntime` first on the exact runtime handle, records `exit_proof` (`proof = "terminate-runtime"`), clears `held-running`, and completes `NodeDeleted -> RemoveTopologyMembership -> node.create` in the same recovery attempt; for a hung mesh-primary, `seat_watch` on the fabric-primary runs the hold and submits the recovery Build, seating the standby on the exit proof only; for a hung fabric-primary, watching admins record `held-running` and publish `Concern` without ever terminating from below.
 
 Page diffs (delegated ruling `R-FM1`):
 - `docs/architecture/lifecycles/node-recovery.md` step 3–4:
@@ -2378,36 +2378,45 @@ Page diffs (delegated ruling `R-FM1`):
 <!-- epic:e12.s87 -->
 ## e12.s87 — R-FM2: a data dir proven gone is recovered over a fresh dir with a new key; a dir present but unreadable is held and named, never resubmitted every tick
 
-**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM2; `lifecycles/node-recovery.md` "Retained" and the new "Lost data dir" paragraph; `deployment-provider.md` PrepareStorage; `lifecycles/reference.md:199`; packet `docs/plans/proposal/i143-failure-matrix.md` R-FM2
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, lane e4s3) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM2; `lifecycles/node-recovery.md` "Retained" and the new "Lost data dir" paragraph; `deployment-provider.md` PrepareStorage; `lifecycles/reference.md:199`; packet `docs/plans/proposal/i143-failure-matrix.md` R-FM2
 
 ### State
 
-not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+completed 2026-10-15 (RED `5068c55d`; traces: gone cell `via-data-dir-lost` `3afc5ad0a17c48afa65aebd97fa550b4` [span `77b5bfc8cf49465e`], `via-node-recovery` submit `b969d8fa8549ea89be5403ec5c232a8b` [39 spans], `via-hydrate-attempt` (`inherited = false`) `1d467f78873ef57f1d928f6e156e24d2` [41 spans]; broken hold cell `via-data-dir-unreadable` `d7f84fcf6d32c35ceb719b6db6263a9c` [span `bffcbae7314d1ad6`, 26 spans, `submits count = 1`]; repaired cell `via-data-dir-unreadable` `3398e9d6a778824a3336aa83c29442ac` [26 spans], `via-data-dir-repaired` `af93811d9ec896682b5c0ec249c0a3bd` [span `f7061fcec7ef1d27`], `via-hydrate-attempt` (`inherited = true`, retained key `8bdd412ada2035bf941753b21a98bf9652e544db7df800455a3879b029575451`) `2302862bb508b7b0584913877b8b491d` [46 spans]). Mechanism: `inspect_transport_key(data_dir)` classifies `std::fs::metadata(data_dir)` `NotFound` as `InheritedDirError::Gone` and any failure reading `<data_dir>/node-key` inside an existing directory (`NotFound` on `node-key`, `EACCES`, `EIO`, non-32-byte payload) as `InheritedDirError::Broken`; in `PrepareStorage`, inherited transport key inspection runs before `rows.claim` so a broken `data_dir` leaves the exited birth's `Deleted` row intact; `NodeDataDirLostRow` (`status/<mesh>/data-dir-lost/<node_id>--<incarnation>.json`) and `NodeDataDirUnreadableRow` (`status/<mesh>/data-dir-unreadable/<node_id>--<incarnation>.json`) are durable status-store facts surfaced on `NodeView::data_dir_lost` and `NodeView::data_dir_unreadable` (`node.get` fields, never gossip `MemberStatus` — the gossip wire is untouched); `RecoverySubmitter::recover_if_proven` holds an absent `data_dir` for `RDM_DATA_DIR_GONE_FLOORS` (default 2) consecutive ticks before submitting `create_over` with `data_dir = None` (fresh directory beside the old path, newly minted endpoint key, `RDM_INHERITED_DATA_DIR=0` → `HydrateCtx { inherited: false }`), and on a broken `data_dir` records `data-dir-unreadable` once and suppresses `owed_submits` while the fact stands, clearing it and resuming with the retained key (`inherited = true`) once `<data_dir>/node-key` reads cleanly.
+
+Page diffs (delegated ruling `R-FM2`):
+- `docs/architecture/lifecycles/node-recovery.md` "Retained" and "Lost or broken data dir (`R-FM2`)":
+  - Old: `| **Retained** | The node's path (`<fabric>.<mesh>.<node>`), its configuration and tags, its `data_dir` on disk, and its transport endpoint key (`<data_dir>/node-key`). |`
+  - New: `| **Retained** | The node's path (`<fabric>.<mesh>.<node>`), its configuration and tags, and — when the exited birth's `data_dir` is present and readable — its `data_dir` on disk and its transport endpoint key (`<data_dir>/node-key`). See *Lost or broken data dir (`R-FM2`)* below when `data_dir` is absent or unreadable. |` + new section `### Lost or broken data dir (R-FM2)` documenting Gone (`NotFound` on `data_dir` for `RDM_DATA_DIR_GONE_FLOORS` consecutive ticks, default 2 → `data-dir-lost { path, since }`, fresh dir beside old path, newly minted key, `HydrateCtx { inherited: false }`) vs Broken (`data_dir` exists but `<data_dir>/node-key` missing/unreadable/corrupt → `PrepareStorage` fails by name, `data-dir-unreadable { path, cause }` recorded once, recovery held without resubmitting every tick until repaired; neither `data-dir-lost` nor `data-dir-unreadable` is a gossip `MemberStatus` — the gossip wire is untouched).
+- `docs/architecture/deployment-provider.md` §3.1 step 1 (`PrepareStorage`):
+  - Old: `1. **PrepareStorage** — creates the node's storage directory and per-node runtime layout. Recovery passes the exited incarnation's data_dir through on CreateNodeRequest so the new incarnation opens the existing directory and its <data_dir>/node-key; if that file is missing or unreadable in a recovery create, PrepareStorage fails rather than minting a silent new identity.`
+  - New: `1. **PrepareStorage** — creates the node's storage directory and per-node runtime layout. Recovery passes the exited incarnation's data_dir through on CreateNodeRequest when that directory is still present so the new incarnation opens the existing directory and its <data_dir>/node-key (RDM_INHERITED_DATA_DIR=1, HydrateCtx { inherited: true }). PrepareStorage distinguishes a gone directory from a broken one (R-FM2): - **Broken (data_dir exists, <data_dir>/node-key missing, unreadable, or corrupt):** PrepareStorage fails by name before claiming the new birth row ... the mesh-primary records data-dir-unreadable { path, cause } on the exited birth (surfaced on node.get, never as a gossip MemberStatus) and holds recovery without resubmitting every tick until the directory reads cleanly again. - **Gone (data_dir path itself absent for RDM_DATA_DIR_GONE_FLOORS consecutive ticks, default 2):** the mesh-primary records data-dir-lost { path, since } on the exited birth (surfaced on node.get) and submits the recovery node.create with data_dir = None under ClaimFor::Recovery ...`
+- `CLAUDE.md` env table: added `RDM_DATA_DIR_GONE_FLOORS` (default `2`).
 
 ### Remaining
 
-- [ ] gone versus broken by the error at `deployment/pipeline.rs:1046-1048`: the dir path absent (`NotFound` on the dir) is gone; `node-key` missing inside an existing dir, `EIO`, `EACCES` or any other read failure is broken
-- [ ] gone: after `RDM_DATA_DIR_GONE_FLOORS` consecutive ticks (default 2; env-table row) the same recovery creates the node at the same path.name over a fresh dir beside the old path with a newly minted endpoint key, `hydrate_before_ready` with `inherited = false`, and `data-dir-lost { path, since }` recorded durably on the exited birth
-- [ ] broken: `data-dir-unreadable { path, cause }` recorded durably on the first failure; the tick's due rule holds that recovery (not due while the fact stands) instead of resubmitting; `node.get` shows it; the fact clears when the dir reads and the recovery proceeds
-- [ ] RDM deletes nothing on disk; the old key is never re-minted
-- [ ] page text (node-recovery.md, deployment-provider.md, env table) lands with the code; exact old and new text recorded here
-- [ ] cells: dir removed after exit → recovery at the same name with a new key and `inherited = false` in the hydration span after two floors; dir made unreadable → the fact and no second recovery submit span; repair → the fact clears and the recovery proceeds; each with its flame
+- [x] gone versus broken by the error at `deployment/pipeline.rs:1046-1048`: the dir path absent (`NotFound` on the dir) is gone; `node-key` missing inside an existing dir, `EIO`, `EACCES` or any other read failure is broken
+- [x] gone: after `RDM_DATA_DIR_GONE_FLOORS` consecutive ticks (default 2; env-table row) the same recovery creates the node at the same path.name over a fresh dir beside the old path with a newly minted endpoint key, `hydrate_before_ready` with `inherited = false`, and `data-dir-lost { path, since }` recorded durably on the exited birth
+- [x] broken: `data-dir-unreadable { path, cause }` recorded durably on the first failure; the tick's due rule holds that recovery (not due while the fact stands) instead of resubmitting; `node.get` shows it; the fact clears when the dir reads and the recovery proceeds
+- [x] RDM deletes nothing on disk; the old key is never re-minted
+- [x] page text (node-recovery.md, deployment-provider.md, env table) lands with the code; exact old and new text recorded here
+- [x] cells: dir removed after exit → recovery at the same name with a new key and `inherited = false` in the hydration span after two floors; dir made unreadable → the fact and no second recovery submit span; repair → the fact clears and the recovery proceeds; each with its flame
 
 ### Acceptance criteria
 
 <!-- crit:e12.s87.1 -->
-- [ ] the three cells green at gate cadence, traces cited here
+- [x] the three cells green at gate cadence, traces cited here
 <!-- /crit:e12.s87.1 -->
 <!-- crit:e12.s87.2 -->
-- [ ] a recovery over a lost dir never appears twice in the Build journal for one exited birth while the dir is unreadable
+- [x] a recovery over a lost dir never appears twice in the Build journal for one exited birth while the dir is unreadable
 <!-- /crit:e12.s87.2 -->
 <!-- crit:e12.s87.3 -->
-- [ ] The story bar holds (section story-bar).
+- [x] The story bar holds (section story-bar).
 <!-- /crit:e12.s87.3 -->
 
 ### Done when
 
-- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+- [x] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
 
 **Epic metadata**
 

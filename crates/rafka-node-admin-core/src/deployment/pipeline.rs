@@ -1037,23 +1037,49 @@ pub(crate) struct Identity {
 }
 
 /// Read the transport key an existing data dir holds, minting none: a recovery's node takes the
-/// endpoint key of the data dir it inherits (node-recovery.md, "Retained"), so a dir with no key
-/// is refused by name, never given a new one.
-pub(crate) fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
+/// How an inherited data dir failed when `PrepareStorage` inspected it (R-FM2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InheritedDirError {
+    /// `<data_dir>` does not exist (`rm -rf` / unmounted).
+    Gone(String),
+    /// `<data_dir>` exists on disk, but `node-key` is missing, unreadable, or corrupt.
+    Broken(String),
+}
+
+impl InheritedDirError {
+    /// Human-readable error message for the failure.
+    pub fn into_message(self) -> String {
+        match self {
+            Self::Gone(m) | Self::Broken(m) => m,
+        }
+    }
+}
+
+/// Inspect `<data_dir>/node-key` of an inherited data dir (R-FM2): classifies whether `<data_dir>`
+/// is absent (`Gone`) or exists with a missing, unreadable, or corrupt `node-key` (`Broken`).
+pub fn inspect_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, InheritedDirError> {
     let path = data_dir.join("node-key");
     let h = match std::fs::read_to_string(&path) {
         Ok(h) => h,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !data_dir.is_dir() => {
-            return Err(format!("the inherited data dir {} does not exist: no node-key to load the endpoint key from", data_dir.display()))
+            return Err(InheritedDirError::Gone(format!("the inherited data dir {} does not exist: no node-key to load the endpoint key from", data_dir.display())))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("node-key is missing in the inherited data dir {}: the endpoint key cannot be retained", data_dir.display())),
-        Err(e) => return Err(format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(InheritedDirError::Broken(format!("node-key is missing in the inherited data dir {}: the endpoint key cannot be retained", data_dir.display())))
+        }
+        Err(e) => return Err(InheritedDirError::Broken(format!("{}: {e}", path.display()))),
     };
     let bytes: [u8; 32] = hex::decode(h.trim())
-        .map_err(|e| format!("{}: {e}", path.display()))?
+        .map_err(|e| InheritedDirError::Broken(format!("{}: {e}", path.display())))?
         .try_into()
-        .map_err(|_| format!("{}: not 32 bytes", path.display()))?;
+        .map_err(|_| InheritedDirError::Broken(format!("{}: not 32 bytes", path.display())))?;
     Ok(EndpointId(iroh::SecretKey::from_bytes(&bytes).public().to_string()))
+}
+
+/// endpoint key of the data dir it inherits (node-recovery.md, "Retained"), so a dir with no key
+/// is refused by name, never given a new one.
+pub(crate) fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
+    inspect_transport_key(data_dir).map_err(InheritedDirError::into_message)
 }
 
 /// One run of one operation (`node.create:<path>`, `node.delete:<path>`).
@@ -1231,14 +1257,25 @@ impl DeploymentPipeline<'_> {
     /// its mesh and before it is asked to be Ready, and `before_launch` awaited right before the new
     /// runtime is launched ([`BeforeLaunch`]).
     pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        use tracing::Instrument;
-        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
-        self.create_steps(req, before_ready, before_launch).instrument(span).await
+        let claim_for = if req.data_dir.is_some() { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
+        self.create_with_claim(req, claim_for, before_ready, before_launch).await
     }
 
-    async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    /// `create_with` for a recovery Build (`ClaimFor::Recovery` even when `req.data_dir` is `None`
+    /// after `RDM_DATA_DIR_GONE_FLOORS`, R-FM2).
+    pub(crate) async fn create_recovery_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+        self.create_with_claim(req, crate::node_rows::ClaimFor::Recovery, before_ready, before_launch).await
+    }
+
+    async fn create_with_claim(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+        use tracing::Instrument;
+        let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
+        self.create_steps(req, claim_for, before_ready, before_launch).instrument(span).await
+    }
+
+    async fn create_steps(&self, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("node.create:{}", req.node)).await?;
-        let mut created = self.create_to_ready(&mut run, req, before_ready, before_launch).await?;
+        let mut created = self.create_to_ready(&mut run, req, claim_for, before_ready, before_launch).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
@@ -1252,12 +1289,12 @@ impl DeploymentPipeline<'_> {
     /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
     /// whole (node-recovery.md sequence step 4). `before_launch`: awaited right before the new runtime
     /// is launched, and only when it is ([`BeforeLaunch`]).
-    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
+    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         // The name this create claimed: a step after the claim that fails withdraws it, so the next
         // attempt's fresh birth is not refused by this one's claim (lifecycles/node-create.md step 1).
         let mut claimed: Option<NodeId> = None;
         let operation = run.operation.clone();
-        let r = self.create_to_ready_claimed(run, req, before_ready, before_launch, &mut claimed).await;
+        let r = self.create_to_ready_claimed(run, req, claim_for, before_ready, before_launch, &mut claimed).await;
         if let (Err(e), Some(node_id), Some(rows)) = (&r, &claimed, self.sink.node_rows()) {
             rows.withdraw(&req.node, node_id, &operation, &format!("the create failed at {}: {}", e.step, e.reason)).await;
         }
@@ -1371,7 +1408,7 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
+    async fn create_to_ready_claimed(&self, run: &mut Run<'_>, req: &CreateRequest, claim_for: crate::node_rows::ClaimFor, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>, claimed: &mut Option<NodeId>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1432,6 +1469,16 @@ impl DeploymentPipeline<'_> {
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
             let step_span = tracing::Span::current();
             let mut done_awaits: Vec<&'static str> = Vec::with_capacity(3);
+            let inherited_key = if inherits {
+                step_span.record("awaiting", "transport-key");
+                let dir = data_dir.clone();
+                let k = crate::record_store::blocking_io(move || load_transport_key(&dir)).await?;
+                done_awaits.push("transport-key");
+                step_span.record("awaited", done_awaits.join(",").as_str());
+                Some(k)
+            } else {
+                None
+            };
             // The name claim, by the writer of the mesh's rows (lifecycles/node-create.md step 1):
             // before anything is prepared or launched for the birth (refused, nothing is), and after
             // the AllocateIdentity receipt names its node id, so an executor lost at any point leaves
@@ -1442,9 +1489,10 @@ impl DeploymentPipeline<'_> {
                 // claim is (`NodeRow::allocated`): a later run of this operation that never heard
                 // this one's receipts continues the same birth rather than being refused by it.
                 let allocated = crate::storage::Allocation { build_id: req.build_id.clone(), operation: run_operation.clone(), incarnation: id.incarnation.clone(), deployment_id: id.deployment_id.clone() };
-                // A create over an exited birth's data dir is node recovery's (node-recovery.md step
-                // 4), whose claim inherits the Deleted row's tags with its config.
-                let of = if inherits { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
+                // A create over an exited birth's data dir (or fresh dir on lost-data-dir recovery)
+                // is node recovery's (node-recovery.md step 4), whose claim inherits the Deleted
+                // row's tags with its config.
+                let of = claim_for;
                 step_span.record("awaiting", "claim");
                 rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated), of)
                     .await
@@ -1454,15 +1502,16 @@ impl DeploymentPipeline<'_> {
                 *claiming = Some(id.node_id.clone());
             }
             // An inherited data dir keeps its key: it is loaded, never minted; both on the blocking pool.
-            step_span.record("awaiting", "transport-key");
-            let key = if inherits {
-                let dir = data_dir.clone();
-                crate::record_store::blocking_io(move || load_transport_key(&dir)).await?
-            } else {
-                EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string())
+            let key = match inherited_key {
+                Some(k) => k,
+                None => {
+                    step_span.record("awaiting", "transport-key");
+                    let k = EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string());
+                    done_awaits.push("transport-key");
+                    step_span.record("awaited", done_awaits.join(",").as_str());
+                    k
+                }
             };
-            done_awaits.push("transport-key");
-            step_span.record("awaited", done_awaits.join(",").as_str());
             if !req.held_runtimes.is_empty() {
                 step_span.record("awaiting", "held-runtimes");
                 for row in &req.held_runtimes {
@@ -1503,6 +1552,7 @@ impl DeploymentPipeline<'_> {
         let spec_for = |traceparent: Option<String>| {
             let mut env = self.template.env.clone();
             env.extend(launch.to_env());
+            env.insert("RDM_INHERITED_DATA_DIR".into(), if inherits { "1".into() } else { "0".into() });
             if let Some(tp) = traceparent {
                 env.insert("TRACEPARENT".into(), tp);
             }

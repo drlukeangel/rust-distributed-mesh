@@ -91,6 +91,8 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_DRAIN_DEADLINE_MS` | `5000` | rpc node: on SIGTERM, how long in-flight handlers may finish before the node leaves. |
 | `RDM_LEAVE_LINGER_MS` | `1000` | Every node (rpc node and node-admin): how long a stopping node keeps announcing `Leaving` on membership (every 200 ms) before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |
 | `RDM_HUNG_HOLD_FLOORS` | `10` | `rafka-node-admin`: how many staleness floors (`RDM_STALENESS_MS`) a TRUE OFFLINE member or mesh-primary whose provider inspection reports `Running` (`held-running { since, verdicts }`) is held before the authority submits the recovery Build starting with `TerminateRuntime { node_id, incarnation, handle }` (`R-FM1`). |
+| `RDM_DATA_DIR_GONE_FLOORS` | `2` | `rafka-node-admin`: how many staleness floors (`RDM_STALENESS_MS`) an exited member whose inherited `data_dir` is absent (`NotFound` on the directory itself) is held before the mesh-primary records `data-dir-lost { path, since }` and recovers it at the same `path.name` over a newly allocated `data_dir` with a newly minted endpoint key and `inherited = false` (`R-FM2`). |
+| `RDM_INHERITED_DATA_DIR` | `0` | Written by `rafka-node-admin` into a launched node's environment (`1` when created over an existing `data_dir`, `0` when created over a newly allocated `data_dir`), surfaced to `hydrate_before_ready` as `HydrateCtx::inherited` (`R-FM2`). |
 
 **Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives OTLP/HTTP on `localhost:4318`; the nodes' exporter posts spans and log records there. Jaeger UI: `http://localhost:16686`.
 

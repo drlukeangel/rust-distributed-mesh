@@ -48,8 +48,8 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        // A scenario's `hydrate_before_ready` knob for this node, if it recorded one.
-        let hydration = match launch.data_dir.parent().and_then(|root| rafka_node_rpc_testkit::hydrate_probe::KnobHydrator::for_node(root, &launch.name.to_string())) {
+        // A scenario's `hydrate_before_ready` knob for this node (passing immediately when no knob file exists).
+        let hydration = match launch.data_dir.parent().map(|root| rafka_node_rpc_testkit::hydrate_probe::KnobHydrator::always(root, &launch.name.to_string())) {
             Some(hook) => rafka_node_rpc_testkit::app_hydration::Hydration::new(hook),
             None => rafka_node_rpc_testkit::app_hydration::Hydration::none(),
         };

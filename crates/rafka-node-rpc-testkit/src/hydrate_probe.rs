@@ -354,11 +354,21 @@ impl KnobHydrator {
         let file = crate::hydrate_knob_dir(root).join(name);
         file.exists().then(|| Arc::new(Self { file }))
     }
+
+    /// The hook for the node `name` of the estate under `root`, passing immediately when no knob
+    /// file exists and consulting the knob file when one was written.
+    pub fn always(root: &std::path::Path, name: &str) -> Arc<Self> {
+        let file = crate::hydrate_knob_dir(root).join(name);
+        Arc::new(Self { file })
+    }
 }
 
 #[async_trait::async_trait]
 impl HydrateBeforeReady for KnobHydrator {
     async fn hydrate_before_ready(&self, _ctx: &HydrateCtx) -> HookOutcome {
+        if !self.file.exists() {
+            return HookOutcome::Ok;
+        }
         let outcome = match std::fs::read_to_string(&self.file) {
             Ok(text) if text.trim() != "pass" => HookOutcome::Blocked { reason: text.trim().to_string(), retry_on: RetryOn::AuthorityAddressed },
             _ => HookOutcome::Ok,

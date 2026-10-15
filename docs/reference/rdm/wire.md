@@ -1756,6 +1756,32 @@ One armed cut and what it held.
 | 5 | `held_for_ms` | `Option<u64>` |  | How long it has held, or held. |
 | 6 | `seen_while_held` | `u64` |  | Matching calls that arrived while another was held here. |
 
+<a id="t-rafka_node_rpc_contract-views-DataDirLost"></a>
+
+### `DataDirLost`
+
+`crates/rafka-node-rpc-contract/src/views.rs` · struct · 2 fields · rafka-node-rpc-contract
+
+The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `path` | `String` |  | The absent data dir path. |
+| 1 | `since` | `u64` |  | When the absent data dir was first observed, ms since the Unix epoch. |
+
+<a id="t-rafka_node_rpc_contract-views-DataDirUnreadable"></a>
+
+### `DataDirUnreadable`
+
+`crates/rafka-node-rpc-contract/src/views.rs` · struct · 2 fields · rafka-node-rpc-contract
+
+The durable `data-dir-unreadable` fact on a birth's status row (R-FM2): the inherited data dir
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `path` | `String` |  | The broken data dir path. |
+| 1 | `cause` | `String` |  | Why `node-key` could not be loaded from the data dir. |
+
 <a id="t-rafka_node_rpc_testkit-declare_probe-DeclareTarget"></a>
 
 ### `DeclareTarget`
@@ -2229,7 +2255,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rafka-node-rpc-contract/src/views.rs` · struct · 22 fields · rafka-node-rpc-contract
+`crates/rafka-node-rpc-contract/src/views.rs` · struct · 24 fields · rafka-node-rpc-contract
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2257,6 +2283,8 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 19 | `tags` | `std::collections::BTreeSet<String>` | `default` | The node's tag labels (R-TG1): caller-owned meta set through `node.update`, read from the |
 | 20 | `config` | `std::collections::BTreeMap<String, String>` | `default` | The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property |
 | 21 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rafka_node_rpc_contract-views-HeldRunning) | `default` | The durable `held-running` fact on this birth's status row (R-FM1), when the provider |
+| 22 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rafka_node_rpc_contract-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
+| 23 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rafka_node_rpc_contract-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
 
 <a id="t-rafka_node_rpc_contract-status-NotAuthority"></a>
 

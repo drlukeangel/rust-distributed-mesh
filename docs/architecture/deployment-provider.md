@@ -231,7 +231,17 @@ concrete provider runtime and locator. An `Overlay` is an ephemeral lifecycle/ro
 
 Persistence belongs to logical `path.name`, not its incarnation: Ephemeral storage is fresh
 for a new node; Persistent storage survives stop, start and restart, and a new node created
-over an inherited data dir keeps it. Delete releases no storage.
+over an inherited data dir keeps it. Delete releases no storage. When `PrepareStorage` runs
+for a recovery (`R-FM2`), it distinguishes an absent inherited `data_dir` (`NotFound` on the
+directory itself: **gone**) from an existing directory whose `node-key` is missing,
+unreadable, or corrupt (**broken**). When the directory is absent past
+`RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2), the mesh-primary records
+`data-dir-lost { path, since }` on the exited birth and `PrepareStorage` allocates a fresh
+`data_dir` beside the old path and mints a new endpoint key (never re-minting the old key),
+running `hydrate_before_ready` with `inherited = false`. When the directory exists on disk
+with a missing or unreadable `node-key`, `PrepareStorage` fails by name without minting a
+key, records `data-dir-unreadable { path, cause }` on the exited birth, and the mesh-primary
+holds recovery without retrying until `<data_dir>/node-key` is repaired (`inherited = true`).
 The selected Rafka versioned ingress defaults are broker and node-admin Persistent/Preserve,
 and gateway and compute Ephemeral. These choices and `default_for(RafkaRole)` belong to
 Rafka's ingress adapter, not generic RDM role policy. The three-state `StorageMeta` contract
