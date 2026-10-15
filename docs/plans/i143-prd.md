@@ -972,6 +972,10 @@ e12.s80 #3121  open: the builder block `e12.s80` below (python3 scripts/prd.py b
 e12.s81 #3122  open: the builder block `e12.s81` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s81)
 e12.s82 #3123  open: the builder block `e12.s82` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s82)
 e12.s83 (issue to generate)  open: the builder block `e12.s83` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s83)
+e12.s84 (issue to generate)  open: the builder block `e12.s84` below (R-CY1: the canary red read, its own RED-first landing)
+e12.s85 (issue to generate)  open: the builder block `e12.s85` below (layout pre-step the name check forces, before §4 steps 4-9)
+e12.s86 (issue to generate)  open: the builder block `e12.s86` below (R-FM1: a hung runtime holds, then the provider terminates the exact runtime)
+e12.s87 (issue to generate)  open: the builder block `e12.s87` below (R-FM2: a lost data dir is recovered over a fresh dir; a broken one is held and named)
 e12.s49 #3078  mesh.delete ends at mesh.deleted: the fabric-primary's leave completes at the
                validated handoff; the final admin stays alive publishing MeshStatus Dead; its
                end is a separate node.delete (fabric-primary executor, exit proof, row Deleted,
@@ -1655,7 +1659,7 @@ The fabric_states__rounds red (no climb of the second Build) LANDED 6007ca6f (20
 - [x] R-BI6 mesh-lane receipts answered and landed in db60161f / 275f9937: RDM's mesh lanes (R-BI7) write their Build journal under `meshes/<mesh>/builds/` on the shared store root under the mesh-primary writer check while the fabric lane writes under `fabric/builds/`
 - [x] the build.md / pointer doc sweep (A2): `grep -rn "Fabric.build_id\|FabricPointer" docs/architecture` returns only the no-pointer sentences; build.md:196-198 replaced and the six `bld-` example ids (node-rpc-envelope.md:364, mesh-delete.md:114/:138, node-mesh-leave.md:59, node-mesh-join.md:94/:155) made canonical 12-character Crockford60 on Luke's yes (2026-10-14)
 - [x] R-BI5a (Luke 2026-10-14, "i agree"; landed 55131ee4, gate 46 s, RED 8f0e64d0; cell `ids_crockford::a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans`; live Jaeger trace `a592b745aaea8819ba14a5777842e24b`, span `c696c67b348c3a5e`): `BuildId::log(&self) -> BuildIdLog<'_>` (`rafka-mesh-entity/src/ids.rs:193-212`) renders `bid_xxxx-xxxx-xxxx` across `build_id = %<expr>.log()` span fields where `<expr>` is a `BuildId` (`rafka-node-admin-client`, `rafka-node-admin-core`), while `Display` (`ids.rs:151`), durable row keys (`node.primary.update:{build_id}:{run}:{op_key}`), stored `BuildFact` rows, `0x20` wire strings and page examples stay the bare 12 characters, and `BuildId::parse("bid_...")` refuses by name (`WrongWidth` / `NonCanonical`). Evidence-reader decisions: crate integration tests (`rafka-node-admin-core/tests/{build_facts_read,build_takeover,drift_convergence,node_objects,receipt_refusal,recovery_admission,store_root_boot}.rs`, `rafka-node-rpc-testkit/tests/{common/mod,node_delete_pipeline,recover_pipeline}.rs`) match `build_id.log().to_string()`; scenario JSONL readers (`Estate::spans` in `rafka-test-scenario/src/estate.rs:794-799` and `spans_of` in `rafka-test-scenario/tests/i143_acceptance_2777.rs:53-58`) normalize `bid_xxxx-xxxx-xxxx` on `fields.build_id` to bare 12-char for scenario REST/RPC string comparisons while on-disk `.spans.jsonl` files keep `bid_xxxx-xxxx-xxxx`; `/home/admin/rafka-v2/scripts` has no span `build_id` readers; `/home/admin/rafka-v2` has one `build_id = %` hit at `crates/rafka-entity-topology/src/builds.rs:346` (`build_id: &str` on `rafka.node_admin.build.resolve.via-build-fact-index`, untouched); `docs/architecture/node-identity-and-state.md:107-108` (§2.0) updated on Luke's yes (2026-10-15, to the exact sentence)
-- [ ] the gate of docs-only tree b3022dce went red on `node_lifecycle__node_restart::rpc_node_restarts_as_the_same_birth_in_the_same_process_and_recovers_state` (canary.rs:157: no `NodeRestarting` step span under the restart call's attempt; the detail log shows that attempt ending `handed-off`), the one red of that stem in 645 gate runs on this box; the tree changed no code, so the red is main's (R-LD1) and the docs landed as a fast-forward. The read is its own RED-first landing with a flame, two candidate roots: the cell assumes the restart runs under `restart.attempt` while a cohort seat holder's restart runs `node.primary.update` under its own attempt first and the restart under the next; or the restart reply should name the attempt that executed it (a product question). Never a cell edit inside another landing
+- [ ] the gate of docs-only tree b3022dce went red on `node_lifecycle__node_restart::rpc_node_restarts_as_the_same_birth_in_the_same_process_and_recovers_state` (canary.rs:157: no `NodeRestarting` step span under the restart call's attempt; the detail log shows that attempt ending `handed-off`), the one red of that stem in 645 gate runs on this box; the tree changed no code, so the red is main's (R-LD1) and the docs landed as a fast-forward. The read is its own RED-first landing with a flame, two candidate roots: the cell assumes the restart runs under `restart.attempt` while a cohort seat holder's restart runs `node.primary.update` under its own attempt first and the restart under the next; or the restart reply should name the attempt that executed it (a product question). Never a cell edit inside another landing. R-CY1 (Luke 2026-10-15): the read is block e12.s84
 
 ### Acceptance criteria
 
@@ -1898,6 +1902,7 @@ landed this session: R-ML3 (fabric-recovery, mesh-investigation), R-PB1/R-PC1 (f
 
 ### Acceptance criteria
 
+- [ ] R-BI9 (Luke 2026-10-15): build.md A7, A8, A9, A10, A11 and A13 land as the build proposal writes them, one docs landing; the dev re-verifies each line against main (A6 at :371 and A14 are already on the page) and records the exact diff here; A12 (packages table) deferred to the crate layout's packages-table landing after the `rdm-` rename
 - [ ] no architecture line contradicts a ruling
 - [ ] check-doc-symbols clean
 - [ ] The story bar holds (section story-bar).
@@ -2127,6 +2132,157 @@ landed d471da63 (2026-10-14, gate 152 s, `TIMINGS wall=76.9s units=455 max_concu
 
 - sections: [the-plan-of-record, story-bar]
 <!-- /epic:e12.s83 -->
+
+<!-- epic:e12.s84 -->
+## e12.s84 — R-CY1: the canary red is read; the restart of a cohort seat holder runs under the attempt after its hand-off
+
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-CY1; `lifecycles/node-primary-update.md` (the holder's own seat update runs under its attempt and ends HandedOff); `lifecycles/node-restart.md`; R-SB1
+
+### State
+
+not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+
+### Remaining
+
+- [ ] RED: a cell that gives the restarted rpc node the cohort primary seat deterministically (lowest node id, or the seat taken before the restart) and runs the canary body; it must fail at canary.rs:157 as the two gate reds did
+- [ ] flame from a live mesh: the restart call's attempt running `node.primary.update` and ending `handed-off`, the restart's steps under the next attempt
+- [ ] name the root: (1) the cell's assumption (the restart runs under `restart.attempt`) is wrong and the cell reads the attempt from the reconcile that executed the restart; or (2) the restart reply should name the executing attempt, which is a ruling for Luke before code moves (write the packet, stop)
+- [ ] the fix lands alone with that sentence in this State; the gate's red story row under e12.s58/s76 points here
+
+### Acceptance criteria
+
+<!-- crit:e12.s84.1 -->
+- [ ] `node_lifecycle__node_restart` green at gate cadence with the seat-holder case covered deterministically, its trace cited here
+<!-- /crit:e12.s84.1 -->
+<!-- crit:e12.s84.2 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s84.2 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar]
+<!-- /epic:e12.s84 -->
+
+<!-- epic:e12.s85 -->
+## e12.s85 — layout pre-step: the two retired-stem files and the 32 id-named test files, before any crate directory moves
+
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** proposal `docs/plans/proposal/rdm-crate-and-test-layout.md` §3, §4 (name check), the lead's sequencing note on the rulings page (2026-10-15)
+
+### State
+
+not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+
+### Remaining
+
+- [ ] `crates/rafka-node-admin-core/src/fence.rs` → `seat_revision.rs` (not `seat_fence.rs`: the name check refuses `fence` in any stem); its `mod` line and citations follow
+- [ ] `crates/rafka-mesh-transport/tests/departed_status.rs` → `deleted_status.rs`
+- [ ] the 32 `i143_acceptance_*.rs` files (4 admin-core, 3 mesh-transport, 1 rpc-testkit, 24 test-scenario) split into their crates' existing test binaries by what each cell proves (`<family>__<case>` names for the scenario crate for now; the `<family>/<module>` mirror is step 8, one crate at a time after it settles); `tools/mesh-audit/i143-acceptance-jobs.json`, `rdm-gate-at.sh` stems and `scripts/i143-acceptance-gate.sh` repointed in the same commit, the old → new map in the commit body
+- [ ] discovery parity: `--list` count per test binary before == after; no cell renamed to a retired word; `python3 name-check.py origin/main HEAD` clean before the gate
+- [ ] after this landing, §4 steps 4-9 in the proposal's order; the fold creates the six crates under their `rdm-` names from step 4 (rafka-v2 is not consuming RDM yet: its pins and the demo's are rewritten once, at step 9 or when it starts)
+
+### Acceptance criteria
+
+<!-- crit:e12.s85.1 -->
+- [ ] `git ls-tree -r --name-only HEAD -- crates tools | python3 name-check-stems` names 0 files the name check would refuse on a directory move
+<!-- /crit:e12.s85.1 -->
+<!-- crit:e12.s85.2 -->
+- [ ] every test binary's discovery count unchanged, recorded in the commit body
+<!-- /crit:e12.s85.2 -->
+<!-- crit:e12.s85.3 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s85.3 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar]
+<!-- /epic:e12.s85 -->
+
+<!-- epic:e12.s86 -->
+## e12.s86 — R-FM1: a hung runtime holds for a ruled hold, then the provider terminates the exact runtime and the ordinary recovery runs; a hung fabric-primary is held and named, never killed from below
+
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM1; `lifecycles/node-recovery.md` step 3 and the new step 4; `fabric-node-lifecycle-elections.md` :155-157; `deployment-provider.md`; packet `docs/plans/proposal/i143-failure-matrix.md` R-FM1
+
+### State
+
+not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+
+### Remaining
+
+- [ ] the `held-running { since, verdicts }` fact: a durable status-row fact written by the mesh-primary on a `NotExited { Running }` verdict, cleared on the birth's answer or returning digest, surfaced on `node.get` (and `fabric.get` for the fabric seat's holder); not a gossip `MemberStatus` (the wire is untouched)
+- [ ] the hold: `RDM_HUNG_HOLD_FLOORS` (default 10 staleness floors) in the env table of CLAUDE.md and `config.md`; the ladder keeps running every tick during the hold; `Unknown` or an unreadable runtime row opens the fact and no hold
+- [ ] the `TerminateRuntime { node_id, incarnation, handle }` step as the first step of the recovery Build the mesh-primary submits when the hold expires: provider `terminate(handle, Graceful)` then `Forced` after the stop grace, `exit_proof` recorded durably, then the ordinary recovery in the same attempt; a refused or unproven terminate ends the attempt `Failed { step, reason }` by name
+- [ ] a hung mesh-primary: the fabric-primary runs the hold and submits the Build; R-EL1 seats the successor on the exit proof only
+- [ ] a hung fabric-primary: the watching admins write `held-running` on its row and publish Concern as today; nothing terminates it; a person decides
+- [ ] page text (node-recovery.md step 4, elections :155-157, deployment-provider.md terminate, env table) lands with the code; the exact old and new text recorded here (Luke delegated the ruling; the diff is for his glance)
+- [ ] cells: SIGSTOP'd member recovers after the hold with the terminate receipt and exit proof in its trace; SIGSTOP'd mesh-primary likewise with the successor seated after the proof; SIGSTOP'd fabric-primary shows `held-running` and nothing else; `node_lifecycle__node_replace.rs:549` becomes the hold's cell; each with its Jaeger flame
+
+### Acceptance criteria
+
+<!-- crit:e12.s86.1 -->
+- [ ] the three cells green at gate cadence, traces cited here; `held-running` visible on `node.get` in the member trace before the terminate step
+<!-- /crit:e12.s86.1 -->
+<!-- crit:e12.s86.2 -->
+- [ ] no path terminates a runtime the provider has not reported `Running` for the exact handle, and none below the fabric-primary terminates it
+<!-- /crit:e12.s86.2 -->
+<!-- crit:e12.s86.3 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s86.3 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar]
+<!-- /epic:e12.s86 -->
+
+<!-- epic:e12.s87 -->
+## e12.s87 — R-FM2: a data dir proven gone is recovered over a fresh dir with a new key; a dir present but unreadable is held and named, never resubmitted every tick
+
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM2; `lifecycles/node-recovery.md` "Retained" and the new "Lost data dir" paragraph; `deployment-provider.md` PrepareStorage; `lifecycles/reference.md:199`; packet `docs/plans/proposal/i143-failure-matrix.md` R-FM2
+
+### State
+
+not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md)
+
+### Remaining
+
+- [ ] gone versus broken by the error at `deployment/pipeline.rs:1046-1048`: the dir path absent (`NotFound` on the dir) is gone; `node-key` missing inside an existing dir, `EIO`, `EACCES` or any other read failure is broken
+- [ ] gone: after `RDM_DATA_DIR_GONE_FLOORS` consecutive ticks (default 2; env-table row) the same recovery creates the node at the same path.name over a fresh dir beside the old path with a newly minted endpoint key, `hydrate_before_ready` with `inherited = false`, and `data-dir-lost { path, since }` recorded durably on the exited birth
+- [ ] broken: `data-dir-unreadable { path, cause }` recorded durably on the first failure; the tick's due rule holds that recovery (not due while the fact stands) instead of resubmitting; `node.get` shows it; the fact clears when the dir reads and the recovery proceeds
+- [ ] RDM deletes nothing on disk; the old key is never re-minted
+- [ ] page text (node-recovery.md, deployment-provider.md, env table) lands with the code; exact old and new text recorded here
+- [ ] cells: dir removed after exit → recovery at the same name with a new key and `inherited = false` in the hydration span after two floors; dir made unreadable → the fact and no second recovery submit span; repair → the fact clears and the recovery proceeds; each with its flame
+
+### Acceptance criteria
+
+<!-- crit:e12.s87.1 -->
+- [ ] the three cells green at gate cadence, traces cited here
+<!-- /crit:e12.s87.1 -->
+<!-- crit:e12.s87.2 -->
+- [ ] a recovery over a lost dir never appears twice in the Build journal for one exited birth while the dir is unreadable
+<!-- /crit:e12.s87.2 -->
+<!-- crit:e12.s87.3 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s87.3 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar]
+<!-- /epic:e12.s87 -->
 <!-- epic:e12.s23 -->
 ## e12.s23 — seats and the Build-door admission: a seat moves only by explicit yield or proven loss (R-EL1 = Y + D, R-MT1 node.primary.update), and nothing that moves a seat or writes caller state runs before the initial fabric is ready-for-traffic
 
