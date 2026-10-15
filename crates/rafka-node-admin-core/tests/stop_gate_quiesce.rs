@@ -37,14 +37,14 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// a dispatcher installed on every thread of the cell's runtime. Each span keeps its start and end.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh1.admin.1", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("mesh1.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -148,7 +148,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
 
         // Its mesh-admin's stop reaches it while that turn is in progress.
         let root = tracing::info_span!("cell.park-gate-quiesce", node = %own.node.name);
-        let stop_trace = root.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
+        let stop_trace = root.in_scope(rdm_transport::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
         let node_self = running.node_self();
         let commander = NodeId::mint();
         let req = StatusRequest::StopNode { node_id: own.node.node_id.clone(), incarnation: own.node.incarnation.clone(), build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: format!("node.stop:{}", own.node.name) };

@@ -9,8 +9,8 @@
 use rdm_core::names::NodeOp;
 use crate::{BuildId, ClientError};
 use rdm_core::{IncarnationId, NodeId, PathName};
-use rafka_node_rpc::stream::StreamItem;
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
+use rdm_transport::stream::StreamItem;
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, RouteChoice};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rdm_core::streaming::FrameKind;

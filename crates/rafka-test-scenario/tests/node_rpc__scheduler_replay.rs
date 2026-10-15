@@ -15,7 +15,7 @@ use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use rdm_core::{IncarnationId, NodeId};
-use rafka_node_rpc::{Budget, CallEvidence, CallOptions, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{Budget, CallEvidence, CallOptions, Failpoint, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{IndeterminateReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -28,7 +28,7 @@ use tracing::Instrument;
 
 const SEED: u64 = 0x2781;
 
-/// `rafka_node_rpc::endpoint::bind`'s configuration with NAT traversal switched off (iroh's `test-knobs`
+/// `rdm_transport::endpoint::bind`'s configuration with NAT traversal switched off (iroh's `test-knobs`
 /// feature). The tap owns every path between a caller and a node: iroh's NAT traversal opens new direct
 /// paths while a connection runs, and a reply the cell means to cut can leave on a path a round has just
 /// opened, a few ms before iroh demotes it. With the extension off on both ends no round runs and the
@@ -36,7 +36,7 @@ const SEED: u64 = 0x2781;
 async fn bind_behind_tap() -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .secret_key(SecretKey::generate())
-        .alpns(vec![rafka_node_rpc::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
+        .alpns(vec![rdm_transport::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .clear_ip_transports()
@@ -55,13 +55,13 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`:
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`:
 /// product's span filter and its `BatchSpanProcessor`, so ending a span only queues it and the sink
 /// runs on the export thread) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -71,7 +71,7 @@ fn capture(cell: &str) -> Capture {
     use tracing_subscriber::Layer as _;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2781-{cell}");
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     let dbg = std::env::var("I2781_TRACE").ok().map(|_| {
         tracing_subscriber::fmt::layer()
             .with_test_writer()
@@ -192,7 +192,7 @@ async fn node() -> Node {
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let stats = server.stats();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let record = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, stats, hooks, record }
 }

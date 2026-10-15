@@ -15,8 +15,8 @@
 //! and a strictly increasing `digest_seq` from 1 on every heartbeat it publishes.
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rafka_mesh_transport::clock::Clock;
-use rafka_mesh_transport::membership::{DigestBook, Membership};
+use rdm_transport::clock::Clock;
+use rdm_transport::membership::{DigestBook, Membership};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -94,7 +94,7 @@ fn held(book: &DigestBook, node_id: &NodeId) -> (u64, MemberStatus, u64) {
 fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-mesh-entity-acceptance").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-mesh-entity-acceptance").expect("the cell's evidence file can be created");
     capture.run(2, async {
         let fabric = FabricId::mint();
         let now = Instant::now();
@@ -164,7 +164,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         // takes each one however the clock behaves (frozen, stepped back, jumped far ahead).
         let (endpoint, gossip) = {
             let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-            let ep = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+            let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
             let g = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
             (ep, g)
         };

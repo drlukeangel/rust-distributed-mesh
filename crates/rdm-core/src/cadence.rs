@@ -1,6 +1,6 @@
 //! The fabric's three configured cadences, read once from the environment, as a set, on the first
 //! read of any of them. They live here, the lowest crate that membership and Node RPC both depend
-//! on, so the transport configuration (`rafka_node_rpc::endpoint`) and the membership channel read
+//! on, so the transport configuration (`rdm_transport::endpoint`) and the membership channel read
 //! the same values.
 //!
 //! A variable that is unset takes its default. A variable that is set and is not a whole number of

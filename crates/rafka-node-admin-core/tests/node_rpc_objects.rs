@@ -6,7 +6,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_client::{CallEnd, ExactBirth, NodeRpc};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 use rdm_core::topology::{Topology, TopologyReply, TopologyRequest};
@@ -16,14 +16,14 @@ use std::time::Duration;
 
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("node-rpc-objects", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("node-rpc-objects", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -85,19 +85,19 @@ async fn serve(reply: StatusReply, delay: Duration) -> Served {
             let t = t.clone();
             async move {
                 t.lock().unwrap().push(req);
-                let mut sink = sink.started(TopologyReply::Started).await.map_err(|_| rafka_node_rpc::HandlerFault::invariant_broken("the sink refused Started"))?;
-                sink.data(TopologyReply::Unchanged { mesh: "mesh1".into(), publisher: rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }, topology_version: 3 }).await.map_err(|_| rafka_node_rpc::HandlerFault::invariant_broken("the sink refused Data"))?;
+                let mut sink = sink.started(TopologyReply::Started).await.map_err(|_| rdm_transport::HandlerFault::invariant_broken("the sink refused Started"))?;
+                sink.data(TopologyReply::Unchanged { mesh: "mesh1".into(), publisher: rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }, topology_version: 3 }).await.map_err(|_| rdm_transport::HandlerFault::invariant_broken("the sink refused Data"))?;
                 Ok(TopologyReply::End { meshes: 1 })
             }
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { node_id: node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: incarnation.clone() });
-    let caller = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(caller, resolver).with_caller_system("rdm");
     Served { birth: ExactBirth { target: NodeTarget::ExactNode(node_id.clone()), node_id, incarnation }, seen, topology_seen, client, _router: router }
 }

@@ -19,7 +19,7 @@ use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_admin_core::model::NodeStatus;
 use rafka_node_admin_core::storage::NodeRow;
-use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
@@ -27,7 +27,7 @@ use rafka_node_rpc_testkit::proof_store::{self, ProofRequest, ProofStore};
 use std::time::Duration;
 
 async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
-    let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+    let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -104,7 +104,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         let (d, _) = book.get(launch.node_id.as_str()).unwrap();
         assert_eq!((&d.node.name, &d.config, &d.node.incarnation), (&old, &config, &incarnation), "the same birth publishes the row's name and config");
         // Its app answers under the name it holds: the proof store's provenance is the row's name.
-        let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let got = match admin.observer.client.call::<ProofStore>(&target, &ProofRequest::Get { key: b"41".to_vec() }, &opts).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
             other => panic!("the proof store get did not end in a reply: {other:?}"),

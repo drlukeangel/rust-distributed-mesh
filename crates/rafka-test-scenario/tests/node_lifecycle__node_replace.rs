@@ -822,9 +822,9 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_the_cutover_and
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
     let reply = rdm_client::NodeRpc::new(&client)
-        .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
+        .config_update(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
@@ -832,7 +832,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_the_cutover_and
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
     let tagged = rdm_client::NodeRpc::new(&client)
-        .tags_create(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, &labels, &rafka_node_rpc::CallOptions::default())
+        .tags_create(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
@@ -987,11 +987,11 @@ async fn stop_and_rename(estate: &Estate, nodes: &Nodes, node: &str) -> Parked {
     let parked = mesh.iter().find(|n| n.name == path && n.parked).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} parked at once after Complete: {mesh:#?}"));
     let primary = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().expect("the node's mesh-primary");
     let birth = rdm_client::ExactBirth {
-        target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()),
+        target: rdm_transport::NodeTarget::ExactNode(parked.node_id.clone()),
         node_id: parked.node_id.clone(),
         incarnation: parked.incarnation_id.clone().expect("the parked birth has its incarnation"),
     };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &path.renamed().name()).await.expect("node.name.update answered");
+    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &path.renamed().name()).await.expect("node.name.update answered");
     assert!(matches!(reply, StatusReply::NameUpdated { .. }), "the stopped {node} is renamed {}: {reply:?}", path.renamed());
     assert!(alive(pid), "the stopped {node} ({pid}) is alive before its delete");
     Parked { node: node.to_string(), before, pid, old_dir, renamed_by: primary.name.to_string(), fabric_primary }
@@ -1123,7 +1123,7 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
 
     // The ladder: silent at the floor, one tickle half a floor later, TRUE OFFLINE at least one floor
     // after the first no-path, then the inspection on that tick.
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let inspected = wait_for(&format!("{node}'s mesh-primary inspects its exact runtime"), crate::node_recovery_due(), || async {
         let spans = estate.spans();
         named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned()
@@ -1341,7 +1341,7 @@ async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
     let held = rt.apply(Fault::Stop).expect("the fabric-primary runtime is held");
     assert_eq!(held.state_after, Some('T'), "the OS holds the fabric-primary runtime: {held:?}");
 
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {watcher}"), crate::node_recovery_due(), |n| {
         n["node_id"] == fp["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
     })
@@ -1580,7 +1580,7 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery() {
     let (estate, birth_build) = fabric_of("a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
@@ -1781,9 +1781,9 @@ async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refuse
 
 /// A caller outside the fabric that reaches the node-admin `admin` by its exact birth: its own
 /// endpoint, and a resolver holding that birth as the answering admin's view names it.
-async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClient>, rdm_core::NodeId) {
-    use rafka_node_rpc::{NodeRpcClient, ResolvedNode, StaticResolver};
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
+async fn caller_of(admin: &Value) -> (std::sync::Arc<rdm_transport::NodeRpcClient>, rdm_core::NodeId) {
+    use rdm_transport::{NodeRpcClient, ResolvedNode, StaticResolver};
+    let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
     let resolver = std::sync::Arc::new(StaticResolver::new());
     let node_id: rdm_core::NodeId = s(&admin["node_id"]).parse().expect("a node id");
     resolver.insert(ResolvedNode {
@@ -1820,9 +1820,9 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
     let reply = rdm_client::NodeRpc::new(&client)
-        .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
+        .config_update(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
@@ -1830,7 +1830,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
     let tagged = rdm_client::NodeRpc::new(&client)
-        .tags_create(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, &labels, &rafka_node_rpc::CallOptions::default())
+        .tags_create(&mp_id, &rdm_transport::RouteChoice::Direct, &birth, &labels, &rdm_transport::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
     assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");

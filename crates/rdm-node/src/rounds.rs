@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use rafka_mesh_transport::membership::Frame;
+use rdm_transport::membership::Frame;
 use rdm_core::RoundHook;
 use rdm_core::status::StatusRequest;
 use tracing::Instrument;

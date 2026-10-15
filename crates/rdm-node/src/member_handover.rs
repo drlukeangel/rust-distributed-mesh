@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use rafka_mesh_transport::membership::{Membership, SeatTaken};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::membership::{Membership, SeatTaken};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::handover::{
     CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply,

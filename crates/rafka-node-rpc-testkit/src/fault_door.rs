@@ -9,7 +9,7 @@
 
 use crate::admin_faults::{AdminFaults, CutSpec};
 use rdm_core::PathName;
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
@@ -166,7 +166,7 @@ pub enum Hit {
     Announcement {
         /// The announcing node.
         node: String,
-        /// The announcement (`rafka_mesh_transport::membership::Withhold`).
+        /// The announcement (`rdm_transport::membership::Withhold`).
         announcement: String,
         /// The channel it is sent on.
         channel: String,

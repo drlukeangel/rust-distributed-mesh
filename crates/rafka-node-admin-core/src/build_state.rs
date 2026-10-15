@@ -3122,7 +3122,7 @@ mod tests {
         // (or the seat record names the primary living elsewhere), so it does NOT sync a journal it
         // does not own. Once the seat record in `book.seats` names its birth, it syncs the journal
         // it owns.
-        let book = rafka_mesh_transport::membership::DigestBook::default();
+        let book = rdm_transport::membership::DigestBook::default();
         let elsewhere_node = crate::model::NodeId::mint();
         let elsewhere_inc = crate::model::IncarnationId::mint();
         book.seats.take(

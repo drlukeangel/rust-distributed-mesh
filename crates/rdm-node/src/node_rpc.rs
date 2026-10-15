@@ -8,8 +8,8 @@
 //! every caller by clone; nothing builds a resolver or a client per call.
 
 use rdm_core::MeshDigest;
-use rafka_mesh_transport::membership::DigestBook;
-use rafka_node_rpc::{Applied, LiveNodeResolver, NodeRpcClient, ResolvedNode};
+use rdm_transport::membership::DigestBook;
+use rdm_transport::{Applied, LiveNodeResolver, NodeRpcClient, ResolvedNode};
 use std::sync::Arc;
 
 /// The process's resolver and client, shared by clone.

@@ -70,7 +70,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let dir = std::env::temp_dir().join(format!("restart-hold-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
@@ -146,7 +146,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let dir = std::env::temp_dir().join(format!("restart-hold-frame-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
@@ -240,7 +240,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let dir = std::env::temp_dir().join(format!("restart-hold-converged-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };

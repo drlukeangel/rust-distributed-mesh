@@ -13,7 +13,7 @@
 
 use rdm_core::launch::Launch;
 use rdm_core::{NodeId, PathName};
-use rafka_node_rpc::{CallOptions, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::{CallOptions, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;

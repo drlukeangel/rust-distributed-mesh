@@ -45,11 +45,11 @@ fn attr(sp: &Value, k: &str) -> String {
 
 /// This cell's capture of the kit's spans, in `<artifacts>/chaos-kit/<test>.capture`: the estate
 /// replaces its own artifacts directory when it is born, so the capture's file is not under it.
-fn capture(test: &str) -> rafka_mesh_telemetry::EvidenceCapture {
+fn capture(test: &str) -> rdm_transport::EvidenceCapture {
     let dir = artifacts_root().join("chaos-kit").join(format!("{test}.capture"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-chaos-kit").expect("the cell's evidence file can be created")
+    rdm_transport::EvidenceCapture::start(&dir, "rafka-chaos-kit").expect("the cell's evidence file can be created")
 }
 
 /// mesh1 with two node-admins and three rpc nodes, all ready.
@@ -320,7 +320,7 @@ async fn firewall_inbound_ends_with_the_process_that_installed_it() {
     ) {
         return;
     }
-    let guard = rafka_mesh_telemetry::init_evidence_telemetry("rafka-chaos-kit");
+    let guard = rdm_transport::init_evidence_telemetry("rafka-chaos-kit");
     if let Ok(marker) = std::env::var(OWNER_MARKER) {
         let port = std::env::var(OWNER_PORT).expect("the owner is told its port");
         let nodes = vec![json!({"name": "mesh1.rpc.1", "transport_addr": format!("127.0.0.1:{port}")})];

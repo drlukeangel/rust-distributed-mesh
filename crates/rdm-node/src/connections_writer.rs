@@ -21,7 +21,7 @@
 //! Two paths arm the one pending direct-recovery attempt per destination birth (connections.md
 //! §9.4, Q7): a latest Direct Failed row in `held`, and a connection accepted from the exact
 //! destination birth this node reaches through its own Proxy (R-CN1,
-//! [`rafka_node_rpc::AcceptTrigger`], never a row). An accept arriving while an item is pending
+//! [`rdm_transport::AcceptTrigger`], never a row). An accept arriving while an item is pending
 //! coalesces into it and wakes the reconciler, which dials this node's own data-plane connection
 //! once the series' reconnect backoff from its latest Failed row has ended (§9.3), never earlier.
 //! Only that dial's Direct Connected owes the Proxy's retirement; a failed dial is the series'
@@ -33,7 +33,7 @@ use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, Conn
 use rdm_core::reconnect::{first_failure, next_due, owed_retirements};
 use rdm_core::{IncarnationId, NodeId, PathName};
 use std::collections::HashMap;
-use rafka_node_rpc::{ConnectionObserver, ResolvedNode};
+use rdm_transport::{ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -535,7 +535,7 @@ impl ConnectionsWriter {
                         entry = tracing::field::Empty,
                     );
                     if let Some(tp) = &traceparent {
-                        rafka_mesh_telemetry::set_parent(&span, tp);
+                        rdm_transport::set_parent(&span, tp);
                     }
                     let outcome = tracing::Instrument::instrument(dial(destination.clone()), span.clone()).await;
                     self.observations_landed().await;
@@ -725,7 +725,7 @@ impl ConnectionObserver for ConnectionsWriter {
     }
 }
 
-impl rafka_node_rpc::AcceptTrigger for ConnectionsWriter {
+impl rdm_transport::AcceptTrigger for ConnectionsWriter {
     /// An accept writes nothing (R-CN1). From the exact birth this node's own active Proxy names,
     /// with no Direct to it Connected, it arms one recovery attempt (or finds it armed) and wakes
     /// the reconciler; from another birth at that path it arms nothing, by name; from a node this
@@ -759,12 +759,12 @@ impl rafka_node_rpc::AcceptTrigger for ConnectionsWriter {
             match self.inner.recovery.lock().unwrap().entry(key) {
                 std::collections::hash_map::Entry::Occupied(mut e) => {
                     if e.get().traceparent.is_none() {
-                        e.get_mut().traceparent = rafka_mesh_telemetry::traceparent_of(&span);
+                        e.get_mut().traceparent = rdm_transport::traceparent_of(&span);
                     }
                     "coalesced"
                 }
                 std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(Pending { destination: destination.clone(), traceparent: rafka_mesh_telemetry::traceparent_of(&span) });
+                    v.insert(Pending { destination: destination.clone(), traceparent: rdm_transport::traceparent_of(&span) });
                     "pending"
                 }
             }
@@ -778,7 +778,7 @@ impl rafka_node_rpc::AcceptTrigger for ConnectionsWriter {
 }
 
 #[async_trait::async_trait]
-impl rafka_node_rpc::CarrierEdges for ConnectionsWriter {
+impl rdm_transport::CarrierEdges for ConnectionsWriter {
     /// The carrier's dial to `node` just failed: the edge is Failed by that very outcome, and the
     /// text is the one the fact carries, named without waiting for the fact's write.
     async fn edge_after_dial(&self, node: &ResolvedNode, reason: &str) -> Option<String> {

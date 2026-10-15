@@ -11,7 +11,7 @@ use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, Timeouts};
 use rafka_node_admin_core::deployment::provider::{DeployError, FabricPolicy, TerminationMode};
-use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 

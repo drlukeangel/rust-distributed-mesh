@@ -3027,64 +3027,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka-mesh-ops"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "opentelemetry",
- "postcard",
- "proptest",
- "serde",
- "thiserror 1.0.69",
- "unsigned-varint",
-]
-
-[[package]]
-name = "rafka-mesh-telemetry"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures-util",
- "http",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
- "rdm-core",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-flame",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rafka-mesh-transport"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "bytes",
- "ctor",
- "futures-lite",
- "iroh",
- "iroh-gossip",
- "postcard",
- "rafka-mesh-telemetry",
- "rafka-node-rpc",
- "rdm-core",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "rafka-node-admin-core"
 version = "0.1.0"
 dependencies = [
@@ -3100,37 +3042,15 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "opentelemetry_sdk",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-rpc",
  "rand 0.8.6",
  "rdm-client",
  "rdm-core",
  "rdm-node",
+ "rdm-transport",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rafka-node-rpc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "iroh",
- "iroh-gossip",
- "opentelemetry",
- "opentelemetry_sdk",
- "rafka-mesh-telemetry",
- "rdm-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
  "tracing-subscriber",
 ]
 
@@ -3146,14 +3066,12 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "opentelemetry_sdk",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
  "rafka-node-admin-core",
- "rafka-node-rpc",
  "rafka-node-rpc-testkit",
  "rdm-client",
  "rdm-core",
  "rdm-node",
+ "rdm-transport",
  "serde",
  "serde_json",
  "tokio",
@@ -3172,13 +3090,11 @@ dependencies = [
  "libc",
  "opentelemetry_sdk",
  "rafka-chaos",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
  "rafka-node-admin-core",
- "rafka-node-rpc",
  "rafka-node-rpc-testkit",
  "rdm-client",
  "rdm-core",
+ "rdm-transport",
  "serde",
  "serde_json",
  "tokio",
@@ -3286,8 +3202,8 @@ name = "rdm-client"
 version = "0.1.0"
 dependencies = [
  "iroh",
- "rafka-node-rpc",
  "rdm-core",
+ "rdm-transport",
  "serde",
  "serde_json",
  "tokio",
@@ -3318,12 +3234,10 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "libc",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-rpc",
  "rand 0.8.6",
  "rdm-client",
  "rdm-core",
+ "rdm-transport",
  "serde",
  "serde_json",
  "tokio",
@@ -3338,6 +3252,41 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "rdm-transport"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "ctor",
+ "futures-lite",
+ "futures-util",
+ "http",
+ "iroh",
+ "iroh-gossip",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "postcard",
+ "proptest",
+ "rdm-core",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-flame",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "unsigned-varint",
 ]
 
 [[package]]

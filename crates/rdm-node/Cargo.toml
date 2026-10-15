@@ -12,9 +12,7 @@ doctest = false
 [dependencies]
 rdm-core = { path = "../rdm-core" }
 rdm-client = { path = "../rdm-client" }
-rafka-mesh-transport = { path = "../rafka-mesh-transport" }
-rafka-node-rpc = { path = "../rafka-node-rpc" }
-rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
+rdm-transport = { path = "../rdm-transport" }
 anyhow = { workspace = true }
 async-trait = "0.1"
 hex = { workspace = true }

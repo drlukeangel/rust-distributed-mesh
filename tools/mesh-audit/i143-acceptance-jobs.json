@@ -223,8 +223,8 @@
       "cells": [
         {
           "name": "refeed_scheduler_bounds_stale_held_peer_attempts",
-          "source": "crates/rafka-mesh-transport/tests/refeed_scheduler.rs",
-          "command": "cargo test -p rafka-mesh-transport --test main refeed_scheduler::refeed_scheduler_bounds_stale_held_peer_attempts -- --exact",
+          "source": "crates/rdm-transport/tests/refeed_scheduler.rs",
+          "command": "cargo test -p rdm-transport --test main refeed_scheduler::refeed_scheduler_bounds_stale_held_peer_attempts -- --exact",
           "dir": "target/i143-acceptance/2902/unit/refeed_scheduler_bounds_stale_held_peer_attempts"
         }
       ]
@@ -503,8 +503,8 @@
       "cells": [
         {
           "name": "status_publisher_reinforces_changed_state_five_times_then_stops",
-          "source": "crates/rafka-mesh-transport/tests/status_reinforcement.rs",
-          "command": "cargo test -p rafka-mesh-transport --test main status_reinforcement::status_publisher_reinforces_changed_state_five_times_then_stops -- --exact",
+          "source": "crates/rdm-transport/tests/status_reinforcement.rs",
+          "command": "cargo test -p rdm-transport --test main status_reinforcement::status_publisher_reinforces_changed_state_five_times_then_stops -- --exact",
           "dir": "target/i143-acceptance/2901/unit/status_publisher_reinforces_changed_state_five_times_then_stops"
         }
       ]
@@ -575,8 +575,8 @@
       "cells": [
         {
           "name": "members_receiver_commits_complete_snapshot_before_advancing_version",
-          "source": "crates/rafka-mesh-transport/tests/members_snapshot.rs",
-          "command": "cargo test -p rafka-mesh-transport --test main members_snapshot::members_receiver_commits_complete_snapshot_before_advancing_version -- --exact",
+          "source": "crates/rdm-transport/tests/members_snapshot.rs",
+          "command": "cargo test -p rdm-transport --test main members_snapshot::members_receiver_commits_complete_snapshot_before_advancing_version -- --exact",
           "dir": "target/i143-acceptance/2900/unit/members_receiver_commits_complete_snapshot_before_advancing_version"
         }
       ]

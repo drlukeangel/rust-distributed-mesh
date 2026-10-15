@@ -11,7 +11,7 @@
 
 use crate::deployment::pipeline::{CommandAdmission, CommandContext, Completion};
 use crate::model::{IncarnationId, Node, NodeId};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::status::{StatusReply, StatusRequest};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -175,19 +175,19 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
         NodeCommand::DeleteConnections => {
             let req = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
-            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
+            let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
             crate::deployment::pipeline::command_admission(&client.call::<rdm_core::status::Status>(target, &req, &opts).await.0)
         }
         NodeCommand::Stop => {
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let stop = rdm_client::StopContext::new(build_id, attempt, node.name.clone());
-            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
+            let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
             admission_of(rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
         }
         NodeCommand::Start => {
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let start = rdm_client::StartContext::new(build_id, attempt, node.name.clone());
-            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
+            let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
             admission_of(rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await)
         }
     };

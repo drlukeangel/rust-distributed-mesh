@@ -17,8 +17,8 @@ use iroh::protocol::Router;
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
-use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Frame, Membership};
-use rafka_mesh_transport::snapshot::PublisherId;
+use rdm_transport::membership::{gossip_addr, learn_addresses, Frame, Membership};
+use rdm_transport::snapshot::PublisherId;
 use rafka_node_admin_core::admin::{start_with, AdminConfig, Running};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
 use rafka_node_admin_core::join::Deployed;
@@ -121,7 +121,7 @@ struct GossipNode {
 
 async fn gossip_node() -> GossipNode {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-    let ep = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+    let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     GossipNode { ep, _router: router, gossip }
@@ -178,7 +178,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let admin_addr = gossip_addr(&admin_digest).expect("mesh1.admin.2's digest names its endpoint");
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
-        let channel = Membership::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rafka_mesh_transport::clock::os_clock(), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
+        let channel = Membership::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         until("mesh1.admin.2 to take the primary's replayed full", WRONG, || installs_at_admin() > installed_before).await;
 

@@ -9,7 +9,7 @@ use rdm_core::reconnect::reconnect_plan;
 use rdm_core::{IncarnationId, NodeId, NodeKind, PathName};
 use rafka_node_admin_core::connections_writer::{ConnectionsWriter, RecoveryDial};
 use rafka_node_admin_core::storage::{ConnectionsStorage, FileConnectionsStorage};
-use rafka_node_rpc::{AcceptTrigger, ConnectionObserver, ResolvedNode};
+use rdm_transport::{AcceptTrigger, ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
 
 const POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
@@ -380,7 +380,7 @@ async fn a_refused_retirement_write_keeps_the_proxy_effective_until_it_lands() {
 /// and nothing else: no fact is "not named", never "lost".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connected() {
-    use rafka_node_rpc::CarrierEdges;
+    use rdm_transport::CarrierEdges;
     let dir = data_dir("edges");
     let (me, dest) = (end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap());
@@ -428,7 +428,7 @@ impl ConnectionsStorage for SlowIndex {
 /// node-admin says `carrier-edge-lost` every time, never "not sent" for want of a write.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write() {
-    use rafka_node_rpc::CarrierEdges;
+    use rdm_transport::CarrierEdges;
     let dir = data_dir("edges-slow");
     let (me, dest) = (end("mesh2.rpc.1"), end("mesh2.admin.1"));
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap())));
@@ -477,7 +477,7 @@ async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observatio
 /// the call ends `NotSent` and the failed dial is recorded as this node's Direct Failed fact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct_failed() {
-    use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, StaticResolver};
+    use rdm_transport::{Budget, CallOptions, NodeRpcClient, StaticResolver};
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::ping::{Ping, PingRequest};
     let dir = data_dir("dead-cold");
@@ -488,7 +488,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     writer.hydrate().await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(resolved(&dest));
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
     let opts = CallOptions { budget: Budget::Overall(std::time::Duration::from_millis(300)), ..Default::default() };
     let resolution = resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY);
@@ -661,14 +661,14 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
 fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("connections-writer", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let d = dispatch.clone();
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
     let _g = tracing::dispatcher::set_default(&dispatch);
     let trace_id = rt.block_on(async {
         let root = tracing::info_span!("rdm.test.connections_writer", cell = "due_time_reconnect");
-        let tp = rafka_mesh_telemetry::traceparent_of(&root).expect("root traceparent");
+        let tp = rdm_transport::traceparent_of(&root).expect("root traceparent");
         let trace_id = tp.split('-').nth(1).unwrap().to_string();
         tracing::Instrument::instrument(
             async {

@@ -23,7 +23,7 @@ use tracing_subscriber::layer::SubscriberExt;
 /// The cell's own span capture: the product span pipeline in front of an in-memory exporter.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    pipeline: rafka_mesh_telemetry::SpanCapture,
+    pipeline: rdm_transport::SpanCapture,
 }
 
 impl Capture {
@@ -44,7 +44,7 @@ impl Capture {
 
 fn capture(service: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture(service, exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture(service, exporter.clone());
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     (Capture { exporter, pipeline }, guard)
 }

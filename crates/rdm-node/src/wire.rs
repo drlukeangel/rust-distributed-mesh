@@ -22,7 +22,7 @@ pub struct JoinAnswer {
     /// The control facts the answer carries.
     pub control: JoinControl,
     /// The statuses the admin holds (original publisher and instant kept).
-    pub statuses: Vec<rafka_mesh_transport::membership::Frame>,
+    pub statuses: Vec<rdm_transport::membership::Frame>,
 }
 
 /// The fabric control state an admin hands a joiner.
@@ -64,7 +64,7 @@ pub struct BuildFloor {
 struct WireJoinAnswer {
     served_by: String,
     control: WireControl,
-    statuses: Vec<rafka_mesh_transport::membership::Frame>,
+    statuses: Vec<rdm_transport::membership::Frame>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -100,12 +100,12 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
         },
         statuses: answer.statuses.clone(),
     };
-    rafka_mesh_transport::wire::encode(&wire).map_err(|e| e.to_string())
+    rdm_transport::wire::encode(&wire).map_err(|e| e.to_string())
 }
 
 /// The join answer one postcard frame carries.
 pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
-    let w: WireJoinAnswer = rafka_mesh_transport::wire::decode(bytes).map_err(|e| e.to_string())?;
+    let w: WireJoinAnswer = rdm_transport::wire::decode(bytes).map_err(|e| e.to_string())?;
     Ok(JoinAnswer {
         served_by: w.served_by,
         control: JoinControl {

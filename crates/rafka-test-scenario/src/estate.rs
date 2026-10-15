@@ -1152,7 +1152,7 @@ pub fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     spans.iter().filter(|s| s["name"] == name).collect()
 }
 
-/// iroh's local view of a remote recorded on `sp` (A1, `rafka_mesh_transport::iroh_obs`) has its
+/// iroh's local view of a remote recorded on `sp` (A1, `rdm_transport::iroh_obs`) has its
 /// shape: `iroh_known_addrs` and `iroh_active_addrs` are both present; either both are
 /// `unavailable` (no record) or the known list is a non-empty comma list of `<kind>:<addr>` and
 /// every active address is one of them (none active is a reading). Shape only: the fields are
@@ -1288,7 +1288,7 @@ mod spawn_tests {
     }
 }
 
-/// The transport diagnostic file every node writes in its data dir (`rafka_mesh_telemetry::TRANSPORT_DIAG_FILE`,
+/// The transport diagnostic file every node writes in its data dir (`rdm_transport::TRANSPORT_DIAG_FILE`,
 /// pinned equal by `the_kept_transport_diag_file_is_the_one_nodes_write`).
 const TRANSPORT_DIAG_FILE: &str = "transport-diag.log";
 
@@ -1316,7 +1316,7 @@ mod tests {
     // the nodes write (R-QH1); a rename of one without the other loses a red gate's handshake evidence.
     #[test]
     fn the_kept_transport_diag_file_is_the_one_nodes_write() {
-        assert_eq!(TRANSPORT_DIAG_FILE, rafka_mesh_telemetry::TRANSPORT_DIAG_FILE);
+        assert_eq!(TRANSPORT_DIAG_FILE, rdm_transport::TRANSPORT_DIAG_FILE);
     }
 
     // CONTRACT: a binary is refused by name when a source file its dep-info lists is newer than it, and

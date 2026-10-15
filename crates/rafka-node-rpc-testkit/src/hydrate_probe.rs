@@ -8,7 +8,7 @@
 //! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
 use rafka_node_admin_core::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, RetryOn};
-use rafka_node_rpc::{CallOptions, HydrationGate, PeerContext, ServerBuilder};
+use rdm_transport::{CallOptions, HydrationGate, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
@@ -223,7 +223,7 @@ pub struct TestHydrator {
     pub pulls_dropped: AtomicU32,
     /// Side effects emitted: one per row version applied, never per arrival.
     pub effects: AtomicU32,
-    book: std::sync::OnceLock<rafka_mesh_transport::membership::DigestBook>,
+    book: std::sync::OnceLock<rdm_transport::membership::DigestBook>,
 }
 
 /// Counts a pull dropped before it finished.
@@ -277,7 +277,7 @@ impl TestHydrator {
 
     /// The membership book the first attempt was handed: what the app subscribes to before it
     /// takes its snapshot.
-    pub fn book(&self) -> Option<rafka_mesh_transport::membership::DigestBook> {
+    pub fn book(&self) -> Option<rdm_transport::membership::DigestBook> {
         self.book.get().cloned()
     }
 

@@ -17,7 +17,7 @@
 
 use crate::held_name::HeldName;
 use rdm_core::launch::Launch;
-use rafka_node_rpc::{HandlerFault, PeerContext, ServerBuilder};
+use rdm_transport::{HandlerFault, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::NodeProtocol;
@@ -410,12 +410,12 @@ impl FileProofStore {
 
 /// One failpoint of a proof-store call: armed for the NEXT call to cross it, it parks that call's
 /// handler, signals that it holds (`reached`), and waits for `release`. Shaped like
-/// [`rafka_node_rpc::Failpoint`], which it carries. Testkit only; the product handler has none.
+/// [`rdm_transport::Failpoint`], which it carries. Testkit only; the product handler has none.
 #[derive(Default)]
 pub struct ApplyCut {
     armed: AtomicBool,
     holds: AtomicU64,
-    point: rafka_node_rpc::Failpoint,
+    point: rdm_transport::Failpoint,
 }
 
 impl ApplyCut {

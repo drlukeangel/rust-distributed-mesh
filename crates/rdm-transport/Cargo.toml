@@ -1,0 +1,53 @@
+[package]
+name = "rdm-transport"
+version = "0.1.0"
+edition = "2021"
+description = "RDM transport substrate: gossip on iroh, Node RPC runtime, wire framing, and OTLP HTTP telemetry"
+publish = false
+autotests = false
+
+[lib]
+doctest = false
+
+[dependencies]
+rdm-core = { path = "../rdm-core" }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures-lite = "2"
+futures-util = "0.3"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-flame = "0.2.0"
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry-http = { version = "0.27", features = ["hyper"] }
+http = "1"
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+anyhow = { workspace = true }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+postcard = { version = "1", features = ["alloc"] }
+unsigned-varint = "0.8"
+thiserror = "1"
+blake3 = "1"
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+bytes = "1"
+
+[features]
+# The test-only OS-clock skew (`clock::skew_os_clock_for_testkit`): enabled by the testkit alone.
+testkit-skew = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "time"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+ctor = "0.2"
+proptest = "1"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

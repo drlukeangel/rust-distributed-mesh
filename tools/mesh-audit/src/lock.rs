@@ -128,7 +128,7 @@ impl fmt::Display for Violation {
 /// envelope, and this audit's own sources.
 pub const ACTIVE_TRANSPORT_SOURCES: &[&str] = &[
     "crates/rafka-node-rpc-contract",
-    "crates/rafka-node-rpc",
+    "crates/rdm-transport",
     "crates/rafka-node-rpc-testkit",
     "crates/rdm-node",
     "crates/rafka-node-admin-core",
@@ -160,8 +160,7 @@ pub const NODES_STORAGE: &str = "crates/rafka-node-admin-core/src/storage.rs";
 
 pub const RUNTIME_SOURCES: &[&str] = &[
     "crates/rdm-core/src",
-    "crates/rafka-mesh-transport/src",
-    "crates/rafka-node-rpc/src",
+    "crates/rdm-transport/src",
     "crates/rafka-node-rpc-testkit/src",
     "crates/rdm-node/src",
     "crates/rafka-node-admin-core/src",
@@ -196,11 +195,12 @@ pub const PROVIDER_BANNED_TOKENS: &[&str] = &["PathConfig", "StorageMeta", "Plac
 /// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
 /// postcard. These sources carry no JSON codec in their non-test code.
 pub const NON_WIRE_CORE_FILES: &[&str] = &["binding.rs", "cadence.rs", "certs.rs", "connections.rs", "digest.rs", "dto.rs", "ids.rs", "lifecycle.rs", "model.rs", "names.rs", "path.rs", "publisher.rs", "runtime.rs", "seat.rs"];
+pub const NON_WIRE_TRANSPORT_FILES: &[&str] = &["clock.rs", "discipline.rs", "evidence_capture.rs", "export.rs", "forward_path.rs", "framer.rs", "iroh_obs.rs", "lib.rs", "load.rs", "log_sink.rs", "logs.rs", "ops.rs", "pipeline.rs", "receive_order.rs", "span_capture.rs", "telemetry.rs", "test_span_capture.rs", "transport_diag.rs", "watchdog.rs"];
 pub const WIRE_SOURCES: &[&str] = &[
-    "crates/rafka-mesh-transport/src/membership.rs",
-    "crates/rafka-mesh-transport/src/snapshot.rs",
-    "crates/rafka-mesh-transport/src/chunking.rs",
-    "crates/rafka-mesh-transport/src/wire.rs",
+    "crates/rdm-transport/src/membership.rs",
+    "crates/rdm-transport/src/snapshot.rs",
+    "crates/rdm-transport/src/chunking.rs",
+    "crates/rdm-transport/src/wire.rs",
     "crates/rafka-node-admin-core/src/fabric_builds.rs",
     "crates/rafka-node-admin-core/src/wire.rs",
     "crates/rafka-node-admin-core/src/join.rs",
@@ -209,7 +209,7 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rdm-node/src/wire.rs",
     "crates/rdm-core/src/wire.rs",
     "crates/rdm-core/src",
-    "crates/rafka-node-rpc/src",
+    "crates/rdm-transport/src",
 ];
 /// A JSON codec: bytes or text produced or read as JSON. `serde_json::to_value`/`from_value`
 /// convert between structures and put no JSON on a wire, so they are not in this list.
@@ -230,8 +230,8 @@ pub const JSON_CODEC_TOKENS: &[&str] = &[
 pub const JSON_VALUE_EDGE: &str = "crates/rafka-node-admin-core/src/wire.rs";
 
 /// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
-pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rafka-mesh-transport/src/membership.rs", "crates/rafka-node-admin-core/src/fabric_builds.rs"];
-pub const WIRE_CODEC: &str = "crates/rafka-mesh-transport/src/wire.rs";
+pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/membership.rs", "crates/rafka-node-admin-core/src/fabric_builds.rs"];
+pub const WIRE_CODEC: &str = "crates/rdm-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/gossip_frames_wire.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
 pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "demo/", "tools/"];
@@ -240,7 +240,7 @@ pub const JOIN_SOURCE: &str = "crates/rafka-node-admin-core/src/join.rs";
 pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
 pub const TOPOLOGY_SOURCE: &str = "crates/rdm-node/src/topology_read.rs";
-pub const SEAT_FRAME_CELLS: &str = "crates/rafka-mesh-transport/tests/seat_frames_wire.rs";
+pub const SEAT_FRAME_CELLS: &str = "crates/rdm-transport/tests/seat_frames_wire.rs";
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
 pub const BUILD_FACTS_SOURCE: &str = "crates/rafka-node-admin-core/src/build_facts_read.rs";
@@ -261,7 +261,7 @@ pub const FORWARD_REPLIES: u32 = 14;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
-pub const CONTEXT_CELLS: &str = "crates/rafka-node-rpc/tests/context.rs";
+pub const CONTEXT_CELLS: &str = "crates/rdm-transport/tests/context.rs";
 pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/node_delete_pipeline.rs";
 pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
@@ -475,7 +475,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
     let mut out = Vec::new();
     match ratchet {
         Ratchet::RdmSpansAreRdmPrefixed => {
-            require(root, "crates/rafka-node-rpc/src/server.rs", &["rdm.node_rpc.request.serve.via-direct"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/server.rs", &["rdm.node_rpc.request.serve.via-direct"], ratchet, &mut out);
             match crate::telemetry::emitters(root) {
                 Ok(emitters) => for e in emitters {
                     // The retained chaos harness is a customer-owned exception, not a
@@ -654,7 +654,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             );
         }
         Ratchet::NoJsonOnTheWire => {
-            let files: Vec<PathBuf> = files_in(root, WIRE_SOURCES).into_iter().filter(|f| !NON_WIRE_CORE_FILES.iter().any(|n| rel(root, f) == format!("crates/rdm-core/src/{n}"))).collect();
+            let files: Vec<PathBuf> = files_in(root, WIRE_SOURCES).into_iter().filter(|f| !NON_WIRE_CORE_FILES.iter().any(|n| rel(root, f) == format!("crates/rdm-core/src/{n}")) && !NON_WIRE_TRANSPORT_FILES.iter().any(|n| rel(root, f) == format!("crates/rdm-transport/src/{n}"))).collect();
             if files.is_empty() {
                 out.push(Violation::Missing { ratchet, file: WIRE_SOURCES.join(", "), what: "the wire sources themselves".into() });
             }
@@ -663,9 +663,9 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
-            require(root, "crates/rafka-mesh-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn seat_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
-            require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rafka_mesh_transport::wire::encode", "rafka_mesh_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
+            require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);

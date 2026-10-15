@@ -32,12 +32,12 @@ fn acceptance_dir(layer: &str, cell: &str) -> PathBuf {
 // UNIT: the detector refuses every wedge that lacks a consequence, by name.
 // ---------------------------------------------------------------------------------------------
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher, so the spans are
 /// exactly the ones the detector emitted for this cell.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -45,7 +45,7 @@ struct Capture {
 fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2782-{cell}");
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
@@ -787,7 +787,7 @@ fn seats_detail_after_str(nodes: &[Value]) -> String {
 /// calls to it, by its process state and CPU use, and by what the control plane does about it,
 /// never by how long it has been quiet.
 async fn silent_case(run: &Run) {
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let id = "silent-runtime:sigstop-rpc-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
     let nodes = run.estate.node_values().await;

@@ -164,7 +164,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
     rafka_node_admin_core::fabric_storage::FabricStorage::claim_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));
     let local = Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new());
-    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rafka_mesh_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), "test-admin".into(), rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
+    let builds = Arc::new(FabricBuildStateAdapter::join(&gossip, &rdm_transport::membership::LocationBook::new(&endpoint, "test-admin").unwrap(), &fabric1(), peers, local.clone(), accepted.clone(), "test-admin".into(), rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(), None).await.unwrap());
     Admin { endpoint, router, builds, local, accepted }
 }
 
@@ -190,7 +190,7 @@ where
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_build() {
     let spans = Spans::default();
-    rafka_mesh_telemetry::enable_callsites();
+    rdm_transport::enable_callsites();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let topology = Arc::new(RwLock::new(observed()));
 

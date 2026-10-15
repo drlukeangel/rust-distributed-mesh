@@ -63,7 +63,7 @@ fn a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans(
 
     let dir = std::env::temp_dir().join(format!("rdm-rbi5a-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-rbi5a").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-rbi5a").expect("the cell's evidence file can be created");
     let (id, facts_json) = capture.run(2, async move {
         let builds = MemoryBuildStateAdapter::new();
         let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());

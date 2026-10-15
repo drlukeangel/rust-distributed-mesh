@@ -38,7 +38,7 @@ pub(crate) struct SilentNode {
 /// floor"). A birth the book holds only from its mesh-primary's projection is unheard since the book
 /// first held it. A birth the book holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
-pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rafka_mesh_transport::membership::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
+pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rdm_transport::membership::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
     watched
         .into_iter()
         .map(|n| {
@@ -64,8 +64,8 @@ pub fn tickle_round(per_call: std::time::Duration) -> std::time::Duration {
 
 /// [`tickle_round`] at the default call budget, the one every call of the tickle spends.
 pub fn tickle_round_at_default_budget() -> std::time::Duration {
-    match rafka_node_rpc::CallOptions::default().budget {
-        rafka_node_rpc::Budget::Overall(d) => tickle_round(d),
+    match rdm_transport::CallOptions::default().budget {
+        rdm_transport::Budget::Overall(d) => tickle_round(d),
         other => panic!("the default call budget is not one overall deadline: {other:?}"),
     }
 }
@@ -257,7 +257,7 @@ impl OfflineTickle {
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
     /// delay between round 1 and round 2; `tickle` makes the direct connect and `via_peer` the
     /// via-peer step. `observe` reads iroh's local view of a node once for the answered and the
-    /// failed span (`rafka_mesh_transport::iroh_obs`); it decides nothing.
+    /// failed span (`rdm_transport::iroh_obs`); it decides nothing.
     ///
     /// A tick waits on no probe (node-recovery.md: one loop, on every gossip interval). Each round it
     /// starts runs beside the loop, at once for every member due, so each member's connect is made
@@ -284,7 +284,7 @@ impl OfflineTickle {
         V: Fn(String) -> VF,
         VF: std::future::Future<Output = ViaPeerVerdict> + Send + 'static,
         O: Fn(String) -> OF,
-        OF: std::future::Future<Output = rafka_mesh_transport::iroh_obs::IrohObservation>,
+        OF: std::future::Future<Output = rdm_transport::iroh_obs::IrohObservation>,
     {
         let began = tokio::time::Instant::now();
         let mut report = OfflineTickReport::default();
@@ -580,7 +580,7 @@ pub(crate) mod tests {
                 },
                 |_| {
                     reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() }
+                    async { rdm_transport::iroh_obs::IrohObservation::unavailable() }
                 },
             )
             .await
@@ -733,7 +733,7 @@ pub(crate) mod tests {
                         }
                     },
                     |_| async { no_path() },
-                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                    |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
             };
@@ -783,7 +783,7 @@ pub(crate) mod tests {
                         }
                     },
                     |_| async { no_path() },
-                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                    |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
             };
@@ -849,7 +849,7 @@ pub(crate) mod tests {
                         }
                     },
                     |_| async { no_path() },
-                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                    |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
             };
@@ -992,7 +992,7 @@ pub(crate) mod tests {
                             verdict
                         }
                     },
-                    |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                    |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
                 )
                 .await
             };
@@ -1088,7 +1088,7 @@ pub(crate) mod tests {
             n.incarnation_id = Some(d.node.incarnation.clone());
             n
         };
-        let book = rafka_mesh_transport::membership::DigestBook::default();
+        let book = rdm_transport::membership::DigestBook::default();
         let t0 = std::time::Instant::now();
         let (silent, fresh, reborn, unheld) = (digest("mesh1.rpc.1"), digest("mesh1.rpc.2"), digest("mesh1.rpc.3"), digest("mesh1.rpc.4"));
         book.record_at(silent.clone(), t0);
@@ -1162,7 +1162,7 @@ pub(crate) mod tests {
                     tokio::time::sleep(std::time::Duration::from_millis(BUDGET)).await;
                     no_path()
                 },
-                |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )
             .await
         };
@@ -1248,7 +1248,7 @@ pub(crate) mod tests {
                 FLOOR,
                 |_| async { Err("no answer".to_string()) },
                 |_| async { no_path() },
-                |_| async { rafka_mesh_transport::iroh_obs::IrohObservation::unavailable() },
+                |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
             )
             .await
         };

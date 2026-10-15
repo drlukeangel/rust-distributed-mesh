@@ -4,10 +4,10 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
-use rafka_mesh_transport::membership::Membership;
-use rafka_mesh_transport::snapshot::{Chunk, SourceSnapshot, Taken};
+use rdm_transport::membership::Membership;
+use rdm_transport::snapshot::{Chunk, SourceSnapshot, Taken};
 use rafka_node_admin_core::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyDoor, TopologyFailure, TopologySlot};
-use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
@@ -50,14 +50,14 @@ struct Node {
     gossip: iroh_gossip::net::Gossip,
     resolved: ResolvedNode,
     /// The rafka-time this node adopted: 5 000 000 ms, nowhere near its OS clock.
-    time: rafka_mesh_transport::clock::RafkaTime,
+    time: rdm_transport::clock::RafkaTime,
     _router: Router,
 }
 
 async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Node {
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), name, Arc::new(time.clone()), vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
@@ -67,7 +67,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let server = extra(rafka_node_admin_core::topology_read::serve(ServerBuilder::new(), slot.clone()))
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .expect("the catalog seals");
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
     Node { ep, membership, client, resolver, slot, gossip, resolved, time, _router: router }
@@ -170,7 +170,7 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_book_h
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
-    let backbone = rafka_mesh_transport::membership::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", "mesh1.rpc.1", server.resolved.incarnation.clone(), vec![]).await.unwrap();
+    let backbone = rdm_transport::membership::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", "mesh1.rpc.1", server.resolved.incarnation.clone(), vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     server.membership.book.record(member_of(&fabric, "mesh1", "rpc", 2));
     let t = target_of(&caller, &server);
@@ -244,7 +244,7 @@ async fn a_large_topology_streams_in_chunks_under_the_ceiling_and_installs_whole
     for c in &chunks {
         let len = Topology::encode_reply(c).unwrap().len();
         assert!(len <= Topology::MAX_REPLY_FRAME_BYTES, "a chunk of {len} bytes is over the ceiling");
-        assert!(len <= rafka_mesh_transport::membership::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
+        assert!(len <= rdm_transport::membership::MAX_FRAME, "a chunk of {len} bytes is over the gossip message bound");
     }
     hold(&server.membership, &source);
     let t = target_of(&caller, &server);
@@ -268,7 +268,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     let counted = sent.clone();
     let server = node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await;
     // A server that streams the first chunk of a two-chunk snapshot and then ends the stream.
-    let lossy_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let lossy_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let (lid, linc) = (NodeId::mint(), IncarnationId::mint());
     let lossy = ServerBuilder::new()
         .serve_stream::<Topology, _, _>(OpOwner::Product("rdm".into()), move |_peer, _req: TopologyRequest, sink| {
@@ -294,7 +294,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
         })
         .seal(ServedBirth { node_id: lid.to_string(), incarnation: linc.to_string() })
         .unwrap();
-    let _router = Router::builder(lossy_ep.clone()).accept(rafka_node_rpc::ALPN, lossy).spawn();
+    let _router = Router::builder(lossy_ep.clone()).accept(rdm_transport::ALPN, lossy).spawn();
     let lossy_node = ResolvedNode { node_id: lid.clone(), name: "mesh1.rpc.9".parse().unwrap(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };
     server.resolver.insert(lossy_node);
     let read = get_topology(&server.client, &NodeTarget::ExactNode(lid), "mesh1", &server.membership, None, None).await.unwrap();
@@ -305,19 +305,19 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
     lossy_ep.close().await;
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on every
 /// thread of the cell's own runtime, so cells sharing a test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture(cell: &str) -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&format!("topology-read-{cell}"), exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(&format!("topology-read-{cell}"), exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -626,7 +626,7 @@ async fn a_node_holding_no_rafka_time_answers_not_ready_by_name() {
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     let d = own_digest(&server, &fabric);
-    let _ = server.slot.set(Arc::new(TopologyDoor::new(server.membership.clone(), Arc::new(move || d.clone()), rafka_mesh_transport::clock::RafkaTime::unadopted())));
+    let _ = server.slot.set(Arc::new(TopologyDoor::new(server.membership.clone(), Arc::new(move || d.clone()), rdm_transport::clock::RafkaTime::unadopted())));
     let t = target_of(&caller, &server);
     let err = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap_err();
     assert!(matches!(&err, TopologyFailure::NotReady(r) if r.contains("holds no rafka-time")), "{err}");

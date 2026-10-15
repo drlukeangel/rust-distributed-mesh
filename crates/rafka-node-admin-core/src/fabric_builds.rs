@@ -34,7 +34,7 @@ use iroh_gossip::proto::TopicId;
 use std::sync::Arc;
 use tracing::Instrument as _;
 
-/// One message on the Build topic, one postcard frame (`rafka_mesh_transport::wire`). The nonce
+/// One message on the Build topic, one postcard frame (`rdm_transport::wire`). The nonce
 /// makes every send distinct, so a catch-up resend is never taken for a message already seen.
 ///
 /// `fabric` is the Fabric record, the Fabric's identity: Fabric control state of its own, sent alone
@@ -55,13 +55,13 @@ impl BuildMessage {
     /// This message as one gossip payload; the payload is not bounded here (see [`encode`]).
     pub fn to_bytes(&self) -> Result<bytes::Bytes, BuildStateError> {
         let wire = crate::wire::WireMessage::of(self).map_err(|e| BuildStateError::Unencodable(e.to_string()))?;
-        rafka_mesh_transport::wire::encode(&wire).map(Into::into).map_err(|e| BuildStateError::Unencodable(e.to_string()))
+        rdm_transport::wire::encode(&wire).map(Into::into).map_err(|e| BuildStateError::Unencodable(e.to_string()))
     }
 
     /// The message a gossip payload carries, or why it is not one.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, rafka_mesh_transport::wire::WireError> {
-        let wire: crate::wire::WireMessage = rafka_mesh_transport::wire::decode(bytes)?;
-        wire.into_message().map_err(|e| rafka_mesh_transport::wire::WireError::new(format!("a Build fact this build does not read: {e}")))
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, rdm_transport::wire::WireError> {
+        let wire: crate::wire::WireMessage = rdm_transport::wire::decode(bytes)?;
+        wire.into_message().map_err(|e| rdm_transport::wire::WireError::new(format!("a Build fact this build does not read: {e}")))
     }
 }
 
@@ -71,7 +71,7 @@ fn encode_fabric(identity: &FabricIdentity) -> Result<bytes::Bytes, BuildStateEr
     BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(identity.clone()) }.to_bytes()
 }
 
-pub use rafka_mesh_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
+pub use rdm_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
     let bytes = BuildMessage { nonce: rand::random(), facts, fabric: None }.to_bytes()?;
@@ -89,7 +89,7 @@ fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
 pub fn encode_chunks(facts: Vec<BuildFact>) -> (Vec<bytes::Bytes>, Vec<BuildStateError>) {
     // Each encoding draws a fresh nonce, whose length varies: a batch is sent as the bytes that
     // were measured to fit, never encoded a second time.
-    let (runs, refused) = rafka_mesh_transport::chunking::pack_in_order(facts, |batch| encode(batch.to_vec()));
+    let (runs, refused) = rdm_transport::chunking::pack_in_order(facts, |batch| encode(batch.to_vec()));
     (runs.into_iter().map(|(_, b)| b).collect(), refused)
 }
 
@@ -135,7 +135,7 @@ fn refeed(
     known: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>>,
     neighbors: Arc<std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>>,
 ) {
-    use rafka_mesh_transport::membership::backbone_gossip_interval;
+    use rdm_transport::membership::backbone_gossip_interval;
     tokio::spawn(async move {
         // As the membership channels (PRD §6.2): a bounded join attempt one gossip interval after
         // the topic was left alone, backed off (doubling, at most one floor apart) while it holds.
@@ -152,7 +152,7 @@ fn refeed(
             if since.elapsed() < backoff {
                 continue;
             }
-            backoff = rafka_mesh_transport::membership::refeed_backoff(backoff);
+            backoff = rdm_transport::membership::refeed_backoff(backoff);
             let mut peers = known.lock().unwrap().clone();
             peers.sort();
             peers.dedup();
@@ -187,7 +187,7 @@ pub struct FabricBuildStateAdapter {
     /// own mesh's primary seat, never the fabric seat's, so an admin that yielded the fabric seat
     /// still opens and claims its own mesh's drift attempts while it holds its mesh's seat.
     mesh_seat_gate: Authority,
-    book: rafka_mesh_transport::membership::LocationBook,
+    book: rdm_transport::membership::LocationBook,
 }
 
 /// What the committed fabric seat record says of this birth's Build authority.
@@ -297,7 +297,7 @@ impl FabricBuildStateAdapter {
     /// this admin reads. `node` names this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
-        book: &rafka_mesh_transport::membership::LocationBook,
+        book: &rdm_transport::membership::LocationBook,
         fabric: &rdm_core::FabricId,
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
@@ -422,7 +422,7 @@ impl FabricBuildStateAdapter {
                     Ok(t) => t,
                     Err(e) => {
                         span.in_scope(|| tracing::info!(error = %e, "gossip has stopped; the Build topic ends"));
-                        rafka_mesh_transport::membership::mark_transport_stopped(format!("gossip refused to re-open the Build topic: {e}"));
+                        rdm_transport::membership::mark_transport_stopped(format!("gossip refused to re-open the Build topic: {e}"));
                         return;
                     }
                 };
@@ -443,7 +443,7 @@ impl FabricBuildStateAdapter {
     /// HyParView's shuffle (a minute per peer). Returns how many were joined.
     pub async fn join_admins(&self, admins: Vec<EndpointAddr>) -> usize {
         let live: Vec<iroh::EndpointId> = admins.iter().map(|a| a.id).collect();
-        let fresh = rafka_mesh_transport::membership::rejoin(&self.joined, &live);
+        let fresh = rdm_transport::membership::rejoin(&self.joined, &live);
         if fresh.is_empty() {
             return 0;
         }
@@ -746,7 +746,7 @@ mod tests {
     async fn a_moved_fabric_seat_record_refuses_the_old_seats_decisions_with_no_fence_write() {
         use futures_util::FutureExt as _;
         use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
-        let seats = rafka_mesh_transport::membership::SeatBook::default();
+        let seats = rdm_transport::membership::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
@@ -781,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
         use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
-        let seats = rafka_mesh_transport::membership::SeatBook::default();
+        let seats = rdm_transport::membership::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rdm_core::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(seats.subscribe());

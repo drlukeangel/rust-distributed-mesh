@@ -10,7 +10,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolder};
-use rafka_mesh_transport::membership::{Backbone, Membership};
+use rdm_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
 use rafka_node_admin_core::build_facts_read::{BuildFactsDoor, BuildFactsSlot};
@@ -22,7 +22,7 @@ use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle,
 use rafka_node_admin_core::status_storage::MemoryStatusStorage;
 use rafka_node_admin_core::storage::MemoryNodesStorage;
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
@@ -162,7 +162,7 @@ struct Admin {
     /// not answered yet (what a process that dies there leaves).
     view_open: tokio::sync::watch::Sender<bool>,
     /// The admin's Node RPC server: a cell stops it taking new calls as node.connections.delete does.
-    server: rafka_node_rpc::NodeRpcServer,
+    server: rdm_transport::NodeRpcServer,
     /// The admin's `FetchBuildFacts` door (op `0x1F`): `NotReady` until a cell fills it.
     facts_slot: BuildFactsSlot,
     /// The admin's Build door (op `0x20`): `NotReady` until a cell fills it.
@@ -291,9 +291,9 @@ async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_sl
 /// An admin born over `storage` and the status rows `status`: a new birth (a new incarnation and a
 /// new endpoint key) of the node `node_id`, holding whatever both already hold.
 async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool, storage: Arc<dyn FabricStorage>, status: Arc<MemoryStatusStorage>) -> (Admin, iroh::Endpoint) {
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
     let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), path, Arc::new(time), vec![]).await.unwrap();
@@ -308,7 +308,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>> = Arc::new(OnceLock::new());
     let pinged = {
         let (slot, ready) = (slot.clone(), ready_on_ping.clone());
-        ServerBuilder::new().serve::<Ping, _, _>(OpOwner::Core, move |_peer: rafka_node_rpc::PeerContext, req: PingRequest| {
+        ServerBuilder::new().serve::<Ping, _, _>(OpOwner::Core, move |_peer: rdm_transport::PeerContext, req: PingRequest| {
             let (slot, ready) = (slot.clone(), ready.clone());
             async move {
                 if let Some(door) = ready.get() {
@@ -321,7 +321,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     };
     let served = rafka_node_admin_core::build_facts_read::serve(rafka_node_admin_core::fabric_handover::serve(pinged, slot.clone()), facts_slot.clone());
     let server = rafka_node_admin_core::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server.clone()).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let topology = Arc::new(tokio::sync::RwLock::new(view(vec![])));
@@ -472,14 +472,14 @@ struct Traced {
 }
 
 /// A cell's own span capture: the spans its threads open, and nobody else's. The product span
-/// pipeline (`rafka_mesh_telemetry::span_capture`) in front of an in-memory exporter stamps the trace
+/// pipeline (`rdm_transport::span_capture`) in front of an in-memory exporter stamps the trace
 /// ids, and [`Spans`] keeps every span in the order it was created with the fields recorded on it.
 /// Both sit behind one dispatcher that is the default of the calling thread and of every thread of
 /// the runtime [`TraceCapture::run`] builds for the cell, so two cells of one process never see each
 /// other's spans.
 struct TraceCapture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     spans: Spans,
 }
@@ -487,7 +487,7 @@ struct TraceCapture {
 fn trace_capture(service: &'static str) -> TraceCapture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let spans = Spans::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(service, exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(service, exporter.clone());
     TraceCapture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(spans.clone()).with(layer)), spans }
 }
 
@@ -508,7 +508,7 @@ impl TraceCapture {
     fn story<F: std::future::Future>(&self, root: &'static str, f: F) -> (String, F::Output) {
         self.run(async {
             let root = tracing::info_span!("rdm.test.fabric_handover", cell = root);
-            let traceparent = rafka_mesh_telemetry::traceparent_of(&root).expect("the cell's root span has a trace context");
+            let traceparent = rdm_transport::traceparent_of(&root).expect("the cell's root span has a trace context");
             let trace_id = traceparent.split('-').nth(1).expect("a traceparent names its trace").to_string();
             (trace_id, tracing::Instrument::instrument(f, root).await)
         })
@@ -1207,12 +1207,12 @@ fn transfer_file(operation: &str) -> String {
 #[test]
 fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attempt_obtains_node_primary_updated() {
     // The cell's spans: the in-memory names the waits read, and the product span pipeline
-    // (`rafka_mesh_telemetry::span_capture`) stamping the trace ids the proof names, both the cell's
+    // (`rdm_transport::span_capture`) stamping the trace ids the proof names, both the cell's
     // own on its own threads.
     let cap = trace_capture("mesh2.admin.1");
     cap.run(async {
         let story = tracing::info_span!("rdm.test.seat.update.via-lost-holder-row");
-        let trace_id = story.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
+        let trace_id = story.in_scope(rdm_transport::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
         let root = DataDir::new("primary-update-root");
         let f = seats_fabric_with(FabricSeat::X, || {
             let at = rafka_node_admin_core::store_root::StoreRoot::at(&root.0);
@@ -2417,9 +2417,9 @@ struct Member {
 }
 
 async fn member(fabric: &FabricId, mesh: &str, path: &str, node_id: &str) -> Member {
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
     let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), path, Arc::new(time), vec![]).await.unwrap();
@@ -2427,7 +2427,7 @@ async fn member(fabric: &FabricId, mesh: &str, path: &str, node_id: &str) -> Mem
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: rafka_node_admin_core::fabric_handover::MemberSlot = Arc::new(OnceLock::new());
     let server = rafka_node_admin_core::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
     let door = Arc::new(rafka_node_admin_core::fabric_handover::MemberDoor::new(path.parse().unwrap(), node_id, incarnation, membership, client));

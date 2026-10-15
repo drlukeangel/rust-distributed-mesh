@@ -17,7 +17,7 @@ use rafka_node_admin_core::build_op::{local_dispatched, BuildDoor, BuildSlot};
 use rafka_node_admin_core::build_run::{AttemptRuns, FramedBuilds, RunDoor};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner};
-use rafka_node_rpc::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
@@ -32,14 +32,14 @@ use std::time::Duration;
 
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("node-objects", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("node-objects", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -233,7 +233,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
 /// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
@@ -261,7 +261,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
@@ -288,7 +288,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
         turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
-    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rdm_transport::membership::SeatBook::default(), incarnation: rdm_core::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
 /// The one executor of the fixture is the fabric-primary itself.
@@ -330,12 +330,12 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     let server = rafka_node_admin_core::build_op::serve(ServerBuilder::new(), slot)
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { node_id, name: "mesh1.admin.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation });
-    let caller = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let caller = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = Arc::new(NodeRpcClient::new(caller, resolver).with_caller_system("rdm"));
     Served { router, carrier: BuildCarrier::new(client, "mesh1.admin.1".parse().unwrap()) }
 }
@@ -902,9 +902,9 @@ fn calls_no_op_carries_today_say_so_by_name() {
         let served = serve(door(&rig, Duration::from_secs(1)).await).await;
         let nodes = nodes_over(&served.carrier);
         let node_id = NodeId::mint();
-        let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
+        let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
         // The rename reaches the node's mesh-primary only with a name within the grammar.
-        let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
+        let (mp, route) = (NodeId::mint(), rdm_transport::RouteChoice::Direct);
         for (bad, says) in [("Rpc", "\"Rpc\""), (".old", "starts with '.'"), ("", "empty")] {
             let refused = nodes.name_update(&birth, &mp, &route, bad).await.expect("a typed refusal");
             assert!(matches!(&refused, rdm_core::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");

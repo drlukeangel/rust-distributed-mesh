@@ -104,7 +104,7 @@ pub enum CutSpec {
     /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
     TopologyRead,
     /// The admin withholds `announcement`, one of its final aggregates or leadership announcements
-    /// (`rafka_mesh_transport::membership::Withhold`: `stopping-aggregate`, `primary-updated`,
+    /// (`rdm_transport::membership::Withhold`: `stopping-aggregate`, `primary-updated`,
     /// `aggregate-in-flight`), from `channel` (`mesh`, `backbone` or `any`) while the cut is armed:
     /// each such send is skipped, so the frame is never offered to the channel. It models the
     /// announcement lost on its way out (R-NS2: best-effort dissemination), not in a peer queue.

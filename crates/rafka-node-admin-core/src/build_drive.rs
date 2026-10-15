@@ -1111,7 +1111,7 @@ impl DriveEnv {
             *dispatches += 1;
             let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %executor, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
             if let Some(tp) = &context.traceparent {
-                rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
+                rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
             }
             // What the attempt decides on, as claimed: an attempt handed back to this admin with this
             // unchanged would end the same way again.
@@ -1257,7 +1257,7 @@ impl DriveEnv {
         let held = self.dispatcher.hold(me, id, attempt);
         let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id.log(), attempt, executor = %me, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         if let Some(tp) = &context.traceparent {
-            rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
+            rdm_transport::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
         }
         let moved = self.gate.move_seats(&m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
         let after = self.topology.read().await.clone();

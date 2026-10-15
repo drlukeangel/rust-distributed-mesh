@@ -8,7 +8,7 @@ use rdm_core::reconnect::reconnect_plan;
 use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
 use rafka_node_admin_core::storage::{ConnectionsStorage, FileConnectionsStorage};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
 use serde_json::{json, Value};
@@ -44,7 +44,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
     let cell = "source_reconnect_failures_grow_log_keep_two_current_members";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
-    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-acceptance").expect("the cell's evidence file can be created");
+    let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-acceptance").expect("the cell's evidence file can be created");
     capture.run(4, async {
         let data_dir = std::env::temp_dir().join(format!("i143-2938-unit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
@@ -68,7 +68,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
         };
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(destination.clone());
-        let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm").with_connection_observer(writer.clone());
         let opts = CallOptions { budget: Budget::Overall(Duration::from_millis(300)), ..Default::default() };
 

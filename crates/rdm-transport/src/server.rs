@@ -1,0 +1,740 @@
+//! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
+//!
+//! Per bi-stream: read the target (an unserved op → `421`; the node id it names is
+//! never a reason to refuse, R-UC1a), the context, the declared length
+//! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
+//! `Busy`), read the body, and dispatch only after the request direction
+//! finished cleanly. A request the sender reset (`499`) or left unfinished is
+//! dropped and never reaches a handler. Handler work runs supervised: a panic
+//! or `HandlerFault` resets with `423 INTERNAL_RPC_FAILURE`.
+
+use crate::admission::{Admission, Limits, Permit};
+use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream, VarInt};
+use iroh::protocol::{AcceptError, ProtocolHandler};
+use rdm_core::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, OpOwner};
+use rdm_core::codes::ResetCode;
+use rdm_core::dispatch::{RequestAssembly, ServerAction};
+use rdm_core::framing::encode_frame;
+use rdm_core::outcome::MalformedKind;
+use rdm_core::protocol::NodeProtocol;
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use rdm_core::context::{dropped_as_str, CallContext};
+use std::sync::Arc;
+use tracing::Instrument;
+
+/// Who is calling, as the transport proved it.
+#[derive(Debug, Clone)]
+pub struct PeerContext {
+    /// The calling node's endpoint id, as the transport proved it.
+    pub endpoint_id: iroh::PublicKey,
+    /// The observability context the request carried, already sanitized: what a carrier
+    /// hands into its inner call unchanged.
+    pub context: CallContext,
+}
+
+/// An unexpected execution fault. Created only by named constructors, so
+/// every fault site is deliberate (node-rpc.md §32.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandlerFault(String);
+
+impl HandlerFault {
+    /// A fault for a broken invariant, naming `what` was broken.
+    pub fn invariant_broken(what: impl Into<String>) -> Self {
+        Self(what.into())
+    }
+    /// The named reason the fault carries.
+    pub fn reason(&self) -> &str {
+        &self.0
+    }
+}
+
+pub(crate) type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// A typed refusal encoded with the protocol's own constructors.
+pub(crate) enum Refusal {
+    NotReady(String),
+    Busy(String),
+    ConnectionsDeleting(String),
+    Malformed(MalformedKind),
+}
+
+pub(crate) trait Erased: Send + Sync {
+    /// The handler's future, with the serve span it runs under: the invocation names what follows the
+    /// handler (its fault or panic) under that span. `Span::none()` for a request that does not decode,
+    /// which is refused and opens no serve span.
+    fn call(&self, peer: PeerContext, payload: Vec<u8>) -> (tracing::Span, BoxFut<Result<Vec<u8>, HandlerFault>>);
+    fn refusal(&self, r: Refusal) -> Vec<u8>;
+    fn max_reply(&self) -> usize;
+    /// A server-streaming handler: frames go out through `out` as the handler produces them.
+    fn is_stream(&self) -> bool {
+        false
+    }
+    /// The streaming handler's future, with its serve span as [`Erased::call`] gives it: the stream's
+    /// end (its terminal or refusal) is written under that span.
+    fn stream(&self, _peer: PeerContext, _payload: Vec<u8>, _out: crate::stream::StreamOut) -> Option<(tracing::Span, BoxFut<crate::stream::StreamEnd>)> {
+        None
+    }
+}
+
+struct Typed<P, F> {
+    f: Arc<F>,
+    _p: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P, F, Fut> Erased for Typed<P, F>
+where
+    P: NodeProtocol,
+    F: Fn(PeerContext, P::Request) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<P::Reply, HandlerFault>> + Send + 'static,
+{
+    fn call(&self, peer: PeerContext, payload: Vec<u8>) -> (tracing::Span, BoxFut<Result<Vec<u8>, HandlerFault>>) {
+        let f = self.f.clone();
+        let req = match P::decode_request(&payload) {
+            Ok(r) => r,
+            Err(d) => {
+                let refused = Box::pin(async move {
+                    tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", protocol = P::NAME, kind = ?d)
+                        .in_scope(|| tracing::info!(?d, "request does not decode"));
+                    P::encode_reply(&P::malformed(d.into())).map_err(|e| HandlerFault::invariant_broken(e.0))
+                });
+                return (tracing::Span::none(), refused);
+            }
+        };
+        let span = tracing::info_span!(
+            "rdm.node_rpc.request.serve.via-direct",
+            protocol = P::NAME,
+            op = P::OP,
+            peer = %peer.endpoint_id,
+            caller_system = tracing::field::Empty,
+            context_dropped = tracing::field::Empty,
+            test_case = tracing::field::Empty,
+            scenario = tracing::field::Empty,
+            operation = tracing::field::Empty,
+        );
+        apply_context(&span, &peer);
+        let serve = span.clone();
+        let handler = Box::pin(async move {
+            let reply = f(peer, req).instrument(serve).await?;
+            P::encode_reply(&reply).map_err(|e| HandlerFault::invariant_broken(e.0))
+        });
+        (span, handler)
+    }
+
+    fn refusal(&self, r: Refusal) -> Vec<u8> {
+        let reply = match r {
+            Refusal::NotReady(s) => P::not_ready(s),
+            Refusal::Busy(s) => P::busy(s),
+            Refusal::ConnectionsDeleting(s) => P::connections_deleting(s),
+            Refusal::Malformed(k) => P::malformed(k),
+        };
+        P::encode_reply(&reply).unwrap_or_default()
+    }
+
+    fn max_reply(&self) -> usize {
+        P::MAX_REPLY_FRAME_BYTES
+    }
+}
+
+/// Parent `span` on the request's W3C context and record its caller identity and the
+/// allowlisted baggage keys. The context never reaches the handler's decision: it is
+/// evidence on the span and, through `peer`, what a carrier hands onward.
+pub(crate) fn apply_context(span: &tracing::Span, peer: &PeerContext) {
+    let c = &peer.context;
+    if let Some(tp) = c.traceparent.as_deref() {
+        crate::set_remote_parent(span, tp, c.tracestate.as_deref());
+    }
+    if let Some(s) = c.caller_system.as_deref() {
+        span.record("caller_system", s);
+    }
+    for (k, v) in c.span_baggage() {
+        span.record(k, v.as_str());
+    }
+}
+
+/// Counters a functional test or an operator can read (pre-body refusals are
+/// counted, not root-spanned per call; node-rpc.md §38.1).
+#[derive(Debug, Default)]
+pub struct ServerStats {
+    /// Requests that reached a handler.
+    pub dispatched: AtomicU64,
+    /// Requests dropped because the sender finished or reset before the request was complete.
+    pub dropped_unfinished: AtomicU64,
+    /// Requests refused because no handler serves the op (`421 UNSERVED_OP`).
+    pub unserved: AtomicU64,
+    /// Requests refused because a frame exceeded its op's size bound.
+    pub too_large: AtomicU64,
+    /// Requests refused typed `Busy` by admission.
+    pub busy: AtomicU64,
+    /// Requests refused typed `Draining` while the server drains.
+    pub draining: AtomicU64,
+    /// Requests refused typed `NotReady` by a closed ready gate.
+    pub not_ready: AtomicU64,
+    /// Requests reset as protocol violations.
+    pub violations: AtomicU64,
+    /// Handlers that failed or panicked.
+    pub faults: AtomicU64,
+    /// Handlers dispatched and not yet finished (a drained node waits for it to reach zero).
+    pub in_flight: AtomicU64,
+}
+
+/// Counts one dispatched handler for as long as it lives, however its
+/// invocation ends.
+struct InFlight(Arc<ServerStats>);
+
+impl InFlight {
+    fn enter(stats: &Arc<ServerStats>) -> Self {
+        stats.in_flight.fetch_add(1, Ordering::SeqCst);
+        Self(stats.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The calls this server dispatched whose reply is not yet settled: written and acknowledged by
+/// the caller, or the caller or the connection gone. A node that closes its endpoint with a reply
+/// unsettled takes the reply down with the connection, so the caller reads `connection lost`
+/// where the node answered `Applied`.
+#[derive(Default)]
+struct UnsettledReplies {
+    next: AtomicU64,
+    open: std::sync::Mutex<std::collections::BTreeSet<u64>>,
+    changed: tokio::sync::watch::Sender<u64>,
+}
+
+/// One dispatched call's place in [`UnsettledReplies`]: held from the dispatch until the reply is
+/// settled, and released on every way out of the call.
+struct Unsettled {
+    book: Arc<UnsettledReplies>,
+    seq: u64,
+}
+
+impl Unsettled {
+    fn enter(book: &Arc<UnsettledReplies>) -> Self {
+        let mut open = book.open.lock().unwrap();
+        let seq = book.next.fetch_add(1, Ordering::SeqCst);
+        open.insert(seq);
+        Self { book: book.clone(), seq }
+    }
+}
+
+impl Drop for Unsettled {
+    fn drop(&mut self) {
+        self.book.open.lock().unwrap().remove(&self.seq);
+        self.book.changed.send_modify(|v| *v += 1);
+    }
+}
+
+impl ServerStats {
+    /// Read `c` with sequential consistency.
+    pub fn get(c: &AtomicU64) -> u64 {
+        c.load(Ordering::SeqCst)
+    }
+}
+
+/// Registration happens at birth; `seal` consumes the builder.
+#[derive(Default)]
+pub struct ServerBuilder {
+    pub(crate) catalog: CatalogBuilder,
+    pub(crate) handlers: HashMap<u8, Arc<dyn Erased>>,
+    admission: Admission,
+    /// Closed (`false`) until the owner opens it: every op, ping included, is refused with the
+    /// protocol's typed `NotReady`.
+    ready: Option<Arc<AtomicBool>>,
+    /// Forwardable protocols this node carries, op -> max inner reply (node-rpc.md §36.1).
+    pub(crate) carried: HashMap<u8, usize>,
+    /// Filled at seal for the forward handler, when this node serves it.
+    pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
+    /// The accept trigger and the resolver that names an accepted peer, when the process runs
+    /// direct recovery (R-CN1).
+    inbound: Option<Inbound>,
+    /// Test seam: withholds the next reply after the handler has applied it.
+    withhold: Option<Arc<ReplyWithhold>>,
+}
+
+/// An accepted connection handed to the process's accept trigger once the resolver names the
+/// peer's live birth: a recovery trigger, never Direct evidence (R-CN1).
+#[derive(Clone)]
+struct Inbound {
+    resolver: Arc<crate::LiveNodeResolver>,
+    trigger: Arc<dyn crate::AcceptTrigger>,
+}
+
+impl ServerBuilder {
+    /// An empty builder: no handlers, default admission, no ready gate.
+    pub fn new() -> Self {
+        Self {
+            catalog: CatalogBuilder::new(),
+            handlers: HashMap::new(),
+            admission: Admission::default(),
+            ready: None,
+            carried: HashMap::new(),
+            carried_table: None,
+            inbound: None,
+            withhold: None,
+        }
+    }
+
+    /// Test seam: let `withhold` hold back the reply of the next call it is armed for. An unarmed
+    /// seam changes nothing.
+    pub fn withhold_replies(mut self, withhold: Arc<ReplyWithhold>) -> Self {
+        self.withhold = Some(withhold);
+        self
+    }
+
+    /// Hand every accepted connection whose peer `resolver` names as a live node to `trigger`
+    /// (R-CN1: an accept is a recovery trigger for this node's own direct dial toward that birth,
+    /// never Direct evidence; the acceptor writes nothing). A peer the resolver does not hold (a
+    /// probe's ephemeral key) is handed to nothing.
+    pub fn with_accept_trigger(mut self, resolver: Arc<crate::LiveNodeResolver>, trigger: Arc<dyn crate::AcceptTrigger>) -> Self {
+        self.inbound = Some(Inbound { resolver, trigger });
+        self
+    }
+
+    /// Serve unary protocol `P` (owned by `owner`) with handler `f`.
+    pub fn serve<P, F, Fut>(mut self, owner: OpOwner, f: F) -> Self
+    where
+        P: NodeProtocol,
+        F: Fn(PeerContext, P::Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<P::Reply, HandlerFault>> + Send + 'static,
+    {
+        self.catalog = self.catalog.serve(CatalogEntry::canonical::<P>(owner, Shape::Unary));
+        self.handlers.insert(P::OP, Arc::new(Typed::<P, F> { f: Arc::new(f), _p: std::marker::PhantomData }));
+        self
+    }
+
+    /// Add the ledger rows that reserve ops for other products; each op is named once in the sealed
+    /// catalog.
+    pub fn ledger(mut self, rows: impl IntoIterator<Item = rdm_core::catalog::LedgerEntry>) -> Self {
+        self.catalog = self.catalog.ledger(rows);
+        self
+    }
+
+    /// Compose a product's transitional adapter (`CatalogEntry::transitional`) into this
+    /// process's one sealed catalog (node-rpc-envelope.md §12). The server runs no handler
+    /// for it: the product's own dispatcher serves the op on its legacy framing and consults
+    /// [`NodeRpcServer::catalog`] to refuse what the catalog does not hold. On this server's
+    /// own ALPN the op is unserved (`421`), as any catalogued op without a handler is.
+    pub fn adapter(mut self, entry: CatalogEntry) -> Self {
+        self.catalog = self.catalog.serve(entry);
+        self
+    }
+
+    /// Serve nothing until `ready` is true: while it is false every op, `Ping` included, is
+    /// answered with its protocol's typed `NotReady` and no handler runs. A node whose handlers
+    /// read state filled after its server is already accepting closes the gate until the state
+    /// exists, so no peer is answered from a half-built node.
+    pub fn with_ready_gate(mut self, ready: Arc<AtomicBool>) -> Self {
+        self.ready = Some(ready);
+        self
+    }
+
+    /// Bound admission for `op` to `limits`.
+    pub fn limits(mut self, op: u8, limits: Limits) -> Self {
+        self.admission.set(op, limits);
+        self
+    }
+
+    /// Seal the catalog before the first stream is accepted, as `birth`: the
+    /// exact node and incarnation this process is. A request is dispatched only
+    /// when its target names this node and a served op.
+    pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
+        let catalog = self.catalog.seal()?;
+        if let Some(table) = &self.carried_table {
+            let _ = table.set(self.carried.clone());
+        }
+        Ok(NodeRpcServer {
+            inner: Arc::new(Inner {
+                catalog,
+                handlers: self.handlers,
+                admission: self.admission,
+                ready: self.ready,
+                draining: AtomicBool::new(false),
+                stats: Arc::new(ServerStats::default()),
+                birth,
+                inbound: self.inbound,
+                withhold: self.withhold,
+                replies: Arc::new(UnsettledReplies::default()),
+                connections: std::sync::Mutex::default(),
+            }),
+        })
+    }
+}
+
+/// Test seam (R-I3): withholds the reply of the next call after its handler has run, until the test
+/// releases it, then writes the reply and records what the caller's side of the stream did with it.
+/// The server, its wire format and the reply bytes are the production ones; only the moment of the
+/// write moves. Unarmed, it is inert.
+#[derive(Default)]
+pub struct ReplyWithhold {
+    armed: AtomicBool,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    landed: tokio::sync::Notify,
+    late: std::sync::Mutex<Option<LateReply>>,
+}
+
+/// What became of a withheld reply once it was released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LateReply {
+    /// The caller's `STOP_SENDING` for the call's reply stream, as the server observed it
+    /// (`Ok(Some(code))`), or why it observed none.
+    pub stopped: Result<Option<u64>, String>,
+    /// The late reply's write: `Err` when the caller's side had already abandoned the stream.
+    pub written: Result<(), String>,
+}
+
+impl ReplyWithhold {
+    /// Withhold the reply of the next call that reaches its write.
+    pub fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Resolves once a handler has finished and its reply is being withheld.
+    pub async fn reached(&self) {
+        self.reached.notified().await;
+    }
+
+    /// Let the withheld reply go.
+    pub fn release(&self) {
+        self.release.notify_one();
+    }
+
+    /// Resolves with what became of the released reply.
+    pub async fn late_reply(&self) -> LateReply {
+        self.landed.notified().await;
+        self.late.lock().unwrap().take().expect("a landed late reply is recorded")
+    }
+
+    fn take_armed(&self) -> bool {
+        self.armed.swap(false, Ordering::SeqCst)
+    }
+
+    async fn hold(&self, send: &mut SendStream, bytes: &[u8]) {
+        self.reached.notify_one();
+        self.release.notified().await;
+        // The caller's abandonment of the reply stream is waited for, not slept for: it is the
+        // fact the release is ordered after.
+        let stopped = send.stopped().await.map(|c| c.map(|v| v.into_inner())).map_err(|e| e.to_string());
+        let written = send.write_all(bytes).await.map_err(|e| e.to_string());
+        *self.late.lock().unwrap() = Some(LateReply { stopped, written });
+        self.landed.notify_one();
+    }
+}
+
+/// The exact birth a server is, named in its spans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedBirth {
+    /// The served node's id.
+    pub node_id: String,
+    /// The served node's incarnation id.
+    pub incarnation: String,
+}
+
+struct Inner {
+    catalog: SealedCatalog,
+    handlers: HashMap<u8, Arc<dyn Erased>>,
+    admission: Admission,
+    ready: Option<Arc<AtomicBool>>,
+    draining: AtomicBool,
+    stats: Arc<ServerStats>,
+    birth: ServedBirth,
+    inbound: Option<Inbound>,
+    withhold: Option<Arc<ReplyWithhold>>,
+    replies: Arc<UnsettledReplies>,
+    /// The connections this server accepted and still holds open, by their stable id.
+    connections: std::sync::Mutex<HashMap<usize, Connection>>,
+}
+
+/// One sealed server for the process's one endpoint. The socket a request
+/// arrives on names nothing: the request's target does.
+#[derive(Clone)]
+pub struct NodeRpcServer {
+    inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for NodeRpcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeRpcServer").field("birth", &self.inner.birth).finish()
+    }
+}
+
+fn code(c: ResetCode) -> VarInt {
+    VarInt::from_u32(c.code())
+}
+
+impl NodeRpcServer {
+    /// The one sealed effective catalog of this process: what every dispatcher in it serves.
+    pub fn catalog(&self) -> &SealedCatalog {
+        &self.inner.catalog
+    }
+
+    /// The server's counters.
+    pub fn stats(&self) -> Arc<ServerStats> {
+        self.inner.stats.clone()
+    }
+
+    /// Resolves once every call dispatched before this one has its reply settled: written, and
+    /// acknowledged by the caller or abandoned by it or its connection. A node that is about to
+    /// close its endpoint waits here first, so no admitted answer is taken down with the
+    /// connection. Calls dispatched after this one do not extend the wait.
+    pub async fn settled(&self) {
+        let book = &self.inner.replies;
+        let upto = book.next.load(Ordering::SeqCst);
+        let mut changed = book.changed.subscribe();
+        loop {
+            if book.open.lock().unwrap().first().is_none_or(|first| *first >= upto) {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Hard-cut the connections this server accepted (`node.connections.delete`), closing each with
+    /// `reason`, except those from `spare` (the peers whose calls are in flight and answered on their
+    /// connections). The endpoint stays bound and fresh dials are accepted. Returns how many were
+    /// closed.
+    pub fn close_connections_except(&self, spare: &[iroh::PublicKey], reason: &'static str) -> usize {
+        let cut: Vec<Connection> = {
+            let held = self.inner.connections.lock().unwrap();
+            held.values().filter(|c| !spare.contains(&c.remote_id())).cloned().collect()
+        };
+        for c in &cut {
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.remote_id().fmt_short(), connection = c.stable_id(), direction = "accepted")
+                .in_scope(|| tracing::info!("an accepted connection was closed"));
+            c.close(0u32.into(), reason.as_bytes());
+        }
+        cut.len()
+    }
+
+    /// Hard-cut the connections this server accepted from `peer` (`node.connections.delete` naming
+    /// one exact connection), closing each with `reason`, unless `peer` is `spare` (the peer whose
+    /// call is in flight and answered on its connection). Returns how many were closed.
+    pub fn close_connections_from(&self, peer: iroh::PublicKey, spare: Option<iroh::PublicKey>, reason: &'static str) -> usize {
+        if Some(peer) == spare {
+            return 0;
+        }
+        let cut: Vec<Connection> = {
+            let held = self.inner.connections.lock().unwrap();
+            held.values().filter(|c| c.remote_id() == peer).cloned().collect()
+        };
+        for c in &cut {
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.remote_id().fmt_short(), connection = c.stable_id(), direction = "accepted")
+                .in_scope(|| tracing::info!("an accepted connection was closed"));
+            c.close(0u32.into(), reason.as_bytes());
+        }
+        cut.len()
+    }
+
+    /// Enter `Draining`: new calls get a typed `Draining` refusal.
+    pub fn drain(&self) {
+        self.inner.draining.store(true, Ordering::SeqCst);
+    }
+
+    /// Leave `Draining`: a parked birth that starts again takes new calls.
+    pub fn resume(&self) {
+        self.inner.draining.store(false, Ordering::SeqCst);
+    }
+
+    async fn refuse(&self, op: u8, r: Refusal, mut send: SendStream, mut recv: RecvStream) {
+        if let Some(h) = self.inner.handlers.get(&op) {
+            let bytes = encode_frame(&h.refusal(r));
+            let _ = send.write_all(&bytes).await;
+            let _ = send.finish();
+        }
+        let _ = recv.stop(code(ResetCode::RequestStop));
+    }
+
+    async fn invocation(self, peer: iroh::PublicKey, mut send: SendStream, mut recv: RecvStream) {
+        let stats = self.inner.stats.clone();
+        let mut asm = RequestAssembly::new(&self.inner.catalog);
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut permit: Option<Permit> = None;
+        let action = loop {
+            let action = match recv.read(&mut buf).await {
+                Ok(Some(n)) => asm.push(&buf[..n]),
+                Ok(None) => asm.finish(),
+                Err(ReadError::Reset(c)) => asm.reset(c.into_inner()),
+                Err(e) => break ServerAction::Drop { reason: if matches!(e, ReadError::ConnectionLost(_)) { "connection lost" } else { "stream closed" } },
+            };
+            if action != ServerAction::Continue {
+                break action;
+            }
+            // Constant-cost guards once the op is known, before the body.
+            if permit.is_none() {
+                if let Some(op) = asm.head_op() {
+                    // A closed gate refuses every op, ping included, before anything else.
+                    if self.inner.ready.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst)) {
+                        stats.not_ready.fetch_add(1, Ordering::SeqCst);
+                        tracing::info_span!("rdm.node_rpc.request.reject.via-not-ready", op, peer = %peer)
+                            .in_scope(|| tracing::info!(op, "the node's ready gate is closed: typed NotReady"));
+                        return self.refuse(op, Refusal::NotReady("this node is not ready: its authority is not filled yet".into()), send, recv).await;
+                    }
+                    // Connections-deleting refuses every new call except the lifecycle control the catalog
+                    // marks served while connections-deleting: the authority's probe and apply still land.
+                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
+                        stats.draining.fetch_add(1, Ordering::SeqCst);
+                        return self.refuse(op, Refusal::ConnectionsDeleting("node is connections-deleting".into()), send, recv).await;
+                    }
+                    match self.inner.admission.try_admit(op, &peer.to_string()) {
+                        Ok(p) => permit = Some(p),
+                        Err(reason) => {
+                            stats.busy.fetch_add(1, Ordering::SeqCst);
+                            tracing::debug_span!("rdm.node_rpc.request.reject.via-busy", op, %reason).in_scope(|| tracing::debug!("busy"));
+                            return self.refuse(op, Refusal::Busy(reason), send, recv).await;
+                        }
+                    }
+                }
+            }
+        };
+        match action {
+            ServerAction::Continue => unreachable!("loop breaks only on a decision"),
+            ServerAction::ResetUnserved { op } => {
+                stats.unserved.fetch_add(1, Ordering::SeqCst);
+                tracing::info_span!("rdm.node_rpc.request.reject.via-unserved-op", op, peer = %peer)
+                    .in_scope(|| tracing::info!(op, "unserved op: 421"));
+                let _ = send.reset(code(ResetCode::UnservedOp));
+                let _ = recv.stop(code(ResetCode::UnservedOp));
+            }
+            ServerAction::RefuseMalformed { op, kind } => {
+                stats.too_large.fetch_add(1, Ordering::SeqCst);
+                tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", op, kind = ?kind)
+                    .in_scope(|| tracing::info!(?kind, "malformed request refused before the body"));
+                self.refuse(op, Refusal::Malformed(kind), send, recv).await;
+            }
+            ServerAction::ResetViolation { op, reason } => {
+                stats.violations.fetch_add(1, Ordering::SeqCst);
+                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?op, reason)
+                    .in_scope(|| tracing::info!(reason, "protocol violation: 424"));
+                let _ = send.reset(code(ResetCode::ProtocolViolation));
+                let _ = recv.stop(code(ResetCode::ProtocolViolation));
+            }
+            ServerAction::Drop { reason } => {
+                stats.dropped_unfinished.fetch_add(1, Ordering::SeqCst);
+                tracing::info_span!("rdm.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
+                    .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
+                let _ = send.reset(code(ResetCode::RequestStop));
+            }
+            ServerAction::Dispatch { op, header, payload } => {
+                let Some(h) = self.inner.handlers.get(&op).cloned() else {
+                    let _ = send.reset(code(ResetCode::UnservedOp));
+                    return;
+                };
+                stats.dispatched.fetch_add(1, Ordering::SeqCst);
+                let _unsettled = Unsettled::enter(&self.inner.replies);
+                // Bad or over-bound context is dropped here, named, and the call proceeds.
+                let (context, dropped) = header.context.sanitized();
+                if !dropped.is_empty() {
+                    tracing::info_span!("rdm.node_rpc.request.update.via-context-dropped", decided_by = "target", op, peer = %peer, context_dropped = %dropped_as_str(&dropped))
+                        .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
+                }
+                let ctx = PeerContext { endpoint_id: peer, context };
+                let out = crate::stream::StreamOut::new(send, h.max_reply());
+                if h.is_stream() {
+                    let Some((serve, streaming)) = h.stream(ctx, payload, out.clone()) else { return };
+                    let counted = InFlight::enter(&stats);
+                    let joined = tokio::spawn(async move {
+                        let _counted = counted;
+                        streaming.await
+                    })
+                    .await;
+                    drop(permit);
+                    // The stream's end is a step of its serve: its terminal (or refusal) is written and
+                    // named under the serve span, which ends once it is written.
+                    out.finish(joined, &stats).instrument(serve).await;
+                    return;
+                }
+                let Some(mut send) = out.take().await else { return };
+                // Supervised: a panic is caught at this boundary.
+                let (serve, handler) = h.call(ctx, payload);
+                let counted = InFlight::enter(&stats);
+                let joined = tokio::spawn(async move {
+                    let _counted = counted;
+                    handler.await
+                })
+                .await;
+                drop(permit);
+                // A fault or a panic is the end of the serve: named under the serve span, which ends here.
+                serve.in_scope(|| match &joined {
+                    Ok(Err(fault)) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
+                        .in_scope(|| tracing::info!("handler fault: 423")),
+                    Err(_panic) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
+                        .in_scope(|| tracing::info!("handler panicked: 423")),
+                    Ok(Ok(_)) => {}
+                });
+                drop(serve);
+                match joined {
+                    Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
+                        let bytes = encode_frame(&reply);
+                        if let Some(w) = self.inner.withhold.as_ref().filter(|w| w.take_armed()) {
+                            w.hold(&mut send, &bytes).await;
+                        } else {
+                            let _ = send.write_all(&bytes).await;
+                        }
+                        let _ = send.finish();
+                        // Settled when the caller has the reply (or has stopped wanting it, or the
+                        // connection is gone): bounded by the connection, never by a timer.
+                        let _ = send.stopped().await;
+                    }
+                    Ok(Ok(_)) => {
+                        stats.violations.fetch_add(1, Ordering::SeqCst);
+                        let _ = send.reset(code(ResetCode::ProtocolViolation));
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        stats.faults.fetch_add(1, Ordering::SeqCst);
+                        let _ = send.reset(code(ResetCode::InternalRpcFailure));
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl ProtocolHandler for NodeRpcServer {
+    /// The handshake's end, as iroh's default awaits it, written to the transport diagnostic file
+    /// (R-QH1): the remote's address, how long the handshake took and, on failure, the full error
+    /// chain. Observation only: the outcome is returned as is.
+    async fn on_accepting(&self, accepting: iroh::endpoint::Accepting) -> Result<Connection, AcceptError> {
+        let remote_addr = accepting.remote_addr();
+        let started = std::time::Instant::now();
+        let r = accepting.await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        match &r {
+            Ok(c) => tracing::info!(target: crate::TRANSPORT_DIAG_TARGET, step = "accept-completed", ?remote_addr, peer = %c.remote_id(), connection = c.stable_id(), elapsed_ms, "the accepted handshake completed"),
+            Err(e) => tracing::info!(target: crate::TRANSPORT_DIAG_TARGET, step = "accept-failed", ?remote_addr, elapsed_ms, error = %format_args!("{e:#}"), error_debug = ?e, "the accepted handshake failed"),
+        }
+        Ok(r?)
+    }
+
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let peer = connection.remote_id();
+        let id = connection.stable_id();
+        // The moment the handshake completed here, as its own span (it ends once the connection is
+        // held, before its streams are served): matched by `peer` against the caller's `dialed` /
+        // `dial-deadline` line, it says which side a slow connect waited on.
+        tracing::info_span!("rdm.node_rpc.connection.create.via-accept", peer = %peer.fmt_short(), connection = id).in_scope(|| {
+            tracing::info!(step = "accepted", "a node rpc connection was accepted");
+            // Once per accepted connection, never per stream: the peer's live birth, as this
+            // process resolves it now, is a recovery trigger (R-CN1), never a Direct fact.
+            if let Some(inbound) = &self.inner.inbound {
+                if let Some(node) = inbound.resolver.by_endpoint(&peer) {
+                    inbound.trigger.accepted(&node);
+                }
+            }
+            self.inner.connections.lock().unwrap().insert(id, connection.clone());
+        });
+        while let Ok((send, recv)) = connection.accept_bi().await {
+            tokio::spawn(self.clone().invocation(peer, send, recv));
+        }
+        self.inner.connections.lock().unwrap().remove(&id);
+        Ok(())
+    }
+}

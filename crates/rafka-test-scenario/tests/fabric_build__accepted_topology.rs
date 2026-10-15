@@ -120,7 +120,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let held_pid = estate.pid_of("mesh1.rpc.3").await;
     let quiet_from = now_ns();
     signal(held_pid, "-STOP");
-    estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is silent in the view", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
+    estate.until_node("mesh1.rpc.3", "mesh1.rpc.3 is silent in the view", rdm_transport::membership::staleness_floor() + Duration::from_secs(15), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ())).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     signal(held_pid, "-CONT");
     let quiet_until = now_ns();

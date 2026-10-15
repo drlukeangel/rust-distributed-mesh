@@ -127,12 +127,12 @@ fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
     let t = Planted::of_tree();
     // The retired name is assembled here so this file never carries it as a token.
     let retired = format!("{}Owner", "Tag");
-    t.write("crates/rafka-node-rpc/src/planted.rs", &format!("use rdm_core::catalog::{retired};\n"));
+    t.write("crates/rdm-transport/src/planted.rs", &format!("use rdm_core::catalog::{retired};\n"));
     let v = only(check(t.root()), Ratchet::NoTransportTagVocabulary);
     assert!(matches!(&v[0], Violation::Token { token, .. } if *token == retired));
     // A serde discriminator named `tag` is JSON vocabulary, not transport vocabulary.
     let s = Planted::of_tree();
-    s.write("crates/rafka-node-rpc/src/planted.rs", "#[serde(tag = \"kind\")]\npub enum A { B }\n");
+    s.write("crates/rdm-transport/src/planted.rs", "#[serde(tag = \"kind\")]\npub enum A { B }\n");
     assert!(check_one(s.root(), Ratchet::NoTransportTagVocabulary).is_empty());
 }
 
@@ -188,7 +188,7 @@ fn connections_deleted_is_not_refusal_fails_when_the_receipt_is_gone() {
 #[test]
 fn forward_preserves_context_fails_without_its_proof() {
     let t = Planted::of_tree();
-    t.delete("crates/rafka-node-rpc/tests/context.rs");
+    t.delete("crates/rdm-transport/tests/context.rs");
     only(check(t.root()), Ratchet::ForwardPreservesContext);
 }
 
@@ -249,7 +249,7 @@ fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
 fn rdm_runtime_emits_customer_span_rejected_by_ownership_ratchet() {
     let t = Planted::of_tree();
     assert!(check(t.root()).is_empty(), "the unmodified copied tree passes");
-    t.write("crates/rafka-node-rpc/src/planted.rs", "fn emit() { tracing::info_span!(\"rafka.node_rpc.request.serve.via-direct\"); }\n");
+    t.write("crates/rdm-transport/src/planted.rs", "fn emit() { tracing::info_span!(\"rafka.node_rpc.request.serve.via-direct\"); }\n");
     let found = only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);
     assert!(matches!(&found[0], Violation::Token { file, line: 1, token, .. }
         if file.ends_with("planted.rs") && token == "rafka.node_rpc.request.serve.via-direct"));
@@ -258,7 +258,7 @@ fn rdm_runtime_emits_customer_span_rejected_by_ownership_ratchet() {
 #[test]
 fn ownership_scan_reads_emitters_preserves_customer_harness_and_fixture_prose() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-rpc/src/planted.rs", r#"
+    t.write("crates/rdm-transport/src/planted.rs", r#"
 // tracing::info_span!("rafka.node_rpc.fixture.serve.via-comment");
 const FIXTURE: &str = "rafka.node_rpc.request.serve.via-direct";
 #[cfg(test)] mod tests { fn fixture() { tracing::info_span!("rafka.mesh.fixture.serve.via-test"); } }
@@ -266,7 +266,7 @@ fn emit() { tracing::info_span!("rdm.node_rpc.request.serve.via-direct"); }
 "#);
     t.write("crates/rafka-chaos/src/planted.rs", "fn emit() { tracing::info_span!(\"rafka.chaos.fault.create.via-injection\"); }\n");
     assert!(check_one(t.root(), Ratchet::RdmSpansAreRdmPrefixed).is_empty());
-    t.write("crates/rafka-node-rpc/src/planted.rs", "fn emit() { tracing::span!(tracing::Level::INFO, \"rafka.chaos.fault.create.via-injection\"); }\n");
+    t.write("crates/rdm-transport/src/planted.rs", "fn emit() { tracing::span!(tracing::Level::INFO, \"rafka.chaos.fault.create.via-injection\"); }\n");
     only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);
 }
 
@@ -274,7 +274,7 @@ fn emit() { tracing::info_span!("rdm.node_rpc.request.serve.via-direct"); }
 #[test]
 fn rdm_macro_emits_customer_span_rejected_by_ownership_ratchet() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-rpc/src/planted.rs", r#"
+    t.write("crates/rdm-transport/src/planted.rs", r#"
 macro_rules! emit { () => { tracing::info_span!(concat!("rafka.", "node_rpc.request.serve.via-direct")); }; }
 "#);
     only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);
@@ -284,34 +284,34 @@ macro_rules! emit { () => { tracing::info_span!(concat!("rafka.", "node_rpc.requ
 #[test]
 fn rdm_instrument_emits_unnamed_span_rejected_by_ownership_ratchet() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-rpc/src/planted.rs", "#[tracing::instrument] fn emit() {}\n");
+    t.write("crates/rdm-transport/src/planted.rs", "#[tracing::instrument] fn emit() {}\n");
     only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);
 }
 
 #[test]
 fn rdm_instrument_names_owner_accepts_native_target_and_rejects_customer_name() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-rpc/src/planted.rs", r#"
+    t.write("crates/rdm-transport/src/planted.rs", r#"
 fn emit() { tracing::info_span!(target: "rafka.customer-target", "rdm.node_rpc.request.serve.via-direct"); }
 "#);
     assert!(check(t.root()).is_empty());
-    t.write("crates/rafka-node-rpc/src/planted.rs", "#[tracing::instrument(name = \"rafka.node_rpc.request.serve.via-direct\")] fn emit() {}\n");
+    t.write("crates/rdm-transport/src/planted.rs", "#[tracing::instrument(name = \"rafka.node_rpc.request.serve.via-direct\")] fn emit() {}\n");
     only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);
 }
 
 #[test]
 fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-mesh-transport/src/membership.rs", "crate::wire::encode(self).expect(\"frame serializes\")", "serde_json::to_vec(self).expect(\"frame serializes\")");
+    t.edit("crates/rdm-transport/src/membership.rs", "crate::wire::encode(self).expect(\"frame serializes\")", "serde_json::to_vec(self).expect(\"frame serializes\")");
     let v = only(check(t.root()), Ratchet::NoJsonOnTheWire);
     assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("membership.rs") && token == "serde_json::to_vec")), "{v:?}");
 
     // The Build topic too, and a direct postcard call beside the shared codec.
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rafka_mesh_transport::wire::decode(bytes)", "serde_json::from_slice(bytes).map_err(|e| rafka_mesh_transport::wire::WireError::new(e.to_string()))");
+    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rdm_transport::wire::decode(bytes)", "serde_json::from_slice(bytes).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rafka_mesh_transport::wire::encode(&wire)", "postcard::to_allocvec(&wire).map_err(|e| rafka_mesh_transport::wire::WireError::new(e.to_string()))");
+    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rdm_transport::wire::encode(&wire)", "postcard::to_allocvec(&wire).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
 
     // A Node RPC source takes no JSON either.
@@ -324,8 +324,8 @@ fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
 fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
     // A test module may build a JSON expectation: the scan stops at `#[cfg(test)]`.
     let t = Planted::of_tree();
-    let clean = std::fs::read_to_string(t.root().join("crates/rafka-mesh-transport/src/wire.rs")).unwrap();
-    t.write("crates/rafka-mesh-transport/src/wire.rs", &format!("{clean}\n#[cfg(test)]\nmod tests {{ fn json() {{ let _ = serde_json::json!(1); }} }}\n"));
+    let clean = std::fs::read_to_string(t.root().join("crates/rdm-transport/src/wire.rs")).unwrap();
+    t.write("crates/rdm-transport/src/wire.rs", &format!("{clean}\n#[cfg(test)]\nmod tests {{ fn json() {{ let _ = serde_json::json!(1); }} }}\n"));
     assert!(check_one(t.root(), Ratchet::NoJsonOnTheWire).is_empty());
 
     // Deleting or renaming the proof cell is itself a violation.

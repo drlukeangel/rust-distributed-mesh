@@ -9,7 +9,7 @@ use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState, RetryOn};
-use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, PullServer, Row, TestHydrator};
@@ -94,7 +94,7 @@ fn observe(b: &Birth) -> Arc<std::sync::Mutex<Vec<MemberStatus>>> {
 }
 
 /// Resolves once `pred` holds of `book`, re-checked on every change the book hears.
-async fn until(book: &rafka_mesh_transport::membership::DigestBook, what: &str, pred: impl Fn(&rafka_mesh_transport::membership::DigestBook) -> bool) {
+async fn until(book: &rdm_transport::membership::DigestBook, what: &str, pred: impl Fn(&rdm_transport::membership::DigestBook) -> bool) {
     let waited = async {
         let mut heard = book.heard_changes();
         loop {

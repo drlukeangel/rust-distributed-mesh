@@ -5,7 +5,7 @@
 //!
 //! The testkit proof store (op 0x70) is served by a real `NodeRpcServer` over a real store file; its
 //! two apply failpoints (`ApplyCuts`: before the apply, after the apply and before the reply) are
-//! the testkit-only seam, shaped like `rafka_node_rpc::Failpoint`. The request-side cut is the
+//! the testkit-only seam, shaped like `rdm_transport::Failpoint`. The request-side cut is the
 //! client's own `CallOptions::cut_before_finish`. Every cut is explored against a healthy control
 //! call of the same family in the same capture.
 
@@ -13,7 +13,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rafka_node_rpc_testkit::proof_store::{self, ApplyCuts, FileProofStore, ProofOp, ProofReply, ProofRequest, ProofStore, Provenance};
 use serde_json::{json, Value};
@@ -111,14 +111,14 @@ impl SinkStall {
     }
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`:
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`:
 /// product's span filter and its `BatchSpanProcessor`, so ending a span only queues it and the sink
 /// runs on the export thread) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     stall: Arc<SinkStall>,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -128,7 +128,7 @@ fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let stall = Arc::new(SinkStall::default());
     let service = format!("i143-2780-{cell}");
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, GatedExporter { inner: exporter.clone(), stall: stall.clone() });
+    let (capture, layer) = rdm_transport::span_capture(&service, GatedExporter { inner: exporter.clone(), stall: stall.clone() });
     Capture { exporter, stall, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
@@ -209,12 +209,12 @@ async fn rig(dir: &std::path::Path) -> Rig {
         .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .expect("the proof store seals");
     let stats = server.stats();
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
-    let client = NodeRpcClient::new(rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
+    let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
     Rig { _router: router, store, cuts, stats, client, target: NodeTarget::ExactNode(launch.node_id.clone()), launch }
 }
 
@@ -244,7 +244,7 @@ impl Rig {
         }
     }
 
-    async fn put(&self, key: &[u8], value: &[u8], opts: &CallOptions) -> (RpcOutcome<ProofReply>, Option<rafka_node_rpc::CallEvidence>) {
+    async fn put(&self, key: &[u8], value: &[u8], opts: &CallOptions) -> (RpcOutcome<ProofReply>, Option<rdm_transport::CallEvidence>) {
         self.client.call::<ProofStore>(&self.target, &ProofRequest::Put { key: key.to_vec(), value: value.to_vec() }, opts).await
     }
 

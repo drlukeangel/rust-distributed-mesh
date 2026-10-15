@@ -847,7 +847,7 @@ async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degr
     })
     .await;
     // Ten backbone publications of the recovered primary held: its republish would have gone out by then.
-    tokio::time::sleep(rafka_mesh_transport::membership::backbone_gossip_interval() * 10).await;
+    tokio::time::sleep(rdm_transport::membership::backbone_gossip_interval() * 10).await;
     let held_status = f.fabric_status().await;
     let held_spans = f.estate.spans();
     let sent_while_held = mesh_sends_after(&held_spans, &f.lost, recovery_start(&held_spans, &f.lost));

@@ -23,7 +23,7 @@ const CONFLICTING: &str = "rdm.node_admin.mesh.reject.via-conflicting-round";
 /// An owner of a leave, named by a fresh node id.
 fn owner_named() -> rafka_node_admin_core::mesh_delete::MeshDeleteOwner {
     let id = NodeId::mint();
-    rafka_node_admin_core::mesh_delete::MeshDeleteOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
+    rafka_node_admin_core::mesh_delete::MeshDeleteOwner { name: id.to_string(), target: rdm_transport::NodeTarget::ExactNode(id) }
 }
 
 fn key(mesh_id: &MeshId, build_id: &str, attempt: u32) -> MeshDeleteKey {

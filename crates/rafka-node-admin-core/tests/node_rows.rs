@@ -20,19 +20,19 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
-/// A cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its
+/// A cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its
 /// span filter and `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher
 /// installed on every thread of the cell's own runtime.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("node-rows", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("node-rows", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 

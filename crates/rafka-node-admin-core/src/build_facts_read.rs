@@ -11,8 +11,8 @@
 use crate::build::BuildId;
 use crate::build_state::{BuildFact, BuildStateAdapter};
 use crate::fabric_builds::{encode_chunks, BuildMessage};
-use rafka_node_rpc::stream::{ReplySink, NotStarted, StreamItem};
-use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::stream::{ReplySink, NotStarted, StreamItem};
+use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build_facts::{BuildFacts, BuildFactsReply, BuildFactsRequest};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::RpcOutcome;
@@ -183,7 +183,7 @@ impl FetchFailure {
 /// a failure that names what was missing, and the caller absorbs nothing from it.
 pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, build_id: &BuildId) -> Result<Fetched, FetchFailure> {
     let req = BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() };
-    let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
+    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
     let mut stream = match client.call_stream::<BuildFacts>(target, &req, &opts).await {
         Ok((s, _)) => s,
         Err((RpcOutcome::Reply(r), _)) => return Err(refusal_of(r.value().clone())),

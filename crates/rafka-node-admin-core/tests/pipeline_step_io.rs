@@ -81,7 +81,7 @@ const HELD: Duration = Duration::from_millis(400);
 #[test]
 fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_their_work() {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("pipeline-step-io", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("pipeline-step-io", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let _guard = tracing::dispatcher::set_default(&dispatch);
     let data_root = std::env::temp_dir().join(format!("pipeline-step-io-{}", NodeId::mint()));
@@ -185,7 +185,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
     use tokio::sync::RwLock;
 
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("pipeline-step-io-s83", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("pipeline-step-io-s83", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let _guard = tracing::dispatcher::set_default(&dispatch);
     let data_root = std::env::temp_dir().join(format!("pipeline-step-io-s83-{}", NodeId::mint()));

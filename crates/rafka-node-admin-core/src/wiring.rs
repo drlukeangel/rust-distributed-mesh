@@ -33,7 +33,7 @@ pub trait LeaveSeam: Send + Sync {
 /// Whether an executable that IS a node-admin withholds one of its final aggregates or leadership
 /// announcements from a channel (R-NS2: "Final aggregates and leadership announcements are best-effort
 /// dissemination. A stop does not wait for their delivery"): its backbone asks it before each send of
-/// an announcement `rafka_mesh_transport::membership::Withhold` names, on each channel (`"backbone"` or
+/// an announcement `rdm_transport::membership::Withhold` names, on each channel (`"backbone"` or
 /// `"mesh"`); a `true` answer skips that one send and nothing else: the frame, the topic and the
 /// delivery path are untouched. The product passes none, so every announcement is sent.
 pub trait AnnouncementSeam: Send + Sync {
@@ -64,7 +64,7 @@ pub trait ReadSeam: Send + Sync {
 /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
 /// the gate of its [`Hydration`](crate::app_hydration::Hydration) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
-pub type ServeApp = Box<dyn FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder + Send>;
+pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
 /// The round fields of the application hand-off: `fabric_id`, `build_id`, `attempt`,
 /// `operation = state-sync:<fabric_id>` and the observability context (fabric-state-sync.md).

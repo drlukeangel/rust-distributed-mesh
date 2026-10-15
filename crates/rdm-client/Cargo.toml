@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 rdm-core = { path = "../rdm-core" }
-rafka-node-rpc = { path = "../rafka-node-rpc" }
+rdm-transport = { path = "../rdm-transport" }
 iroh = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }

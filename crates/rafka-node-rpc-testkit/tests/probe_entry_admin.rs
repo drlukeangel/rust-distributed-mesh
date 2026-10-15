@@ -11,7 +11,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_rpc::{ServedBirth, ServerBuilder};
+use rdm_transport::{ServedBirth, ServerBuilder};
 use rdm_core::status::{NodeSelect, StatusRequest};
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore};
 use std::sync::Arc;
@@ -57,9 +57,9 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             .carry::<rafka_node_rpc_testkit::proof_store::ProofStore>()
             .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();
-        let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+        let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         let admin = admin_view::serve(vec![
             node("mesh1.rpc.1", &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
             node("mesh1.rpc.2", &NodeId::mint(), None, None, None),

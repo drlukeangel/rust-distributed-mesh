@@ -1,7 +1,7 @@
 //! Rafka-time: node-admin's time, adopted from the authority and never from a node's own clock.
 //!
 //! [`RafkaTime`] (the one reader every stamp of a process reads) is defined in
-//! `rafka_mesh_transport::clock`. This module is where a process takes a value into it, through
+//! `rdm_transport::clock`. This module is where a process takes a value into it, through
 //! the one entry point [`adopt_pulled`]:
 //!
 //! - The fabric's Day-0 root, a node-admin with no launcher, no seeds and no recovery flag,
@@ -23,8 +23,8 @@
 //! Neither side estimates network delay: the value is adopted as the authority read it.
 
 use rdm_core::{NodeId, Seat};
-use rafka_mesh_transport::clock::{Adopted, RafkaTime};
-use rafka_mesh_transport::membership::SeatBook;
+use rdm_transport::clock::{Adopted, RafkaTime};
+use rdm_transport::membership::SeatBook;
 
 /// Who is pulling, by the seat it holds in its own seat records when it pulls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

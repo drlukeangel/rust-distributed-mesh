@@ -1,5 +1,5 @@
 //! The wire shape of the Build topic (`fabric_builds`): every type here is positional postcard
-//! (`rafka_mesh_transport::wire`), carrying every field and no internally tagged enum.
+//! (`rdm_transport::wire`), carrying every field and no internally tagged enum.
 //!
 //! The domain types (`BuildFact`, `FabricIdentity`, the accepted topology) are JSON elsewhere: the
 //! REST views, the local journal and the tests read `"fact"`, `"kind"`, `"action"`,

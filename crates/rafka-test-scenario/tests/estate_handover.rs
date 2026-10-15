@@ -3,7 +3,7 @@
 
 use rdm_core::MeshNode;
 use rdm_client::{BuildCarrier, Fabrics};
-use rafka_node_rpc::{NodeRpcClient, ResolvedNode, StaticResolver};
+use rdm_transport::{NodeRpcClient, ResolvedNode, StaticResolver};
 use rafka_test_scenario::estate::{artifacts_root, bin_dir, binary, estate_root, estate_store_dir, named, wait_for, EstateScope};
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -92,7 +92,7 @@ async fn a_started_admin_is_reached_by_the_birth_it_printed() {
     let birth: MeshNode = serde_json::from_str(line).unwrap_or_else(|e| panic!("the birth line is a birth: {e}: {line}"));
 
     // A caller that holds nothing but the line.
-    let endpoint = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
+    let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: birth.endpoint_id.0.parse().expect("the birth's endpoint is an iroh key"), transport_addr: birth.transport_addr, incarnation: birth.incarnation.clone() });
     let fabrics = Fabrics::new(BuildCarrier::new(Arc::new(NodeRpcClient::new(endpoint.clone(), resolver).with_caller_system("rdm")), birth.name.clone()));

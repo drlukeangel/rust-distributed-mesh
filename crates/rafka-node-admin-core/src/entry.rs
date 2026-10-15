@@ -19,7 +19,7 @@ pub async fn run(service: &str) {
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(service);
+    let _telemetry = rdm_transport::init_evidence_telemetry(service);
     let cfg = match AdminConfig::from_env(|k| std::env::var(k).ok()) {
         Ok(c) => c,
         Err(e) => {
@@ -36,7 +36,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
         fabric = %cfg.fabric,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_mesh_telemetry::set_parent(&boot, &tp);
+        rdm_transport::set_parent(&boot, &tp);
     }
     if let Some(l) = &cfg.launch {
         boot.record("node", l.name.to_string().as_str());
@@ -65,7 +65,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
                 // The refused boot's spans (the reason it exits for) reach the evidence file and the
                 // collector: the boot span closes, then the exporters drain before the exit.
                 drop(boot);
-                rafka_mesh_telemetry::flush_before_exit();
+                rdm_transport::flush_before_exit();
                 std::process::exit(3);
             }
         }
@@ -82,16 +82,16 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %node, reason = %why)
                 .in_scope(|| tracing::error!("hydrate_before_ready failed; this node-admin ends"));
             eprintln!("{service}: {node} failed hydrate_before_ready: {why}");
-            rafka_mesh_telemetry::flush_before_exit();
+            rdm_transport::flush_before_exit();
             std::process::exit(3);
         }
         // A mesh transport that stopped for good leaves a runtime that can neither be heard nor
         // answer: it ends, and its exit is the death proof the fabric recovers from.
-        reason = rafka_mesh_transport::membership::until_transport_stopped() => {
+        reason = rdm_transport::membership::until_transport_stopped() => {
             tracing::info_span!("rdm.mesh.node.delete.via-transport-stopped", reason = %reason)
                 .in_scope(|| tracing::error!("the mesh transport stopped; this runtime exits"));
             eprintln!("{service}: the mesh transport stopped: {reason}");
-            rafka_mesh_telemetry::flush_before_exit();
+            rdm_transport::flush_before_exit();
             rdm_core::runtime::exit_transport_stopped(&reason);
         }
     }

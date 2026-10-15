@@ -17,7 +17,7 @@ use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::mesh_delete::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, MeshDeleteKey, MeshDeleteOwner, RosterBirth};
-use rafka_node_rpc::NodeTarget;
+use rdm_transport::NodeTarget;
 use rafka_node_admin_core::model::ProviderKind;
 use rdm_core::status::StatusReply;
 use serde_json::Value;

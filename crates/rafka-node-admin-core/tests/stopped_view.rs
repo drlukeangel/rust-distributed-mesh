@@ -10,7 +10,7 @@
 use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rafka_mesh_transport::membership::{Backbone, Membership};
+use rdm_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::{project, view_projector, GossipLifecycle, Records};
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
 use rafka_node_admin_core::model::{NodeStatus, PathName, ProviderKind};
@@ -71,7 +71,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
     let (trace_id, admitted_before, reply) = cap.run(async {
         let fabric = FabricId::mint();
         let mesh1 = MeshId::mint();
-        let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &mesh1, MP, Arc::new(crate::adopted_time()), vec![]).await.unwrap();
@@ -94,7 +94,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
         let rows = MemoryNodesStorage::default();
         let row = NodeRow { name: succ.node.name.clone(), node_id: succ.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         rows.put_node_row(&row).await.unwrap().unwrap();
-        let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep.clone(), Arc::new(rafka_node_rpc::StaticResolver::new())).with_caller_system("rdm"));
+        let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
         let configs = rafka_node_admin_core::node_config::NodeConfigs::new(client, Default::default(), Default::default());
         let (moved, rename): (rafka_node_admin_core::status_rpc::RowMoved, rafka_node_admin_core::status_rpc::Rename) = Default::default();
         // The view takes a moved row as the admin wires it: projected at once.

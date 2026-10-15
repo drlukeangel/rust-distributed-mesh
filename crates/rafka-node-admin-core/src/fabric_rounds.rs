@@ -23,7 +23,7 @@ use crate::round::Missing;
 use crate::status_declare::{Authority, DeclareWake, Declarer, Key};
 use crate::topology::Topology;
 use crate::wiring::{FabricHooks, StateSyncRound, SyncState};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashSet};
@@ -183,8 +183,8 @@ struct Climb {
 
 /// The gossip a round's hooks go out on: this admin's mesh channel and the backbone.
 struct RoundGossip {
-    backbone: rafka_mesh_transport::membership::Backbone,
-    membership: rafka_mesh_transport::membership::Membership,
+    backbone: rdm_transport::membership::Backbone,
+    membership: rdm_transport::membership::Membership,
 }
 
 /// One admin's rounds: as the fabric-primary the climb, as a mesh primary the commands to its
@@ -231,7 +231,7 @@ impl FabricRounds {
     }
 
     /// Where this admin's round hooks are published, once it has joined the backbone.
-    pub fn set_gossip(&self, backbone: rafka_mesh_transport::membership::Backbone, membership: rafka_mesh_transport::membership::Membership) {
+    pub fn set_gossip(&self, backbone: rdm_transport::membership::Backbone, membership: rdm_transport::membership::Membership) {
         let _ = self.gossip.set(RoundGossip { backbone, membership });
     }
 

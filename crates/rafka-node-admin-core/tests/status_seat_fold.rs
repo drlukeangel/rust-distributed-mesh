@@ -168,7 +168,7 @@ fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
 #[test]
 fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection() {
     use rdm_core::MemberStatus;
-    use rafka_mesh_transport::membership::{Backbone, Membership};
+    use rdm_transport::membership::{Backbone, Membership};
     use rdm_core::status::{StatusReply, StatusRequest};
     let cap = crate::mesh_delete_resume::capture();
     let (trace_id, after_take, rpc2_heard, projected, declared, after_declare) = cap.run(async {
@@ -189,7 +189,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     a.put_node_declared(&NodeDeclaredRow { node_id: n.node_id.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), name: n.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
                 }
                 // B: its membership's book, its seat fold over the same root.
-                let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
+                let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
                 let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![]).await.unwrap();

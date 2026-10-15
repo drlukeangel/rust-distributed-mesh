@@ -18,7 +18,7 @@ use rdm_core::connections::{ConnectionState, NodeConnection};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
-use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::status::{ConnectionScope, Status, StatusReply, StatusRequest};
@@ -129,7 +129,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
 
         let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-        let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
             let (client, target, opts) = (&admin.observer.client, &target, &opts);

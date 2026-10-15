@@ -110,7 +110,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     // Find control again through the mesh primaries the fabric named: ask each
     // for the fabric, and take the primary it names once that primary answers
     // for the fabric too and agrees.
-    let control = wait_for("an advertised admin leads to a live fabric primary", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(30), || async {
+    let control = wait_for("an advertised admin leads to a live fabric primary", (rdm_transport::membership::staleness_floor() * 2 + rdm_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(30), || async {
         for admin in &advertised {
             // A killed admin's port is soon another estate's: only this Fabric's admins count.
             let Some(f) = estate.fabric_view_at(admin).await else { continue };
@@ -262,7 +262,7 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     let pid = estate.pid_of("mesh1.rpc.2").await;
     assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
     estate
-        .until_node("mesh1.rpc.2", "the frozen member is unheard in the view", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ()))
+        .until_node("mesh1.rpc.2", "the frozen member is unheard in the view", rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ()))
         .await;
 
     estate.reconcile(&desired).await;
@@ -294,7 +294,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     let gone = estate.until_node("mesh1.rpc.2", "this admin hears mesh1.rpc.2", Duration::from_secs(30), |n| n.cloned()).await;
     kill(estate.pid_of("mesh1.rpc.2").await);
     estate
-        .until_view("a new birth restores two ready rpc nodes", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(60), |views| {
+        .until_view("a new birth restores two ready rpc nodes", rdm_transport::membership::staleness_floor() + Duration::from_secs(60), |views| {
             let ready: Vec<_> = views.iter().filter(|n| n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).collect();
             (ready.len() == 2 && !ready.iter().any(|n| n.incarnation_id == gone.incarnation_id)).then_some(())
         })

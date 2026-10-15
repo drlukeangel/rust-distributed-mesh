@@ -32,7 +32,7 @@
 
 use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{FabricEvent, MeshState, NodeState, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, BTreeSet};
@@ -452,7 +452,7 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
     match &p.trace {
         Some(traceparent) => {
             let span = tracing::info_span!("rdm.node_admin.status.update.via-round-completion", key = ?p.key, to = %target.name, "otel.kind" = "internal");
-            rafka_mesh_telemetry::set_parent(&span, traceparent);
+            rdm_transport::set_parent(&span, traceparent);
             span
         }
         None => tracing::Span::none(),

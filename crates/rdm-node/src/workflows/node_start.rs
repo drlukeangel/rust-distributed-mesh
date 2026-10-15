@@ -43,8 +43,8 @@ use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
 use crate::wire::JoinAnswer;
 use rdm_core::{MemberStatus, MeshDigest};
-use rafka_mesh_transport::membership::Membership;
-use rafka_node_rpc::{CancelToken, NodeRpcClient, NodeTarget};
+use rdm_transport::membership::Membership;
+use rdm_transport::{CancelToken, NodeRpcClient, NodeTarget};
 use rdm_core::topology::SourceVersion;
 use std::future::Future;
 use std::pin::Pin;
@@ -71,7 +71,7 @@ pub struct Starting {
     /// through it.
     pub client: Arc<NodeRpcClient>,
     /// The process's rafka-time, adopted from the join answer and refreshed last.
-    pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    pub rafka_time: rdm_transport::clock::RafkaTime,
 }
 
 /// Whom a start joins.
@@ -420,7 +420,7 @@ struct AfterTheHook {
     path: PathName,
     node_id: NodeId,
     client: Arc<NodeRpcClient>,
-    rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    rafka_time: rdm_transport::clock::RafkaTime,
     membership: Membership,
     /// The authority the join reached, and what the step spans name it; `None` with no authority.
     through: Option<(JoinThrough, String)>,

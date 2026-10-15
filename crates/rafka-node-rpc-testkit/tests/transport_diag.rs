@@ -18,7 +18,7 @@
 use crate::common::admin_view::{self, node};
 use iroh::protocol::ProtocolHandler;
 use rdm_core::{IncarnationId, NodeId};
-use rafka_node_rpc::{ServedBirth, ServerBuilder};
+use rdm_transport::{ServedBirth, ServerBuilder};
 
 /// The diagnostic file each process writes in its node log directory.
 const DIAG: &str = "transport-diag.log";
@@ -63,12 +63,12 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&run).unwrap();
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin") });
+    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rafka-node-admin") });
     let maker_key = iroh::SecretKey::generate();
     let expected = iroh::SecretKey::generate().public();
     let (maker_addr, accepted, out) = rt.block_on(async {
         let server = ServerBuilder::new().seal(ServedBirth { node_id: NodeId::mint().to_string(), incarnation: IncarnationId::mint().to_string() }).unwrap();
-        let ep = rafka_node_rpc::endpoint::bind(maker_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(maker_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let maker_addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let target = NodeId::mint();
         // The entry admin the probe reads its view from: a third endpoint of this process, whose view
@@ -157,15 +157,15 @@ fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
     }
     let _ = std::fs::remove_dir_all(&data_dir);
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-    let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node") });
+    let telemetry = rt.block_on(async { rdm_transport::init_evidence_telemetry("rafka-rpc-node") });
     let (noq_trace, diag_target) = (tracing::enabled!(target: "noq_proto::endpoint", tracing::Level::TRACE), tracing::enabled!(target: "transport_diag", tracing::Level::INFO));
     rt.block_on(async {
-        let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         ep.close().await;
     });
     drop(rt);
     drop(telemetry);
-    rafka_mesh_telemetry::flush_before_exit();
+    rdm_transport::flush_before_exit();
     assert!(!noq_trace, "noq-proto endpoint trace is enabled in a process outside an evidence run");
     assert!(!diag_target, "the transport_diag target is enabled in a process outside an evidence run");
     let file = data_dir.join(DIAG);

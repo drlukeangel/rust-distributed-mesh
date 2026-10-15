@@ -2,7 +2,7 @@
 //! product's: tagged in the product's own ledger rows, served only by the kinds that own it, and
 //! unserved (`421`) everywhere else in the same sealed catalog.
 
-use rafka_node_rpc::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
+use rdm_transport::{HandlerFault, NodeRpcClient, PeerContext, ServerBuilder};
 use rdm_core::catalog::{LedgerEntry, OpOwner, OpState};
 use rdm_core::outcome::{MalformedKind, ReplyKind};
 use rdm_core::protocol::NodeProtocol;

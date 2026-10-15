@@ -7,7 +7,7 @@ use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rafka_node_rpc_testkit::{compose, Role, LEGACY_ADAPTERS};
-use rafka_node_rpc::{Budget, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
+use rdm_transport::{Budget, CallOptions, Decode, NodeRpcClient, NodeTarget, ResolvedNode, ServerStats, StaticResolver};
 use rdm_core::catalog::{EntryKind, OpOwner};
 use rdm_core::outcome::{IndeterminateReason, NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -72,7 +72,7 @@ impl RoleProcess {
             transport_addr: addr,
             incarnation: self.launch.incarnation.clone(),
         });
-        let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         (NodeRpcClient::new(ep, resolver), NodeTarget::ExactNode(self.launch.node_id.clone()))
     }
 }
@@ -100,7 +100,7 @@ async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
         })
         .await;
     assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == absent), "{out:?}");
-    assert_eq!(rafka_node_rpc::ServerStats::get(&gateway.running.server.stats().dispatched), 0, "an unserved op is never dispatched");
+    assert_eq!(rdm_transport::ServerStats::get(&gateway.running.server.stats().dispatched), 0, "an unserved op is never dispatched");
     gateway.running.stop(Duration::ZERO).await;
 }
 
@@ -165,7 +165,7 @@ async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute
     assert!(compute.running.server.catalog().lookup(BrokerData::OP).is_none(), "the compute carries the family for others and serves no handler for it");
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "k".into() }, &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == BrokerData::OP), "a compute serves no broker_data: {out:?}");
-    assert_eq!(rafka_node_rpc::ServerStats::get(&compute.running.server.stats().dispatched), 0);
+    assert_eq!(rdm_transport::ServerStats::get(&compute.running.server.stats().dispatched), 0);
     broker.running.stop(Duration::ZERO).await;
     compute.running.stop(Duration::ZERO).await;
 }

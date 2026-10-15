@@ -23,8 +23,8 @@
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
-use rafka_mesh_transport::membership::{DigestBook, Membership};
-use rafka_node_rpc::{CancelToken, HydrationGate, NodeRpcClient};
+use rdm_transport::membership::{DigestBook, Membership};
+use rdm_transport::{CancelToken, HydrationGate, NodeRpcClient};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -59,7 +59,7 @@ pub struct AcceptingAuthority {
     pub endpoint: iroh::PublicKey,
     /// Where a call to it goes: the launcher's birth at a first start; after a stop, the endpoint
     /// and path of the call the join went back over.
-    pub target: rafka_node_rpc::NodeTarget,
+    pub target: rdm_transport::NodeTarget,
 }
 
 /// Why a birth has no authority to pull from.
@@ -132,7 +132,7 @@ pub struct HydrateCtx {
     /// and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.
-    pub rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    pub rafka_time: rdm_transport::clock::RafkaTime,
     /// The member cert the accepting authority's signer issued for exactly this birth, as opaque
     /// bytes (`fabric-certs.md`): empty when that authority is configured with no certs; `None`
     /// for a birth that made no JoinNode (the Day-0 root, a recovery start).

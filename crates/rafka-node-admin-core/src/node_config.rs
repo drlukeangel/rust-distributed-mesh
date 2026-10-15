@@ -14,7 +14,7 @@
 use crate::storage::NodeRow;
 use crate::topology::Topology;
 use rdm_client::{CallEnd, ExactBirth, NodeRpc};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use std::sync::Arc;
 

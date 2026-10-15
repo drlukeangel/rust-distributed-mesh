@@ -14,7 +14,7 @@
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use rdm_core::{MeshDigest, RuntimeFact};
 use crate::wire::JoinAnswer;
-use rafka_node_rpc::ServerBuilder;
+use rdm_transport::ServerBuilder;
 use rdm_core::catalog::OpOwner;
 use rdm_core::join::{Join, JoinReply, JoinRequest};
 use std::collections::{HashMap, VecDeque};
@@ -358,7 +358,7 @@ impl JoinDoor {
 
 /// Serve `JoinNode` on this admin. Until `slot` is filled a join is `NotReady` by name.
 pub fn serve(b: ServerBuilder, slot: JoinSlot) -> ServerBuilder {
-    b.serve::<Join, _, _>(OpOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: JoinRequest| {
+    b.serve::<Join, _, _>(OpOwner::Product("rdm".into()), move |peer: rdm_transport::PeerContext, req: JoinRequest| {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {

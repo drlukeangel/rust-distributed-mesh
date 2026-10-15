@@ -8,7 +8,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_rpc::{ServedBirth, ServerBuilder};
+use rdm_transport::{ServedBirth, ServerBuilder};
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore};
 use crate::common::admin_view::{self, node};
 use std::sync::Arc;
@@ -47,24 +47,24 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             .carry::<rafka_node_rpc_testkit::proof_store::ProofStore>()
             .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();
-        let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let _router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+        let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         // A carrier: a node that serves Forward and makes one inner call to the target.
-        let target_record = rafka_node_rpc::ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() };
+        let target_record = rdm_transport::ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() };
         let carrier_key = SecretKey::generate();
         let (carrier_id, carrier_inc) = (NodeId::mint(), IncarnationId::mint());
-        let carrier_resolver = Arc::new(rafka_node_rpc::StaticResolver::new());
+        let carrier_resolver = Arc::new(rdm_transport::StaticResolver::new());
         carrier_resolver.insert(target_record.clone());
-        let carrier_client = Arc::new(rafka_node_rpc::NodeRpcClient::new(rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), carrier_resolver));
+        let carrier_client = Arc::new(rdm_transport::NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), carrier_resolver));
         let carrier_server = ServerBuilder::new()
             .carry::<rafka_node_rpc_testkit::proof_store::ProofStore>()
             .serve_forward(carrier_client)
             .seal(ServedBirth { node_id: carrier_id.to_string(), incarnation: carrier_inc.to_string() })
             .unwrap();
-        let cep = rafka_node_rpc::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let cep = rdm_transport::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let caddr = cep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let _crouter = Router::builder(cep).accept(rafka_node_rpc::ALPN, carrier_server).spawn();
+        let _crouter = Router::builder(cep).accept(rdm_transport::ALPN, carrier_server).spawn();
         let served = admin_view::serve(vec![
             node("mesh1.rpc.1", &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
             node("mesh1.gateway.1", &carrier_id, Some(carrier_key.public().to_string()), Some(caddr), Some(carrier_inc.clone())),

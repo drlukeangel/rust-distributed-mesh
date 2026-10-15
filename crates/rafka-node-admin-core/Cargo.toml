@@ -25,12 +25,10 @@ blake3 = "1"
 futures-lite = "2"
 futures-util = "0.3"
 bytes = "1"
-rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
+rdm-transport = { path = "../rdm-transport" }
 rdm-core = { path = "../rdm-core" }
 rdm-node = { path = "../rdm-node" }
-rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 rdm-client = { path = "../rdm-client" }
-rafka-node-rpc = { path = "../rafka-node-rpc" }
 
 [[bin]]
 name = "rafka-node-admin"

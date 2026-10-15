@@ -9,7 +9,7 @@ use std::sync::Arc;
 async fn main() {
     // A stop that arrives while the node boots is heard from here on.
     node::listen_for_stop();
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node");
+    let telemetry = rdm_transport::init_evidence_telemetry("rafka-rpc-node");
     let launch = match Launch::from_env(|k| std::env::var(k).ok()) {
         Ok(l) => l,
         Err(e) => {
@@ -31,7 +31,7 @@ async fn main() {
         os_clock_skew_ms = skew.unwrap_or(0),
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_mesh_telemetry::set_parent(&boot, &tp);
+        rdm_transport::set_parent(&boot, &tp);
     }
     // The declare oracle calls out through the node's one client, which exists once the node runs.
     let declare_client: Arc<std::sync::OnceLock<rafka_node_rpc_testkit::node_rpc::ProcessNodeRpc>> = Arc::new(std::sync::OnceLock::new());

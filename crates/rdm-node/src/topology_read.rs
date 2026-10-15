@@ -3,7 +3,7 @@
 //! Every node serves it: it reads what the node holds (its membership book and the snapshot
 //! receiver's held sources, each with the publisher and `topology_version` it holds them at) and
 //! streams one snapshot per mesh, chunked by the one method gossip's `Members` snapshots use
-//! ([`rafka_mesh_transport::snapshot::chunks_of`]). It mutates nothing at the target.
+//! ([`rdm_transport::snapshot::chunks_of`]). It mutates nothing at the target.
 //!
 //! The caller ([`get_topology`]) installs a mesh only once every chunk of one snapshot is held,
 //! through the receiver the Mesh channel's snapshots install into
@@ -11,10 +11,10 @@
 
 use rdm_core::wire::ProjectionEntry;
 use rdm_core::{MeshDigest, PublisherId};
-use rafka_mesh_transport::membership::{Frame, Membership};
-use rafka_mesh_transport::snapshot::{chunks_of, Chunk, SourceSnapshot, Taken};
-use rafka_node_rpc::stream::StreamItem;
-use rafka_node_rpc::{NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::membership::{Frame, Membership};
+use rdm_transport::snapshot::{chunks_of, Chunk, SourceSnapshot, Taken};
+use rdm_transport::stream::StreamItem;
+use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::streaming::FrameKind;
@@ -36,7 +36,7 @@ pub struct TopologyDoor {
     /// Whether this node holds a seat holder's exact birth as proven gone.
     gone: Option<GoneSource>,
     /// The rafka-time this node adopted: the value its answer carries, never its own clock.
-    time: rafka_mesh_transport::clock::RafkaTime,
+    time: rdm_transport::clock::RafkaTime,
     snapshots: AtomicU64,
 }
 
@@ -61,7 +61,7 @@ const STORED_PER_FRAME: usize = 24;
 
 impl TopologyDoor {
     /// A door over `membership`, the node's own digest and the rafka-time the node adopted.
-    pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
+    pub fn new(membership: Membership, own: Arc<dyn Fn() -> MeshDigest + Send + Sync>, time: rdm_transport::clock::RafkaTime) -> Self {
         Self { membership, own, stored: None, gone: None, time, snapshots: AtomicU64::new(0) }
     }
 
@@ -120,7 +120,7 @@ pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyRep
 }
 
 impl TopologyDoor {
-    async fn serve(&self, req: TopologyRequest, sink: rafka_node_rpc::stream::ReplySink<Topology, rafka_node_rpc::stream::NotStarted>) -> TopologyReply {
+    async fn serve(&self, req: TopologyRequest, sink: rdm_transport::stream::ReplySink<Topology, rdm_transport::stream::NotStarted>) -> TopologyReply {
         let TopologyRequest::GetTopology { mesh, since } = req;
         let me = (self.own)();
         let span = tracing::info_span!(
@@ -301,7 +301,7 @@ impl TopologyRead {
     /// Adopt the rafka-time this read was served with into `time`, by the rule of the puller
     /// `node_id` of `mesh` as its own seat records stand (the same [`crate::rafka_time::adopt_pulled`]
     /// every pull goes through). `served_by` is the target's `path.name`.
-    pub fn adopt_rafka_time(&self, time: &rafka_mesh_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rafka_mesh_transport::clock::Adopted, TimeNotAdopted> {
+    pub fn adopt_rafka_time(&self, time: &rdm_transport::clock::RafkaTime, membership: &Membership, node: &str, mesh: &str, node_id: &rdm_core::NodeId, served_by: &str) -> Result<rdm_transport::clock::Adopted, TimeNotAdopted> {
         let served = self.rafka_time.ok_or_else(|| TimeNotAdopted::Absent(format!("{served_by}: the topology answer carries no rafka-time")))?;
         let puller = crate::rafka_time::Puller::of(membership.seats(), mesh, node_id);
         crate::rafka_time::adopt_pulled(time, puller, node, crate::rafka_time::Served { via: "get-topology", served_by, ms: served.ms, seat: served.seat }).map_err(TimeNotAdopted::Refused)
@@ -397,11 +397,11 @@ pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_
 /// between its pulls a node keeps its rafka-time disciplined from its own authority's heartbeats only
 /// (origin-ordering.md, rafka-time), so a gap's repair neither stalls its reading nor clears its
 /// discipline's window or slew.
-pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rafka_mesh_transport::membership::TopUpFetch {
+pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rdm_transport::membership::TopUpFetch {
     Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
         let client = client.clone();
         Box::pin(async move {
-            let mut done = rafka_mesh_transport::membership::TopUpDone::default();
+            let mut done = rdm_transport::membership::TopUpDone::default();
             for mesh in meshes {
                 let read = get_topology(&client, &NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None).await.map_err(|e| format!("{mesh}: {e}"))?;
                 done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
@@ -416,7 +416,7 @@ pub fn top_up_fetch(client: Arc<NodeRpcClient>) -> rafka_mesh_transport::members
 /// whom to reach; what it holds as members stays what it hears itself.
 /// Read the topology from `target`.
 pub async fn read_topology(client: &NodeRpcClient, target: &NodeTarget, node: &str, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    let mut receiver = rafka_mesh_transport::snapshot::SnapshotReceiver::default();
+    let mut receiver = rdm_transport::snapshot::SnapshotReceiver::default();
     read_with(client, target, node, mesh, since, |c| receiver.take_chunk(c)).await
 }
 
@@ -429,7 +429,7 @@ async fn read_with(
     mut take: impl FnMut(Chunk) -> Taken,
 ) -> Result<TopologyRead, TopologyFailure> {
     let req = TopologyRequest::GetTopology { mesh: mesh.map(String::from), since };
-    let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(10)), ..Default::default() };
+    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(10)), ..Default::default() };
     let target_name = match target {
         NodeTarget::ExactNode(id) => id.to_string(),
         other => format!("{other:?}"),

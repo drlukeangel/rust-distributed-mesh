@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 /// The page title.
 pub const TITLE: &str = "Gossip frames";
 
-const CRATE: &str = "rafka-mesh-transport";
-const FILE: &str = "crates/rafka-mesh-transport/src/membership.rs";
+const CRATE: &str = "rdm-transport";
+const FILE: &str = "crates/rdm-transport/src/membership.rs";
 const NAME: &str = "Frame";
 
 /// Render the page. The `Frame` enum missing from its file is refused by name.

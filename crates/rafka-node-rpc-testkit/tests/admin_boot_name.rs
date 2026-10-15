@@ -126,8 +126,8 @@ fn a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_it
         let birth = launch.node_id.to_string();
         let opened = tokio::time::timeout(OPENS, spans.recorded("rdm.node_admin.node.serve.via-view-holds-birth", |f| f.get("node_id") == Some(&birth))).await;
         let ping = PingRequest::Ping { payload: b"the mesh primary reaches the admin it admitted".to_vec() };
-        let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(5) }, ..Default::default() };
-        let answer = match root.node_rpc.client.call::<Ping>(&rafka_node_rpc::NodeTarget::ExactNode(launch.node_id.clone()), &ping, &opts).await.0 {
+        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(5) }, ..Default::default() };
+        let answer = match root.node_rpc.client.call::<Ping>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), &ping, &opts).await.0 {
             RpcOutcome::Reply(r) => Ok(r.into_value()),
             other => Err(format!("{other:?}")),
         };

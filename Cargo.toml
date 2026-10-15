@@ -1,11 +1,8 @@
 [workspace]
 members = [
-    "crates/rafka-mesh-telemetry",
-    "crates/rafka-mesh-transport",
-    "crates/rafka-mesh-ops",
+    "crates/rdm-transport",
     "crates/rdm-node",
     "crates/rafka-chaos",
-    "crates/rafka-node-rpc",
     "crates/rafka-node-rpc-testkit",
     "crates/rafka-node-admin-core",
     "crates/rdm-client",

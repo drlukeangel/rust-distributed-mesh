@@ -25,7 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rdm_core::{FabricId, MemberStatus, MeshDigest, MeshId, NodeKind};
 use rdm_client::NodeView;
-use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
+use rdm_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use rafka_test_scenario::typed::until_arrival;
@@ -103,7 +103,7 @@ struct Observer {
 impl Observer {
     async fn join(fabric: &FabricId, mesh_id: &MeshId, seeds: Vec<EndpointAddr>) -> Self {
         let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
-        let endpoint = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         learn_addresses(&endpoint, &seeds).unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();

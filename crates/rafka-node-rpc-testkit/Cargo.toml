@@ -14,11 +14,9 @@ async-trait = "0.1"
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 # rafka-rpc-probe: the entry admin's view, read over Node RPC through the typed objects (fabric.get, node.get).
 rdm-client = { path = "../rdm-client" }
-rafka-node-rpc = { path = "../rafka-node-rpc" }
+rdm-transport = { path = "../rdm-transport" }
 rdm-core = { path = "../rdm-core" }
 rdm-node = { path = "../rdm-node" }
-rafka-mesh-transport = { path = "../rafka-mesh-transport" }
-rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 tokio = { workspace = true }
@@ -36,7 +34,7 @@ rig = ["dep:libc"]
 # The OS-clock skew a testkit executable applies from its launch environment. Default for the
 # testkit's own executables; the product role binaries depend on the testkit without it.
 default = ["testkit-skew"]
-testkit-skew = ["rafka-mesh-transport/testkit-skew"]
+testkit-skew = ["rdm-transport/testkit-skew"]
 
 [dev-dependencies]
 rafka-node-rpc-testkit = { path = ".", features = ["rig"] }

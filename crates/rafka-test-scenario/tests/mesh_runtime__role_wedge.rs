@@ -42,7 +42,7 @@ async fn a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth() 
 
     // Frozen: pending-reconnect at the floor, then dead after the tickle and the hold-down. The unheard state is
     // the admin's own detection: no call is held open to wait on, so the view is read until it holds it.
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let pid = estate.pid_of(&path).await;
     assert!(std::process::Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success(), "SIGSTOP {pid} ({path})");
     estate.until_node(&path, &format!("{path} marked pending-reconnect"), floor * 2 + Duration::from_secs(20), |n| n.filter(|n| n.status == NodeStatus::PendingReconnect).map(|_| ())).await;

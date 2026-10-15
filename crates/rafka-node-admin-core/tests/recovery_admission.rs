@@ -35,7 +35,7 @@ fn view() -> Topology {
 
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    pipeline: rafka_mesh_telemetry::SpanCapture,
+    pipeline: rdm_transport::SpanCapture,
 }
 
 impl Capture {
@@ -77,7 +77,7 @@ fn opened(facts: &[BuildFact]) -> usize {
 #[tokio::test]
 async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recovery() {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3051-cell4", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-3051-cell4", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 
@@ -174,7 +174,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
 #[tokio::test]
 async fn a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_applied_by_the_delete() {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3016-deleted-birth", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-3016-deleted-birth", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 
@@ -237,7 +237,7 @@ async fn gossip_admin(name: &str, fabric: &FabricId, peers: Vec<iroh::EndpointAd
     let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let builds = rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter::join(
         &gossip,
-        &rafka_mesh_transport::membership::LocationBook::new(&endpoint, name).unwrap(),
+        &rdm_transport::membership::LocationBook::new(&endpoint, name).unwrap(),
         fabric,
         peers,
         Arc::new(MemoryBuildStateAdapter::new()),
@@ -303,7 +303,7 @@ fn deletion_receipts(lane: Option<&str>, kind: &str, build: &rafka_node_admin_co
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_a_mesh_primary_opens_and_claims_on_its_own_log_is_heard_by_the_fabric_primary_and_answered_already_applied_there() {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-heard-at-fabric-primary", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-heard-at-fabric-primary", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 
@@ -417,7 +417,7 @@ async fn rendered(refusal: Refusal) -> serde_json::Value {
 #[tokio::test]
 async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_runs_in_mesh1() {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-two-meshes", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-two-meshes", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
     let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
@@ -460,7 +460,7 @@ async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_r
 #[tokio::test]
 async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-one-mesh", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-one-mesh", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
     let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
@@ -544,7 +544,7 @@ async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admit
     use rafka_node_admin_core::build_state::BuildState;
     use rdm_core::build::BuildReply;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-run-in-mesh", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-run-in-mesh", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
     let (_fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
@@ -651,7 +651,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
     use rafka_node_admin_core::build_state::BuildState;
     use rafka_node_admin_core::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 
@@ -817,7 +817,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     use rafka_node_admin_core::build_state::{AttemptOpened, BuildState};
     use rafka_node_admin_core::mesh_claims::InFlight;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-unclaimed-open", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-unclaimed-open", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 
@@ -939,7 +939,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     use rafka_node_admin_core::mesh_claims::InFlight;
     use rafka_node_admin_core::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-unclaimed-resubmit", exporter.clone());
+    let (pipeline, layer) = rdm_transport::span_capture("i143-r-bi7-unclaimed-resubmit", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
     let capture = Capture { exporter, pipeline };
 

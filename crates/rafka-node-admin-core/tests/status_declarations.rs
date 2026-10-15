@@ -16,7 +16,7 @@ use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ReplyWithhold, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest};
 use std::collections::BTreeMap;
@@ -48,7 +48,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
 
 struct Rig {
     admin: Birth,
-    server: rafka_node_rpc::NodeRpcServer,
+    server: rdm_transport::NodeRpcServer,
     _router: Router,
     resolved: ResolvedNode,
     authority: Arc<StatusAuthority>,
@@ -190,9 +190,9 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let server = rafka_node_admin_core::status_rpc::serve(ServerBuilder::new().withhold_replies(withhold.clone()), slot)
         .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode {
         node_id: admin.node.node_id.clone(),
         name: admin.node.name.clone(),
@@ -207,7 +207,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
 async fn client_of(rig: &Rig, b: &Birth) -> NodeRpcClient {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(rig.resolved.clone());
-    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     tracing::info!(step = "client-bound", node = %b.node.name, peer = %b.key.public().fmt_short(), local = ?ep.bound_sockets(), "a client endpoint is bound on the birth's key");
     NodeRpcClient::new(ep, resolver).with_caller_system("rdm")
 }
@@ -462,9 +462,9 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
         })
         .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
     ServedNode { resolved, seen, heard, _router: router }
 }
@@ -473,14 +473,14 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
 async fn configs_door(rig: &Rig, node: &ServedNode) {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
-    let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
 }
 
 /// mesh1's primary's config door, the one door its record changes take turns at, its client
 /// resolving no node: what a cell whose subject is told nothing (a stopped birth) needs.
 async fn quiet_door(rig: &Rig) {
-    let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
 }
 
@@ -504,7 +504,7 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
@@ -540,7 +540,7 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "d".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&old).await.unwrap().expect("the mesh-primary wrote the node's row at its .old name");
         assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()));
@@ -572,7 +572,7 @@ fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing
         stopped_with_row(&rig, stopped, &["edge"]).await;
         let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
         let client = client_of(&rig, &b["admin2"]).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
         let row = rig.nodes.node_row_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
         assert_eq!((row.node_id.clone(), row.config.clone(), row.tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
@@ -602,7 +602,7 @@ async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
     let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("k{i:02}"), "v".to_string())).collect();
     let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
     let client = client_of(&rig, admin2).await;
-    let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
+    let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
     assert_eq!(
         reply,
         StatusReply::RejectedConfig { over: rdm_core::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rdm_core::MAX_CONFIG_KEYS as u32, max_bytes: rdm_core::MAX_CONFIG_BYTES as u32 } }
@@ -678,7 +678,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rdm_transport::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         let StatusReply::ConfigNotApplied { node: named, answered, reason } = &reply else { panic!("the row is written and the birth refused: {reply:?}") };
         assert_eq!((named.as_str(), answered.as_str()), ("mesh1.rpc.1", "not-ready"), "{reply:?}");
         assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
@@ -730,7 +730,7 @@ fn a_row_the_store_refuses_ends_row_refused_and_nothing_is_told() {
 async fn door_at(key: &SecretKey, node: &ServedNode) -> rafka_node_admin_core::node_config::NodeConfigs {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(node.resolved.clone());
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())
 }
 
@@ -805,10 +805,10 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
         let (carrier, _carrier_router) = carrier_admin(m2admin, &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier);
-        let ep = rafka_node_rpc::endpoint::bind(rpc2.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(rpc2.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
         let config: BTreeMap<String, String> = [("zone".to_string(), "far".to_string())].into();
-        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone(), path: m2admin.node.name.clone() };
+        let route = rdm_transport::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone(), path: m2admin.node.name.clone() };
         let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &route, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote the row");
@@ -854,7 +854,7 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let me = &rig.admin.node;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &rdm_transport::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (me.node_id.clone(), config.clone()));
@@ -871,17 +871,17 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
 }
 
 /// The spans a cell's own run exported through the product span pipeline
-/// (`rafka_mesh_telemetry::span_capture`), with their trace ids.
+/// (`rdm_transport::span_capture`), with their trace ids.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("status-declarations", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("status-declarations", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -931,10 +931,10 @@ impl Capture {
 /// its live resolver holding `target`, the birth it carries to.
 async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Router) {
     use rdm_core::connections::{ConnectionEnd, ConnectionsHeld};
-    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() };
-    let live = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+    let live = Arc::new(rdm_transport::LiveNodeResolver::default());
     live.apply(target.clone(), None);
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         ConnectionEnd { name: resolved.name.clone(), node_id: resolved.node_id.clone(), incarnation: Some(resolved.incarnation.clone()) },
@@ -947,7 +947,7 @@ async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Route
     let server = rafka_node_admin_core::admin::rpc_server(connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
-    (resolved, Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn())
+    (resolved, Router::builder(ep).accept(rdm_transport::ALPN, server).spawn())
 }
 
 /// CONTRACT (ops-naming "Node data": the node applies the config and carries it in its next digest; a
@@ -1052,7 +1052,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let node = serve_node(&newcomer).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(node.resolved.clone());
-        let ep = rafka_node_rpc::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())));
         let records = rafka_node_admin_core::admin::Records::default();
@@ -1102,7 +1102,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         let node = serve_node(&newcomer).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(node.resolved.clone());
-        let ep = rafka_node_rpc::endpoint::bind(m2admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(m2admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let configs: rafka_node_admin_core::node_config::NodeConfigsSlot = Arc::new(OnceLock::new());
         let _ = configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), Default::default(), Default::default())));
         let records = rafka_node_admin_core::admin::Records::default();
@@ -1367,9 +1367,9 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier.clone());
         let caller = &b["m2admin"];
-        let ep = rafka_node_rpc::endpoint::bind(caller.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(caller.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
-        let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() };
+        let route = rdm_transport::RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() };
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let reply = rdm_client::NodeRpc::new(&client).name_update(&rig.admin.node.node_id, &route, &exact(&succ), "3", &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });

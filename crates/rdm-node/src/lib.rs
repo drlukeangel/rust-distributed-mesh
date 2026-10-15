@@ -4,7 +4,7 @@
 
 pub use rdm_core::launch::Launch;
 pub use rdm_core::{certs, dto, model, names, status, NodeKind};
-pub use rafka_node_rpc::{NodeRpcClient, ServerBuilder};
+pub use rdm_transport::{NodeRpcClient, ServerBuilder};
 pub use crate::node::{
     drain_deadline_from_env, leave_linger_from_env, listen_for_stop, stop_commanded,
     stop_requested, wait_for_signal, NodeSeams, RunningNode,
@@ -105,7 +105,7 @@ pub async fn run_with(
 ) -> Result<()> {
     crate::node::listen_for_stop();
     let executable = executable_name()?;
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&executable);
+    let _telemetry = rdm_transport::init_evidence_telemetry(&executable);
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
@@ -116,7 +116,7 @@ pub async fn run_with(
         executable = %executable,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_mesh_telemetry::set_parent(&boot, &tp);
+        rdm_transport::set_parent(&boot, &tp);
     }
     let running = {
         use tracing::Instrument;

@@ -441,7 +441,7 @@ impl BuildExecutor {
             outcome = tracing::field::Empty,
         );
         if let Some(tp) = &context.traceparent {
-            rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
+            rdm_transport::set_remote_parent(&span, tp, context.tracestate.as_deref());
         }
         let r = self.run_claimed(&*builds, build_id, lane, attempt, &me, plan, &span).instrument(span.clone()).await;
         span.record(

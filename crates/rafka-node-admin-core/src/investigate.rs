@@ -23,8 +23,8 @@
 use crate::admin::Records;
 use crate::model::{Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rafka_mesh_transport::membership::Membership;
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::membership::Membership;
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::NotSentReason;
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::status::{Status, StatusReply, StatusRequest};
@@ -654,7 +654,7 @@ pub(crate) struct Found {
     pub(crate) carrier: String,
     pub(crate) detail: String,
     /// iroh's local view of each node-admin asked, `<path.name>=<known addrs>` joined by `;`: a
-    /// diagnostic beside the probe, nothing decides on it (`rafka_mesh_transport::iroh_obs`).
+    /// diagnostic beside the probe, nothing decides on it (`rdm_transport::iroh_obs`).
     pub(crate) iroh_known: String,
     /// The addresses iroh used for each node-admin asked, as `iroh_known`.
     pub(crate) iroh_active: String,
@@ -742,7 +742,7 @@ impl ProbeCalls for WatchCalls<'_> {
 
     async fn observe(&self, admin: &Node) -> (String, String) {
         let key = admin.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-        let seen = rafka_mesh_transport::iroh_obs::observe_remote(&self.0.membership.endpoint(), key).await;
+        let seen = rdm_transport::iroh_obs::observe_remote(&self.0.membership.endpoint(), key).await;
         (seen.known_addrs, seen.active_addrs)
     }
 
@@ -1023,7 +1023,7 @@ mod tests {
         };
         let floor = Duration::from_secs(30);
         for every in [Duration::from_millis(500), Duration::from_secs(2)] {
-            let book = rafka_mesh_transport::membership::DigestBook::default();
+            let book = rdm_transport::membership::DigestBook::default();
             let (admin, rpc) = (digest("mesh2.admin.1"), digest("mesh2.rpc.1"));
             let t0 = Instant::now();
             assert!(book.record_forwarded_at(admin.clone(), t0), "the direct backbone receipt");

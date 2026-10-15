@@ -261,7 +261,7 @@ mod tests {
     fn the_frames_page_lists_every_frame_variant_in_declaration_order() {
         let root = rafka_mesh_audit::workspace_root();
         let pages = pages(&root).unwrap();
-        let declared = declared_variants(&root, "crates/rafka-mesh-transport/src/membership.rs", "Frame");
+        let declared = declared_variants(&root, "crates/rdm-transport/src/membership.rs", "Frame");
         assert_eq!(variant_rows(page(&pages, "frames.md"), "Frame"), positions(&declared));
     }
 
@@ -274,7 +274,7 @@ mod tests {
         for (variant, serde) in [("Pending", "pending"), ("ReadyForTraffic", "ready-for-traffic"), ("PendingReconnect", "pending-reconnect"), ("Deleted", "deleted")] {
             assert!(node_status.contains(&format!("**`{variant}`** | `{serde}`")), "NodeStatus::{variant} is `{serde}` on the page:\n{node_status}");
         }
-        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rafka-mesh-transport/src/membership.rs` |"), "the mesh status string const is listed with its value and its file");
+        assert!(statuses.contains("| `MESH_READY_FOR_TRAFFIC` | `ready-for-traffic` | `crates/rdm-transport/src/membership.rs` |"), "the mesh status string const is listed with its value and its file");
     }
 
     #[test]

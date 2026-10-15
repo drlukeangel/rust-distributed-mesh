@@ -20,7 +20,7 @@ use rafka_node_admin_core::build_state::{
 };
 use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::build_claim::BuildClaimReply;
 use rdm_core::context::CallContext;
 use std::sync::{Arc, OnceLock};
@@ -71,9 +71,9 @@ async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildS
     let server = build_claim::serve(ServerBuilder::new(), slot)
         .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolved = ResolvedNode {
         node_id: b.node.node_id.clone(),
         name: b.node.name.clone(),
@@ -221,10 +221,10 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     open(&p_builds, &id, 2).await;
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(p_seat.resolved.clone());
-    let ep = rafka_node_rpc::endpoint::bind(reborn_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(reborn_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver);
     let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
-    let (out, _) = client.call::<BuildClaim>(&rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+    let (out, _) = client.call::<BuildClaim>(&rdm_transport::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
     match out {
         rdm_core::outcome::RpcOutcome::Reply(reply) => match reply.value() {
             BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth"), "{reason}"),
@@ -251,13 +251,13 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
     resolver.insert(p_seat.resolved.clone());
     // A fresh endpoint key, in no birth of the fabric-primary's view.
     let stranger = SecretKey::generate();
-    let ep = rafka_node_rpc::endpoint::bind(stranger, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(stranger, "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver);
     let call = |req: BuildClaimRequest| {
         let client = &client;
-        let target = rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone());
+        let target = rdm_transport::NodeTarget::ExactNode(p.node.node_id.clone());
         async move {
-            match client.call::<BuildClaim>(&target, &req, &rafka_node_rpc::CallOptions::default()).await.0 {
+            match client.call::<BuildClaim>(&target, &req, &rdm_transport::CallOptions::default()).await.0 {
                 rdm_core::outcome::RpcOutcome::Reply(reply) => reply.value().clone(),
                 other => panic!("{other:?}"),
             }

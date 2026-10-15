@@ -7,7 +7,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -21,14 +21,14 @@ fn echo(p: &[u8]) -> PingRequest {
 /// A node serving Ping from one endpoint: every payload is echoed at once.
 struct Node {
     _router: Router,
-    _server: rafka_node_rpc::NodeRpcServer,
+    _server: rdm_transport::NodeRpcServer,
     resolved: ResolvedNode,
 }
 
 async fn node() -> Node {
     let key = SecretKey::generate();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let server = ServerBuilder::new()
         .serve::<Ping, _, _>(OpOwner::Core, move |_peer, req: PingRequest| async move {
@@ -37,7 +37,7 @@ async fn node() -> Node {
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
     Node { _router: router, _server: server, resolved }
 }
@@ -58,7 +58,7 @@ struct Rig {
 async fn rig(record: ResolvedNode) -> Rig {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(record.clone());
-    let cep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let cep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     Rig { client: NodeRpcClient::new(cep, resolver), target: NodeTarget::ExactNode(record.node_id) }
 }
 

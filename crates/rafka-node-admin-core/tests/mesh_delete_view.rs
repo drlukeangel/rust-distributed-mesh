@@ -12,7 +12,7 @@
 use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rafka_mesh_transport::membership::{Backbone, Membership};
+use rdm_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::{project, project_with, GossipLifecycle, Records, ViewReads};
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
 use rafka_node_admin_core::model::{PathName, ProviderKind, ScopeStatus};
@@ -80,7 +80,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
     let (trace_id, live_before, after_receipt) = cap.run(async {
         let fabric = FabricId::mint();
         let (mesh1, mesh3) = (MeshId::mint(), MeshId::mint());
-        let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let membership = Membership::join(&gossip, &ep, &fabric, "mesh3", &mesh3, FP, Arc::new(crate::adopted_time()), vec![]).await.unwrap();

@@ -16,14 +16,14 @@ use std::time::Duration;
 
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-rb2", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("i143-rb2", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -192,7 +192,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             primary: Arc::new(|| Some("mesh1.admin.1".into())),
             row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
-                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);
                 t
             })),

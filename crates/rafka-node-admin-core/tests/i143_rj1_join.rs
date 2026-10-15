@@ -22,12 +22,12 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -36,7 +36,7 @@ fn capture(cell: &str) -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-rj1-{cell}");
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
@@ -150,7 +150,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
             row: Arc::new(|_| Box::pin(async { Ok(None) })),
             issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
-                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);
                 t
             })),
@@ -225,7 +225,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
             Box::pin(async move { Ok(Some(row)) })
         }),
         issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
-            let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+            let t = rdm_transport::clock::RafkaTime::unadopted();
             t.adopt(1_000);
             t
         })),
@@ -364,7 +364,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
                 Box::pin(async move { Ok(Some(row)) })
             }),
             issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::no_certs({
-                let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+                let t = rdm_transport::clock::RafkaTime::unadopted();
                 t.adopt(1_000);
                 t
             })),

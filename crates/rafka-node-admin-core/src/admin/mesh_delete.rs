@@ -346,7 +346,7 @@ impl AdminRunner {
         handoff: tokio::sync::watch::Receiver<Option<crate::mesh_delete::MeshDeleteOutcome>>,
     ) -> Result<(), RunEnd> {
         let req = StatusRequest::DeleteMesh { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
-        let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+        let (out, _) = node_rpc.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
         match &out {
             rdm_core::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
             rdm_core::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::Failed(format!("{outer}: {} refused delete-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
@@ -563,7 +563,7 @@ impl AdminRunner {
             Some(key) => crate::workflows::node_start::reached_back(&me_str, &self.node_rpc.client, &key).await.ok().map(|target| crate::mesh_delete::MeshDeleteOwner { target, name: sender.map(|n| n.name.to_string()).unwrap_or_else(|| format!("the admin at endpoint {}", key.fmt_short())) }),
             None => None,
         };
-        let fabric_primary = view.fabric_primary().map(|n| crate::mesh_delete::MeshDeleteOwner { target: rafka_node_rpc::NodeTarget::ExactNode(n.node_id.clone()), name: n.name.to_string() });
+        let fabric_primary = view.fabric_primary().map(|n| crate::mesh_delete::MeshDeleteOwner { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), name: n.name.to_string() });
         let owner = match crate::mesh_delete::leave_owner(call, fabric_primary, &me_str, &key) {
             Ok(owner) => owner,
             Err(refused) => return refused,
@@ -754,7 +754,7 @@ impl AdminRunner {
         };
         let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
         let req = StatusRequest::MeshDeleted { mesh_id: key.mesh_id.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
-        let (out, _) = node_rpc.client.call::<Status>(&owner.target, &req, &rafka_node_rpc::CallOptions::default()).await;
+        let (out, _) = node_rpc.client.call::<Status>(&owner.target, &req, &rdm_transport::CallOptions::default()).await;
         let outcome = match &out {
             rdm_core::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
             other => format!("{} {other:?}", other.name()),
@@ -819,7 +819,7 @@ impl AdminRunner {
         }
         // The manifest: the sender's Build facts, read now.
         let node_rpc = &self.node_rpc;
-        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &build).await.map(|f| f.facts);
+        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rdm_transport::NodeTarget::ExactNode(final_node_id.clone()), &build).await.map(|f| f.facts);
         let verdict = match crate::mesh_delete::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &me_name, &final_node_id.to_string()) {
             Ok(v) => v,
             Err(refused) => return refused,

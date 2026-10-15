@@ -14,7 +14,7 @@ use rdm_core::connections::{resolve, CarrierPolicy, ConnectionState, NodeConnect
 use rdm_core::launch::Launch;
 use rdm_core::{NodeKind, PathName};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
-use rafka_node_rpc::{CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::{CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
@@ -327,7 +327,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                     let marked = reason.clone();
                     tokio::spawn(async move {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        rafka_mesh_transport::membership::mark_transport_stopped(marked);
+                        rdm_transport::membership::mark_transport_stopped(marked);
                     });
                     OriginateReply::TransportStopMarked { by, reason }
                 }
@@ -415,7 +415,7 @@ async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateRep
 
 async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier: &str, failed_attempts: u32) -> OriginateReply {
     use rdm_core::connections::{ConnectionEnd, ConnectionKind};
-    use rafka_node_rpc::ConnectionObserver;
+    use rdm_transport::ConnectionObserver;
     let bad = |reason: String| OriginateReply::BadDestination { by: by.clone(), reason };
     let mut ends = Vec::new();
     for what in [destination, carrier] {
@@ -433,7 +433,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
         seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
     }
     seams.connections.observations_landed().await;
-    let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
+    let end = |n: &rdm_transport::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
         id: rdm_core::ConnectionId::mint(),
         source: seams.connections.own(),

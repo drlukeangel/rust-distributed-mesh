@@ -22,8 +22,8 @@
 
 use rdm_core::NodeId;
 use rdm_client::{BuildId, FabricDesired, LaunchKind, MeshDesired, PathName};
-use rafka_node_rpc::stream::StreamItem;
-use rafka_node_rpc::{Budget, CallOptions, NodeTarget};
+use rdm_transport::stream::StreamItem;
+use rdm_transport::{Budget, CallOptions, NodeTarget};
 use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit};
 use rdm_core::outcome::RpcOutcome;
 use rafka_test_scenario::container_faults;
@@ -5153,7 +5153,7 @@ async fn mock_partition_heal_recovers_coverage_and_routes() {
 struct Observer {
     _endpoint: iroh::Endpoint,
     _router: iroh::protocol::Router,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, rafka_mesh_transport::membership::Frame)>>>,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(&'static str, rdm_transport::membership::Frame)>>>,
 }
 
 impl Observer {
@@ -5165,9 +5165,9 @@ impl Observer {
 
     async fn join(fabric: &rdm_core::FabricId, mesh: &rdm_core::MeshId, seeds: Vec<iroh::EndpointAddr>) -> Self {
         use futures_lite::StreamExt as _;
-        use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
+        use rdm_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
         let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
-        let endpoint = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         learn_addresses(&endpoint, &seeds).unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
@@ -5192,7 +5192,7 @@ impl Observer {
 }
 
 async fn control_run(cell: &str, shape: Shape) {
-    use rafka_mesh_transport::membership::Frame;
+    use rdm_transport::membership::Frame;
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -6624,7 +6624,7 @@ async fn soak_run(cell: &str, story: Story) {
     let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
     let day0 = estate.node_values().await;
     let per_mesh = [(NodeClass::NodeAdmin, shape.node_admin), (NodeClass::Compute, shape.compute), (NodeClass::Gateway, shape.gateway), (NodeClass::Broker, shape.broker)];
-    let cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
+    let cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_round());
     let (floor, backbone) = (cfg.floor, cfg.backbone);
     eprintln!("SOAK {} cell={cell} seed={seed} secs={secs} profile={:?} provider={} network_faults={can_cut}", story.id, story.profile, provider());
     let driver = SoakDriver::new(estate, cfg, crate::build_log::build_read).await;

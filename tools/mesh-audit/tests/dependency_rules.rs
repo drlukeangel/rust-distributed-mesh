@@ -199,9 +199,9 @@ fn rule5_test_knobs_is_a_dev_dependency_feature_of_the_scenario_crate_alone() {
     let root = workspace_root();
     let dev = deps::packages_with_test_knobs(&root, "rafka-test-scenario", "normal,build,dev").unwrap();
     assert_eq!(dev, vec!["iroh".to_string()], "the scheduler-replay cell's iroh carries test-knobs in the dev closure");
-    let rpc_dev = deps::packages_with_test_knobs(&root, "rafka-node-rpc", "normal,build,dev").unwrap();
-    assert!(rpc_dev.is_empty(), "the rpc crate's tests use only crates below it, so its dev closure carries no test-knobs: {rpc_dev:?}");
-    for bin_package in ["rafka-node-admin-core", "rafka-node-rpc-testkit", "rdm-node", "rafka-node-rpc", "rafka-test-scenario"] {
+    let rpc_dev = deps::packages_with_test_knobs(&root, "rdm-transport", "normal,build,dev").unwrap();
+    assert!(rpc_dev.is_empty(), "the transport crate's tests use only crates below it, so its dev closure carries no test-knobs: {rpc_dev:?}");
+    for bin_package in ["rafka-node-admin-core", "rafka-node-rpc-testkit", "rdm-node", "rdm-transport", "rafka-test-scenario"] {
         let shipped = deps::packages_with_test_knobs(&root, bin_package, "normal,build").unwrap();
         assert!(shipped.is_empty(), "{bin_package} ships test-knobs through {shipped:?}");
     }

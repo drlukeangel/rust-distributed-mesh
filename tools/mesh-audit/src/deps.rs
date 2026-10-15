@@ -27,7 +27,7 @@ use std::process::Command;
 /// PRD §4 target packages plus the generic crates already in the workspace.
 pub const GENERIC_PACKAGES: &[&str] = &[
     "rdm-core",
-    "rdm-core",
+    "rdm-transport",
     "rafka-mesh-transport",
     "rafka-node-rpc",
     "rafka-node-admin-core",
@@ -51,6 +51,7 @@ pub const PUBLIC_INTERFACES: &[&str] = &[
     "rdm-client",
     "rdm-node",
     "rdm-core",
+    "rdm-transport",
     "rafka-node-rpc-testkit",
     "rafka-test-scenario",
     "rafka-mesh-telemetry",

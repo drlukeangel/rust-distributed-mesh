@@ -13,7 +13,7 @@
 //!   (`Launch::mesh_issuer`, `RDM_MESH_ISSUER`).
 //!
 //! Issue time and expiry are the issuing admin's rafka-time: every call is given `now_ms` read from
-//! the admin's own [`RafkaTime`](rafka_mesh_transport::clock::RafkaTime). The issuing side already
+//! the admin's own [`RafkaTime`](rdm_transport::clock::RafkaTime). The issuing side already
 //! holds it; an admin that does not yet hold rafka-time issues nothing and says so.
 //!
 //! A node-admin is started with an explicit [`CertChoice`]: an app's signer, or [`NoCerts`] by
@@ -22,7 +22,7 @@
 pub use rdm_core::certs::{BirthIdentity, CertRefusal, IssueFailure};
 #[cfg(test)]
 use crate::model::{EndpointId, IncarnationId, NodeId};
-use rafka_mesh_transport::clock::RafkaTime;
+use rdm_transport::clock::RafkaTime;
 use std::sync::Arc;
 
 /// The app's signing capability. Implementations hold the keys; RDM holds none.

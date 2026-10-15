@@ -1,8 +1,8 @@
-//! A unit cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`)
+//! A unit cell's own span capture: the product span pipeline (`rdm_transport::span_capture`)
 //! into an in-memory exporter, behind a dispatcher the cell installs on its own thread (a
 //! `#[tokio::test]` runtime is that one thread), so the spans it reads are its own and carry the
 //! trace ids a cell reports. The pipeline enables every callsite before the dispatcher exists
-//! (`rafka_mesh_telemetry::enable_callsites`), so a callsite another thread hit first still reaches it.
+//! (`rdm_transport::enable_callsites`), so a callsite another thread hit first still reaches it.
 
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -20,7 +20,7 @@ pub(crate) struct Captured {
 /// The capture and the dispatcher that feeds it.
 pub(crate) struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     /// Install with `tracing::dispatcher::set_default` for the cell's span of work.
     pub dispatch: tracing::Dispatch,
 }
@@ -29,7 +29,7 @@ impl Capture {
     /// A capture exporting under `service.name = cell`.
     pub(crate) fn new(cell: &str) -> Self {
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-        let (capture, layer) = rafka_mesh_telemetry::span_capture(cell, exporter.clone());
+        let (capture, layer) = rdm_transport::span_capture(cell, exporter.clone());
         Self { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
     }
 

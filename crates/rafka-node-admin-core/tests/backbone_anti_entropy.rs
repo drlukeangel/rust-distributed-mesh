@@ -16,7 +16,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, MeshId, NodeId};
-use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Backbone, Membership};
+use rdm_transport::membership::{gossip_addr, learn_addresses, Backbone, Membership};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rdm_core::PathName;
 use rafka_node_admin_core::build::BuildId;
@@ -125,14 +125,14 @@ impl BuildStateAdapter for HeldBuilds {
 /// a dispatcher installed on every thread of the cell's runtime.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh1.admin.1", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("mesh1.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
@@ -198,12 +198,12 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         let root = running.digest.lock().unwrap().clone();
 
         // A peer mesh's place on the backbone, seeded with the publisher's address.
-        let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
         let seed = gossip_addr(&root).expect("the publisher's digest names its gossip address");
         learn_addresses(&ep, &[seed.clone()]).unwrap();
-        let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(root.emitted_at_rafka_ms);
         let observer = Membership::join(&gossip, &ep, &root.fabric_id, "mesh2", &MeshId::mint(), "mesh2.admin.1", Arc::new(time), vec![]).await.unwrap();
         let _observer_bb = Backbone::join(&gossip, &ep, &observer, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![seed]).await.unwrap();

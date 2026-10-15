@@ -8,7 +8,7 @@
 //! storage meta says.
 //!
 //! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
-//! callsite before installing its dispatcher (`rafka_mesh_telemetry::span_capture` calls `enable_callsites`).
+//! callsite before installing its dispatcher (`rdm_transport::span_capture` calls `enable_callsites`).
 
 use crate::common;
 

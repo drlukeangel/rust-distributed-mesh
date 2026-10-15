@@ -350,7 +350,7 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
     plant("rshape-consumer-not-own-workspace", "no [workspace] table", check_manifest(&toml.replace("[workspace]", "")).0);
     plant("rshape-consumer-missing-entry-point", "a missing entry point", check_manifest(&toml.replace("name = \"rshape-broker\"", "name = \"other\"")).0);
     plant("rshape-consumer-lock-rev-mismatch", "a lockfile at another rev", check_lock(&lock.replace(&rev, &"2".repeat(40)), &rev));
-    plant("rshape-consumer-in-root-workspace", "the consumer as a root member", check_root_excludes_consumer(&root_toml.replace("exclude = [", "xexclude = [").replace("\"crates/rafka-mesh-telemetry\",", &format!("\"crates/rafka-mesh-telemetry\", \"{CONSUMER}\","))));
+    plant("rshape-consumer-in-root-workspace", "the consumer as a root member", check_root_excludes_consumer(&root_toml.replace("exclude = [", "xexclude = [").replace("\"crates/rdm-transport\",", &format!("\"crates/rdm-transport\", \"{CONSUMER}\","))));
     plant(
         "rshape-consumer-second-mechanism",
         "a consumer-owned planner",

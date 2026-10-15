@@ -28,8 +28,8 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use rdm_core::connections::{ConnectionKind, ConnectionState, NodeConnection};
 use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
-use rafka_mesh_transport::membership::Membership;
-use rafka_node_rpc::{NodeRpcClient, NodeRpcServer, NodeTarget};
+use rdm_transport::membership::Membership;
+use rdm_transport::{NodeRpcClient, NodeRpcServer, NodeTarget};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -157,7 +157,7 @@ pub trait Session: Send + Sync {
     /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
     /// birth's connections rows: the session drops it once it holds the name its join answer handed,
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
     /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B): report `JoinNode` to the authority reached
     /// back over `spare` and re-enter the mesh channel (and backbone, for a node-admin).
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<WhichMesh>, String> {
@@ -228,7 +228,7 @@ pub struct NodeSelf {
     pub client: Arc<NodeRpcClient>,
     /// The process's live resolver: an admin that commanded this birth is applied to it at the path
     /// its call came in on, so the completion call goes back there.
-    pub resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
+    pub resolver: Arc<rdm_transport::LiveNodeResolver>,
     /// This birth's membership: the mesh channel its completion frames go out on.
     pub membership: Membership,
     /// Set this birth's status and answer the digest to publish.
@@ -240,11 +240,11 @@ pub struct NodeSelf {
     pub declare: Option<Declare>,
     /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
     /// retired, so its `hydrate_before_ready` hook and any pull it has in flight end.
-    pub retire: Option<rafka_node_rpc::Retirement>,
+    pub retire: Option<rdm_transport::Retirement>,
     /// The backbone, for a node-admin: its round hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
-    pub backbone: Option<rafka_mesh_transport::membership::Backbone>,
+    pub backbone: Option<rdm_transport::membership::Backbone>,
     /// The bound of this birth's `node.connections.delete { All }`, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch or its
     /// admin config): the eligible work in flight is let finish until it passes. Strictly shorter
@@ -277,7 +277,7 @@ impl NodeSelf {
         name: PathName,
         server: NodeRpcServer,
         client: Arc<NodeRpcClient>,
-        resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
+        resolver: Arc<rdm_transport::LiveNodeResolver>,
         membership: Membership,
         set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
@@ -295,13 +295,13 @@ impl NodeSelf {
     }
 
     /// This surface, publishing its round hooks on `backbone` as well as its mesh channel.
-    pub fn with_backbone(mut self, backbone: rafka_mesh_transport::membership::Backbone) -> Self {
+    pub fn with_backbone(mut self, backbone: rdm_transport::membership::Backbone) -> Self {
         self.backbone = Some(backbone);
         self
     }
 
     /// This surface, cancelling `retire` when `node.connections.delete { All }` or a stop is admitted.
-    pub fn with_retire(mut self, retire: rafka_node_rpc::Retirement) -> Self {
+    pub fn with_retire(mut self, retire: rdm_transport::Retirement) -> Self {
         self.retire = Some(retire);
         self
     }
@@ -470,7 +470,7 @@ impl NodeSelf {
     async fn await_in_flight(&self) -> InFlight {
         self.server.drain();
         let stats = self.server.stats();
-        let eligible = || rafka_node_rpc::ServerStats::get(&stats.in_flight).saturating_sub(1);
+        let eligible = || rdm_transport::ServerStats::get(&stats.in_flight).saturating_sub(1);
         let began = eligible();
         let until = tokio::time::Instant::now() + self.connections_delete_deadline;
         loop {
@@ -648,7 +648,7 @@ impl NodeSelf {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };
-        let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
+        let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rdm_transport::CallOptions::default()).await;
         let answer = match &out {
             rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
             other => other.name().to_string(),
@@ -1018,7 +1018,7 @@ impl NodeSelf {
             };
             let retire = match &self.retire {
                 Some(r) => r.renew(),
-                None => rafka_node_rpc::CancelToken::new(),
+                None => rdm_transport::CancelToken::new(),
             };
             // No row is written from here until the session holds the name its join answer hands:
             // every connection the start makes or accepts is recorded under that name.

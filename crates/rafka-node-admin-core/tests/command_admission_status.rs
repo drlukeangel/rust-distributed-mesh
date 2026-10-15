@@ -5,7 +5,7 @@
 
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rafka_mesh_transport::membership::{Backbone, Membership};
+use rdm_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::GossipLifecycle;
 use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
 use std::net::SocketAddr;
@@ -51,10 +51,10 @@ fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_admission() {
     let fabric = FabricId::mint();
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
@@ -95,10 +95,10 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
     use rdm_core::status::{NodeState, StatusReply, StatusRequest};
     let fabric = FabricId::mint();
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
     membership.set_mesh_primary(true);

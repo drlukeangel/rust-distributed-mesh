@@ -26,7 +26,7 @@ use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome};
 use crate::model::{EndpointId, NodeId, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use crate::topology::Topology;
-use rafka_node_rpc::ServerBuilder;
+use rdm_transport::ServerBuilder;
 use rdm_core::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
 use rdm_core::catalog::OpOwner;
 use rdm_core::context::CallContext;
@@ -45,8 +45,8 @@ pub const CALLER_SYSTEM: &str = "rdm";
 pub fn current_context() -> CallContext {
     CallContext {
         caller_system: Some(CALLER_SYSTEM.into()),
-        traceparent: rafka_mesh_telemetry::current_traceparent(),
-        tracestate: rafka_mesh_telemetry::current_tracestate(),
+        traceparent: rdm_transport::current_traceparent(),
+        tracestate: rdm_transport::current_tracestate(),
         baggage: None,
     }
 }
@@ -301,7 +301,7 @@ pub type ClaimSlot = Arc<OnceLock<Arc<ClaimDoor>>>;
 /// Serve `BuildClaim` on this admin. `slot` is filled once the admin holds a view; until then a
 /// claim is `NotReady` by name.
 pub fn serve(b: ServerBuilder, slot: ClaimSlot) -> ServerBuilder {
-    b.serve::<BuildClaim, _, _>(OpOwner::Product("rdm".into()), move |peer: rafka_node_rpc::PeerContext, req: BuildClaimRequest| {
+    b.serve::<BuildClaim, _, _>(OpOwner::Product("rdm".into()), move |peer: rdm_transport::PeerContext, req: BuildClaimRequest| {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {

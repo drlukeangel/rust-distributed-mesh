@@ -19,7 +19,7 @@ use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::node_commands::CommandKey;
-use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
@@ -135,7 +135,7 @@ impl Birth {
     }
 
     fn opts() -> CallOptions {
-        CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() }
+        CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() }
     }
 
     async fn call(&self, req: &StatusRequest) -> StatusReply {
@@ -261,7 +261,7 @@ impl Birth {
     /// birth holds that record.
     async fn seat(&self, admin: &crate::common::AdminSide, revision: u64) {
         let holder = rdm_core::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
-        admin.observer.membership.publish_lifecycle(&rafka_mesh_transport::membership::Frame::Seated { seat: rdm_core::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
+        admin.observer.membership.publish_lifecycle(&rdm_transport::membership::Frame::Seated { seat: rdm_core::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
         let seats = self.running.membership.seats();
         let mut changed = seats.subscribe();
         tokio::time::timeout(Duration::from_secs(20), async {

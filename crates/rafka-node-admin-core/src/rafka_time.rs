@@ -1,7 +1,7 @@
 //! Rafka-time: Day-0 root and seat-move pull (`rafka-node-admin-core`).
 
 use rdm_core::NodeId;
-use rafka_mesh_transport::clock::{Adopted, RafkaTime};
+use rdm_transport::clock::{Adopted, RafkaTime};
 use std::sync::Arc;
 use tracing::Instrument as _;
 
@@ -13,7 +13,7 @@ pub const OWN_CLOCK_DAY0_ROOT: &str = "day0-root";
 /// node-admin a fabric recovery launches when every node the store names is confirmed gone by the
 /// provider. No node serves rafka-time to either.
 pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, reason: &'static str) -> Adopted {
-    let now = rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock);
+    let now = rdm_transport::clock::Clock::now_rafka_ms(&rdm_transport::clock::OsClock);
     let adopted = time.adopt(now);
     tracing::info_span!(
         parent: parent,
@@ -46,8 +46,8 @@ pub async fn run_seat_move_pull(
     time: RafkaTime,
     me: crate::model::PathName,
     me_id: NodeId,
-    client: Arc<rafka_node_rpc::NodeRpcClient>,
-    membership: rafka_mesh_transport::membership::Membership,
+    client: Arc<rdm_transport::NodeRpcClient>,
+    membership: rdm_transport::membership::Membership,
 ) {
     let seats = membership.seats().clone();
     let mut changed = seats.subscribe();
@@ -87,8 +87,8 @@ async fn pull_from_fabric_primary(
     time: &RafkaTime,
     me: &crate::model::PathName,
     me_id: &NodeId,
-    client: &rafka_node_rpc::NodeRpcClient,
-    membership: &rafka_mesh_transport::membership::Membership,
+    client: &rdm_transport::NodeRpcClient,
+    membership: &rdm_transport::membership::Membership,
     moved_to: rdm_core::SeatHolder,
 ) -> (String, u32, Option<rdm_core::SeatHolder>) {
     let mut last = String::from("no attempt");
@@ -101,7 +101,7 @@ async fn pull_from_fabric_primary(
             }
             holder = current;
         }
-        let read = crate::topology_read::read_topology(client, &rafka_node_rpc::NodeTarget::ExactNode(holder.node_id.clone()), &me.to_string(), Some(&holder.mesh), None).await;
+        let read = crate::topology_read::read_topology(client, &rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &me.to_string(), Some(&holder.mesh), None).await;
         match read {
             Ok(read) => {
                 let served_by = membership.book.all().into_iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
@@ -132,13 +132,13 @@ async fn pull_from_fabric_primary(
 pub(crate) async fn adopt_from_reachable(
     time: &RafkaTime,
     me: &crate::model::PathName,
-    client: &rafka_node_rpc::NodeRpcClient,
-    resolver: &rafka_node_rpc::LiveNodeResolver,
-    membership: &rafka_mesh_transport::membership::Membership,
+    client: &rdm_transport::NodeRpcClient,
+    resolver: &rdm_transport::LiveNodeResolver,
+    membership: &rdm_transport::membership::Membership,
     contacts: Vec<crate::reenter::MapNode>,
     parent: &tracing::Span,
 ) -> Result<String, String> {
-    use rafka_node_rpc::NodeTarget;
+    use rdm_transport::NodeTarget;
     let span = tracing::info_span!(parent: parent, "rdm.mesh.entry.resolve.via-recovery-pull", node = %me, contacts = contacts.len(), served_by = tracing::field::Empty, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
     let outcome = async {
         let mut tried: std::collections::BTreeMap<String, String> = Default::default();

@@ -11,7 +11,7 @@ use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, Conn
 use rdm_core::{IncarnationId, NodeId};
 use rafka_node_admin_core::connections_writer::ConnectionsWriter;
 use rafka_node_admin_core::storage::MemoryConnectionsStorage;
-use rafka_node_rpc::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::forward::{Forward, ForwardReply, ForwardRequest};
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
@@ -40,7 +40,7 @@ fn resolved(b: &Birth, name: &str, addr: std::net::SocketAddr) -> ResolvedNode {
 
 struct Rig {
     admin: ResolvedNode,
-    admin_server: rafka_node_rpc::NodeRpcServer,
+    admin_server: rdm_transport::NodeRpcServer,
     _admin_router: Router,
     admin_connections: Arc<ConnectionsWriter>,
     admin_live: Arc<LiveNodeResolver>,
@@ -68,12 +68,12 @@ async fn rig() -> Rig {
         })
         .seal(served(&target))
         .unwrap();
-    let target_ep = rafka_node_rpc::endpoint::bind(target.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let target_ep = rdm_transport::endpoint::bind(target.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let target_addr = target_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let target_router = Router::builder(target_ep).accept(rafka_node_rpc::ALPN, target_server).spawn();
+    let target_router = Router::builder(target_ep).accept(rdm_transport::ALPN, target_server).spawn();
     let target_resolved = resolved(&target, "mesh1.rpc.1", target_addr);
 
-    let admin_ep = rafka_node_rpc::endpoint::bind(admin_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let admin_ep = rdm_transport::endpoint::bind(admin_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let admin_addr = admin_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let admin = resolved(&admin_birth, "mesh1.admin.2", admin_addr);
     let live = Arc::new(LiveNodeResolver::default());
@@ -89,12 +89,12 @@ async fn rig() -> Rig {
     let admin_server = rafka_node_admin_core::admin::rpc_server(connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .seal(served(&admin_birth))
         .unwrap();
-    let admin_router = Router::builder(admin_ep).accept(rafka_node_rpc::ALPN, admin_server.clone()).spawn();
+    let admin_router = Router::builder(admin_ep).accept(rdm_transport::ALPN, admin_server.clone()).spawn();
 
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(admin.clone());
     resolver.insert(target_resolved.clone());
-    let origin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let origin_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let origin = NodeRpcClient::new(origin_ep, resolver).with_caller_system("rdm");
     Rig { admin, admin_server, _admin_router: admin_router, admin_connections: connections, admin_live: live, target, target_resolved, handled, _target_router: target_router, origin }
 }
@@ -131,7 +131,7 @@ async fn a_status_call_carried_to_a_target_the_admin_cannot_resolve_is_not_sent_
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(r.admin.clone());
     resolver.insert(resolved(&stranger, "mesh1.rpc.9", "127.0.0.1:1".parse().unwrap()));
-    let origin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let origin_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let origin = NodeRpcClient::new(origin_ep, resolver);
     let (out, _) = origin.call_via::<Status>(&admin_target(&r), &stranger.node_id, &probe(&stranger), &CallOptions::default()).await;
     match &out {
@@ -163,7 +163,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(r.admin.clone());
     resolver.insert(dead_resolved);
-    let origin_ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let origin_ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let origin = NodeRpcClient::new(origin_ep, resolver);
     let (out, _) = origin.call_via::<Status>(&admin_target(&r), &dead.node_id, &probe(&dead), &CallOptions::default()).await;
     match &out {

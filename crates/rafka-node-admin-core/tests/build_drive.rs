@@ -2180,7 +2180,7 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
 fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_its_boot_name() {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("renamed-admin-held-name", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("renamed-admin-held-name", exporter.clone());
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
     let d = dispatch.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -2240,8 +2240,8 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             local: builds.clone(),
             gate: rafka_node_admin_core::stop_gate::StopGate::new(),
         });
-        let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep, Arc::new(rafka_node_rpc::StaticResolver::new())));
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(rdm_transport::NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new())));
         let rpc_dispatcher = Arc::new(rafka_node_admin_core::build_op::RpcDispatcher {
             me: boot.clone(),
             local: run_door,

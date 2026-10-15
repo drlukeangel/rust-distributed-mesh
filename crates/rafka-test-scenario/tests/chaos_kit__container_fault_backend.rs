@@ -855,14 +855,14 @@ fn num(v: &Value) -> u64 {
 /// fault backend's and the detector's spans are exactly what this cell emitted.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2784-{cell}");
-    let capture = rafka_mesh_telemetry::install_span_capture(&service, exporter.clone()).expect("one global subscriber per cell process");
+    let capture = rdm_transport::install_span_capture(&service, exporter.clone()).expect("one global subscriber per cell process");
     Capture { exporter, capture, service }
 }
 
@@ -934,7 +934,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 3, 3)]).await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let build_id = estate.accepted_build_id().await;
     let nodes0 = estate.node_values().await;
     let rpcs: Vec<Value> = nodes0.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use rafka_node_rpc::ServerBuilder;
+use rdm_transport::ServerBuilder;
 use rdm_core::launch::Launch;
 
 pub use rdm_node::node::{
@@ -22,7 +22,7 @@ pub async fn start_hydrating(
 ) -> Result<RunningNode> {
     start_with_rafka_time_hydrating(
         launch,
-        rafka_mesh_transport::clock::RafkaTime::unadopted(),
+        rdm_transport::clock::RafkaTime::unadopted(),
         hydration,
         register,
     )
@@ -32,7 +32,7 @@ pub async fn start_hydrating(
 /// Bring the node up exactly as `launch` says.
 pub async fn start(
     launch: &Launch,
-    register: impl FnOnce(ServerBuilder, Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder,
+    register: impl FnOnce(ServerBuilder, Arc<rdm_transport::LiveNodeResolver>) -> ServerBuilder,
 ) -> Result<RunningNode> {
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
@@ -43,8 +43,8 @@ pub async fn start_with_client(
     launch: &Launch,
     register: impl FnOnce(
         ServerBuilder,
-        Arc<rafka_node_rpc::LiveNodeResolver>,
-        Arc<rafka_node_rpc::NodeRpcClient>,
+        Arc<rdm_transport::LiveNodeResolver>,
+        Arc<rdm_transport::NodeRpcClient>,
     ) -> ServerBuilder,
 ) -> Result<RunningNode> {
     start_with_seams(launch, |b, s| register(b, s.resolver, s.client)).await
@@ -56,7 +56,7 @@ pub async fn start_with_seams(
     launch: &Launch,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    let rafka_time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
     start_with_rafka_time_hydrating(
         launch,
         rafka_time,
@@ -68,7 +68,7 @@ pub async fn start_with_seams(
 
 async fn start_with_rafka_time_hydrating(
     launch: &Launch,
-    rafka_time: rafka_mesh_transport::clock::RafkaTime,
+    rafka_time: rdm_transport::clock::RafkaTime,
     hydration: rdm_node::app_hydration::Hydration,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
@@ -98,7 +98,7 @@ async fn start_with_rafka_time_hydrating(
 #[cfg(feature = "testkit-skew")]
 fn rafka_time_knob(
     launch: &Launch,
-    rafka_time: &rafka_mesh_transport::clock::RafkaTime,
+    rafka_time: &rdm_transport::clock::RafkaTime,
     boot: &tracing::Span,
 ) -> Option<Box<dyn FnOnce() + Send>> {
     let root = launch.data_dir.parent()?.to_path_buf();
@@ -111,7 +111,7 @@ fn rafka_time_knob(
 #[cfg(not(feature = "testkit-skew"))]
 fn rafka_time_knob(
     _: &Launch,
-    _: &rafka_mesh_transport::clock::RafkaTime,
+    _: &rdm_transport::clock::RafkaTime,
     _: &tracing::Span,
 ) -> Option<Box<dyn FnOnce() + Send>> {
     None

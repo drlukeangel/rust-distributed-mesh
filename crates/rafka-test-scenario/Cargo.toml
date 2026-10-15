@@ -23,13 +23,11 @@ rafka-chaos = { path = "../rafka-chaos" }
 rdm-core = { path = "../rdm-core" }
 # i143_acceptance_2782 captures the detector's own spans in process.
 tracing-subscriber = { workspace = true }
-rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
-rafka-node-rpc = { path = "../rafka-node-rpc" }
+rdm-transport = { path = "../rdm-transport" }
 # node_rpc__scheduler_replay switches NAT traversal off on its endpoints (R-I3); `test-knobs` is a dev-dependency
 # feature only, and `dep-rules` refuses it anywhere else.
 iroh = { workspace = true, features = ["test-knobs"] }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 # i143_acceptance_2780 derives its cut list from the product's own documented step orders.
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 iroh-gossip = { workspace = true }

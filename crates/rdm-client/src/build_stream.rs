@@ -14,8 +14,8 @@
 use crate::calls::ended;
 use crate::{BuildId, CallEnd};
 use rdm_core::PathName;
-use rafka_node_rpc::stream::{ReplyStream, StreamFailure, StreamItem};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::stream::{ReplyStream, StreamFailure, StreamItem};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt};
 use rdm_core::codes::ResetCode;
 use rdm_core::outcome::{IndeterminateReason, RpcOutcome};
@@ -360,7 +360,7 @@ pub struct BuildReceipts {
 mod tests {
     use super::*;
     use rdm_core::{IncarnationId, NodeId};
-    use rafka_node_rpc::{HandlerFault, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+    use rdm_transport::{HandlerFault, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
     use rdm_core::catalog::OpOwner;
 
     /// CONTRACT (node-rpc-envelope.md "Build, op `0x20`": the caller "waits on the stream" of a
@@ -390,13 +390,13 @@ mod tests {
             .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
             .unwrap();
         let key = iroh::SecretKey::generate();
-        let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let _router = iroh::protocol::Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+        let _router = iroh::protocol::Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
         let fp: PathName = "mesh1.admin.1".parse().unwrap();
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
-        let cep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let cep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
         let mut stream = carrier.create(BuildChange::Stop { node: "mesh1.admin.1".parse().unwrap() }).await.expect("the call was accepted");
         assert_eq!((stream.build_id().as_str(), stream.attempt()), ("cq2tyb03krac", 3));

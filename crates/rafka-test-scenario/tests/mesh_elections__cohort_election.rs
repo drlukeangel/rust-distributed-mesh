@@ -183,7 +183,7 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Coho
     // Another admin may announce first: `admin`'s own view holds the killed birth dead before
     // anything is read from it.
     estate
-        .until_view_at(admin, &format!("{admin} no longer hears {gone_id}"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
+        .until_view_at(admin, &format!("{admin} no longer hears {gone_id}"), rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
             (!views.iter().any(|n| n.node_id.to_string() == gone_id && !matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect))).then_some(())
         })
         .await;
@@ -269,7 +269,7 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     // The rebirth is drift recovery's, once the killed runtime is proven exited: wait for the
     // count, then for the seats.
     estate
-        .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rafka_mesh_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), |views| {
+        .until_view_at(&admin1, "drift recovery restores three live rpc nodes", rdm_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), |views| {
             (views.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).count() == 3).then_some(())
         })
         .await;
@@ -314,7 +314,7 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
             // Side A stops hearing the rpc holder, and elects no rpc primary of its own: silence and an
             // observer-inferred Dead are not proof, the holder keeps the seat (elections §5).
             let a_view = estate
-                .until_view_at(&admin_pp, &format!("side A no longer hears the rpc holder {rpc_now}"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
+                .until_view_at(&admin_pp, &format!("side A no longer hears the rpc holder {rpc_now}"), rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |views| {
                     let nodes = Estate::values(views);
                     nodes.iter().any(|n| n["name"] == rpc_now.as_str() && n["status"] != "ready-for-traffic").then_some(nodes)
                 })

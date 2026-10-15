@@ -20,7 +20,7 @@
 
 use rdm_core::{IncarnationId, MeshNode, NodeId, PathName};
 use rdm_client::{BuildCarrier, Fabrics, NodeSelector, NodeView, Nodes};
-use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
 use serde_json::{json, Value};
@@ -310,12 +310,12 @@ async fn run(a: Args) -> Result<Value, String> {
     // not hold is the client's own `NotSent(Resolve(..))`, never a refusal here.
     // A carrier the view does not hold (it left the fabric while the call was aimed at it) is the same
     // fact as a target it does not hold: the call is not sent, and the client says so.
-    let route: Result<rafka_node_rpc::RouteChoice, _> = match (&a.via, a.no_route) {
-        (_, true) => Ok(rafka_node_rpc::RouteChoice::NoActiveRoute),
-        (None, false) => Ok(rafka_node_rpc::RouteChoice::Direct),
+    let route: Result<rdm_transport::RouteChoice, _> = match (&a.via, a.no_route) {
+        (_, true) => Ok(rdm_transport::RouteChoice::NoActiveRoute),
+        (None, false) => Ok(rdm_transport::RouteChoice::Direct),
         (Some(v), false) => {
             let carrier = self::target(v)?;
-            resolver.resolve(&carrier).map(|c| rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name })
+            resolver.resolve(&carrier).map(|c| rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id, path: c.name })
         }
     };
     let opts = CallOptions { cut_before_finish: a.cut_before_finish, ..CallOptions::default() };
@@ -326,7 +326,7 @@ async fn run(a: Args) -> Result<Value, String> {
                 let (out, _, leg) = client.call_routed::<ProofStore>(&n.node_id, &route, &req, &opts).await;
                 (out, leg.token())
             }
-            Err(_) if matches!(route, rafka_node_rpc::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &opts).await.0, "direct"),
+            Err(_) if matches!(route, rdm_transport::RouteChoice::Direct) => (client.call::<ProofStore>(&target, &req, &opts).await.0, "direct"),
             Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), route.token()),
         },
     };
@@ -352,7 +352,7 @@ async fn run(a: Args) -> Result<Value, String> {
 /// no root.
 fn main() -> std::process::ExitCode {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("the probe's runtime");
-    let telemetry = runtime.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-probe") });
+    let telemetry = runtime.block_on(async { rdm_transport::init_evidence_telemetry("rafka-rpc-probe") });
     let code = runtime.block_on(probe());
     drop(runtime);
     drop(telemetry);
@@ -377,7 +377,7 @@ async fn probe() -> std::process::ExitCode {
         Ok(mut v) => {
             // The invocation's trace, named by the probe itself: a scenario reads it here, never from the
             // span file, whose root is exported only when its last descendant has closed.
-            if let Some(tp) = span.in_scope(rafka_mesh_telemetry::current_traceparent) {
+            if let Some(tp) = span.in_scope(rdm_transport::current_traceparent) {
                 v["traceparent"] = json!(tp);
             }
             println!("{v}");
@@ -426,7 +426,7 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 
 /// The probe's one endpoint.
 async fn bind_endpoint() -> Result<iroh::Endpoint, String> {
-    rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))
+    rdm_transport::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))
 }
 
 /// Where the probe binds its one socket: `RDM_PROBE_BIND` (an address on the fabric's network,
@@ -465,7 +465,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         _ => OriginateRequest::Snapshot,
     };
     let (client, _) = enter(&a.admin_birth).await?;
-    let opts = CallOptions { budget: rafka_node_rpc::Budget::Overall(std::time::Duration::from_secs(20)), ..CallOptions::default() };
+    let opts = CallOptions { budget: rdm_transport::Budget::Overall(std::time::Duration::from_secs(20)), ..CallOptions::default() };
     let (out, _) = client.call::<Originate>(target, &req, &opts).await;
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
     // process ungracefully and its span file is lost (a call that never left the resolver is the case).
@@ -501,7 +501,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 /// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
 /// nothing: it has no membership.
 async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
-    use rafka_node_rpc::stream::StreamItem;
+    use rdm_transport::stream::StreamItem;
     use rdm_core::topology::{SourceVersion, Topology, TopologyReply, TopologyRequest};
     let since = match &a.since {
         None => None,

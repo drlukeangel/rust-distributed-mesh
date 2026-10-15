@@ -182,8 +182,8 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
     assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
 
     // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
     assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     let listed = view_of(&nodes, &renamed).await;
     assert!(listed.parked && listed.node_id == before.node_id && listed.incarnation_id == before.incarnation_id, "node.get lists the parked birth at {renamed}: {listed:?}");
@@ -192,7 +192,7 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
 
     // The rollback (node-replace.md Rollback 2-3): the row's name goes back while the node is
     // stopped, and the start by that name rejoins the same process.
-    let back = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &path.name()).await.expect("node.name.update answered");
+    let back = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &path.name()).await.expect("node.name.update answered");
     assert_eq!(back, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     let started = frames(nodes.start(&path).await.expect("the start by the row's name was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
@@ -254,10 +254,10 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
 
     // The update: one call to the node's mesh-primary, the row written, the stopped node told nothing.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
     let carrier = estate.carrier().await;
     let reply = rdm_client::NodeRpc::new(carrier.client())
-        .config_update(&primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
+        .config_update(&primary.node_id, &rdm_transport::RouteChoice::Direct, &birth, told.clone(), &rdm_transport::CallOptions::default())
         .await
         .expect("node.config.update answered");
     assert_eq!(reply, StatusReply::ConfigUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
@@ -326,8 +326,8 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
 
     // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
     assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     // Every admin's view names the parked birth by its row, the one that performed no rename included.
     for admin in &admins {

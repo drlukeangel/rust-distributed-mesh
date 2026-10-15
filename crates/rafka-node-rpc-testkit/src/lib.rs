@@ -41,7 +41,7 @@ pub fn os_clock_skew_dir(root: &std::path::Path) -> std::path::PathBuf {
 #[cfg(feature = "testkit-skew")]
 pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64> {
     let ms: i64 = std::fs::read_to_string(os_clock_skew_dir(root).join(name)).ok()?.trim().parse().ok()?;
-    rafka_mesh_transport::clock::skew_os_clock_for_testkit(ms);
+    rdm_transport::clock::skew_os_clock_for_testkit(ms);
     Some(ms)
 }
 
@@ -78,7 +78,7 @@ pub fn rafka_time_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
 /// only by testkit executables, once the node has adopted its authority's time, to prove the
 /// discipline brings a node back to it. Returns `(ahead_ms, drift_ppm)` applied.
 #[cfg(feature = "testkit-skew")]
-pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rafka_mesh_transport::clock::RafkaTime, parent: &tracing::Span) -> Option<(i64, i64)> {
+pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rdm_transport::clock::RafkaTime, parent: &tracing::Span) -> Option<(i64, i64)> {
     let text = std::fs::read_to_string(rafka_time_knob_dir(root).join(name)).ok()?;
     let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')?.trim().parse::<i64>().ok()).unwrap_or(0);
     let (ahead_ms, drift_ppm) = (get("ahead_ms"), get("drift_ppm"));
@@ -150,9 +150,9 @@ pub const LEGACY_ADAPTERS: &[LegacyAdapter] = &[LegacyAdapter {
 pub fn compose(
     role: Role,
     served_by: &str,
-    b: rafka_node_rpc::ServerBuilder,
-    client: std::sync::Arc<rafka_node_rpc::NodeRpcClient>,
-) -> rafka_node_rpc::ServerBuilder {
+    b: rdm_transport::ServerBuilder,
+    client: std::sync::Arc<rdm_transport::NodeRpcClient>,
+) -> rdm_transport::ServerBuilder {
     let b = families::for_kind(role.kind, served_by, b, client);
     LEGACY_ADAPTERS.iter().fold(b, |b, a| {
         b.adapter(rdm_core::catalog::CatalogEntry::transitional(
@@ -187,11 +187,11 @@ impl Oracles {
     /// Add the proof store, resolve probe and declare probe protocols to `b`.
     pub fn serve(
         &self,
-        b: rafka_node_rpc::ServerBuilder,
+        b: rdm_transport::ServerBuilder,
         launch: &rdm_core::launch::Launch,
-        resolver: std::sync::Arc<rafka_node_rpc::LiveNodeResolver>,
+        resolver: std::sync::Arc<rdm_transport::LiveNodeResolver>,
         name: &crate::held_name::HeldName,
-    ) -> rafka_node_rpc::ServerBuilder {
+    ) -> rdm_transport::ServerBuilder {
         crate::declare_probe::serve(
             crate::resolve_probe::serve(
                 crate::proof_store::serve(b, self.store.clone(), launch, name),
@@ -219,11 +219,11 @@ pub async fn run_proof(role: Role) -> anyhow::Result<()> {
 pub async fn run_proof_with(
     role: Role,
     hydration: crate::app_hydration::Hydration,
-    serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder,
+    serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder,
 ) -> anyhow::Result<()> {
     crate::node::listen_for_stop();
     let executable = executable_name()?;
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&executable);
+    let _telemetry = rdm_transport::init_evidence_telemetry(&executable);
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
@@ -234,7 +234,7 @@ pub async fn run_proof_with(
         executable = %executable,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_mesh_telemetry::set_parent(&boot, &tp);
+        rdm_transport::set_parent(&boot, &tp);
     }
     let oracles = Oracles::open(&launch)?;
     let running = {

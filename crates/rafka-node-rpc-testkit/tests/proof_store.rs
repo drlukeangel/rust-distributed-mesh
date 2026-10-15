@@ -10,7 +10,7 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::launch::Launch;
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore, ProofOp, ProofReply, ProofRequest, ProofStore, Provenance, MAX_KEY_BYTES, MAX_VALUE_BYTES};
 use serde_json::{json, Value};
@@ -26,12 +26,12 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     dir
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`:
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`:
 /// product's span filter and its `BatchSpanProcessor`) in front of an in-memory exporter, behind a
 /// dispatcher installed on every thread of the cell's own runtime.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     service: String,
 }
@@ -40,7 +40,7 @@ fn capture(cell: &str) -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2775-{cell}");
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service }
 }
 
@@ -129,12 +129,12 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
         let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))
             .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .expect("the proof store seals");
-        let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let _router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
+        let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(ResolvedNode { node_id: launch.node_id.clone(), name: launch.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: launch.incarnation.clone() });
-        let client = NodeRpcClient::new(rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
+        let client = NodeRpcClient::new(rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: ProofRequest| {
             let (client, target) = (&client, &target);

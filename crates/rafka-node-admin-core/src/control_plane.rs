@@ -62,7 +62,7 @@ pub struct ControlPlane {
     /// admin opens as its mesh's primary takes before any fact of it is written.
     pub claims: Arc<crate::mesh_claims::MeshClaims>,
     /// The rafka-time this admin stamps its Builds and attempts with.
-    pub time: rafka_mesh_transport::clock::RafkaTime,
+    pub time: rdm_transport::clock::RafkaTime,
     /// Where this fabric-primary admits a Build or an attempt: held from the check that no Build is
     /// reconciling to the durable write that makes the next one, by every path that starts work
     /// (a submitted change, an opened attempt, the drift check).
@@ -85,7 +85,7 @@ impl ControlPlane {
     /// initial `topology`, stamping with `time`: the rafka-time its process adopted. A control
     /// plane is never built without one, because every Build and attempt it opens is
     /// stamped from it.
-    pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
+    pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology, time: rdm_transport::clock::RafkaTime) -> Self {
         Self {
             builds,
             accepted,

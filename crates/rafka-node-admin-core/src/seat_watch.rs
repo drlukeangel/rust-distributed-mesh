@@ -22,8 +22,8 @@ use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
 use rdm_core::{Seat, SeatHolder};
-use rafka_mesh_transport::membership::{Backbone, ConcernHeard, Membership};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::membership::{Backbone, ConcernHeard, Membership};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::Instrument as _;
@@ -267,7 +267,7 @@ impl Looker {
             .filter(|c| c.mesh == n.mesh && c.node_id != n.node_id && c.node_id != self.me_id && c.status == NodeStatus::ReadyForTraffic)
             .take(crate::offline::VIA_PEER_TICKLE_FANOUT)
             .map(|c| {
-                let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+                let route = rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
                 let probe = async move {
                     let (out, _, _) = self.client.call_routed::<rdm_core::status::Status>(&n.node_id, &route, kick, &CallOptions::default()).await;
                     out.reply().map(|r| r.value().clone())
@@ -291,7 +291,7 @@ impl Looker {
 /// runtime row `nodes` holds for the exact birth (recorded at its launch, or handed into this
 /// admin's nodes.storage at its own create). A birth lost before this admin heard it has no digest
 /// here; its row is still the runtime recorded at launch. Neither held: unproven, naming both.
-pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rafka_mesh_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
+pub async fn inspect_birth(provider: &dyn crate::deployment::provider::DeploymentProvider, book: &rdm_transport::membership::DigestBook, nodes: Option<&dyn crate::storage::NodesStorage>, n: &Node) -> Finding {
     let Some(inc) = n.incarnation_id.clone() else { return Finding::Unproven { reason: "the view holds no incarnation for it".into() } };
     let held = book.get(n.node_id.as_str()).filter(|(d, _)| d.node.incarnation == inc);
     let (fact, data_dir) = match held {
@@ -408,7 +408,7 @@ pub async fn run(w: Watch) {
         tokio::select! {
             _ = seats_changed.changed() => {}
             _ = w.membership.concerns().heard() => {}
-            _ = tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()) => {}
+            _ = tokio::time::sleep(rdm_transport::membership::gossip_interval()) => {}
         }
         // Held here while the admin is parked: its own wait, outside every lock.
         turn = Some(w.gate.turn("seat-watch").await);
@@ -432,7 +432,7 @@ pub async fn run(w: Watch) {
                 if let Some(f) = w.republish.get() {
                     f().await;
                 }
-                let admins: Vec<_> = w.membership.book.current(w.membership.book.staleness_floor()).iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
+                let admins: Vec<_> = w.membership.book.current(w.membership.book.staleness_floor()).iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(rdm_transport::membership::gossip_addr).collect();
                 let refed = admins.len();
                 w.backbone.join_admins(admins).await;
                 let seats = w.membership.seats();
@@ -466,7 +466,7 @@ pub async fn run(w: Watch) {
             // One read of iroh's local view of the suspect, recorded beside the investigation;
             // the finding is the provider's and the Node RPC's, never this.
             let key = node.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-            let seen = rafka_mesh_transport::iroh_obs::observe_remote(&w.membership.endpoint(), key).await;
+            let seen = rdm_transport::iroh_obs::observe_remote(&w.membership.endpoint(), key).await;
             span.record("iroh_known_addrs", seen.known_addrs.as_str());
             span.record("iroh_active_addrs", seen.active_addrs.as_str());
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;

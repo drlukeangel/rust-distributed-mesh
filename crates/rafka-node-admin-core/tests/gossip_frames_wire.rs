@@ -12,9 +12,9 @@
 
 use rdm_core::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
-use rafka_mesh_transport::chunking::MAX_MESSAGE_BYTES;
-use rafka_mesh_transport::membership::Frame;
-use rafka_mesh_transport::snapshot::{chunks_of, Full, PublisherId};
+use rdm_transport::chunking::MAX_MESSAGE_BYTES;
+use rdm_transport::membership::Frame;
+use rdm_transport::snapshot::{chunks_of, Full, PublisherId};
 use rafka_node_admin_core::accepted::{AttemptAction, FabricTopology, MeshTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildId, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateError, BuildStepReceipt, StepOutcome};

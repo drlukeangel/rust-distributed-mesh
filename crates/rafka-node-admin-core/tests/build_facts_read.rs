@@ -11,7 +11,7 @@ use rafka_node_admin_core::build_facts_read::{fetch_build_facts, BuildFactsDoor,
 use rafka_node_admin_core::build_state::{AttemptOpened, AttemptReason, AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
 use rafka_node_admin_core::hydrate::{HydrationBlocker, Hydrator, Responder, Responders};
 use rafka_node_admin_core::model::{FabricId, PathName};
-use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::build_facts::{BuildFacts, BuildFactsReply};
 use rdm_core::{IncarnationId, NodeId};
 use std::collections::BTreeMap;
@@ -62,10 +62,10 @@ struct Node {
 /// A node serving `FetchBuildFacts` with `serve`, counting the reads it is asked.
 async fn node_serving<F, Fut>(name: &str, serve: F) -> Node
 where
-    F: Fn(rdm_core::build_facts::BuildFactsRequest, rafka_node_rpc::stream::ReplySink<BuildFacts, rafka_node_rpc::stream::NotStarted>) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<BuildFactsReply, rafka_node_rpc::HandlerFault>> + Send + 'static,
+    F: Fn(rdm_core::build_facts::BuildFactsRequest, rdm_transport::stream::ReplySink<BuildFacts, rdm_transport::stream::NotStarted>) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<BuildFactsReply, rdm_transport::HandlerFault>> + Send + 'static,
 {
-    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
@@ -78,7 +78,7 @@ where
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .expect("the catalog seals");
-    let router = Router::builder(ep.clone()).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation };
     Node { ep, client, resolver, resolved, calls, _router: router }
@@ -170,17 +170,17 @@ struct Story {
 }
 
 fn story_of(root: &tracing::Span) -> Story {
-    let traceparent = rafka_mesh_telemetry::traceparent_of(root).expect("the cell's root span has a trace context: the capture is installed on this thread");
+    let traceparent = rdm_transport::traceparent_of(root).expect("the cell's root span has a trace context: the capture is installed on this thread");
     let mut parts = traceparent.split('-');
     Story { trace_id: parts.nth(1).expect("a traceparent names its trace").into(), span_id: parts.next().expect("a traceparent names its span").into() }
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on every thread of the cell's
 /// own runtime, so two cells in one test process never share spans.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     /// True when the runtime's worker threads hold no dispatcher: only the thread that runs the story does.
     bare_workers: bool,
@@ -189,7 +189,7 @@ struct Capture {
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("build-facts-read", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("build-facts-read", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), bare_workers: false }
 }
 
@@ -484,12 +484,12 @@ fn an_interrupted_stream_never_counts_and_the_read_is_made_again() {
                 async move {
                     if n == 0 {
                         // The first read: Started and one chunk, then the stream is cut.
-                        let mut sink = sink.started(BuildFactsReply::Started).await.map_err(|e| rafka_node_rpc::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        let mut sink = sink.started(BuildFactsReply::Started).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
                         let (messages, _) = rafka_node_admin_core::fabric_builds::encode_chunks(full_facts(&door).await);
                         sink.data(BuildFactsReply::Facts { build_id: id_of(&req), chunk_index: 0, chunk_count: messages.len() as u32 + 1, facts: messages[0].to_vec() })
                             .await
-                            .map_err(|e| rafka_node_rpc::HandlerFault::invariant_broken(format!("{e:?}")))?;
-                        return Err(rafka_node_rpc::HandlerFault::invariant_broken("the stream is cut"));
+                            .map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        return Err(rdm_transport::HandlerFault::invariant_broken("the stream is cut"));
                     }
                     Ok(door.serve(req, sink).await)
                 }

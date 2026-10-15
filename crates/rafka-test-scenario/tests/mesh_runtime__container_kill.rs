@@ -67,7 +67,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     assert!(out.status.success(), "docker kill: {}", String::from_utf8_lossy(&out.stderr));
 
     // Silent past the staleness floor, proven exited, re-created by the next attempt.
-    let floor = rafka_mesh_transport::membership::staleness_floor();
+    let floor = rdm_transport::membership::staleness_floor();
     let after = estate
         .until_node(NODE, "mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");

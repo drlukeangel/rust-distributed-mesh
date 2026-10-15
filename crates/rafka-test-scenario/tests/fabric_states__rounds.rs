@@ -657,8 +657,8 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     // node.tags.create at mesh2's primary: the Status op's own refusal, nothing written.
     let rpc2 = estate.node_view("mesh2.rpc.1").await;
     let primary2 = estate.node_view("mesh2.admin.1").await;
-    let birth2 = ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(rpc2.node_id.clone()), node_id: rpc2.node_id.clone(), incarnation: rpc2.incarnation_id.clone().expect("mesh2.rpc.1 has a known birth") };
-    let created = nodes.tags_create(&birth2, &primary2.node_id, &rafka_node_rpc::RouteChoice::Direct, &["rabbit".to_string()].into()).await.unwrap_or_else(|end| panic!("node.tags.create at {mesh2_primary}: {end}"));
+    let birth2 = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(rpc2.node_id.clone()), node_id: rpc2.node_id.clone(), incarnation: rpc2.incarnation_id.clone().expect("mesh2.rpc.1 has a known birth") };
+    let created = nodes.tags_create(&birth2, &primary2.node_id, &rdm_transport::RouteChoice::Direct, &["rabbit".to_string()].into()).await.unwrap_or_else(|end| panic!("node.tags.create at {mesh2_primary}: {end}"));
     assert_eq!(created, StatusReply::RejectedFabricNotReady { workflow: "node.tags.create mesh2.rpc.1".into(), status: "state-sync".into() });
     assert!(estate.node_view("mesh2.rpc.1").await.tags.is_empty(), "a refused node.tags.create writes no tags");
 

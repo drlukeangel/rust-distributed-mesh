@@ -112,7 +112,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         let pull = PullServer::behind(rows, root_hydration.gate());
         let serve = {
             let pull = pull.clone();
-            Box::new(move |b: rafka_node_rpc::ServerBuilder| pull.serve(b)) as rafka_node_admin_core::wiring::ServeApp
+            Box::new(move |b: rdm_transport::ServerBuilder| pull.serve(b)) as rafka_node_admin_core::wiring::ServeApp
         };
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());

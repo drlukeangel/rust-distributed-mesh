@@ -12,7 +12,7 @@
 use crate::held_name::HeldName;
 use rdm_core::launch::Launch;
 use rdm_core::{NodeId, PathName};
-use rafka_node_rpc::{LiveNodeResolver, NodeResolver, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::{LiveNodeResolver, NodeResolver, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, ResolveFailure};
 use rdm_core::protocol::NodeProtocol;

@@ -14,7 +14,7 @@ use rdm_core::status::TagScope;
 use rdm_core::status::StatusReply;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
-use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
 use std::collections::BTreeSet;
@@ -35,7 +35,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 
 /// A caller outside the mesh: its own endpoint, and a resolver that holds exactly `nodes`.
 async fn caller(nodes: &[ResolvedNode]) -> (Arc<NodeRpcClient>, iroh::Endpoint) {
-    let endpoint = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
+    let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller's endpoint binds");
     let resolver = Arc::new(StaticResolver::new());
     for n in nodes {
         resolver.insert(n.clone());
@@ -231,7 +231,7 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
         };
         let got = by_id().await.first().cloned().expect("node.get lists the admin by its id");
         assert!(got.tags.is_empty(), "a node born with no tags carries none: {got:#?}");
-        let route = rafka_node_rpc::RouteChoice::Direct;
+        let route = rdm_transport::RouteChoice::Direct;
         let mine = vec![me.node.node_id.clone()];
         let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
         let created = |already: &[&str]| StatusReply::TagsCreated { node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone(), already_carried: labels(already) };
@@ -260,7 +260,7 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
 
         // A create whose label is not a label, past the typed object's own check, is refused by the
         // mesh-primary naming it, and nothing changes.
-        let refused = NodeRpc::new(&client).tags_create(&me.node.node_id, &route, &birth, &labels(&["Rabbit"]), &rafka_node_rpc::CallOptions::default()).await.expect("a typed reply");
+        let refused = NodeRpc::new(&client).tags_create(&me.node.node_id, &route, &birth, &labels(&["Rabbit"]), &rdm_transport::CallOptions::default()).await.expect("a typed reply");
         assert!(matches!(&refused, StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "refused naming the label: {refused:?}");
         assert_eq!(by_id().await[0].tags, labels(&["red"]), "a refused create changes nothing");
 
@@ -341,7 +341,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             heard.changed().await.unwrap();
         }
         // The node originates a data-plane connection to its admin: a Direct entry of its log.
-        match seams.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &rdm_core::ping::PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &rafka_node_rpc::CallOptions::default()).await.0 {
+        match seams.client.call::<rdm_core::ping::Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &rdm_core::ping::PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &rdm_transport::CallOptions::default()).await.0 {
             rdm_core::outcome::RpcOutcome::Reply(_) => {}
             other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }

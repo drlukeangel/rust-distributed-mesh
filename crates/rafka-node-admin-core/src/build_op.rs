@@ -22,9 +22,9 @@ use crate::control_plane::{ActionKind, ControlPlane, Refusal};
 use crate::model::PathName;
 use crate::topology::Topology;
 use rdm_core::IncarnationId;
-use rafka_mesh_transport::membership::SeatBook;
-use rafka_node_rpc::stream::{NotStarted, ReplySink, StreamItem};
-use rafka_node_rpc::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
+use rdm_transport::membership::SeatBook;
+use rdm_transport::stream::{NotStarted, ReplySink, StreamItem};
+use rdm_transport::{Budget, CallOptions, HandlerFault, NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, MeshCounts, StepReceipt, StepResult};
 use rdm_core::catalog::OpOwner;
 use rdm_core::context::CallContext;
@@ -525,17 +525,17 @@ impl BuildDoor {
     }
 }
 
-fn gone(e: rafka_node_rpc::stream::SinkError) -> HandlerFault {
+fn gone(e: rdm_transport::stream::SinkError) -> HandlerFault {
     HandlerFault::invariant_broken(format!("the caller left the stream, and the Build's drive goes on without it: {e:?}"))
 }
 
-async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Result<ReplySink<Build, rafka_node_rpc::stream::Streaming>, HandlerFault> {
+async fn started(sink: ReplySink<Build, NotStarted>, frame: BuildReply) -> Result<ReplySink<Build, rdm_transport::stream::Streaming>, HandlerFault> {
     sink.started(frame).await.map_err(gone)
 }
 
 /// Read a drive's frames to the caller until its terminal. A seat that moved ends the stream with
 /// the typed `SeatMoved` terminal naming the new seat: the caller re-submits the Build id there.
-async fn stream_frames(mut sink: ReplySink<Build, rafka_node_rpc::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
+async fn stream_frames(mut sink: ReplySink<Build, rdm_transport::stream::Streaming>, mut reader: crate::build_drive::DriveReader) -> Result<BuildReply, HandlerFault> {
     while let Some(t) = reader.next().await {
         match t {
             Read::Frame(f) => sink.data(f).await.map_err(gone)?,
@@ -601,7 +601,7 @@ impl InnerStream for LocalStream {
 
 /// The frames of a `build.attempt.run` stream from another admin.
 struct RemoteStream {
-    stream: rafka_node_rpc::stream::ReplyStream<Build>,
+    stream: rdm_transport::stream::ReplyStream<Build>,
 }
 
 #[async_trait::async_trait]

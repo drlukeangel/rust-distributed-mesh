@@ -195,7 +195,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     let dead: BTreeMap<String, u64> = [(old_name.clone(), now_ns())].into_iter().collect();
     // Tracked by NodeId: node recovery may create the killed path again under a new NodeId.
     let successor = estate
-        .until_view("mesh2 elects a successor", rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
+        .until_view("mesh2 elects a successor", rdm_transport::membership::staleness_floor() * 2 + rdm_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
             let p = primary(&Estate::values(views), "mesh2");
             (!s(&p["name"]).is_empty() && s(&p["node_id"]) != old_id).then(|| s(&p["name"]))
         })
@@ -262,7 +262,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // peer mesh's admin may briefly name itself in its own view (and, gated,
     // publishes nothing). The converged view names the one publisher.
     let next = estate
-        .until_view("a new fabric primary alone publishes the fabric's status", rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
+        .until_view("a new fabric primary alone publishes the fabric's status", rdm_transport::membership::staleness_floor() * 2 + rdm_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
             let n = Estate::values(views);
             // Tracked by NodeId: node recovery may create the lost path again under a new NodeId.
             let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["name"]))?;
@@ -358,7 +358,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     let others: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| *n != lone_name).collect();
     let before: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect();
     let isolation = Partition::start(&udp_ports(&nodes, &[lone_name.clone()]), &udp_ports(&nodes, &others)).expect("the host dropped traffic above");
-    wait_for(&format!("{lone_name} is cut off"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(20), || {
+    wait_for(&format!("{lone_name} is cut off"), rdm_transport::membership::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {
@@ -392,7 +392,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
             assert_eq!(&s(&n["incarnation_id"]), inc, "{} was never created again", n["name"]);
         }
     }
-    wait_for(&format!("{lone_name} hears the fabric again"), rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(20), || {
+    wait_for(&format!("{lone_name} hears the fabric again"), rdm_transport::membership::staleness_floor() + Duration::from_secs(20), || {
         let spans = estate.spans();
         let lone_name = lone_name.clone();
         async move {

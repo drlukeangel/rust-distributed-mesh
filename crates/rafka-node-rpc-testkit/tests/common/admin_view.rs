@@ -6,7 +6,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MeshNode, NodeId, PathName};
-use rafka_node_rpc::{ServedBirth, ServerBuilder};
+use rdm_transport::{ServedBirth, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
 use rdm_core::views::{FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
@@ -71,7 +71,7 @@ impl AdminView {
 pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     let key = iroh::SecretKey::generate();
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let mut me = node(ADMIN, &node_id, Some(key.public().to_string()), Some(addr), Some(incarnation.clone()));
     me.is_primary = true;
@@ -103,7 +103,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
         })
         .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let birth = MeshNode { node_id, name: ADMIN.parse().unwrap(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
     AdminView { birth, seen, router }
 }

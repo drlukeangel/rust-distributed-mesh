@@ -6,7 +6,7 @@
 
 use crate::{HeldView, NodeRpc, NodeStatus, NodeView};
 use rdm_core::{MeshNode, NodeId, PathName};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -52,7 +52,7 @@ pub struct Peers {
 impl Peers {
     /// A client that reaches every node of `views`.
     pub async fn of(views: &[NodeView]) -> Self {
-        let endpoint = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the test endpoint binds");
+        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the test endpoint binds");
         let resolver = Arc::new(StaticResolver::new());
         let me = Self { rpc: Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm")), resolver, held: Mutex::new(HashMap::new()), _endpoint: endpoint };
         me.learn(views);

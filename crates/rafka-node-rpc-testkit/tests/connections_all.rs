@@ -10,7 +10,7 @@ use rafka_node_rpc_testkit::rig::AdminSide;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
-use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest, WhichMesh};
@@ -20,7 +20,7 @@ use rafka_node_rpc_testkit::originate::Seams;
 use std::time::Duration;
 
 async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, scope: Option<&str>) -> StatusReply {
-    let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: scope.map(str::to_string), ..CallOptions::default() };
+    let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, scope: scope.map(str::to_string), ..CallOptions::default() };
     match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -35,7 +35,7 @@ async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) 
 
 /// [`live_node`], serving what `register` adds, with its seams: the data-plane client it originates
 /// its connections on and the connections writer that logs them.
-async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId, register: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> (Launch, node::RunningNode, Seams) {
+async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId, register: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder) -> (Launch, node::RunningNode, Seams) {
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     let key = node::load_or_mint_key(dir).unwrap();
     let launch = Launch {
@@ -284,7 +284,7 @@ fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
         let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
-        let stop = std::sync::Arc::new(rafka_node_rpc::Failpoint::default());
+        let stop = std::sync::Arc::new(rdm_transport::Failpoint::default());
         let opts = CallOptions { after_connect: Some(stop.clone()), ..CallOptions::default() };
         let dial = ping_admin(&seams, &admin, &opts);
         let steps = async {
@@ -336,7 +336,7 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
         .await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let all = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
-        let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         pull.hold();
         let held_call = async { admin.observer.client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {

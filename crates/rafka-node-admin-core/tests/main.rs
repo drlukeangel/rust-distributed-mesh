@@ -27,8 +27,8 @@ fn process_env() {
 }
 
 /// The rafka-time a test admin holds, adopted from a reference nowhere near any OS clock.
-pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
-    let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
+pub fn adopted_time() -> rdm_transport::clock::RafkaTime {
+    let t = rdm_transport::clock::RafkaTime::unadopted();
     t.adopt(1_000_000);
     t
 }

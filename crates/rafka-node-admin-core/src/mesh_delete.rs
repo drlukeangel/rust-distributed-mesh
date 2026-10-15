@@ -1155,7 +1155,7 @@ pub fn refuse_source_failed(call: &'static str, key: &MeshDeleteKey, source: &st
 pub struct MeshDeleteOwner {
     /// Where the handoff and the read of the owner's Build facts go: the endpoint and path of the
     /// `delete-mesh` call, or the fabric-primary's birth.
-    pub target: rafka_node_rpc::NodeTarget,
+    pub target: rdm_transport::NodeTarget,
     /// What spans name the owner: its `path.name` where a record names it, else its endpoint.
     pub name: String,
 }
@@ -1863,7 +1863,7 @@ mod tests {
     /// An owner of a leave, named by a fresh node id.
     fn owner() -> MeshDeleteOwner {
         let id = NodeId::mint();
-        MeshDeleteOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
+        MeshDeleteOwner { name: id.to_string(), target: rdm_transport::NodeTarget::ExactNode(id) }
     }
 
     fn birth(node: &str, inc: &str) -> RosterBirth {
@@ -1931,7 +1931,7 @@ mod tests {
     async fn a_later_delete_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt() {
         use tracing_subscriber::layer::SubscriberExt;
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-        let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-s48-leave-admission", exporter.clone());
+        let (capture, layer) = rdm_transport::span_capture("i143-s48-leave-admission", exporter.clone());
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
         let runs = Arc::new(MeshDeleteRuns::default());

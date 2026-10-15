@@ -29,6 +29,7 @@ pub const N0_TOKENS: &[&str] = &["presets::N0", "DnsAddressLookup", "PkarrPublis
 /// The canonical i143 sources: Node RPC, node-admin, the rpc node, the client,
 /// and the membership/entry modules of the transport crate.
 pub const CANONICAL: &[&str] = &[
+    "crates/rdm-transport/src",
     "crates/rafka-node-rpc/src",
     "crates/rdm-node/src",
     "crates/rafka-node-rpc-testkit/src",
@@ -107,7 +108,7 @@ fn scan(root: &Path, file: &Path, tokens: &[&str], mut found: impl FnMut(String,
 const NODE_RPC_ALPN_VALUE: &str = "b\"rafka-node-rpc/1\"";
 const ENTRY_ALPN_NAME: &str = "ENTRY_ALPN";
 /// First arguments `.accept(..)` may register.
-const ACCEPTED: &[&str] = &["rafka_node_rpc::ALPN", "iroh_gossip::ALPN", "crate::ALPN"];
+const ACCEPTED: &[&str] = &["rdm_transport::ALPN", "rafka_node_rpc::ALPN", "iroh_gossip::ALPN", "crate::ALPN"];
 
 /// Non-test text of a file: everything before its first `#[cfg(test)]`.
 fn non_test(text: &str) -> &str {

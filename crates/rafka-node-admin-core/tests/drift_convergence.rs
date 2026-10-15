@@ -23,7 +23,7 @@
 //! lane, a drift repair's in the fabric lane).
 
 use rdm_core::{MeshDigest, MeshNode, MemberStatus, RuntimeFact, RuntimeLocator, RuntimeProvider};
-use rafka_mesh_transport::membership::DigestBook;
+use rdm_transport::membership::DigestBook;
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_state::{BuildState, BuildStateAdapter as _, MemoryBuildStateAdapter};
@@ -1342,7 +1342,7 @@ mod one_attempt_number {
         std::fs::create_dir_all(&dir).unwrap();
         // The cell's own capture, in its own file of `dir`: this thread's default dispatcher, and
         // every task of the cell runs on this thread (a current-thread runtime).
-        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s35").expect("the cell's evidence file can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s35").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.build.admission.drift-versus-submit");
         use tracing::Instrument as _;
         let e = estate().await;
@@ -1583,7 +1583,7 @@ mod fully_crashed_mesh {
         let dir = evidence_dir("every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed");
         use tracing::Instrument as _;
         let trace_id = async {
@@ -1644,7 +1644,7 @@ mod fully_crashed_mesh {
         let dir = evidence_dir("a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-held");
         use tracing::Instrument as _;
         let admin2 = async {
@@ -1686,7 +1686,7 @@ mod fully_crashed_mesh {
         let dir = evidence_dir("a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-member-runs");
         use tracing::Instrument as _;
         let (member, nodes) = async {
@@ -1744,7 +1744,7 @@ mod fully_crashed_mesh {
         let dir = evidence_dir("the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-degraded");
         use tracing::Instrument as _;
         async {
@@ -1816,7 +1816,7 @@ mod fully_crashed_mesh {
         let dir = evidence_dir("a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
+        let capture = rdm_transport::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-unborn");
         use tracing::Instrument as _;
         let unborn = async {

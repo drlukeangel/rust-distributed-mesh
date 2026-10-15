@@ -14,7 +14,7 @@
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId};
 use crate::topology::Topology;
-use rafka_node_rpc::{PeerContext, ServerBuilder};
+use rdm_transport::{PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::status::{transition, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
 use std::collections::BTreeMap;
@@ -184,7 +184,7 @@ impl SeatFold {
     /// it is adopted there ([`DigestBook::adopt_status`]), before the view naming this admin primary is
     /// installed and so before its first projection (fabric-authority.md §7: hydration, not
     /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
-    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rafka_mesh_transport::membership::DigestBook>) {
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rdm_transport::membership::DigestBook>) {
         let holds = now.holds_mesh_seat(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
@@ -236,7 +236,7 @@ impl SeatFold {
 impl SeatFold {
     /// Adopt into `book` every birth of this admin's mesh that `declared` holds a state for ahead of
     /// what `book` holds for that exact birth: the status its predecessor set, held by the successor.
-    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rafka_mesh_transport::membership::DigestBook, me_name: &crate::model::PathName) {
+    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rdm_transport::membership::DigestBook, me_name: &crate::model::PathName) {
         let held: Vec<(NodeId, IncarnationId, crate::model::PathName, NodeState)> = {
             let declared = declared.lock().unwrap();
             declared
@@ -336,7 +336,7 @@ pub struct StatusAuthority {
     /// This admin's digest book: as its mesh's primary it sets each member's status there from the
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
-    pub book: Option<rafka_mesh_transport::membership::DigestBook>,
+    pub book: Option<rdm_transport::membership::DigestBook>,
     /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
     /// property command is refused `RejectedFabricNotReady` and nothing is written.
     pub first_ready: crate::fabric_state::FirstReady,
@@ -719,7 +719,7 @@ impl StatusAuthority {
     /// A birth the book holds at the same incarnation keeps its rows, however long it is silent, and
     /// so does a birth the book does not hold at all whose path no other node holds (nothing is
     /// proven of it).
-    pub async fn retire_superseded(&self, book: &rafka_mesh_transport::membership::DigestBook) {
+    pub async fn retire_superseded(&self, book: &rdm_transport::membership::DigestBook) {
         let me_name = book.held_path_name().unwrap_or_else(|| self.me.clone());
         // The births held and their paths, read under the lock and the lock released before any await.
         let held: Vec<((NodeId, IncarnationId), Option<crate::model::PathName>)> = {
@@ -803,8 +803,8 @@ impl StatusAuthority {
                     book.reported(node_id, incarnation, rdm_core::MemberStatus::Draining);
                 }
             }
-            let target = rafka_node_rpc::NodeTarget::ExactNode(node_id.clone());
-            let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
+            let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
+            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
             let reply = match configs.client().call::<rdm_core::status::Status>(&target, req, &opts).await.0 {
                 rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
                 other => {
@@ -1667,7 +1667,7 @@ mod tests {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
             assert_eq!(authority.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
         }
-        let book = rafka_mesh_transport::membership::DigestBook::default();
+        let book = rdm_transport::membership::DigestBook::default();
         // rpc.1 restarted: the book holds its next incarnation.
         book.record(digest_of(&restarted, IncarnationId::mint()));
         // rpc.2 deleted: its exact birth departed.
@@ -1761,7 +1761,7 @@ mod tests {
         let mut recovered = exited.clone();
         recovered.node_id = NodeId::mint();
         recovered.incarnation_id = Some(IncarnationId::mint());
-        let book = rafka_mesh_transport::membership::DigestBook::default();
+        let book = rdm_transport::membership::DigestBook::default();
         book.record(digest_of(&recovered, recovered.incarnation_id.clone().unwrap()));
         let capture = crate::span_capture::Capture::new("i143-3051-recovered-rows");
         {

@@ -85,7 +85,7 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     // displaces it"): the one advertised broker primary is the announced successor, and the killed
     // birth is no longer ready anywhere in the view.
     let view = estate
-        .until_view("the view's one broker primary is the announced successor and the killed birth is gone", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |view| {
+        .until_view("the view's one broker primary is the announced successor and the killed birth is gone", rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |view| {
             let advertised: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::Broker && n.is_primary).collect();
             let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == NodeStatus::ReadyForTraffic);
             (advertised.len() == 1 && advertised[0].node_id.to_string() == succ_id && killed_gone).then(|| view.to_vec())

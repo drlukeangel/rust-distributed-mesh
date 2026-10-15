@@ -73,8 +73,8 @@ python3 -I - "$OUTPUT/metadata.json" "$CANDIDATE" "$RDM_URL" <<'PY' || exit 1
 import json, sys
 meta, cand, url = sys.argv[1:4]
 m = json.load(open(meta))
-APPROVED = {"rdm-node", "rafka-node-admin-core", "rafka-mesh-transport", "rafka-mesh-telemetry", "rafka-node-rpc-testkit",
-            "rafka-node-rpc", "rdm-core", "rdm-client", "rafka-chaos"}
+APPROVED = {"rdm-node", "rafka-node-admin-core", "rdm-transport", "rafka-node-rpc-testkit",
+            "rdm-core", "rdm-client", "rafka-chaos"}
 bad = []
 rdm = []
 for p in m["packages"]:

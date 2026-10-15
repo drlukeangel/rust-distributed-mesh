@@ -127,7 +127,7 @@ thread_local! {
 
 /// The one span capture of a testkit cell. Every span the cell's runtime emits, on whichever of its
 /// threads, goes to two layers of one subscriber: [`Spans`] (the name/parent/field map the cell's
-/// assertions read) and the product span pipeline (`rafka_mesh_telemetry::span_capture`: product's
+/// assertions read) and the product span pipeline (`rdm_transport::span_capture`: product's
 /// filter and its `BatchSpanProcessor`) in front of the JSONL evidence exporter, at
 /// `target/i143-testkit/<cell>/testkit.<pid>-<ns>.spans.jsonl`. A process the cell launches
 /// through [`template`] writes its own JSONL into the same dir. The capture is flushed (bounded) when
@@ -136,15 +136,15 @@ pub struct Capture {
     pub spans: Spans,
     pub dir: std::path::PathBuf,
     dispatch: tracing::Dispatch,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
 }
 
 /// The capture of the cell named `cell` (its test function's name).
 pub fn capture(cell: &str) -> Capture {
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell);
-    let exporter = rafka_mesh_telemetry::jsonl_span_exporter(&dir, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
+    let exporter = rdm_transport::jsonl_span_exporter(&dir, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
     let spans = Spans::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(cell, exporter);
+    let (capture, layer) = rdm_transport::span_capture(cell, exporter);
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(spans.clone()).with(layer));
     Capture { spans, dir, dispatch, capture }
 }
@@ -448,7 +448,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
 /// The admin side's Ping (op `0x01`), so a node's data-plane call to it is answered: in RDM
 /// standalone a node's data-plane connection is one the testkit originates (connections.md "Two
 /// planes, two words"), and the cell's admin side is a destination it reaches.
-pub fn serve_ping(b: rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder {
+pub fn serve_ping(b: rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder {
     use rdm_core::ping::{Ping, PingReply, PingRequest};
     b.serve::<Ping, _, _>(rdm_core::catalog::OpOwner::Core, |_peer, req: PingRequest| async move {
         let PingRequest::Ping { payload, .. } = req;

@@ -13,7 +13,7 @@ use rafka_node_admin_core::model::{Fabric, Node, NodeStatus, ProviderKind, Scope
 use rafka_node_admin_core::status_rpc::{Declared, StatusAuthority};
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, StatusStorage};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -33,14 +33,14 @@ fn acceptance_dir(cell: &str) -> PathBuf {
     }
 }
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its span filter and
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its span filter and
 /// `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher installed on
 /// every thread of the cell's own runtime, so two cells in one test process never share spans.
 /// When it drops, whether the cell passed or panicked, every span it holds goes to the cell's
 /// `spans.json`, so a red is read from its own trace and never from a rerun.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
     /// The resource's `service.name` this capture exports under.
     service: String,
@@ -52,7 +52,7 @@ fn capture(cell: &str) -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2805-{cell}");
-    let (capture, layer) = rafka_mesh_telemetry::span_capture(&service, exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture(&service, exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), service, dir: acceptance_dir(cell) }
 }
 
@@ -123,7 +123,7 @@ struct Birth {
 impl Birth {
     /// The birth's one endpoint.
     async fn endpoint(&self) -> iroh::Endpoint {
-        self.endpoint.get_or_init(|| async { rafka_node_rpc::endpoint::bind(self.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap() }).await.clone()
+        self.endpoint.get_or_init(|| async { rdm_transport::endpoint::bind(self.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap() }).await.clone()
     }
 }
 
@@ -147,7 +147,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
 /// draining) on its own endpoint, over a view holding `me` and `others`.
 struct Rig {
     me: Birth,
-    server: rafka_node_rpc::NodeRpcServer,
+    server: rdm_transport::NodeRpcServer,
     _router: Router,
     resolved: ResolvedNode,
     authority: Arc<StatusAuthority>,
@@ -209,7 +209,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         .unwrap();
     let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode {
         node_id: me.node.node_id.clone(),
         name: me.node.name.clone(),
@@ -997,7 +997,7 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
             let fp = &fp;
             async move {
                 let ep = fp.endpoint().await;
-                let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+                let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
                 rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rdm_core::status::MeshState::Pending, &target).await
             }
@@ -1090,7 +1090,7 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
         let (topology, me, me_id) = (r.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
-        let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
+        let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
         let client = NodeRpcClient::new(fp.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let gate = r.ready.clone();
         let opener = tokio::spawn(async move {

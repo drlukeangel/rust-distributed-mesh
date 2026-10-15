@@ -24,7 +24,7 @@ use crate::build::BuildId;
 use crate::build_facts_read::fetch_build_facts;
 use crate::build_state::LocalBuildLog;
 use crate::model::{NodeId, PathName};
-use rafka_node_rpc::{NodeRpcClient, NodeTarget};
+use rdm_transport::{NodeRpcClient, NodeTarget};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;

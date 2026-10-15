@@ -42,8 +42,8 @@ use crate::fabric_storage::{FabricStorage, SeatTransferRow};
 use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
 use rdm_core::{LifecycleOp, Seat};
-use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SeatBook, SeatTaken};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rdm_transport::membership::{Backbone, DigestBook, Membership, SeatBook, SeatTaken};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
 use rdm_core::outcome::RpcOutcome;
@@ -475,7 +475,7 @@ impl HandoverDoor {
         let book = self.membership.seats();
         let held = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation))?;
         book.held_frames().into_iter().find_map(|f| match f {
-            rafka_mesh_transport::membership::Frame::PrimaryUpdated { op, seats } if seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary && c.record() == held) => {
+            rdm_transport::membership::Frame::PrimaryUpdated { op, seats } if seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary && c.record() == held) => {
                 Some(HandoverBirth { mesh: op.name.mesh.clone(), node_id: op.node_id, incarnation: op.incarnation })
             }
             _ => None,

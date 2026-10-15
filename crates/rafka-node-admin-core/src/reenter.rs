@@ -15,8 +15,8 @@
 
 use crate::model::{EndpointId, IncarnationId, NodeId, PathName};
 use crate::storage::NodeRecord;
-use rafka_mesh_transport::membership::Membership;
-use rafka_node_rpc::{Budget, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
+use rdm_transport::membership::Membership;
+use rdm_transport::{Budget, CallOptions, LiveNodeResolver, NodeRpcClient, NodeTarget, ResolvedNode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -135,7 +135,7 @@ pub(crate) enum TopologySource<'a> {
     DurableMap(&'a [NodeRecord]),
     /// A node of the own mesh: its topology is read with `GetTopology` (op 0x1E), which installs
     /// nothing (the map is for reaching nodes, not for holding them), and this admin joins the mesh channel with it as the seed.
-    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership, me: &'a PathName, me_id: &'a NodeId, time: &'a rafka_mesh_transport::clock::RafkaTime, adopt_time: bool },
+    LocalNode { node: &'a MapNode, client: &'a NodeRpcClient, membership: &'a Membership, me: &'a PathName, me_id: &'a NodeId, time: &'a rdm_transport::clock::RafkaTime, adopt_time: bool },
 }
 
 /// The topology `source` holds, every mesh, as births a Ping can reach. `Err` names what failed.
@@ -176,7 +176,7 @@ pub(crate) struct EntryCtx {
     pub client: Arc<NodeRpcClient>,
     pub resolver: Arc<LiveNodeResolver>,
     pub membership: Membership,
-    pub time: rafka_mesh_transport::clock::RafkaTime,
+    pub time: rdm_transport::clock::RafkaTime,
 }
 
 /// What the sweep found.

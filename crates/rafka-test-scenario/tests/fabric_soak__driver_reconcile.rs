@@ -34,14 +34,14 @@ fn acceptance_dir(cell: &str, layer: &str) -> PathBuf {
 /// fault backend's and the detector's spans are exactly what this cell emitted.
 struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     service: String,
 }
 
 fn capture(cell: &str) -> Capture {
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let service = format!("i143-2787-{cell}");
-    let capture = rafka_mesh_telemetry::install_span_capture(&service, exporter.clone()).expect("one global subscriber per cell process");
+    let capture = rdm_transport::install_span_capture(&service, exporter.clone()).expect("one global subscriber per cell process");
     Capture { exporter, capture, service }
 }
 
@@ -105,7 +105,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     let estate = Estate::bootstrap(owner(cell, provider), "fabric1", "mesh1").await;
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
-    let cfg = Config::mm(seed, secs, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
+    let cfg = Config::mm(seed, secs, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_round());
     let driver = Driver::new(estate, cfg, crate::build_log::build_read).await;
     let progress = driver.progress();
     // The run is its own task: a panic inside it still leaves the seed and the executed sequence.

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rafka_node_rpc::{NodeRpcClient, NodeTarget};
+use rdm_transport::{NodeRpcClient, NodeTarget};
 use rdm_core::join::{Join, JoinReply, JoinRequest};
 use rdm_core::wire::WireDigest;
 use rdm_core::outcome::RpcOutcome;
@@ -52,7 +52,7 @@ where
     let node = digest.node.name.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {
-        let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
+        let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
         let to = next().await;
         let anchor = match &to {
             Ok((_, anchor)) => anchor.clone(),

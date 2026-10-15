@@ -17,7 +17,7 @@ use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build_state::{BuildFact, StepOutcome};
-use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
 use rdm_core::context::CallContext;
 use rdm_core::outcome::RpcOutcome;
@@ -66,7 +66,7 @@ pub(crate) struct Caller {
 impl Caller {
     /// A caller that learns the fabric from the estate's entry node-admin, over Node RPC.
     pub(crate) async fn of(estate: &Estate) -> Caller {
-        let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
         let resolver = Arc::new(StaticResolver::new());
         let client = Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm"));
         let caller = Caller { peers: estate.peers().await, entry: estate.entry().await, fabric_id: estate.fabric_id.clone(), client, resolver, bases: Default::default() };
@@ -265,7 +265,7 @@ async fn attempt_run(caller: &Caller, to: &str, build: &BuildId, attempt: u32, e
         Err((RpcOutcome::Reply(r), _)) => r.into_value(),
         Err((other, _)) => panic!("the call to {to} ended {other:?}"),
         Ok((mut stream, _)) => match stream.next().await {
-            Some(rafka_node_rpc::stream::StreamItem::Frame(_, r)) => r,
+            Some(rdm_transport::stream::StreamItem::Frame(_, r)) => r,
             other => panic!("the stream of {to} gave {other:?}"),
         },
     }

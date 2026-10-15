@@ -13,7 +13,7 @@ use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
 use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricDesired, FabricView, MeshDesired, MeshView, NodeView};
 use rdm_core::{NodeId, NodeKind, PathName};
-use rafka_node_rpc::{CallOptions, NodeTarget};
+use rdm_transport::{CallOptions, NodeTarget};
 use rdm_core::build::{BuildChange, MeshCounts};
 use rdm_core::status::{NodeSelect, Status, StatusReply, StatusRequest};
 
@@ -246,35 +246,35 @@ impl Nodes {
     /// node-properties-own-commands.md §2; [`crate::NodeRpc::name_update`]). The mesh-primary decides
     /// everything from its own held record; a name outside the name grammar is refused here,
     /// `RejectedName`, as the mesh-primary would refuse it, and nothing is sent.
-    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, name: &str) -> Result<StatusReply, CallEnd> {
+    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, name: &str) -> Result<StatusReply, CallEnd> {
         if let Some(reason) = rdm_core::status::name_refusal(name) {
             let span = NodeOp::NameUpdate.span();
             span.record("outcome", "rejected-name");
             span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), reason = %reason, "the name is outside the name grammar; nothing is sent"));
             return Ok(StatusReply::rejected_name(&reason));
         }
-        crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rdm_transport::CallOptions::default()).await
     }
 
     /// `node.tags.create`: add `labels` to the tags of the exact birth `birth`, a single call to the
     /// node's mesh-primary `mesh_primary` over `route` ([`crate::NodeRpc::tags_create`]). Labels
     /// outside the label grammar, an empty list or more than a node carries are refused here,
     /// `RejectedTags`, and nothing is sent.
-    pub async fn tags_create(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, labels: &std::collections::BTreeSet<String>) -> Result<StatusReply, CallEnd> {
+    pub async fn tags_create(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, labels: &std::collections::BTreeSet<String>) -> Result<StatusReply, CallEnd> {
         if let Some(reason) = rdm_core::status::create_tags_refusal(labels) {
             return Ok(refused_before_sending(NodeOp::TagsCreate, &reason));
         }
-        crate::NodeRpc::new(self.carrier.client()).tags_create(mesh_primary, route, birth, labels, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).tags_create(mesh_primary, route, birth, labels, &rdm_transport::CallOptions::default()).await
     }
 
     /// `node.tags.delete`: remove every label (`All`) or the named ones from the exact birth `birth`,
     /// as [`Self::tags_create`]; a `Labels` scope naming nothing or a non-label is refused here,
     /// `RejectedTags`, and nothing is sent.
-    pub async fn tags_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rdm_core::status::TagScope) -> Result<StatusReply, CallEnd> {
+    pub async fn tags_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, scope: &rdm_core::status::TagScope) -> Result<StatusReply, CallEnd> {
         if let Some(reason) = scope.refusal() {
             return Ok(refused_before_sending(NodeOp::TagsDelete, &reason));
         }
-        crate::NodeRpc::new(self.carrier.client()).tags_delete(mesh_primary, route, birth, scope, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).tags_delete(mesh_primary, route, birth, scope, &rdm_transport::CallOptions::default()).await
     }
 
     /// `node.connections.get`: the connections the exact birth `birth` holds, under the name it
@@ -298,14 +298,14 @@ impl Nodes {
     /// node's mesh-primary `mesh_primary` over `route` (R-CR2, R-CR3; [`crate::NodeRpc::connections_delete`]).
     /// A scope that names nothing to cut is refused here by name, `RejectedConnectionScope`, and
     /// nothing is sent.
-    pub async fn connections_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rdm_core::status::ConnectionScope) -> Result<rdm_core::status::StatusReply, CallEnd> {
+    pub async fn connections_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rdm_transport::RouteChoice, scope: &rdm_core::status::ConnectionScope) -> Result<rdm_core::status::StatusReply, CallEnd> {
         if let Some(reason) = scope.refusal() {
             let span = NodeOp::ConnectionsDelete.span();
             span.record("outcome", "rejected-connection-scope");
             span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
             return Ok(rdm_core::status::StatusReply::RejectedConnectionScope { reason: format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str()) });
         }
-        crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, birth, scope, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, birth, scope, &rdm_transport::CallOptions::default()).await
     }
 
     /// `node.config.get`: no request of its own (node-rpc-envelope.md: its dedicated request mapping is

@@ -37,25 +37,25 @@ const EXITING: &str = "mesh2.rpc.2";
 const OTHER_ADMIN: &str = "mesh2.admin.2";
 const FINAL: &str = "mesh2.admin.1";
 
-/// This cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its
+/// This cell's own span capture: the product span pipeline (`rdm_transport::span_capture`: its
 /// span filter and `BatchSpanProcessor`) in front of an in-memory exporter, behind a dispatcher
 /// installed on every thread of the cell's own runtime.
 pub(crate) struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
-    capture: rafka_mesh_telemetry::SpanCapture,
+    capture: rdm_transport::SpanCapture,
     dispatch: tracing::Dispatch,
 }
 
 pub(crate) fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
-    let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh2.admin.1", exporter.clone());
+    let (capture, layer) = rdm_transport::span_capture("mesh2.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
 }
 
 /// The trace id of `span`, a cell's root, as the capture's pipeline stamps it.
 pub(crate) fn trace_id(span: &tracing::Span) -> String {
-    span.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context: the capture is installed on this thread")
+    span.in_scope(rdm_transport::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context: the capture is installed on this thread")
 }
 
 impl Capture {
@@ -1404,7 +1404,7 @@ fn a_created_admins_seat_watch_proves_the_lost_holders_exit_from_its_runtime_row
     let lost = node(FINAL);
     let h = handle(FINAL, 49_001);
     let fleet = Fleet { pids: [(49_001, FINAL.to_string())].into_iter().collect(), ..Default::default() };
-    let book = rafka_mesh_transport::membership::DigestBook::default();
+    let book = rdm_transport::membership::DigestBook::default();
     let (without_row, with_row) = tokio::runtime::Runtime::new().unwrap().block_on(async {
         let nodes = MemoryNodesStorage::default();
         let without_row = inspect_birth(&fleet, &book, Some(&nodes), &lost).await;
