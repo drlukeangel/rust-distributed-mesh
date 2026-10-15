@@ -22,11 +22,11 @@
 **Ruling (Luke 2026-10-14: "bid_xxxx-xxxx-xxxx but only in logs otherwise we just use the raw-crockford as its a bigint storage value at 12"; agreed 2026-10-14 to build).**
 - On the wire, in every store row and in every page example a Build id is the bare 12-character Crockford60 (R-BI5): a 60-bit integer at 12 characters (`BuildId`'s `Display` in `rafka-mesh-entity/src/ids.rs:151` stays bare).
 - A log line or `build_id` span field renders it `bid_xxxx-xxxx-xxxx` (the same 12 characters in three groups of four, `BuildId::log()` -> `BuildIdLog` in `rafka-mesh-entity/src/ids.rs:193-212`) for the eye. Nothing parses that form (`BuildId::parse("bid_...")` refuses by name with `IdParseReason::WrongWidth`), and nothing stores it.
-- Cell: `ids_crockford::a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans`. Flame (Jaeger 192.168.68.99:16687): trace `a592b745aaea8819ba14a5777842e24b` (`rdm.node_admin.build.create.via-accepted` span `c696c67b348c3a5e` carries `"build_id": "bid_293h-reeg-et79"` while the Build row key `node.primary.update:293hreeget79:1:node.stop:mesh1.admin.1`, stored `BuildFact` JSON and the `0x20` `BuildReply::Started` wire carrier stay bare `293hreeget79`).
+- Cell: `ids_crockford::a_dashed_bid_build_id_is_refused_by_parse_and_emitted_only_in_build_id_spans` (RED `8f0e64d0`, landed `55131ee4`, gate 46 s). Flame (Jaeger 192.168.68.99:16687): trace `a592b745aaea8819ba14a5777842e24b` (`rdm.node_admin.build.create.via-accepted` span `c696c67b348c3a5e` carries `"build_id": "bid_293h-reeg-et79"` while the Build row key `node.primary.update:293hreeget79:1:node.stop:mesh1.admin.1`, stored `BuildFact` JSON and the `0x20` `BuildReply::Started` wire carrier stay bare `293hreeget79`).
 
 # R-RX6 — the four A' attribution items in `e12.s53` stay as landed (Luke 2026-10-14, "i agree")
 
-**Docs of record:** `node-rpc.md` §14; `gossip.md` §3.1; `i143-prd.md` `e12.s53`.
+**Docs of record:** `node-rpc.md` §14; `gossip.md` §3.1; `i143-prd.md` `e12.s53` (landed `f1109974`, gate 44 s).
 
 - The four places that read the transport-authenticated sender or the seat book to attribute an incoming message or sample are not receiver authorization and stay as landed:
   1. round `heard_from` keyed on the sender (`status_rpc.rs:582`);
@@ -36,7 +36,7 @@
 
 # R-SF1 — the staleness floor stays process-wide (Luke 2026-10-14, "i agree", option A)
 
-**Docs of record:** `i143-prd.md` `e12.s82` / `e12.s83`.
+**Docs of record:** `i143-prd.md` `e12.s82` / `e12.s83` (landed `f1109974`, gate 44 s).
 
 - `cadence::staleness_floor()` (`rafka-mesh-entity/src/cadence.rs:56`) stays read once per process.
 - The four transport cells that need another floor keep running in their own subprocess with `RDM_STALENESS_MS` set through `own_process::delegated_with_env`: `channel_stopped.rs:69`, `gossip_stats.rs:77`, `peer_location_book.rs:148` (`60000 ms`), and `heartbeat_spans.rs:63` (`2000 ms`).
@@ -44,7 +44,7 @@
 
 # e12.s55 — the PRD row is the record (Luke 2026-10-14, "i agree")
 
-**Docs of record:** `i143-prd.md` `e12.s55`.
+**Docs of record:** `i143-prd.md` `e12.s55` (landed `f1109974`, gate 44 s).
 
 - Leave the `e12.s55` PRD row as the record for parked post-beta `R-HB3` (`digest_seq` as evidence on four `0x1B` replies) and file no issue.
 - Replace the dead `#3085` tracking reference in the `e12.s55` header with `Tracking issue: none (the #3085 reference never resolved; parked post-beta, this row is the record)`.
