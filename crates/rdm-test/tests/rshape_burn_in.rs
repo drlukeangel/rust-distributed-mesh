@@ -3640,7 +3640,14 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
 /// other operation of the node, its successor or its predecessor.
 fn recipe_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
     let (new, old) = (format!("{node}.new"), format!("{node}.old"));
-    let mut reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|sp| sp["attributes"]["build_id"] == build_id).collect();
+    // The recipe is an attempt of the accepted Build (its via-recipe span names the attempt it opened):
+    // the reconciles from that attempt on in the fabric lane are the recipe's. The formation's earlier
+    // attempts of the same Build created the node at its path and are not the recipe's.
+    let opened = named(spans, "rdm.node_admin.build.update.via-recipe").into_iter().filter(|sp| sp["attributes"]["build_id"] == build_id).map(attempt_of).min().unwrap_or_else(|| panic!("{node}: no via-recipe span opened the recipe of Build {build_id}"));
+    let mut reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["lane"].as_str().unwrap_or("").is_empty() && attempt_of(sp) >= opened)
+        .collect();
     reconciles.sort_by_key(|sp| start_ns(sp));
     let mut ops: Vec<String> = Vec::new();
     for sp in reconciles {
