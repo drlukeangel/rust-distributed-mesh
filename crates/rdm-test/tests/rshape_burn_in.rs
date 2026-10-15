@@ -954,18 +954,19 @@ impl RouteRun {
         assert_eq!((c.out["outcome"].as_str(), c.out["reason"].as_str()), (Some("NotSent"), Some("Resolve(Unknown)")), "{}", c.out);
         leg(self, "exact-unknown-node", c, "controller", &json!(exact(&ghost)), &Value::Null);
 
-        // 5. the gateway that carried now holds a Direct edge to each broker it dialed: it originates
-        //    to them itself over its held connections.
+        // 5. the gateway that carried kept nothing of the carried calls: its own first call to each broker
+        //    has no Direct fact to follow (`direct-unknown`, connections.md §5), and the connection it
+        //    originates is its Direct edge to the replying birth (§1, R-CR6).
         for (dest, d, kind) in [("mesh1.broker.1", &b1, "same-mesh"), ("mesh2.broker.1", &b2, "cross-mesh")] {
             let dest_id = s(&d["node_id"]);
+            let key = format!("orig-{kind}");
+            let c = probe_call(e, &["originate", "--target", &format!("path:{g1}"), "--destination", &format!("path:{dest}"), "--key", &key, "--value", &value(&key)]);
+            assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("direct-unknown"), Some("reply")), "the carrier kept nothing of its carried call to {dest}: {}", c.out);
             wait_for(&format!("{g1} holds a Connected Direct edge to {dest}'s current birth"), Duration::from_secs(30), || async {
                 let snap = snapshot(e, g1);
                 snap["own_latest_directs"].as_array().into_iter().flatten().any(|x| x["state"] == "Connected" && x["destination"]["node_id"] == d["node_id"] && x["destination"]["incarnation"] == d["incarnation_id"]).then_some(())
             })
             .await;
-            let key = format!("orig-{kind}");
-            let c = probe_call(e, &["originate", "--target", &format!("path:{g1}"), "--destination", &format!("path:{dest}"), "--key", &key, "--value", &value(&key)]);
-            assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str(), c.out["call_outcome"].as_str()), (Some("Reply"), Some("direct"), Some("reply")), "{}", c.out);
             // The door's own `outcome` lowercases (`reply`); the probe prints the call's outcome as `call_outcome`.
             assert_eq!(c.out["by"], g1);
             assert_eq!(c.out["destination_node_id"], dest_id);
@@ -1064,9 +1065,10 @@ impl RouteRun {
 /// and the typed reply names the birth that answered. A same-mesh exact call and a cross-mesh exact
 /// call are Direct and served by exactly that broker (the other mesh's broker never sees the
 /// write); the same two carried through a mesh1 gateway are `via-peer` with exactly one carried
-/// inner call to the exact target; after carrying, that gateway holds a Connected Direct edge to
-/// each broker it dialed and originates calls to them itself, `direct`, with the replying broker's
-/// NodeId and incarnation; a compute that holds no Direct fact toward the broker dials it directly
+/// inner call to the exact target, and the carrier keeps nothing of them (connections.md §1: a Forward
+/// keeps no connection, no id, no row at the forwarder); that gateway's own first call to each broker is
+/// `direct-unknown` (no Direct fact toward it, §5), replied by the broker's NodeId and incarnation, and
+/// leaves it a Connected Direct edge to that birth; a compute that holds no Direct fact toward the broker dials it directly
 /// (`direct-unknown`) and the broker applies the write; an exact NodeId the fabric never held is
 /// NotSent `Resolve(Unknown)`. What must NOT happen: a reply from any node but the requested one, a
 /// handler execution for a call that was not sent, or a route the connections projection does not
