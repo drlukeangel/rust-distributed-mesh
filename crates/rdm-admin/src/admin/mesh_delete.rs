@@ -1,6 +1,6 @@
 //! The two sides of the mesh-delete workflow a runner executes (mesh-delete.md).
 //!
-//! The owner's side ([`AdminRunner::shutdown_mesh`]) is the fabric-primary: it owns the outer
+//! The owner's side ([`AdminRunner::delete_mesh`]) is the fabric-primary: it owns the outer
 //! workflow `mesh.delete:<mesh_id>` once the fabric seat is outside the deleting mesh (the
 //! confirmed fabric-primary handover, `fabric_handover`). It captures the accepted roster and the
 //! final primary's provider access (refusing before anything is dismantled when it has none),
@@ -67,15 +67,15 @@ impl AdminRunner {
     }
 
     /// The owner's outer workflow `mesh.delete:<mesh_id>`.
-    pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), crate::executor::RunEnd> {
+    pub(super) async fn delete_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), crate::executor::RunEnd> {
         let outer = crate::mesh_delete::operation(mesh_id);
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-shutdown", mesh = %mesh, mesh_id = %mesh_id, build_id = %build_id.log(), attempt, operation = %outer, outcome = tracing::field::Empty);
-        let result = self.shutdown_mesh_in(build_id, attempt, mesh, mesh_id, &outer).instrument(span.clone()).await;
+        let result = self.delete_mesh_in(build_id, attempt, mesh, mesh_id, &outer).instrument(span.clone()).await;
         span.record("outcome", if result.is_ok() { "complete" } else { "incomplete" });
         result
     }
 
-    async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
+    async fn delete_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
         // Where this owner resumes, from its own Build facts, before it calls anything; the run this
         // attempt belongs to keys the fabric seat's update (ruling R-PU2).
         let build = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?;
@@ -137,7 +137,7 @@ impl AdminRunner {
                         }
                     }
                 }
-                self.admin_for_leaving_mesh(build_id, attempt, mesh, &key, &steps, &view).await?
+                self.admin_for_deleting_mesh(build_id, attempt, mesh, &key, &steps, &view).await?
             }
         };
         // A resumed attempt hands the workflow only to the final primary admitted, or to the one the
@@ -183,7 +183,7 @@ impl AdminRunner {
             return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id).into());
         }
         let handoff = self.leaves.open(key.clone(), admitted.clone());
-        let result = self.lead_leave(build_id, attempt, mesh_id, outer, node_rpc, &primary, &key, handoff).await;
+        let result = self.lead_delete(build_id, attempt, mesh_id, outer, node_rpc, &primary, &key, handoff).await;
         if result.is_err() {
             // This attempt's open leave ends with it; the receipts are the record a resumed attempt reads.
             self.leaves.close(&key);
@@ -198,7 +198,7 @@ impl AdminRunner {
     /// for the mesh on an unproven exit (R-D1); then the admin is created at a path no birth held,
     /// into the existing mesh under its existing MeshId. A live admin not yet seated is no loss:
     /// the attempt ends and the next one hands that admin the workflow.
-    async fn admin_for_leaving_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, RunEnd> {
+    async fn admin_for_deleting_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &MeshDeleteKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, RunEnd> {
         let outer = key.operation.as_str();
         let no_primary = format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to");
         // Before admission the leave is refused by name: nothing was dismantled and nothing is resumed.
@@ -239,7 +239,7 @@ impl AdminRunner {
         let held: Vec<PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
         let path = crate::mesh_delete::leaving_mesh_admin_path(mesh, &adm.roster, &held)?;
         let span = tracing::info_span!("rdm.node_admin.node.create.via-leaving-mesh", mesh = %mesh, mesh_id = %key.mesh_id, node = %path, build_id = %build_id.log(), attempt, operation = %outer, predecessor = %format!("{} {}", lost.node, lost.incarnation_id), outcome = tracing::field::Empty);
-        let created = self.create_leaving_mesh_admin(build_id, attempt, &path, &key.mesh_id).instrument(span.clone()).await;
+        let created = self.create_deleting_mesh_admin(build_id, attempt, &path, &key.mesh_id).instrument(span.clone()).await;
         span.record("outcome", if created.is_ok() { "created" } else { "failed" });
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
@@ -255,11 +255,11 @@ impl AdminRunner {
     /// forward (states.md, "pending -> ready-for-traffic -> leaving -> dead"), and a mesh that is
     /// leaving is never told it is pending. A fabric-primary that holds no state for the mesh
     /// creates nothing: no state is assumed.
-    async fn create_leaving_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId) -> Result<(), String> {
+    async fn create_deleting_mesh_admin(&self, build_id: &crate::build::BuildId, attempt: u32, path: &PathName, mesh_id: &MeshId) -> Result<(), String> {
         let state = self.records.declared.lock().unwrap().meshes.get(mesh_id).copied().ok_or_else(|| {
             format!("{}: this fabric-primary holds no declared state for {} ({mesh_id}), so the admin created for it could be handed none; nothing is created under an assumed state", self.held_name(), path.mesh)
         })?;
-        match self.fence_predecessor(path).await {
+        match self.revise_predecessor(path).await {
             crate::seat_revision::FenceOutcome::Clear { gone: None } => {}
             other => return Err(format!("{path} is not a path no birth held: the create door fenced {other:?}")),
         }
@@ -334,7 +334,7 @@ impl AdminRunner {
     /// Steps 2-5 of the owner's workflow, for the leave `key` opened at admission: `mesh.deleting`,
     /// `DeleteMesh`, the validated handoff (mesh.deleted) and its completion receipt.
     #[allow(clippy::too_many_arguments)]
-    async fn lead_leave(
+    async fn lead_delete(
         &self,
         build_id: &crate::build::BuildId,
         attempt: u32,

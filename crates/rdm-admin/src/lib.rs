@@ -68,6 +68,7 @@ pub use rdm_node::store_root;
 pub mod status_storage;
 pub mod topology;
 pub use rdm_node::topology_read;
+pub mod primitives;
 pub mod views;
 pub mod wire;
 pub mod wiring;

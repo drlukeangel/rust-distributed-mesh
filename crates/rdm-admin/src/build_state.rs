@@ -2932,7 +2932,7 @@ mod tests {
                     if !p.ends_with("target") {
                         stack.push(p);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rdm-admin/src/admin.rs") && !p.ends_with("rdm-admin/tests/store_root_boot.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rdm-admin/src/admin.rs") && !p.ends_with("rdm-admin/src/admin/boot.rs") && !p.ends_with("rdm-admin/tests/store_root_boot.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
                     if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") || text.contains("JOURNAL_FILE") {
                         offenders.push(p);

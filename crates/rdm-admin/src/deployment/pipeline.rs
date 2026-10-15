@@ -1997,7 +1997,7 @@ impl DeploymentPipeline<'_> {
     /// Exited is the proof, and the executor publishes NodeDeleted from it. Storage is kept: "It
     /// releases node.id and name, not storage". The lifecycle events name the birth as its own
     /// digest does (`<path>`), by its exact `(node.id, incarnation)`.
-    pub async fn delete_parked(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    pub async fn delete_stopped(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         async {

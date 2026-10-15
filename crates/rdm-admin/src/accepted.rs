@@ -736,7 +736,7 @@ fn plan_with(
         for p in &m.nodes {
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's fence decides against the world (a running runtime at the path is
-            // held, never replaced: `AdminRunner::fence_predecessor`).
+            // held, never replaced: `AdminRunner::revise_predecessor`).
             if restarted == Some(p) {
                 continue;
             }

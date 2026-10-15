@@ -6,3 +6,4 @@
 pub use crate::app_hydration::StartKind;
 pub use crate::deployment::pipeline::{CommandAdmission, CreateStep, READY_PREREQUISITES};
 pub use crate::workflows::node_start::{node_start, FirstStart, JoinThrough, JoinTo, Joining, StartNode, Starting};
+pub use crate::admin::AdminRunner;

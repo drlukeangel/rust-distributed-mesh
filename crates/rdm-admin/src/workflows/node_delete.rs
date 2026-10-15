@@ -5,3 +5,4 @@
 
 pub use crate::deployment::pipeline::{RetireStep, StorageDisposition};
 pub use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, TerminationMode};
+pub use crate::admin::AdminRunner;

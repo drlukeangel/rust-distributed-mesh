@@ -4,3 +4,4 @@
 //! and the mesh transitions to deleted.
 
 pub use crate::mesh_delete::*;
+pub use crate::admin::MeshDeleteDoor;
