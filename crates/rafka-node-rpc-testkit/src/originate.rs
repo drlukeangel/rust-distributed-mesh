@@ -13,7 +13,7 @@ use crate::proof_store::{ProofReply, ProofRequest, ProofStore};
 use rdm_core::connections::{resolve, CarrierPolicy, ConnectionState, NodeConnection};
 use rdm_core::launch::Launch;
 use rdm_core::{NodeKind, PathName};
-use rafka_node_admin_core::connections_writer::ConnectionsWriter;
+use rdm_admin::connections_writer::ConnectionsWriter;
 use rdm_transport::{CallOptions, LiveNodeResolver, NodeResolver, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};

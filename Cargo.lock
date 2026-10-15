@@ -3027,34 +3027,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rafka-node-admin-core"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "bytes",
- "ctor",
- "dashmap",
- "futures-lite",
- "futures-util",
- "hex",
- "iroh",
- "iroh-gossip",
- "libc",
- "opentelemetry_sdk",
- "rand 0.8.6",
- "rdm-client",
- "rdm-core",
- "rdm-node",
- "rdm-transport",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "rafka-node-rpc-testkit"
 version = "0.1.0"
 dependencies = [
@@ -3066,8 +3038,8 @@ dependencies = [
  "iroh-gossip",
  "libc",
  "opentelemetry_sdk",
- "rafka-node-admin-core",
  "rafka-node-rpc-testkit",
+ "rdm-admin",
  "rdm-client",
  "rdm-core",
  "rdm-node",
@@ -3090,8 +3062,8 @@ dependencies = [
  "libc",
  "opentelemetry_sdk",
  "rafka-chaos",
- "rafka-node-admin-core",
  "rafka-node-rpc-testkit",
+ "rdm-admin",
  "rdm-client",
  "rdm-core",
  "rdm-transport",
@@ -3195,6 +3167,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rdm-admin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "bytes",
+ "ctor",
+ "dashmap",
+ "futures-lite",
+ "futures-util",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "libc",
+ "opentelemetry_sdk",
+ "rand 0.8.6",
+ "rdm-client",
+ "rdm-core",
+ "rdm-node",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

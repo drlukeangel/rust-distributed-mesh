@@ -7,10 +7,10 @@
 use crate::common;
 
 use rdm_core::{FabricId, IncarnationId};
-use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, Timeouts};
-use rafka_node_admin_core::deployment::provider::{DeployError, FabricPolicy, TerminationMode};
+use rdm_admin::build_state::MemoryBuildStateAdapter;
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, Timeouts};
+use rdm_admin::deployment::provider::{DeployError, FabricPolicy, TerminationMode};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
@@ -33,7 +33,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let fabric_id = FabricId::mint();
         let fabric = format!("fab-{fabric_id}");
         let policy = FabricPolicy::bootstrap(Some("process")).expect("a known MESH_SPAWN_TYPE");
-        let prepared = match rafka_node_admin_core::deployment::prepare(policy, &fabric).await {
+        let prepared = match rdm_admin::deployment::prepare(policy, &fabric).await {
             Ok(p) => p,
             Err(DeployError::Unsupported { reason, .. }) => {
                 eprintln!("process provider unsupported here: {reason}");
@@ -54,7 +54,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
             joins: &admin.joins,
             observer,
             sink: &sink,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
             builds: &builds,
             template: &template,
             timeouts: Timeouts::default(),

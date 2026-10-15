@@ -12,8 +12,8 @@ use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, 
 use rdm_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
 use rdm_core::status::TagScope;
 use rdm_core::status::StatusReply;
-use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use rdm_admin::admin::{start_with, AdminConfig};
+use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
@@ -83,7 +83,7 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
         // The reads answer from the view the admin holds: it holds itself ready, in both seats.
         tokio::time::timeout(WRONG, async {
             loop {
-                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
                 if ready {
                     return;
                 }
@@ -210,8 +210,8 @@ fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_t
         tokio::time::timeout(WRONG, async {
             loop {
                 let t = running.control.topology.read().await;
-                let ready = t.fabric.status == rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic
-                    && t.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                let ready = t.fabric.status == rdm_admin::model::ScopeStatus::ReadyForTraffic
+                    && t.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
                 drop(t);
                 if ready {
                     return;

@@ -113,7 +113,7 @@ pub struct Config {
     pub backbone: Duration,
     /// The longest one offline-tickle round takes: the direct connect, then every via-peer carrier at
     /// once, each one call of the default budget
-    /// (`rafka_node_admin_core::offline::tickle_round_at_default_budget`).
+    /// (`rdm_admin::offline::tickle_round_at_default_budget`).
     pub tickle_round: Duration,
 }
 

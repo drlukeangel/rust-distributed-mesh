@@ -11,13 +11,13 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published, Spans};
 use rdm_core::{FabricId, IncarnationId, LifecycleOp, NodeId};
-use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts};
-use rafka_node_admin_core::node_commands::NodeCommand;
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
-use rafka_node_admin_core::model::{Node, PathName};
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts};
+use rdm_admin::node_commands::NodeCommand;
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
+use rdm_admin::model::{Node, PathName};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -82,7 +82,7 @@ impl LifecycleEvents for Recorder {
 
 struct Rig {
     admin: common::AdminSide,
-    template: rafka_node_admin_core::deployment::pipeline::LaunchTemplate,
+    template: rdm_admin::deployment::pipeline::LaunchTemplate,
     builds: MemoryBuildStateAdapter,
     sink: Published,
     provider: ProcessDeploymentProvider,
@@ -115,7 +115,7 @@ fn path() -> PathName {
     "mesh1.rpc.1".parse().unwrap()
 }
 
-fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], operation: &str) -> Vec<String> {
+fn receipts(steps: &[rdm_admin::build_state::BuildStepReceipt], operation: &str) -> Vec<String> {
     steps.iter().filter(|r| r.operation == operation && r.outcome == StepOutcome::Complete).map(|r| r.step.clone()).collect()
 }
 
@@ -175,7 +175,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     };
     rig.log.lock().unwrap().clear();
     let old_inc = first.node.incarnation_id.clone().unwrap();
-    let exit = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: old_inc.clone(), exit_code: code, proof: "provider".into(), observed_at_ms: 1 };
+    let exit = rdm_admin::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: old_inc.clone(), exit_code: code, proof: "provider".into(), observed_at_ms: 1 };
 
     let recover_build = publish_build(&rig.builds, add_node()).await;
     // node.delete of the crashed target, on the mesh-primary's exit proof.
@@ -203,8 +203,8 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     assert!(last_of(&delete) < first_of(&create), "the delete, then the create: {operations:?}");
     // Every receipt the recovery wrote rides the fabric's Build topic and FetchBuildFacts to the
     // fabric-primary, whose planning and recovery dedup read them: none is refused for want of a wire shape.
-    let facts: Vec<rafka_node_admin_core::build_state::BuildFact> = view.steps.iter().cloned().map(rafka_node_admin_core::build_state::BuildFact::Step).collect();
-    let (_, refused) = rafka_node_admin_core::fabric_builds::encode_chunks(facts);
+    let facts: Vec<rdm_admin::build_state::BuildFact> = view.steps.iter().cloned().map(rdm_admin::build_state::BuildFact::Step).collect();
+    let (_, refused) = rdm_admin::fabric_builds::encode_chunks(facts);
     assert!(refused.is_empty(), "a receipt of the recovery has no wire shape: {refused:?}");
     let output = |operation: &str, step: &str| view.steps.iter().find(|r| r.operation == operation && r.step == step).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{operation} {step} has an output"));
     assert_eq!(output(&delete, "NodeDeleted")["node_id"], serde_json::to_value(&first.node.node_id).unwrap(), "NodeDeleted names the exited node");
@@ -266,7 +266,7 @@ async fn a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name
         .unwrap_or_else(|e| panic!("create: {e}"));
     rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
     rig.log.lock().unwrap().clear();
-    let other = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: rdm_core::IncarnationId::mint(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 };
+    let other = rdm_admin::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: rdm_core::IncarnationId::mint(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 };
     let build = publish_build(&rig.builds, add_node()).await;
     let err = pipeline
         .retire(&RetireRequest { build_id: build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(other.clone()) })
@@ -342,7 +342,7 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
 ///   retained endpoint key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn prepare_storage_distinguishes_a_gone_inherited_data_dir_from_a_broken_one_and_recovers_each_by_its_rule() {
-    use rafka_node_admin_core::deployment::pipeline::{inspect_transport_key, InheritedDirError};
+    use rdm_admin::deployment::pipeline::{inspect_transport_key, InheritedDirError};
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;

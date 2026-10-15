@@ -4,7 +4,7 @@ members = [
     "crates/rdm-node",
     "crates/rafka-chaos",
     "crates/rafka-node-rpc-testkit",
-    "crates/rafka-node-admin-core",
+    "crates/rdm-admin",
     "crates/rdm-client",
     "crates/rdm-core",
     "crates/rafka-test-scenario",

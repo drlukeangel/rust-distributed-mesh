@@ -27,7 +27,7 @@ pub fn node_recovery_due() -> std::time::Duration {
         rdm_transport::Budget::Overall(d) => d,
         other => panic!("the default call budget is not one overall deadline: {other:?}"),
     };
-    let round = rafka_node_admin_core::offline::tickle_round(call);
+    let round = rdm_admin::offline::tickle_round(call);
     floor + gossip + floor / 2 + gossip + round + floor + round + gossip + call
 }
 

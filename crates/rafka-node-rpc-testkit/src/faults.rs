@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
-use rafka_node_admin_core::record_store::StorageError;
-use rafka_node_admin_core::storage::ConnectionsStorage;
+use rdm_admin::record_store::StorageError;
+use rdm_admin::storage::ConnectionsStorage;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 

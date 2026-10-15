@@ -390,7 +390,7 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     assert!(before.is_empty(), "no row reaches the store root {} before state-commit; found {}: {before:#?}", root.display(), before.len());
     // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
     // `<store_dir>/fabrics/fabric1`, and is held in the fabric-primary's scratchpad like every row.
-    let name_claim = root.parent().expect("the store root sits under the store_dir").join(rafka_node_admin_core::store_root::FABRIC_NAMES).join("fabric1.json");
+    let name_claim = root.parent().expect("the store root sits under the store_dir").join(rdm_admin::store_root::FABRIC_NAMES).join("fabric1.json");
     assert!(!name_claim.exists(), "the fabric's name claim reaches {} only at state-commit", name_claim.display());
     door.release("state-sync").await;
     ready_under(&estate, &first).await;

@@ -14,7 +14,7 @@ use crate::common::{admin_side, AdminSide};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
+use rdm_admin::app_hydration::{HookOutcome, Hydration};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use rafka_node_rpc_testkit::node;
 use std::sync::{Arc, Mutex};

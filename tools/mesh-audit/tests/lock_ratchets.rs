@@ -86,7 +86,7 @@ fn every_ratchet_has_a_name_and_runs() {
 #[test]
 fn tag_is_descriptive_only_fails_a_runtime_read_of_a_descriptive_map() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/planted.rs", "fn decide(d: &MeshDigest) -> bool { d.extra.get(\"in_flight\").is_some() }\n");
+    t.write("crates/rdm-admin/src/planted.rs", "fn decide(d: &MeshDigest) -> bool { d.extra.get(\"in_flight\").is_some() }\n");
     let v = only(check(t.root()), Ratchet::TagIsDescriptiveOnly);
     assert!(matches!(&v[0], Violation::Token { file, token, .. } if file.ends_with("planted.rs") && token == ".extra.get("));
 }
@@ -94,7 +94,7 @@ fn tag_is_descriptive_only_fails_a_runtime_read_of_a_descriptive_map() {
 #[test]
 fn resource_behavior_is_typed_meta_fails_a_behavior_boolean_outside_ingress() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/planted.rs", "pub struct Launch { pub stateful: bool }\n");
+    t.write("crates/rdm-admin/src/planted.rs", "pub struct Launch { pub stateful: bool }\n");
     only(check(t.root()), Ratchet::ResourceBehaviorIsTypedMeta);
     // The ingress normalization input is the one place a legacy intent may be named.
     let clean = Planted::of_tree();
@@ -104,21 +104,21 @@ fn resource_behavior_is_typed_meta_fails_a_behavior_boolean_outside_ingress() {
 #[test]
 fn accepted_build_has_explicit_path_config_fails_when_the_build_loses_its_path_config_or_its_proof() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/accepted.rs", "fn every_materialized_path_carries_exactly_one_path_config", "fn every_materialized_path_carries_a_name");
+    t.edit("crates/rdm-admin/src/accepted.rs", "fn every_materialized_path_carries_exactly_one_path_config", "fn every_materialized_path_carries_a_name");
     only(check(t.root()), Ratchet::AcceptedBuildHasExplicitPathConfig);
 }
 
 #[test]
 fn legacy_defaults_are_ingress_only_fails_a_default_applied_in_the_pipeline() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { PathConfig::default_for(kind).storage }\n");
+    t.write("crates/rdm-admin/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { PathConfig::default_for(kind).storage }\n");
     only(check(t.root()), Ratchet::LegacyDefaultsAreIngressOnly);
 }
 
 #[test]
 fn provider_interprets_neither_meta_nor_tags_fails_a_provider_reading_meta() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/deployment/process.rs", "fn release(meta: &StorageMeta) {}\n");
+    t.write("crates/rdm-admin/src/deployment/process.rs", "fn release(meta: &StorageMeta) {}\n");
     only(check(t.root()), Ratchet::ProviderInterpretsNeitherMetaNorTags);
 }
 
@@ -140,18 +140,18 @@ fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
 fn retire_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
     let t = Planted::of_tree();
     t.edit(
-        "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
+        "crates/rdm-admin/src/deployment/pipeline.rs",
         "        Self::NodeDeleting,\n        Self::StopNode,",
         "        Self::NodeDeleting,",
     );
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::StopNode,");
+    t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::StopNode,");
     only(check(t.root()), Ratchet::RetireAttemptsRpcStopFirst);
 }
 
 #[test]
 fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
+    t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
     let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
     assert!(matches!(&v[0], Violation::Arms { found, .. } if !found.iter().any(|a| a == "Refused")));
 }
@@ -160,7 +160,7 @@ fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
 fn drift_silence_is_not_retire_authority_fails_without_its_proof() {
     let t = Planted::of_tree();
     t.edit(
-        "crates/rafka-node-admin-core/tests/drift_convergence.rs",
+        "crates/rdm-admin/tests/drift_convergence.rs",
         "fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced",
         "fn a_silent_node_is_replaced",
     );
@@ -171,7 +171,7 @@ fn drift_silence_is_not_retire_authority_fails_without_its_proof() {
 fn retire_receipt_names_command_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
-        "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
+        "crates/rdm-admin/src/deployment/pipeline.rs",
         "#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
         "#[serde(rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
     );
@@ -308,10 +308,10 @@ fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
 
     // The Build topic too, and a direct postcard call beside the shared codec.
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rdm_transport::wire::decode(bytes)", "serde_json::from_slice(bytes).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
+    t.edit("crates/rdm-admin/src/fabric_builds.rs", "rdm_transport::wire::decode(bytes)", "serde_json::from_slice(bytes).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/fabric_builds.rs", "rdm_transport::wire::encode(&wire)", "postcard::to_allocvec(&wire).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
+    t.edit("crates/rdm-admin/src/fabric_builds.rs", "rdm_transport::wire::encode(&wire)", "postcard::to_allocvec(&wire).map_err(|e| rdm_transport::wire::WireError::new(e.to_string()))");
     only(check(t.root()), Ratchet::NoJsonOnTheWire);
 
     // A Node RPC source takes no JSON either.
@@ -331,7 +331,7 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
     // Deleting or renaming the proof cell is itself a violation.
     let t = Planted::of_tree();
     t.edit(
-        "crates/rafka-node-admin-core/tests/gossip_frames_wire.rs",
+        "crates/rdm-admin/tests/gossip_frames_wire.rs",
         "fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling",
         "fn every_frame_round_trips",
     );
@@ -345,12 +345,12 @@ fn no_json_on_the_wire_reads_only_non_test_code_and_holds_its_proof_cell() {
 #[test]
 fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
+    t.write("crates/rdm-admin/src/planted.rs", "async fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
     let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
     assert!(matches!(&v[0], Violation::Token { file, line: 2, token, .. } if file.ends_with("planted.rs") && token.contains("held across the .await at line 3")), "{v:?}");
-    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn f(span: tracing::Span) {\n    let g = span.clone().entered();\n    if ok() {\n        step();\n    }\n    other().await;\n}\n");
+    t.write("crates/rdm-admin/src/planted.rs", "async fn f(span: tracing::Span) {\n    let g = span.clone().entered();\n    if ok() {\n        step();\n    }\n    other().await;\n}\n");
     only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);    // An item-level `#[cfg(test)]` gates its one item: the guard below it is still read.
-    t.write("crates/rafka-node-admin-core/src/planted.rs", "#[cfg(test)]\nfn helper() {}\n\nasync fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
+    t.write("crates/rdm-admin/src/planted.rs", "#[cfg(test)]\nfn helper() {}\n\nasync fn f(span: tracing::Span) {\n    let _g = span.enter();\n    work().await;\n}\n");
     let v = only(check(t.root()), Ratchet::NoSpanGuardAcrossAwait);
     assert!(matches!(&v[0], Violation::Token { file, line: 5, .. } if file.ends_with("planted.rs")), "{v:?}");
 }
@@ -359,7 +359,7 @@ fn no_span_guard_across_await_refuses_a_guard_alive_at_an_await() {
 fn no_span_guard_across_await_accepts_scoped_dropped_discarded_and_test_guards() {
     let t = Planted::of_tree();
     t.write(
-        "crates/rafka-node-admin-core/src/planted.rs",
+        "crates/rdm-admin/src/planted.rs",
         r#"
 async fn scoped(span: tracing::Span) {
     {
@@ -402,13 +402,13 @@ mod tests {
 fn one_rename_write_path_reads_only_non_test_code() {
     let t = Planted::of_tree();
     t.write(
-        "crates/rafka-node-admin-core/src/planted.rs",
+        "crates/rdm-admin/src/planted.rs",
         "pub fn real() {}\n\n#[cfg(test)]\nmod tests {\n    struct Double(MemoryNodesStorage);\n    impl Double {\n        async fn release_node_row(&self, n: &PathName, by: &NodeId) -> bool {\n            self.0.release_node_row(n, by).await\n        }\n    }\n}\n",
     );
     assert!(check_one(t.root(), Ratchet::OneRenameWritePath).is_empty(), "{:?}", check_one(t.root(), Ratchet::OneRenameWritePath));
 
     t.write(
-        "crates/rafka-node-admin-core/src/planted.rs",
+        "crates/rdm-admin/src/planted.rs",
         "#[cfg(test)]\npub(crate) fn tempdir() -> u8 {\n    0\n}\n\nasync fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) {\n    let _ = s.release_node_row(n, by).await;\n}\n",
     );
     let v = only(check(t.root()), Ratchet::OneRenameWritePath);
@@ -418,10 +418,10 @@ fn one_rename_write_path_reads_only_non_test_code() {
 #[test]
 fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_door() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/planted.rs", "async fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) { let _ = s.release_node_row(n, by).await; }\n");
+    t.write("crates/rdm-admin/src/planted.rs", "async fn take(s: &dyn NodesStorage, n: &PathName, by: &NodeId) { let _ = s.release_node_row(n, by).await; }\n");
     let v = only(check(t.root()), Ratchet::OneRenameWritePath);
     assert!(matches!(&v[0], Violation::Token { file, token, .. } if file.ends_with("planted.rs") && token == ".release_node_row("));
     let d = Planted::of_tree();
-    d.edit("crates/rafka-node-admin-core/src/node_rows.rs", "pub(crate) async fn move_row(storage: &dyn NodesStorage,", "pub async fn rename(storage: &dyn NodesStorage,");
+    d.edit("crates/rdm-admin/src/node_rows.rs", "pub(crate) async fn move_row(storage: &dyn NodesStorage,", "pub async fn rename(storage: &dyn NodesStorage,");
     only(check(d.root()), Ratchet::OneRenameWritePath);
 }

@@ -283,9 +283,9 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 
 use crate::build_log;
 use rdm_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
-use rafka_node_admin_core::build_state::BuildState;
-use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
-use rafka_node_admin_core::lifecycle::HookPhase;
+use rdm_admin::build_state::BuildState;
+use rdm_admin::deployment::pipeline::{CreateStep, RetireStep};
+use rdm_admin::lifecycle::HookPhase;
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};

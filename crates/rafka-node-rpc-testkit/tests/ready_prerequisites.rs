@@ -10,18 +10,18 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::build_state::{
+use rdm_admin::build::BuildId;
+use rdm_admin::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt,
     ClaimOutcome, MemoryBuildStateAdapter, StepOutcome,
 };
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Publication, Timeouts, READY_PREREQUISITES,
 };
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{DeploymentProvider, TerminationMode};
-use rafka_node_admin_core::model::Node;
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{DeploymentProvider, TerminationMode};
+use rdm_admin::model::Node;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -43,10 +43,10 @@ impl BuildStateAdapter for Losing {
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
     }
-    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, rdm_admin::build_state::BuildStateError> {
         self.inner.current_build().await
     }
-    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -70,13 +70,13 @@ impl BuildStateAdapter for Losing {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn exits_owed(&self, build_id: &rafka_node_admin_core::build::BuildId, mesh: &str) -> Result<Vec<rafka_node_admin_core::build_state::OwedExit>, BuildStateError> {
+    async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -117,7 +117,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
         joins: &admin.joins,
         observer: &observer,
         sink: &sink,
-        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+        lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),
@@ -151,7 +151,7 @@ async fn create_losing(lose: Option<&'static str>) -> u32 {
     }
     // Whatever runs for this node stops with the test, by signal: it drains, stops and exports its
     // queued spans before it exits.
-    let handle: rafka_node_admin_core::deployment::provider::DeploymentHandle = view
+    let handle: rdm_admin::deployment::provider::DeploymentHandle = view
         .steps
         .iter()
         .find(|r| r.step == CreateStep::DeployRuntime.name())
@@ -226,7 +226,7 @@ fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
             joins: &admin.joins,
             observer: &observer,
             sink: &sink,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
             builds: &builds,
             template: &template,
             timeouts: Timeouts { ready: Duration::from_secs(120), ..Timeouts::default() },

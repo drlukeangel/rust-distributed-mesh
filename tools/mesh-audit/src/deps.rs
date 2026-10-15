@@ -30,6 +30,7 @@ pub const GENERIC_PACKAGES: &[&str] = &[
     "rdm-transport",
     "rafka-mesh-transport",
     "rafka-node-rpc",
+    "rdm-admin",
     "rafka-node-admin-core",
     "rdm-client",
     "rdm-node",

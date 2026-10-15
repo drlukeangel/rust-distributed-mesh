@@ -18,11 +18,11 @@ use crate::common::{admin_side_serving, admin_side_serving_as};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
-use rafka_node_admin_core::node_commands::CommandKey;
+use rdm_admin::node_commands::CommandKey;
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
-use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
+use rdm_admin::app_hydration::{HookOutcome, Hydration};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, Mode, PullRequest, PullServer, TestHydrator};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
@@ -247,7 +247,7 @@ impl HeldActions {
 }
 
 #[async_trait::async_trait]
-impl rafka_node_admin_core::fabric_rounds::RoundActions for HeldActions {
+impl rdm_admin::fabric_rounds::RoundActions for HeldActions {
     async fn commit_state(&self, _node: &rdm_core::PathName) -> Result<(), String> {
         self.run().await
     }
@@ -274,8 +274,8 @@ impl Birth {
     }
 
     /// The round command `kind` of `attempt` from `admin`, the birth resolved by it.
-    async fn round_from(&self, admin: &crate::common::AdminSide, kind: rafka_node_admin_core::fabric_state::RoundKind, attempt: u32) -> StatusReply {
-        let key = rafka_node_admin_core::fabric_state::RoundKey { kind, fabric_id: self.launch.fabric_id.clone(), build_id: BUILD.into(), attempt };
+    async fn round_from(&self, admin: &crate::common::AdminSide, kind: rdm_admin::fabric_state::RoundKind, attempt: u32) -> StatusReply {
+        let key = rdm_admin::fabric_state::RoundKey { kind, fabric_id: self.launch.fabric_id.clone(), build_id: BUILD.into(), attempt };
         let req = kind.down(&key, self.launch.node_id.clone(), self.launch.incarnation.clone());
         match admin.observer.client.call::<Status>(&self.target, &req, &Self::opts()).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
@@ -287,7 +287,7 @@ impl Birth {
 /// Resolves once `admin` has taken a check-in named `completion` of `attempt` from the birth.
 async fn checked_in(admin: &crate::common::AdminSide, completion: &str, attempt: u32) {
     let mut held = admin.observer.check_ins.subscribe();
-    tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rafka_node_admin_core::fabric_state::RoundOp::of(r).is_some_and(|o| o.attempt == attempt))))
+    tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rdm_admin::fabric_state::RoundOp::of(r).is_some_and(|o| o.attempt == attempt))))
         .await
         .unwrap_or_else(|_| panic!("{} never took a {completion} check-in of attempt {attempt}", admin.launcher.name))
         .expect("the check-ins are held by the admin side");
@@ -307,7 +307,7 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        use rafka_node_admin_core::fabric_state::RoundKind;
+        use rdm_admin::fabric_state::RoundKind;
         let birth = Birth::up("round-new-commander").await;
         let actions = HeldActions::new();
         birth.running.own.set_round_actions(actions.clone());
@@ -376,7 +376,7 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        use rafka_node_admin_core::fabric_state::RoundKind;
+        use rdm_admin::fabric_state::RoundKind;
         let birth = Birth::up("round-unheard-commander").await;
         let actions = HeldActions::new();
         actions.gate.send_replace(true);

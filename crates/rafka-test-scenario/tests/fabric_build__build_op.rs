@@ -16,7 +16,7 @@
 use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
 use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
-use rafka_node_admin_core::build_state::{BuildFact, StepOutcome};
+use rdm_admin::build_state::{BuildFact, StepOutcome};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
 use rdm_core::context::CallContext;

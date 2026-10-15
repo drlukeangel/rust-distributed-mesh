@@ -29,7 +29,7 @@ rdm-transport = { path = "../rdm-transport" }
 iroh = { workspace = true, features = ["test-knobs"] }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # i143_acceptance_2780 derives its cut list from the product's own documented step orders.
-rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+rdm-admin = { path = "../rdm-admin" }
 iroh-gossip = { workspace = true }
 futures-lite = "2"
 bytes = "1"

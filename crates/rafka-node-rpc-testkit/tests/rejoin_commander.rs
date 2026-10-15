@@ -91,7 +91,7 @@ async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<r
     };
     primary.deployed(&launch, &key);
     let running = match hydrator {
-        Some(h) => node::start_hydrating(&launch, rafka_node_admin_core::app_hydration::Hydration::new(h), |b, _| b).await,
+        Some(h) => node::start_hydrating(&launch, rdm_admin::app_hydration::Hydration::new(h), |b, _| b).await,
         None => node::start(&launch, |b, _| b).await,
     }
     .expect("the node comes up");
@@ -351,7 +351,7 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        use rafka_node_admin_core::app_hydration::{HookOutcome, HydrationState, RetryOn};
+        use rdm_admin::app_hydration::{HookOutcome, HydrationState, RetryOn};
         use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
         let hydrator = TestHydrator::new(Mode::Local);
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_hydrating("addressed-unrecorded", false, Some(hydrator.clone())).await;

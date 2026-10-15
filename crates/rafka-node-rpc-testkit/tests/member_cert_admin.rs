@@ -6,10 +6,10 @@
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, NodeId};
-use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_node_admin_core::app_hydration::{Hydration, HydrationState};
-use rafka_node_admin_core::certs::CertChoice;
-use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use rdm_admin::admin::{start_with, AdminConfig};
+use rdm_admin::app_hydration::{Hydration, HydrationState};
+use rdm_admin::certs::CertChoice;
+use rdm_admin::wiring::{FabricHooks, Wiring};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use rafka_node_rpc_testkit::test_certs::{TestCertSigner, TestMemberCert};
 use std::sync::Arc;
@@ -90,7 +90,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
-        let _ = root.runner.joins.expect(rafka_node_admin_core::join::Deployed {
+        let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),

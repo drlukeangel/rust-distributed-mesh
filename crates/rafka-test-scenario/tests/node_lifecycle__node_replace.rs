@@ -1602,7 +1602,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     // just past one, so that fold comes almost one interval after the verdict.
     let gossip = rdm_core::cadence::gossip_interval();
     let connect = floor.min(Duration::from_secs(10));
-    let round1_due = floor + gossip + gossip + floor / 2 + rafka_node_admin_core::offline::tickle_round(connect) + Duration::from_millis(200);
+    let round1_due = floor + gossip + gossip + floor / 2 + rdm_admin::offline::tickle_round(connect) + Duration::from_millis(200);
     let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { round_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
     assert_eq!(s(&round1["attributes"]["verdict"]), "no-path", "{mp}'s round 1 finds no path to the killed {NODE}: {round1}");
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.

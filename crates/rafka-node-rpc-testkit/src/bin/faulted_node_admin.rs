@@ -10,7 +10,7 @@ use rafka_node_rpc_testkit::test_app;
 
 #[tokio::main]
 async fn main() {
-    rafka_node_admin_core::entry::run_with("faulted-node-admin", |cfg| {
+    rdm_admin::entry::run_with("faulted-node-admin", |cfg| {
         // The path.name this admin is: the launch's, or the Day-0 admin's first.
         let name = cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1).to_string());
         // The directory that holds every node's data dir of this fabric: where its boot cuts are listed.
@@ -41,7 +41,7 @@ async fn main() {
         let door = faults.clone();
         wiring.serve_app = Some(Box::new(move |b| rafka_node_rpc_testkit::fault_door::serve(b, door)));
         wiring.fabric_hooks = test_app::hooks(mode, faults).unwrap_or_else(|e| fail("test app", e));
-        wiring.certs = rafka_node_admin_core::certs::CertChoice::Signer(std::sync::Arc::new(rafka_node_rpc_testkit::test_certs::TestCertSigner));
+        wiring.certs = rdm_admin::certs::CertChoice::Signer(std::sync::Arc::new(rafka_node_rpc_testkit::test_certs::TestCertSigner));
         wiring
     })
     .await

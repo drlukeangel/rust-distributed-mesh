@@ -9,11 +9,11 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
 use rdm_core::{FabricId, LifecycleOp};
-use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, RetireRequest, Timeouts};
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
+use rdm_admin::build_state::MemoryBuildStateAdapter;
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, RetireRequest, Timeouts};
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{DeploymentProvider, DeploymentStatus};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 

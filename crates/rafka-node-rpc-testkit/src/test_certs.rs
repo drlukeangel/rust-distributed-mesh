@@ -2,7 +2,7 @@
 //! test asserts on them without any key material: RDM never parses a cert, this module is the
 //! test's own reader of what its own signer wrote.
 
-use rafka_node_admin_core::certs::{BirthIdentity, CertRefusal, CertSigner};
+use rdm_admin::certs::{BirthIdentity, CertRefusal, CertSigner};
 
 /// The member cert [`TestCertSigner`] issues, decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]

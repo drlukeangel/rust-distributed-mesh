@@ -11,7 +11,7 @@ use tracing::instrument::WithSubscriber;
 /// 30 s by default) and is kept alive every `gossip_interval() / 2` (`RDM_GOSSIP_INTERVAL_MS`,
 /// 2 s by default, so 1 s). A pooled connection to a dead peer therefore closes within the
 /// staleness floor, before the peer-mesh investigation's second probe (four thirds of the floor
-/// unheard, `rafka_node_admin_core::investigate::Rungs::at`), so the second probe's dial fails
+/// unheard, `rdm_admin::investigate::Rungs::at`), so the second probe's dial fails
 /// before writing.
 pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
     let idle = rdm_core::cadence::staleness_floor();

@@ -15,10 +15,10 @@
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId, PathName};
-use rafka_node_admin_core::admin::{start_with, AdminConfig, Running};
-use rafka_node_admin_core::app_hydration::Hydration;
-use rafka_node_admin_core::join::Deployed;
-use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use rdm_admin::admin::{start_with, AdminConfig, Running};
+use rdm_admin::app_hydration::Hydration;
+use rdm_admin::join::Deployed;
+use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use std::time::Duration;

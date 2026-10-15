@@ -9,14 +9,14 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Timeouts};
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateRequest, CreateStep, DeploymentPipeline, NodeObserver, Timeouts};
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{
     DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode,
 };
-use rafka_node_admin_core::model::{Node, ProviderKind};
+use rdm_admin::model::{Node, ProviderKind};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -65,7 +65,7 @@ impl DeploymentProvider for Killable {
     async fn signal_stop(&self, h: &DeploymentHandle) -> Result<(), DeployError> {
         self.inner.signal_stop(h).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, rafka_node_admin_core::deployment::provider::DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, rdm_admin::deployment::provider::DeployError> {
         self.inner.find(spec).await
     }
 }
@@ -79,7 +79,7 @@ struct Pausing<'a> {
 
 #[async_trait::async_trait]
 impl NodeObserver for Pausing<'_> {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_admin::deployment::pipeline::Publication> {
         if self.pause {
             self.reached.notify_one();
             std::future::pending::<()>().await;
@@ -128,7 +128,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
         joins: &admin.joins,
         observer: &observer,
         sink: &sink,
-        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+        lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),
@@ -149,7 +149,7 @@ async fn killed_then_rerun(kill_at: KillAt) {
         joins: &admin.joins,
         observer: &admin.observer,
         sink: &sink,
-        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+        lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),

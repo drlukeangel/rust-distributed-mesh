@@ -7,8 +7,8 @@ use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_transport::membership::{Backbone, Membership};
-use rafka_node_admin_core::deployment::pipeline::NodeObserver;
-use rafka_node_admin_core::model::Node;
+use rdm_admin::deployment::pipeline::NodeObserver;
+use rdm_admin::model::Node;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
@@ -25,7 +25,7 @@ pub struct LiveMesh {
     pub client: NodeRpcClient,
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
-    pub commands: Arc<rafka_node_admin_core::node_commands::CommandBook>,
+    pub commands: Arc<rdm_admin::node_commands::CommandBook>,
     /// Every round check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
     /// arrival order: the request as it came.
     pub check_ins: Arc<tokio::sync::watch::Sender<Vec<rdm_core::status::StatusRequest>>>,
@@ -58,12 +58,12 @@ impl LiveMesh {
 
 #[async_trait::async_trait]
 impl NodeObserver for LiveMesh {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_admin::deployment::pipeline::Publication> {
         self.membership
             .book
             .get(node_id.as_str())
             .filter(|(d, _)| &d.node.incarnation == incarnation)
-            .map(|(d, _)| rafka_node_admin_core::deployment::pipeline::Publication { runtime: d.node.runtime, data_dir: d.data_dir })
+            .map(|(d, _)| rdm_admin::deployment::pipeline::Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
@@ -89,19 +89,19 @@ impl NodeObserver for LiveMesh {
         // The same probe the node-admin's own observer sends (node-start.md step 3), to the birth
         // this launcher resolves by its own digest.
         self.echo_target(node).ok()?;
-        rafka_node_admin_core::admin::probed_ready_blocker(&self.client, &self.membership.book, node).await
+        rdm_admin::admin::probed_ready_blocker(&self.client, &self.membership.book, node).await
     }
 
-    async fn send_command(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> rafka_node_admin_core::deployment::pipeline::CommandAdmission {
+    async fn send_command(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext) -> rdm_admin::deployment::pipeline::CommandAdmission {
         let target = match self.echo_target(node) {
             Ok(t) => t,
-            Err(reason) => return rafka_node_admin_core::deployment::pipeline::CommandAdmission::NotSent { reason },
+            Err(reason) => return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason },
         };
-        rafka_node_admin_core::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
+        rdm_admin::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
     }
 
-    async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
-        rafka_node_admin_core::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
+    async fn await_completion(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext, within: Duration) -> rdm_admin::deployment::pipeline::Completion {
+        rdm_admin::node_commands::await_completion(&self.commands, node, cmd, ctx, within).await
     }
 }
 
@@ -207,12 +207,12 @@ pub struct AdminSide {
     /// The fabric this admin side serves.
     pub fabric: FabricId,
     /// The births this admin side deployed and awaits a `JoinNode` from.
-    pub joins: Arc<rafka_node_admin_core::join::Joins>,
+    pub joins: Arc<rdm_admin::join::Joins>,
     /// The admin every launch from `template` names as its launcher.
     pub launcher: rdm_core::launch::Launcher,
     /// The node rows this admin side holds by `path.name` (what a mesh-primary's store answers
     /// `node_row_at` with): its join door reads the row's config to hand a joiner.
-    rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rafka_node_admin_core::storage::NodeRow>>>,
+    rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>>,
     /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rdm_core::digest::MeshDigest>>,
     /// Over the data root where every launch from this admin side's template keeps its births'
@@ -273,7 +273,7 @@ impl AdminSide {
 
     fn register(&self, launch: &rdm_core::launch::Launch, key: &SecretKey, name: rdm_core::PathName, last_accepted: Option<rdm_core::PathName>, held: bool) {
         let runtime = rdm_core::runtime::await_own_record(&launch.data_dir, Duration::from_secs(10)).expect("the birth's runtime record is written");
-        let _ = self.joins.expect(rafka_node_admin_core::join::Deployed {
+        let _ = self.joins.expect(rdm_admin::join::Deployed {
             name,
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
@@ -287,7 +287,7 @@ impl AdminSide {
     }
 
     /// Hold `row` as the node row at its `path.name`, a blind put of its own key.
-    pub fn put_row(&self, row: rafka_node_admin_core::storage::NodeRow) {
+    pub fn put_row(&self, row: rdm_admin::storage::NodeRow) {
         self.rows.lock().unwrap().insert(row.name.clone(), row);
     }
 
@@ -359,22 +359,22 @@ pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -
     admin_side_taking_joins(ip, fabric, "mesh1.admin.1", false, None, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
-fn no_certs() -> Arc<dyn rafka_node_admin_core::certs::CertSigner> {
-    Arc::new(rafka_node_admin_core::certs::NoCerts)
+fn no_certs() -> Arc<dyn rdm_admin::certs::CertSigner> {
+    Arc::new(rdm_admin::certs::NoCerts)
 }
 
 /// [`admin_side_on_rafka_time`] whose join door issues each admitted birth's member cert with
 /// `signer`, on the admin side's rafka-time (the reference, when given).
-pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
+pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, signer: Arc<dyn rdm_admin::certs::CertSigner>) -> AdminSide {
     admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, reference_ms, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, signer).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, signer: Arc<dyn rdm_admin::certs::CertSigner>) -> AdminSide {
     admin_side_taking_joins_seated(ip, fabric, name, takes_joins, reference_ms, serve_app, status, signer, SideSeat::Primary).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>, seat: SideSeat) -> AdminSide {
+async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, signer: Arc<dyn rdm_admin::certs::CertSigner>, seat: SideSeat) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -391,7 +391,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             rafka_time.adopt(ms);
         }
         None => {
-            rafka_node_admin_core::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, name, rafka_node_admin_core::rafka_time::OWN_CLOCK_DAY0_ROOT);
+            rdm_admin::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, name, rdm_admin::rafka_time::OWN_CLOCK_DAY0_ROOT);
         }
     }
     let seeds = match &seat {
@@ -404,13 +404,13 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
-    let joins = Arc::new(rafka_node_admin_core::join::Joins::default());
-    let rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rafka_node_admin_core::storage::NodeRow>>> = Arc::default();
+    let joins = Arc::new(rdm_admin::join::Joins::default());
+    let rows: Arc<std::sync::Mutex<std::collections::HashMap<rdm_core::PathName, rdm_admin::storage::NodeRow>>> = Arc::default();
     let (admin_node_id, admin_incarnation) = (NodeId::mint(), IncarnationId::mint());
-    let join_slot: rafka_node_admin_core::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
+    let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
         let learner = membership.clone();
-        Arc::new(rafka_node_admin_core::join::JoinDoor {
+        Arc::new(rdm_admin::join::JoinDoor {
             me: name.parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new({
@@ -418,9 +418,9 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                 move || {
                 let (rafka_time, served_by) = (rafka_time.clone(), served_by.clone());
                 Box::pin(async move {
-                    Ok(rafka_node_admin_core::wire::JoinAnswer {
+                    Ok(rdm_admin::wire::JoinAnswer {
                         served_by,
-                        control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), name: None, config: None },
+                        control: rdm_admin::wire::JoinControl { provider: rdm_admin::model::ProviderKind::Process, fabric: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -428,7 +428,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| None),
-            issuer: Arc::new(rafka_node_admin_core::certs::CertIssuer::new(signer, rafka_time.clone())),
+            issuer: Arc::new(rdm_admin::certs::CertIssuer::new(signer, rafka_time.clone())),
             row: Arc::new({
                 let rows = rows.clone();
                 move |name| {
@@ -461,10 +461,10 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     if matches!(seat, SideSeat::Primary) {
         assert!(matches!(membership.take_read_chunk(held, "peer"), rdm_transport::snapshot::Taken::Installed(_)));
     }
-    let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
+    let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The completion calls a commanded node makes back (`node-drained`, `node-left`) resolve the
     // open commands of this admin side.
-    let commands = Arc::new(rafka_node_admin_core::node_commands::CommandBook::default());
+    let commands = Arc::new(rdm_admin::node_commands::CommandBook::default());
     // The round check-ins a node makes to this admin side as its commander are held in order and
     // acknowledged; the admin side keeps no checklist.
     let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
@@ -499,15 +499,15 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                         return Ok(StatusReply::Applied);
                     }
                     match &req {
-                        R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rafka_node_admin_core::node_commands::refuse_reserved(&receiver, "", &req)),
-                        R::NodeLeft { .. } => Ok(rafka_node_admin_core::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
+                        R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rdm_admin::node_commands::refuse_reserved(&receiver, "", &req)),
+                        R::NodeLeft { .. } => Ok(rdm_admin::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
                         _ => Ok(StatusReply::NotReady { reason: "the admin side serves round check-ins and declarations only".into() }),
                     }
                 }
             })
         }
     };
-    let rpc_server = serve_app(serve_commands(rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rdm_transport::ServerBuilder::new(), join_slot), topology_slot.clone())))
+    let rpc_server = serve_app(serve_commands(rdm_admin::topology_read::serve(rdm_admin::join::serve(rdm_transport::ServerBuilder::new(), join_slot), topology_slot.clone())))
         .seal(rdm_transport::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.to_string() })
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rdm_transport::ALPN, rpc_server).spawn();
@@ -567,7 +567,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         (None, None)
     };
     let _ = own_digest_slot.set(admin_digest.clone());
-    let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
+    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
         observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },

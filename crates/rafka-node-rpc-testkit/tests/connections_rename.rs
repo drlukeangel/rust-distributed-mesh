@@ -22,8 +22,8 @@ use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rdm_transport::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
-use rafka_node_admin_core::model::NodeStatus;
-use rafka_node_admin_core::storage::NodeRow;
+use rdm_admin::model::NodeStatus;
+use rdm_admin::storage::NodeRow;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
@@ -32,7 +32,7 @@ use std::time::Duration;
 
 /// Every entry in `name`'s kept log under the fabric's store root, in the order written.
 fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<NodeConnection> {
-    let root = rafka_node_admin_core::store_root::StoreRoot::open(store, fabric).expect("the store root opens");
+    let root = rdm_admin::store_root::StoreRoot::open(store, fabric).expect("the store root opens");
     let file = root.connections(name).join("history.jsonl");
     std::fs::read_to_string(&file)
         .unwrap_or_else(|e| panic!("{}: {e}", file.display()))

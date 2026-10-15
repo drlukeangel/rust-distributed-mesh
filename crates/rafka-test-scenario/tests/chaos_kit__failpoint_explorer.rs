@@ -14,9 +14,9 @@
 
 use crate::build_log;
 use rdm_client::{BuildSpec, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
-use rafka_node_admin_core::build_state::BuildState;
-use rafka_node_admin_core::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
-use rafka_node_admin_core::lifecycle::HookPhase;
+use rdm_admin::build_state::BuildState;
+use rdm_admin::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
+use rdm_admin::lifecycle::HookPhase;
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
@@ -171,7 +171,7 @@ impl Run {
 
     /// Await the fact `holds` of Build `id` as the admin behind `door` holds it in its own log. A Build the
     /// admin's log holds as failed fails the cell with the Build.
-    async fn build_fact(&self, door: &Door, id: &str, fact: &str, holds: impl Fn(&rafka_node_admin_core::build_state::BuildProjection) -> bool) -> Value {
+    async fn build_fact(&self, door: &Door, id: &str, fact: &str, holds: impl Fn(&rdm_admin::build_state::BuildProjection) -> bool) -> Value {
         let carrier = self.estate.carrier_at(&path(&door.name)).await;
         let build = build_log::build_fact(&carrier, id, fact, Duration::from_secs(120), |b| {
             assert!(b.state != BuildState::Failed, "Build {id} failed at {}: {b:#?}", door.name);
@@ -834,7 +834,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     // which only the release lets complete: it must settle at `receipts_before` receipts.
     let op = format!("node.create:{admin}");
     let want = create_order[..receipts_before].to_vec();
-    let receipts = |b: &rafka_node_admin_core::build_state::BuildProjection| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, Some(1));
+    let receipts = |b: &rdm_admin::build_state::BuildProjection| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, Some(1));
     let b = run.build_fact(&exec, &build_id, &format!("`{id}`: the Build holds a receipt for every step before WaitForNodeReady (through {}) and waits on the held admin", want.last().unwrap()), |b| receipts(b) == want).await;
     let done = done_steps(&b, &op, Some(1));
     assert!(done.len() <= receipts_before && done == create_order[..done.len()].to_vec(), "`{id}`: the Build holds a prefix of the documented order that stops before WaitForNodeReady: {done:?}");

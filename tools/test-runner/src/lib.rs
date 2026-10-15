@@ -78,7 +78,7 @@ const GATE_RELEASE_ONLY: &[&str] = &[
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[
-    "rafka-mesh-audit", "rdm-core", "rdm-transport", "rafka-node-admin-core", "rafka-node-rpc-testkit", "rdm-node",
+    "rafka-mesh-audit", "rdm-core", "rdm-transport", "rdm-admin", "rafka-node-rpc-testkit", "rdm-node",
 ];
 /// Stems that need a container runtime (the gate's `container-proof` job).
 const CONTAINER_STEMS: &[&str] = &["container_proof", "mesh_runtime__container_kill"];

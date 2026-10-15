@@ -14,9 +14,9 @@
 //! so the client cannot host it either).
 
 use rdm_client::{await_fact, BuildCarrier, CallEnd};
-use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
-use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, BuildState, StepOutcome};
+use rdm_admin::build::BuildId;
+use rdm_admin::build_facts_read::{fetch_build_facts, FetchFailure};
+use rdm_admin::build_state::{fold, BuildFact, BuildProjection, BuildState, StepOutcome};
 use rdm_transport::NodeTarget;
 use std::time::Duration;
 

@@ -9,18 +9,18 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::accepted::FabricTopology;
-use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion,
+use rdm_admin::accepted::FabricTopology;
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CommandAdmission, Completion,
     CreateRequest, DeploymentPipeline, NodeObserver, RetireRequest, Timeouts,
 };
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{
     DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch,
     TerminationMode,
 };
-use rafka_node_admin_core::model::{Node, ProviderKind};
+use rdm_admin::model::{Node, ProviderKind};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -31,16 +31,16 @@ struct DeparturesLost<'a> {
 
 #[async_trait::async_trait]
 impl NodeObserver for DeparturesLost<'_> {
-    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
+    async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_admin::deployment::pipeline::Publication> {
         self.live.joined(node_id, incarnation).await
     }
     async fn ready(&self, node: &Node) -> Result<(), String> {
         self.live.ready(node).await
     }
-    async fn send_command(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> CommandAdmission {
+    async fn send_command(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext) -> CommandAdmission {
         self.live.send_command(node, cmd, ctx).await
     }
-    async fn await_completion(&self, node: &Node, cmd: rafka_node_admin_core::node_commands::NodeCommand, ctx: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> Completion {
+    async fn await_completion(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext, within: Duration) -> Completion {
         self.live.await_completion(node, cmd, ctx, within).await
     }
 }
@@ -75,7 +75,7 @@ impl DeploymentProvider for Stubborn<'_> {
         }
         self.inner.signal_stop(h).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, rafka_node_admin_core::deployment::provider::DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, rdm_admin::deployment::provider::DeployError> {
         self.inner.find(spec).await
     }
 }
@@ -119,7 +119,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
             joins: &admin.joins,
             observer: &observer,
             sink: &sink,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
             builds: &builds,
             template: &template,
             timeouts: timeouts(),
@@ -138,7 +138,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
 
         let build = publish_build(
             &builds,
-            FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()),
+            FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
         )
         .await;
         let retired = pipeline
@@ -179,7 +179,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             joins: &admin.joins,
             observer: &observer,
             sink: &sink,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
             builds: &builds,
             template: &template,
             timeouts: timeouts(),
@@ -215,7 +215,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         // Retiring B: B ignores its stop and keeps running, every departure is lost.
         let build = publish_build(
             &builds,
-            FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()),
+            FabricTopology::root("fabric1", "mesh1", rdm_admin::model::MeshId::parse("meshd0000001").unwrap()),
         )
         .await;
         let retired = pipeline

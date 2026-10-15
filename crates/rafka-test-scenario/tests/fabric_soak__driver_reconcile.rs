@@ -86,7 +86,7 @@ fn walk_logs(root: &Path) -> Vec<PathBuf> {
 /// One offline-tickle round at its longest: the direct connect, then every via-peer carrier at once,
 /// each one call of the default budget.
 fn tickle_round() -> std::time::Duration {
-    rafka_node_admin_core::offline::tickle_round_at_default_budget()
+    rdm_admin::offline::tickle_round_at_default_budget()
 }
 
 fn attr<'a>(sp: &'a Value, k: &str) -> &'a str {

@@ -4,9 +4,9 @@
 //! typed `NotReady` until that admin's own hook has passed.
 
 use rdm_core::MemberStatus;
-use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState};
-use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use rdm_admin::admin::{start_with, AdminConfig};
+use rdm_admin::app_hydration::{HookOutcome, Hydration, HydrationState};
+use rdm_admin::wiring::{FabricHooks, Wiring};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +27,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 
 /// Resolves once `running`'s admin published ReadyForTraffic (the Ready check runs on its own
 /// cadence; this reads the digest it publishes).
-async fn until_ready(running: &rafka_node_admin_core::admin::Running) {
+async fn until_ready(running: &rdm_admin::admin::Running) {
     let waited = async {
         loop {
             if running.digest.lock().unwrap().status == MemberStatus::ReadyForTraffic {
@@ -98,7 +98,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         use rdm_core::launch::{Launch, Launcher};
         use rdm_core::runtime::RuntimeFact;
         use rdm_core::{IncarnationId, NodeId};
-        use rafka_node_admin_core::app_hydration::RetryOn;
+        use rdm_admin::app_hydration::RetryOn;
         use rafka_node_rpc_testkit::hydrate_probe::{PullServer, Row};
 
         let root_dir = std::env::temp_dir().join(format!("hydrate-pair-a-{}", NodeId::mint()));
@@ -112,7 +112,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         let pull = PullServer::behind(rows, root_hydration.gate());
         let serve = {
             let pull = pull.clone();
-            Box::new(move |b: rdm_transport::ServerBuilder| pull.serve(b)) as rafka_node_admin_core::wiring::ServeApp
+            Box::new(move |b: rdm_transport::ServerBuilder| pull.serve(b)) as rdm_admin::wiring::ServeApp
         };
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
@@ -150,7 +150,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
-        let _ = root.runner.joins.expect(rafka_node_admin_core::join::Deployed {
+        let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
             name: launch.name.clone(),
             node_id: launch.node_id.clone(),
             incarnation: launch.incarnation.clone(),
@@ -184,10 +184,10 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
         let HydrationState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
         let joiner_digest = joiner.digest.lock().unwrap().clone();
-        let mut subject = rafka_node_admin_core::model::Node::allocated(joiner_digest.node.name.clone());
+        let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone());
         subject.node_id = joiner_digest.node.node_id.clone();
         subject.incarnation_id = Some(joiner_digest.node.incarnation.clone());
-        let observer = rafka_node_admin_core::admin::MembershipObserver {
+        let observer = rdm_admin::admin::MembershipObserver {
             book: root.membership.book.clone(),
             client: Some(root.node_rpc.client.clone()),
             commands: Arc::default(),
@@ -196,7 +196,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         };
         let named = tokio::time::timeout(WRONG, async {
             loop {
-                if let Some(why) = rafka_node_admin_core::deployment::pipeline::NodeObserver::ready_blocker(&observer, &subject).await {
+                if let Some(why) = rdm_admin::deployment::pipeline::NodeObserver::ready_blocker(&observer, &subject).await {
                     return why;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;

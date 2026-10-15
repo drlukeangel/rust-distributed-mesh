@@ -6581,7 +6581,7 @@ fn soak_seconds() -> u64 {
 
 /// One offline-tickle round at its longest (the driver derives its unheard windows from it).
 fn tickle_round() -> Duration {
-    rafka_node_admin_core::offline::tickle_round_at_default_budget()
+    rdm_admin::offline::tickle_round_at_default_budget()
 }
 
 /// Whether this host can drop UDP between loopback ports; `Err` names why it cannot.

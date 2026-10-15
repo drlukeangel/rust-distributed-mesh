@@ -75,7 +75,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let b0 = current_build(&estate).await;
     // The fabric seat appears one gossip interval before the executor's next pass: wait for the Build
     // itself, never for the seat that precedes it.
-    build_log::build_fact(&estate.carrier().await, &b0, "complete", Duration::from_secs(60), |b| b.state == rafka_node_admin_core::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    build_log::build_fact(&estate.carrier().await, &b0, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     let day0 = build_log::build_value(&estate.carrier().await, &b0).await;
     assert_eq!(paths(&day0, "mesh1"), ["mesh1.admin.1"], "{day0}");
     assert_eq!(day0["state"], "complete", "{day0}");
@@ -110,7 +110,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     // The late admin held the Build's acceptance before Ready; the completion is a later fact the fabric-primary
     // appended and broadcast once, which every admin absorbs (`fabric_builds.rs` module docs: progress waits on no
     // gossip), so the read awaits that fact as step 1 does.
-    let held = build_log::build_fact(&estate.carrier_at(&late_path).await, &c, "complete", Duration::from_secs(60), |b| b.state == rafka_node_admin_core::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    let held = build_log::build_fact(&estate.carrier_at(&late_path).await, &c, "complete", Duration::from_secs(60), |b| b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     let held = serde_json::to_value(held).expect("a Build view serializes");
     assert_eq!(held["state"], "complete", "{held}");
     assert_eq!(paths(&held, "mesh1").len(), 6, "the late admin holds the accepted Build's topology: {held}");

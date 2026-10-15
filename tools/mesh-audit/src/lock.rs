@@ -131,7 +131,7 @@ pub const ACTIVE_TRANSPORT_SOURCES: &[&str] = &[
     "crates/rdm-transport",
     "crates/rafka-node-rpc-testkit",
     "crates/rdm-node",
-    "crates/rafka-node-admin-core",
+    "crates/rdm-admin",
     "crates/rdm-client",
     "crates/rafka-test-scenario",
     "tools/mesh-audit",
@@ -154,16 +154,16 @@ pub const TRANSPORT_TAG_TOKENS: &[&str] = &[
 
 /// The runtime sources where a descriptive annotation is never read to decide.
 /// The one writer of a node row's move (`move_row`).
-pub const NODE_ROWS: &str = "crates/rafka-node-admin-core/src/node_rows.rs";
+pub const NODE_ROWS: &str = "crates/rdm-admin/src/node_rows.rs";
 /// The nodes store: the claim and the release are defined and implemented here.
-pub const NODES_STORAGE: &str = "crates/rafka-node-admin-core/src/storage.rs";
+pub const NODES_STORAGE: &str = "crates/rdm-admin/src/storage.rs";
 
 pub const RUNTIME_SOURCES: &[&str] = &[
     "crates/rdm-core/src",
     "crates/rdm-transport/src",
     "crates/rafka-node-rpc-testkit/src",
     "crates/rdm-node/src",
-    "crates/rafka-node-admin-core/src",
+    "crates/rdm-admin/src",
     "crates/rdm-client/src",
 ];
 
@@ -179,16 +179,16 @@ pub const INGRESS_META: &str = "crates/rdm-core/src/meta.rs";
 /// Where a per-kind default or a normalization may be applied: before Build acceptance only.
 pub const INGRESS_SOURCES: &[&str] = &[
     "crates/rdm-core/src/meta.rs",
-    "crates/rafka-node-admin-core/src/accepted.rs",
-    "crates/rafka-node-admin-core/src/build.rs",
+    "crates/rdm-admin/src/accepted.rs",
+    "crates/rdm-admin/src/build.rs",
 ];
 pub const DEFAULT_TOKENS: &[&str] = &["default_for(", "normalize_path_config("];
 
 /// The provider implementations: concrete actions on exact locators, policy-blind.
 pub const PROVIDER_SOURCES: &[&str] = &[
-    "crates/rafka-node-admin-core/src/deployment/provider.rs",
-    "crates/rafka-node-admin-core/src/deployment/process.rs",
-    "crates/rafka-node-admin-core/src/deployment/container.rs",
+    "crates/rdm-admin/src/deployment/provider.rs",
+    "crates/rdm-admin/src/deployment/process.rs",
+    "crates/rdm-admin/src/deployment/container.rs",
 ];
 pub const PROVIDER_BANNED_TOKENS: &[&str] = &["PathConfig", "StorageMeta", "PlacementMeta", ".extra", ".tags", "stateful"];
 
@@ -201,9 +201,9 @@ pub const WIRE_SOURCES: &[&str] = &[
     "crates/rdm-transport/src/snapshot.rs",
     "crates/rdm-transport/src/chunking.rs",
     "crates/rdm-transport/src/wire.rs",
-    "crates/rafka-node-admin-core/src/fabric_builds.rs",
-    "crates/rafka-node-admin-core/src/wire.rs",
-    "crates/rafka-node-admin-core/src/join.rs",
+    "crates/rdm-admin/src/fabric_builds.rs",
+    "crates/rdm-admin/src/wire.rs",
+    "crates/rdm-admin/src/join.rs",
     "crates/rdm-node/src/topology_read.rs",
     "crates/rdm-node/src/join.rs",
     "crates/rdm-node/src/wire.rs",
@@ -227,31 +227,31 @@ pub const JSON_CODEC_TOKENS: &[&str] = &[
 
 /// The one source that converts a step receipt's JSON `output` (the REST and journal shape) to the
 /// typed result its step produced: it names `serde_json::Value` and nothing else may.
-pub const JSON_VALUE_EDGE: &str = "crates/rafka-node-admin-core/src/wire.rs";
+pub const JSON_VALUE_EDGE: &str = "crates/rdm-admin/src/wire.rs";
 
 /// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
-pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/membership.rs", "crates/rafka-node-admin-core/src/fabric_builds.rs"];
+pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/membership.rs", "crates/rdm-admin/src/fabric_builds.rs"];
 pub const WIRE_CODEC: &str = "crates/rdm-transport/src/wire.rs";
-pub const WIRE_CELLS: &str = "crates/rafka-node-admin-core/tests/gossip_frames_wire.rs";
+pub const WIRE_CELLS: &str = "crates/rdm-admin/tests/gossip_frames_wire.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
 pub const SPAN_GUARD_SOURCES: &[&str] = &["crates/", "demo/", "tools/"];
 /// The join (`JoinNode`, 0x1D): its serve and call sites, and the cell that proves its postcard shape.
-pub const JOIN_SOURCE: &str = "crates/rafka-node-admin-core/src/join.rs";
-pub const JOIN_CELLS: &str = "crates/rafka-node-admin-core/tests/join_wire.rs";
+pub const JOIN_SOURCE: &str = "crates/rdm-admin/src/join.rs";
+pub const JOIN_CELLS: &str = "crates/rdm-admin/tests/join_wire.rs";
 /// The topology read (`GetTopology`, 0x1E): its serve and install sites, and the cell that proves its postcard shape.
 pub const TOPOLOGY_SOURCE: &str = "crates/rdm-node/src/topology_read.rs";
 pub const SEAT_FRAME_CELLS: &str = "crates/rdm-transport/tests/seat_frames_wire.rs";
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
-pub const BUILD_FACTS_SOURCE: &str = "crates/rafka-node-admin-core/src/build_facts_read.rs";
-pub const BUILD_FACTS_HYDRATE: &str = "crates/rafka-node-admin-core/src/hydrate.rs";
+pub const BUILD_FACTS_SOURCE: &str = "crates/rdm-admin/src/build_facts_read.rs";
+pub const BUILD_FACTS_HYDRATE: &str = "crates/rdm-admin/src/hydrate.rs";
 pub const BUILD_FACTS_CELLS: &str = "crates/rdm-core/tests/build_facts_wire.rs";
 /// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the holder writes the one committed seat-transfer row, the successor installs from it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape and the seat frames.
-pub const HANDOVER_SOURCE: &str = "crates/rafka-node-admin-core/src/fabric_handover.rs";
+pub const HANDOVER_SOURCE: &str = "crates/rdm-admin/src/fabric_handover.rs";
 pub const HANDOVER_CELLS: &str = "crates/rdm-core/tests/handover_wire.rs";
 
-pub const PIPELINE: &str = "crates/rafka-node-admin-core/src/deployment/pipeline.rs";
-pub const ACCEPTED: &str = "crates/rafka-node-admin-core/src/accepted.rs";
+pub const PIPELINE: &str = "crates/rdm-admin/src/deployment/pipeline.rs";
+pub const ACCEPTED: &str = "crates/rdm-admin/src/accepted.rs";
 pub const STATUS: &str = "crates/rdm-core/src/status.rs";
 pub const FORWARD: &str = "crates/rdm-core/src/forward.rs";
 pub const FORWARD_WIRE: &str = "crates/rdm-core/tests/forward_wire.rs";
@@ -263,7 +263,7 @@ pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rdm-transport/tests/context.rs";
 pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/node_delete_pipeline.rs";
-pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
+pub const DRIFT_CELLS: &str = "crates/rdm-admin/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
 
 /// The typed arms of the landed `CommandAdmission` (what a directed `node.connections.delete`,
@@ -665,7 +665,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
             require(root, "crates/rdm-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn seat_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
-            require(root, "crates/rafka-node-admin-core/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
+            require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);

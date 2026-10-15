@@ -7,7 +7,7 @@ use crate::common::{admin_side_issuing, AdminSide};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rafka_node_admin_core::app_hydration::Hydration;
+use rdm_admin::app_hydration::Hydration;
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::test_certs::{RefusingCertSigner, TestCertSigner, TestMemberCert};
@@ -197,7 +197,7 @@ fn an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and
     cap.run(crate::common::Threads::Current, async move {
         let dir = birth_dir("member-cert-none");
         let fabric = FabricId::mint();
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), Arc::new(rafka_node_admin_core::certs::NoCerts)).await;
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), Arc::new(rdm_admin::certs::NoCerts)).await;
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
         admin.deployed(&launch, &key);

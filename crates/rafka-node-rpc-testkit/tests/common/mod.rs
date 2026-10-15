@@ -16,15 +16,15 @@
 pub mod admin_view;
 
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::accepted::{FabricTopology, MeshTopology};
-use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{
+use rdm_admin::accepted::{FabricTopology, MeshTopology};
+use rdm_admin::build::BuildId;
+use rdm_admin::build_state::{BuildAccepted, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{
     CreateRequest, CreateStep, DeploymentPipeline, LaunchTemplate, Timeouts, TopologySink,
 };
-use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentStatus, FabricPolicy, TerminationMode};
-use rafka_node_admin_core::model::{Node, NodeStatus, PathName};
+use rdm_admin::deployment::provider::{DeployError, DeploymentStatus, FabricPolicy, TerminationMode};
+use rdm_admin::model::{Node, NodeStatus, PathName};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -234,9 +234,9 @@ pub use rafka_node_rpc_testkit::rig::*;
 /// (`StoreRoot::open`; states.md, Rounds). A cell that reads a node's rows from the store root runs
 /// its node in a fabric past its first state-commit.
 pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
-    let root = rafka_node_admin_core::store_root::StoreRoot::at(&store.join(fabric.to_string()));
-    let fabric_store = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &rdm_core::IncarnationId::mint()).await.expect("the fabric store opens");
-    rafka_node_admin_core::fabric_storage::FabricStorage::claim_identity(&fabric_store, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
+    let root = rdm_admin::store_root::StoreRoot::at(&store.join(fabric.to_string()));
+    let fabric_store = rdm_admin::fabric_storage::FileFabricStorage::open(&root, &rdm_core::IncarnationId::mint()).await.expect("the fabric store opens");
+    rdm_admin::fabric_storage::FabricStorage::claim_identity(&fabric_store, &rdm_admin::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published").expect("the fabric name is free");
 }
 
 /// A launch template for `rafka-rpc-node` whose launcher is `admin`: its seed, its fabric and its
@@ -275,7 +275,7 @@ pub async fn publish_build(builds: &MemoryBuildStateAdapter, topology: FabricTop
 
 /// mesh1 with one admin and one rpc node: what the smoke deploys toward.
 pub fn add_node() -> FabricTopology {
-    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rafka_node_admin_core::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into() }
+    FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), MeshTopology::of(&rdm_admin::build::MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 1), (rdm_core::NodeKind::RpcNode, 1)])))].into() }
 }
 
 /// What `deploy_through_every_step` found.
@@ -316,7 +316,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // A failed smoke leaves nothing running: every container of the fabric and its network go.
     let _cleanup = (spawn_type == "container").then(|| ContainerFabricCleanup(fabric.clone()));
     let policy = FabricPolicy::bootstrap(Some(spawn_type)).expect("a known MESH_SPAWN_TYPE");
-    let prepared = match rafka_node_admin_core::deployment::prepare(policy, &fabric).await {
+    let prepared = match rdm_admin::deployment::prepare(policy, &fabric).await {
         Ok(p) => p,
         Err(DeployError::Unsupported { reason, .. }) => return Smoke::Unsupported(reason),
         Err(e) => panic!("preparing the {spawn_type} provider failed: {e}"),
@@ -338,7 +338,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
         joins: &admin.joins,
         observer,
         sink: &sink,
-        lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+        lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
         builds: &builds,
         template: &template,
         timeouts: Timeouts::default(),
@@ -381,7 +381,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
         let addr = created.node.transport_addr.expect("a created node carries its transport address");
         let std::net::IpAddr::V4(ip) = addr.ip() else { panic!("{addr} is not IPv4") };
         assert!(ip >= first && ip <= last, "{addr} is outside the fabric network {:?}", c.network());
-        use rafka_node_admin_core::deployment::container::{netns_holds_udp, netns_udp_sockets};
+        use rdm_admin::deployment::container::{netns_holds_udp, netns_udp_sockets};
         assert_eq!(netns_holds_udp(pid, addr), Ok(true), "the node's own namespace holds {addr}");
         assert_eq!(netns_holds_udp(std::process::id(), addr), Ok(false), "the host namespace holds {addr}");
         // One Iroh UDP socket on the node's address: the transport, and nothing else bound there
@@ -416,7 +416,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // The exact runtime: what the provider recorded is what the runtime
     // read, and any admin of the same control domain controls it from the
     // published fact alone (i143.e4.s16).
-    use rafka_node_admin_core::deployment::provider::{adopt, AdoptRefusal};
+    use rdm_admin::deployment::provider::{adopt, AdoptRefusal};
     let fact = created.handle.fact().expect("the provider's handle names its runtime exactly");
     assert_eq!(fact.control_domain, provider.control_domain());
     let data_dir = std::path::PathBuf::from(created.node.data_dir.clone().expect("the node's data dir"));

@@ -14,12 +14,12 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
 use rdm_core::{FabricId, MemberStatus};
-use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
-use rafka_node_admin_core::model::NodeStatus;
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, RetireRequest, RetireStep, Timeouts};
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::deployment::provider::{DeploymentProvider, DeploymentStatus};
+use rdm_admin::model::NodeStatus;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 
 #[test]
@@ -44,12 +44,12 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             joins: &admin.joins,
             observer: &admin.observer,
             sink: &sink,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
             builds: &builds,
             template: &template,
             timeouts: Timeouts::default(),
         };
-        let node: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
+        let node: rdm_admin::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let create = |build_id| CreateRequest { build_id, attempt: 1, node: "mesh1.rpc.1".parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
 
         let first = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("create: {e}"));
@@ -69,7 +69,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert_eq!(got, want);
         // StopNode is the directed command: its receipt carries what the call established;
         // AwaitNodeLeft carries the completion, the stop's own reply.
-        use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, Completion};
+        use rdm_admin::deployment::pipeline::{CommandAdmission, Completion};
         let output = |step: RetireStep| view.steps.iter().find(|r| r.step == step.name()).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{} receipted with an output", step.name()));
         // The stop is answered `Stopped` on its own call: the receipt names what its
         // node.connections.delete { All } established.

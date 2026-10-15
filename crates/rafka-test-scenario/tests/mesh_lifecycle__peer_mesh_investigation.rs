@@ -22,8 +22,8 @@ use std::time::Duration;
 
 /// The investigation's rungs as the estate runs them (the nodes read the same cadence environment):
 /// a cell waits on these, never a fixed number of milliseconds.
-fn rungs() -> rafka_node_admin_core::investigate::Rungs {
-    rafka_node_admin_core::investigate::Rungs::configured()
+fn rungs() -> rdm_admin::investigate::Rungs {
+    rdm_admin::investigate::Rungs::configured()
 }
 
 fn owner(test: &str) -> Owner {

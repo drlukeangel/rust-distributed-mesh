@@ -7,7 +7,7 @@
 
 use crate::build_log;
 use rdm_client::{Frame, LaunchKind as NodeKind, NodeSpec, NodeStatus};
-use rafka_node_admin_core::deployment::pipeline::RetireStep;
+use rdm_admin::deployment::pipeline::RetireStep;
 use rafka_test_scenario::estate::{Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::json;
@@ -78,7 +78,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     door.release(cut).await;
     let finished = Estate::complete(&mut restart).await;
     assert_eq!((finished.build_id.as_str(), finished.attempt), (build_id.as_str(), 2), "{finished:?}");
-    let done = build_log::build_fact(&estate.carrier().await, &build_id, "attempt 2 complete", Duration::from_secs(120), |b| b.attempt == 2 && b.state == rafka_node_admin_core::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
-    assert!(done.attempt == 2 && done.state == rafka_node_admin_core::build_state::BuildState::Complete, "{done:?}");
+    let done = build_log::build_fact(&estate.carrier().await, &build_id, "attempt 2 complete", Duration::from_secs(120), |b| b.attempt == 2 && b.state == rdm_admin::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
+    assert!(done.attempt == 2 && done.state == rdm_admin::build_state::BuildState::Complete, "{done:?}");
     estate.stop().await;
 }

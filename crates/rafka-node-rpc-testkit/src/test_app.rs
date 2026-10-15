@@ -13,7 +13,7 @@
 //! `traffic_opened` is the one notice after the open-traffic round; it only records a span.
 
 use crate::admin_faults::{AdminFaults, CutSpec, Probe};
-use rafka_node_admin_core::wiring::{FabricHooks, StateSyncRound, SyncState};
+use rdm_admin::wiring::{FabricHooks, StateSyncRound, SyncState};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -102,7 +102,7 @@ pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String
         }
         .instrument(span)
     });
-    let traffic_opened: rafka_node_admin_core::wiring::TrafficOpenedNotice = std::sync::Arc::new(|round: StateSyncRound| {
+    let traffic_opened: rdm_admin::wiring::TrafficOpenedNotice = std::sync::Arc::new(|round: StateSyncRound| {
         let span = tracing::info_span!("rdm.testkit.app.update.via-traffic-opened", fabric_id = %round.fabric_id, build_id = %round.build_id, attempt = round.attempt, operation = %round.operation, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application opens client traffic") }.instrument(span))
     });

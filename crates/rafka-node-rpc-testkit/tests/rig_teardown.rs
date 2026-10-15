@@ -8,10 +8,10 @@ use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, Published};
 use rdm_core::FabricId;
-use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, NoLifecycleEvents, Timeouts};
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::build_state::MemoryBuildStateAdapter;
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, NoLifecycleEvents, Timeouts};
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
 use std::net::IpAddr;
 
 /// `pid` runs as the process started at `start`: its `/proc` entry carries that start token and one

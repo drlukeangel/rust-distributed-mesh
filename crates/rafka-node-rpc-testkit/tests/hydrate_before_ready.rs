@@ -8,7 +8,7 @@ use rdm_core::digest::MeshDigest;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
-use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration, HydrationState, RetryOn};
+use rdm_admin::app_hydration::{HookOutcome, Hydration, HydrationState, RetryOn};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
@@ -463,14 +463,14 @@ fn the_hook_is_handed_the_accepting_authority_of_its_exact_birth() {
 fn the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping() {
     let cap = crate::common::capture("the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping");
     cap.run(crate::common::Threads::Current, async move {
-        use rafka_node_admin_core::deployment::pipeline::NodeObserver;
+        use rdm_admin::deployment::pipeline::NodeObserver;
         let b = birth(MemberStatus::Pending).await;
         let hydrator = TestHydrator::new(Mode::Pull);
         let running = start(&b, &hydrator).await.unwrap().expect("a blocked node still comes up, Pending");
         let book = &b.admin.observer.membership.book;
         until(book, "the authority heard the node's Pending digest", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
         let (d, _) = book.get(b.launch.node_id.as_str()).unwrap();
-        let mut node = rafka_node_admin_core::model::Node::allocated(d.node.name.clone());
+        let mut node = rdm_admin::model::Node::allocated(d.node.name.clone());
         node.node_id = d.node.node_id.clone();
         node.endpoint_id = Some(d.node.endpoint_id.clone());
         node.incarnation_id = Some(d.node.incarnation.clone());

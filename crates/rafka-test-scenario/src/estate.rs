@@ -39,7 +39,7 @@ pub fn artifacts_root() -> PathBuf {
 }
 
 /// The fabrics' name index beside the per-fabric roots under a store_dir (R-FN1,
-/// `rafka_node_admin_core::store_root::FABRIC_NAMES`): not a fabric root.
+/// `rdm_admin::store_root::FABRIC_NAMES`): not a fabric root.
 const FABRIC_NAMES: &str = "fabrics";
 
 /// Directory holding the built binaries: `RDM_BIN_DIR`, else the cargo
@@ -323,7 +323,7 @@ pub fn binary(name: &str) -> PathBuf {
 /// The package that builds `name`, for the rebuild command a refusal names.
 pub(crate) fn package_of(name: &str) -> &'static str {
     match name {
-        "rafka-node-admin" => "rafka-node-admin-core",
+        "rafka-node-admin" => "rdm-admin",
         "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rafka-node-rpc-testkit",
         "rafka-node" => "rafka-node-rpc-testkit",
         _ => "<the package of this binary>",

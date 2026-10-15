@@ -27,7 +27,7 @@ async fn a_seeded_fault_schedule_holds_every_invariant() {
     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
     let floor = rdm_transport::membership::staleness_floor();
     let backbone = rdm_transport::membership::backbone_gossip_interval();
-    let tickle_round = rafka_node_admin_core::offline::tickle_round_at_default_budget();
+    let tickle_round = rdm_admin::offline::tickle_round_at_default_budget();
     let driver = Driver::new(estate, Config::mm(seed, secs, floor, backbone, tickle_round), crate::build_log::build_read).await;
     let (report, mut estate) = driver.run().await;
     eprintln!("{}", soak::summary(&report));

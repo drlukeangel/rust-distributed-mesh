@@ -9,20 +9,20 @@
 use crate::common;
 
 use rdm_core::{FabricId, IncarnationId, NodeId};
-use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateStep, DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
-use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::model::Node;
+use rdm_admin::build::BuildId;
+use rdm_admin::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
+use rdm_admin::deployment::endpoint::RPC_NODE;
+use rdm_admin::deployment::pipeline::{CreateStep, DeploymentPipeline, CreateRequest, LaunchTemplate, NodeObserver, Timeouts, TopologySink};
+use rdm_admin::deployment::process::ProcessDeploymentProvider;
+use rdm_admin::model::Node;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 struct Discard;
 impl TopologySink for Discard {
     fn publish(&self, _: Node) {}
-    fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
-    fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
+    fn remove(&self, _: &rdm_admin::model::PathName) {}
+    fn remove_birth(&self, _: &rdm_admin::model::PathName, _: &rdm_core::NodeId, _: &rdm_core::IncarnationId) {}
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
         struct Never;
         #[async_trait::async_trait]
         impl NodeObserver for Never {
-            async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
+            async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<rdm_admin::deployment::pipeline::Publication> {
                 None
             }
             async fn ready(&self, _: &Node) -> Result<(), String> {
@@ -58,7 +58,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
         let builds = MemoryBuildStateAdapter::new();
         let build_id = BuildId::mint();
         builds
-            .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted {
+            .publish_accepted(&rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: common::add_node(),
                 submitted_change: None,
@@ -66,14 +66,14 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             })
             .await
             .unwrap();
-        let joins = rafka_node_admin_core::join::Joins::default();
+        let joins = rdm_admin::join::Joins::default();
         let provider = ProcessDeploymentProvider::new();
         let pipeline = DeploymentPipeline {
             provider: &provider,
             joins: &joins,
             observer: &Never,
             sink: &Discard,
-            lifecycle: &rafka_node_admin_core::deployment::pipeline::NoLifecycleEvents,
+            lifecycle: &rdm_admin::deployment::pipeline::NoLifecycleEvents,
             builds: &builds,
             template: &template,
             timeouts: Timeouts { bind: Duration::from_secs(10), ..Timeouts::default() },

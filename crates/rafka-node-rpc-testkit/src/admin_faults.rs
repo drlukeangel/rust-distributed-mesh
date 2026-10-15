@@ -2,7 +2,7 @@
 //! released through a door, so a scenario holds a real admin at one named cut of its documented
 //! Build, deployment, lifecycle and hydration sequences and releases it (i143.e8.s2).
 //!
-//! The product node-admin carries no fault code. Its `Wiring` (`rafka_node_admin_core::wiring`)
+//! The product node-admin carries no fault code. Its `Wiring` (`rdm_admin::wiring`)
 //! takes the decorators here: a [`FaultedBuilds`] over the Build state, a [`FaultedProvider`] over
 //! the deployment provider, a [`FaultedEvents`]
 //! over the lifecycle events and one [`FaultedHook`] per reachable lifecycle phase. Each decorator
@@ -19,18 +19,18 @@
 use crate::fault_door::{CutRow, FaultState, Hit};
 use async_trait::async_trait;
 use rdm_core::LifecycleOp;
-use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::certs::CertChoice;
-use rafka_node_admin_core::build_state::{
+use rdm_admin::build::BuildId;
+use rdm_admin::certs::CertChoice;
+use rdm_admin::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome,
     StepOutcome,
 };
-use rafka_node_admin_core::deployment::pipeline::LifecycleEvents;
-use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::fabric_storage::FabricIdentity;
-use rafka_node_admin_core::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
-use rafka_node_admin_core::model::ProviderKind;
-use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use rdm_admin::deployment::pipeline::LifecycleEvents;
+use rdm_admin::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+use rdm_admin::fabric_storage::FabricIdentity;
+use rdm_admin::lifecycle::{HookContext, HookPhase, LifecycleHook, LifecycleHookSpec, LifecycleScope, LifecycleState, ShapePredicate, TransitionKey};
+use rdm_admin::model::ProviderKind;
+use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -411,10 +411,10 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
     }
-    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, rdm_admin::build_state::BuildStateError> {
         self.inner.current_build().await
     }
-    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
         self.inner.newest_accepted_at_ms().await
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -445,19 +445,19 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rdm_admin::model::PathName, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn mesh_deleted_of(&self, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
+    async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn exits_owed(&self, build_id: &rafka_node_admin_core::build::BuildId, mesh: &str) -> Result<Vec<rafka_node_admin_core::build_state::OwedExit>, BuildStateError> {
+    async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
     }
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    fn held_name(&self) -> Option<rafka_node_admin_core::model::PathName> {
+    fn held_name(&self) -> Option<rdm_admin::model::PathName> {
         self.inner.held_name()
     }
 }
@@ -493,10 +493,10 @@ impl DeploymentProvider for FaultedProvider {
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
         self.inner.signal_stop(handle).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         self.inner.find(spec).await
     }
-    async fn bind_ip(&self, node: &rafka_node_admin_core::model::PathName) -> Result<std::net::IpAddr, DeployError> {
+    async fn bind_ip(&self, node: &rdm_admin::model::PathName) -> Result<std::net::IpAddr, DeployError> {
         self.inner.bind_ip(node).await
     }
     fn launched(&self) -> Vec<DeploymentHandle> {
@@ -566,7 +566,7 @@ impl LifecycleHook for FaultedHook {
 /// The Build topic's catch-up seam: an armed [`CutSpec::CatchUp`] withholds that neighbour's catch-up.
 struct FaultedCatchUp(Arc<AdminFaults>);
 
-impl rafka_node_admin_core::wiring::CatchUpSeam for FaultedCatchUp {
+impl rdm_admin::wiring::CatchUpSeam for FaultedCatchUp {
     fn withholds(&self, node: &str, neighbour: &str) -> bool {
         self.0.in_force(Probe::CatchUp { node: node.to_string(), neighbour: neighbour.to_string() })
     }
@@ -575,7 +575,7 @@ impl rafka_node_admin_core::wiring::CatchUpSeam for FaultedCatchUp {
 /// The leave's seam: an armed [`CutSpec::LeaveAnnouncement`] that matches withholds that publish.
 struct FaultedLeave(Arc<AdminFaults>);
 
-impl rafka_node_admin_core::wiring::LeaveSeam for FaultedLeave {
+impl rdm_admin::wiring::LeaveSeam for FaultedLeave {
     fn withholds(&self, node: &str, announcement: u32, channel: &'static str) -> bool {
         self.0.in_force(Probe::LeaveAnnouncement { node: node.to_string(), announcement, channel })
     }
@@ -584,7 +584,7 @@ impl rafka_node_admin_core::wiring::LeaveSeam for FaultedLeave {
 /// The backbone's announcement seam: an armed [`CutSpec::Announcement`] that matches withholds that send.
 struct FaultedAnnouncement(Arc<AdminFaults>);
 
-impl rafka_node_admin_core::wiring::AnnouncementSeam for FaultedAnnouncement {
+impl rdm_admin::wiring::AnnouncementSeam for FaultedAnnouncement {
     fn withholds(&self, node: &str, announcement: &'static str, channel: &'static str) -> bool {
         self.0.in_force(Probe::Announcement { node: node.to_string(), announcement, channel })
     }
@@ -595,7 +595,7 @@ impl rafka_node_admin_core::wiring::AnnouncementSeam for FaultedAnnouncement {
 struct FaultedRead(Arc<AdminFaults>);
 
 #[async_trait]
-impl rafka_node_admin_core::wiring::ReadSeam for FaultedRead {
+impl rdm_admin::wiring::ReadSeam for FaultedRead {
     async fn before_topology_read(&self, node: &str, authority: &str) {
         self.0.hold(Probe::TopologyRead { node: node.to_string(), authority: authority.to_string() }).await;
     }
