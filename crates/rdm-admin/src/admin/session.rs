@@ -531,9 +531,11 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
         let mut d = self.digest.lock().unwrap();
         if d.status == MemberStatus::Pending {
             d.status = MemberStatus::ReadyForTraffic;
+            // The Ready names the birth that became ready, as the first start's does.
+            let incarnation = d.node.incarnation.clone();
             drop(d);
             self.wake.wake.poke();
-            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, source = "self-published-membership").in_scope(|| tracing::info!("ready for traffic"));
+            tracing::info_span!(parent: &self.root, "rdm.mesh.node.update.via-ready", node = %self.name, node_id = %self.node_id, incarnation_id = %incarnation.as_str(), source = "self-published-membership").in_scope(|| tracing::info!("ready for traffic"));
         }
     }
 }
