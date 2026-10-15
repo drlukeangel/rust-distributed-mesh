@@ -2192,47 +2192,51 @@ fn claim_rows(spans: &[Value]) -> Vec<Value> {
         .map(|sp| {
             let a = &sp["attributes"];
             json!({
-                "phase": "claim", "build_id": a["build_id"], "attempt": attempt_of(sp), "executor": a["executor"], "previous_executor": a["previous_executor"], "reason": a["reason"],
+                "phase": "claim", "build_id": a["build_id"], "lane": a["lane"].as_str().unwrap_or(""), "attempt": attempt_of(sp), "executor": a["executor"], "previous_executor": a["previous_executor"], "reason": a["reason"],
                 "outcome": a["outcome"].as_str().map(str::to_string).unwrap_or_else(|| "interrupted".into()), "operations": a["operations"], "start_unix_nano": start_ns(sp), "end_unix_nano": sp["end_unix_nano"], "trace_id": sp["trace_id"], "span_id": sp["span_id"], "parent_span_id": sp["parent_span_id"],
             })
         })
         .collect()
 }
 
-/// No two effective executors share an attempt of one Build, and a Build's effective attempts only
-/// advance. An effective attempt is one that ended converged, failed or handed-off; a claim that
-/// was lost or found not open executed nothing.
+/// No two effective executors share an attempt of one Build's lane, and the effective attempts of
+/// each lane only advance. A lane is the fabric's (`lane` empty: the fabric-primary's attempts of the
+/// accepted topology) or one mesh's: drift recovery opens the next attempt of the current Build in
+/// the member's mesh's lane, executed by that mesh's primary (build.md §4.1, "one claimant per mesh
+/// for drift"), so mesh1's and mesh2's lanes each have an attempt 1. An effective attempt is one that
+/// ended converged, failed or handed-off; a claim that was lost or found not open executed nothing.
 fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Value {
-    let mut by: BTreeMap<(String, u64), BTreeSet<String>> = BTreeMap::new();
+    let mut by: BTreeMap<(String, String, u64), BTreeSet<String>> = BTreeMap::new();
     let mut lost = 0usize;
     for c in claims {
         match c["outcome"].as_str() {
             // `interrupted`: the executor's process ended inside the attempt (it retired itself), so
             // its span closed without an outcome. It held the attempt; a successor takes the next one.
             Some("converged" | "failed" | "handed-off" | "interrupted") => {
-                by.entry((s(&c["build_id"]), c["attempt"].as_u64().unwrap())).or_default().insert(s(&c["executor"]));
+                by.entry((s(&c["build_id"]), s(&c["lane"]), c["attempt"].as_u64().unwrap())).or_default().insert(s(&c["executor"]));
             }
             Some("lost" | "not-open" | "finished") => lost += 1,
             other => panic!("a reconcile attempt ended with an outcome nobody named ({other:?}): {c}"),
         }
     }
-    for ((b, n), execs) in &by {
-        assert_eq!(execs.len(), 1, "Build {b} attempt {n} was executed effectively by {execs:?}: two executors share one attempt");
+    let lane_name = |l: &str| if l.is_empty() { "the fabric lane".to_string() } else { format!("{l}'s lane") };
+    for ((b, l, n), execs) in &by {
+        assert_eq!(execs.len(), 1, "Build {b} attempt {n} in {} was executed effectively by {execs:?}: two executors share one attempt", lane_name(l));
     }
-    let mut last: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    let mut last: BTreeMap<(String, String), (u64, u64)> = BTreeMap::new();
     let mut ordered: Vec<&Value> = claims.iter().filter(|c| matches!(c["outcome"].as_str(), Some("converged" | "failed" | "handed-off" | "interrupted"))).collect();
-    ordered.sort_by_key(|c| (s(&c["build_id"]), c["attempt"].as_u64().unwrap()));
+    ordered.sort_by_key(|c| (s(&c["build_id"]), s(&c["lane"]), c["attempt"].as_u64().unwrap()));
     for c in ordered {
-        let (b, n, t) = (s(&c["build_id"]), c["attempt"].as_u64().unwrap(), c["start_unix_nano"].as_u64().unwrap());
-        if let Some((pn, pt)) = last.insert(b.clone(), (n, t)) {
-            assert!(t >= pt || n == pn, "Build {b}: attempt {n} began before attempt {pn} did");
+        let (b, l, n, t) = (s(&c["build_id"]), s(&c["lane"]), c["attempt"].as_u64().unwrap(), c["start_unix_nano"].as_u64().unwrap());
+        if let Some((pn, pt)) = last.insert((b.clone(), l.clone()), (n, t)) {
+            assert!(t >= pt || n == pn, "Build {b}: attempt {n} in {} began before attempt {pn} did", lane_name(&l));
         }
     }
-    let attempts: BTreeMap<String, Vec<(u64, Vec<String>)>> = by.iter().fold(BTreeMap::new(), |mut m, ((b, n), e)| {
-        m.entry(b.clone()).or_default().push((*n, e.iter().cloned().collect()));
+    let attempts: BTreeMap<String, Vec<(String, u64, Vec<String>)>> = by.iter().fold(BTreeMap::new(), |mut m, ((b, l, n), e)| {
+        m.entry(b.clone()).or_default().push((lane_name(l), *n, e.iter().cloned().collect()));
         m
     });
-    inv.holds("no two effective executors share one attempt of one Build, and every Build's effective attempts advance", true, json!({"effective_attempts_by_build": attempts, "lost_or_not_open_claims": lost}));
+    inv.holds("no two effective executors share one attempt of one Build's lane, and every lane's effective attempts advance", true, json!({"effective_attempts_by_build": attempts, "lost_or_not_open_claims": lost}));
     json!({"effective_attempts_by_build": attempts, "lost_or_not_open_claims": lost})
 }
 
