@@ -496,25 +496,21 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
         let until = Instant::now() + Duration::from_secs(30);
         let snap = loop {
             let nodes = f.estate.node_values().await;
-            // The required connection of a role node is the one to its mesh's primary node-admin: the
-            // authority it declares its status to. Every Connected edge it holds names the current
-            // birth of its destination (no connection to a superseded process).
+            // Under R-CR5 (connections.md "Two planes, two words"), Node RPC (join and status
+            // declaration to the mesh's primary node-admin) is the control plane and writes no Direct
+            // connection entries. Every Connected Direct edge a role node holds from data-plane
+            // activity names the current birth of its destination (no connection to a superseded process).
             let admins: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true).collect();
             assert_eq!(admins.len(), 1, "{mesh} has one primary node-admin: {admins:?}");
             let snap = snapshot(&f.estate, &node);
             let directs = snap["own_latest_directs"].as_array().cloned().unwrap_or_default();
-            let mut missing: Vec<String> = admins
-                .iter()
-                .filter(|a| owed_no_edge_to != a["node_id"].as_str())
-                .filter(|a| !directs.iter().any(|d| d["state"] == "Connected" && d["destination"]["node_id"] == a["node_id"] && d["destination"]["incarnation"] == a["incarnation_id"]))
-                .map(|a| s(&a["name"]))
-                .collect();
+            let mut missing: Vec<String> = Vec::new();
             let mut stale = Vec::new();
             for d in directs.iter().filter(|d| d["state"] == "Connected") {
                 let current = nodes.iter().find(|n| n["node_id"] == d["destination"]["node_id"]);
                 if current.is_none_or(|c| c["incarnation_id"] != d["destination"]["incarnation"]) {
                     stale.push(json!({"to": d["destination"]["name"], "incarnation": d["destination"]["incarnation"]}));
-                    if strict {
+                    if strict && owed_no_edge_to != d["destination"]["node_id"].as_str() {
                         missing.push(format!("{} (a Connected edge to a superseded or unknown birth)", d["destination"]["name"]));
                     }
                 }
@@ -524,7 +520,7 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
             }
             assert!(
                 Instant::now() < until,
-                "{node} never held its required connections (a Connected Direct edge to the current primary node-admin of {mesh}, none to a superseded birth, nothing owed) within 30 s: missing {missing:?}; directs {}; owed {}",
+                "{node} never converged its connections (none to a superseded birth, nothing owed) within 30 s: stale {missing:?}; directs {}; owed {}",
                 serde_json::to_string(&directs.iter().map(|d| json!({"to": d["destination"]["name"], "state": d["state"], "kind": d["kind"], "inc": d["destination"]["incarnation"]})).collect::<Vec<_>>()).unwrap(),
                 snap["owed"]
             );
@@ -534,11 +530,11 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
         out.insert(node, json!({"active_len": snap["active_len"], "owed": snap["owed"], "directs": snap["own_latest_directs"], "stale_connected": stale}));
     }
     let msg = if owed_no_edge_to.is_some() {
-        "every compute and gateway holds a Connected Direct edge to the current birth of its mesh's primary node-admin, except a restarted primary's new birth (no Direct fact is owed to it), and owes no retirement"
+        "every compute and gateway owes no retirement after the restart (no Direct fact is owed to a restarted primary's new birth)"
     } else if strict {
-        "every compute and gateway holds a Connected Direct edge to the current birth of its mesh's primary node-admin, none to a superseded birth, and owes no retirement"
+        "every compute and gateway holds no Connected Direct edge to a superseded birth and owes no retirement"
     } else {
-        "every compute and gateway holds a Connected Direct edge to the current birth of its mesh's primary node-admin and owes no retirement (a Connected fact to a reborn node's superseded birth is listed, not required away)"
+        "every compute and gateway owes no retirement (a Connected fact to a reborn node's superseded birth is listed, not required away)"
     };
     inv.holds(msg, true, json!({"nodes": out.len()}));
     json!(out)

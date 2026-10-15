@@ -423,9 +423,9 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     run.plain_create(NodeKind::RpcNode, node).await;
     run.plain_create(NodeKind::RpcNode, "mesh1.rpc.2").await;
     let receipt = json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node});
-    restart_cut(&run, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, 2).await;
+    let prev = restart_cut(&run, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, 2).await;
     let event = json!({"kind": "event", "event": "restarting", "node": node});
-    restart_cut(&run, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, 3).await;
+    restart_cut(&run, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, prev + 1).await;
     run.plain_delete(node).await;
     run.plain_delete("mesh1.rpc.2").await;
 
@@ -674,23 +674,30 @@ fn restart_order(retire_order: &[String]) -> Vec<String> {
 
 /// A restart (an attempt of the accepted Build, never a new Build) stalled at `spec`.
 #[allow(clippy::too_many_arguments)]
-async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, group: &str, receipts_before: usize, node: &str, attempt: u64) {
+async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, group: &str, receipts_before: usize, node: &str, opened_attempt: u64) -> u64 {
     let order = restart_order(retire_order);
     let door = run.member_door("mesh1").await;
     let before = run.node_ready(node).await;
+    // When `node` holds its cohort's primary seat, `DriveEnv::seats_first` runs `node.primary.update`
+    // in `opened_attempt` and hands the `node.restart` step off to `opened_attempt + 1`.
+    let was_primary = before["is_primary"].as_bool().unwrap_or(false);
+    let attempt = opened_attempt + u64::from(was_primary);
     let process_before = run.processes(node);
     let current_before = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let mut stream = run.estate.nodes_obj().await.restart(&path(node)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
     let build_id = Run::id_of(&stream);
     assert_eq!(build_id, current_before, "a restart opens an attempt of the accepted Build; it makes no Build");
-    assert_eq!(u64::from(stream.accepted().attempt), attempt, "the call opened attempt {attempt} of the Build");
+    assert_eq!(u64::from(stream.accepted().attempt), opened_attempt, "the call opened attempt {opened_attempt} of the Build");
     let op = format!("node.restart:{node}");
     let mut h = run.hold(&door, id, ack, &build_id, &op, Some(order[..receipts_before].to_vec()), Some((node, 1))).await;
     assert_eq!(h.attempt, attempt, "the restart is attempt {attempt} of the Build");
     h.during["attempt_is_a_restart_of_the_accepted_build"] = json!(true);
     let rel = door.release(id).await;
     run.complete(&mut stream).await;
+    if was_primary {
+        run.note_build(&build_id, opened_attempt);
+    }
     let b = run.attempt_complete(&door, &build_id, attempt).await;
     assert_eq!(done_steps(&b, &op, Some(attempt)), order, "the restart runs every step once, in order, under its one operation: {b}");
     assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(attempt)), Vec::<String>::new(), "no step of the restart is a retire-node receipt: {b}");
@@ -714,6 +721,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     }
     let after = json!({"build_state": b["state"], "attempt": attempt, "operation": op, "steps": order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": current_before});
     run.push(row(h, group, id, &spec, rel, after));
+    attempt
 }
 
 /// A lifecycle hook of `Node: Pending -> ReadyForTraffic` stalled; the create's pipeline is done.

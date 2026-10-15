@@ -427,7 +427,10 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             }}),
             install: Arc::new(move |d| learner.learn(d.clone(), "join")),
             known: Arc::new(|| Box::pin(async {})),
-            primary: Arc::new(|| None),
+            primary: {
+                let membership = membership.clone();
+                Arc::new(move || membership.mesh_primary().ok().map(|p| p.node.name.to_string()))
+            },
             issuer: Arc::new(rdm_admin::certs::CertIssuer::new(signer, rafka_time.clone())),
             row: Arc::new({
                 let rows = rows.clone();
@@ -552,6 +555,9 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let (rounds, publisher) = if primary {
         let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", name, admin_incarnation.clone(), vec![]).await.expect("the launcher joins the backbone");
         backbone.set_mesh_primary(true);
+        if name == "mesh1.admin.1" {
+            backbone.announce_seat(rdm_core::Seat::MeshPrimary, rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 }).await;
+        }
         let rounds = {
             let (backbone, membership) = (backbone.clone(), membership.clone());
             AbortOnDrop(tokio::spawn(async move {
