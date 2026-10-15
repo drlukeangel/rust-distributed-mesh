@@ -136,6 +136,19 @@ pub async fn restart_canary(owner: Owner) -> Value {
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == node_name)
         .expect("rdm.node_admin.build.update.via-node-rpc for the restart call");
+    let opened_attempt = restart.attempt.to_string();
+    let handoff_dispatch = named(&spans, "rdm.node_admin.build.update.via-dispatch")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str())
+        .expect("the attempt opened by the restart call dispatched the seat holder's primary update");
+    assert_eq!(handoff_dispatch["attributes"]["outcome"], "handed-off", "the seat holder's primary update attempt ended handed-off: {handoff_dispatch}");
+    assert_eq!(handoff_dispatch["parent_span_id"], rest["span_id"], "the hand-off dispatch is a child of the restart call's request span: {handoff_dispatch}");
+    let primary_update = named(&spans, "rdm.node_admin.seat.update.via-primary-update")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["attempt"] == opened_attempt.as_str() && s["attributes"]["holder"] == node_name)
+        .expect("rdm.node_admin.seat.update.via-primary-update for the restarted rpc seat holder");
+    assert_eq!(primary_update["attributes"]["outcome"], "updated", "node.primary.update moved the rpc cohort seat before the restart: {primary_update}");
+    assert!(descends_from(&spans, primary_update, handoff_dispatch), "the seat update descends from the hand-off attempt's dispatch span");
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)))
@@ -146,21 +159,22 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let node_op = named(&spans, "rdm.node_admin.node.update.via-build")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == node_name)
-        .expect("rdm.node_admin.node.update.via-build for rpc.2");
+        .expect("rdm.node_admin.node.update.via-build for the restarted rpc node");
     assert!(descends_from(&spans, node_op, rest), "node.update.via-build descends from the restart call's build.update.via-node-rpc");
     assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
-    let attempt = restart.attempt.to_string();
+    let attempt = reconcile["attributes"]["attempt"].as_str().expect("the reconcile span carries the attempt that executed the restart");
+    assert_eq!(attempt, (restart.attempt + 1).to_string(), "the restart executes under the attempt after the seat hand-off");
     let step = |name: &str| {
         named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
-            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && s["attributes"]["node"] == node_name && s["attributes"]["attempt"] == attempt.as_str())
-            .unwrap_or_else(|| panic!("the {name} step span of the restart attempt for rpc.2"))
+            .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && s["attributes"]["node"] == node_name && s["attributes"]["attempt"] == attempt)
+            .unwrap_or_else(|| panic!("the {name} step span of the restart attempt for {node_name}"))
     };
     for name in ["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady"] {
         assert!(descends_from(&spans, step(name), node_op), "the {name} step descends from the node Build operation");
         assert_eq!(step(name)["attributes"]["outcome"], "complete", "{name}");
     }
-    assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|s| s["attributes"]["build_id"] != restart_build.as_str() || s["attributes"]["attempt"] != attempt.as_str() || !matches!(s["attributes"]["step"].as_str(), Some("DeployRuntime" | "TerminateRuntime"))), "a restart deploys nothing and terminates nothing");
+    assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|s| s["attributes"]["build_id"] != restart_build.as_str() || s["attributes"]["attempt"] != attempt || !matches!(s["attributes"]["step"].as_str(), Some("DeployRuntime" | "TerminateRuntime"))), "a restart deploys nothing and terminates nothing");
     let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().find(|s| s["attributes"]["node"] == node_name).unwrap();
     assert!(descends_from(&spans, served, step("StartNode")), "the node's start descends from the StartNode step");
     estate.record_trace_url(rest["trace_id"].as_str().unwrap());
@@ -175,6 +189,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "birth_build": birth_build,
         "restart_build": restart_build,
         "restart_attempt": restart.attempt,
+        "executing_attempt": attempt,
         "process_before": process_before,
         "process_after": process_after,
         "get_after_restart": get,
@@ -182,6 +197,8 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "cut_key_absent": absent,
         "trace_id": rest["trace_id"],
         "build_update_via_node_rpc_span": rest["span_id"],
+        "handoff_dispatch_span": handoff_dispatch["span_id"],
+        "primary_update_span": primary_update["span_id"],
         "reconcile_span": reconcile["span_id"],
         "node_update_via_build_span": node_op["span_id"],
         "start_step_span": step("StartNode")["span_id"],
