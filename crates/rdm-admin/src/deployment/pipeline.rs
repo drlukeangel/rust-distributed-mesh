@@ -2113,7 +2113,7 @@ impl DeploymentPipeline<'_> {
         let mut node = req.node.clone();
         let handle = &req.handle;
         let incarnation = node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth") })?;
-        let terminal = self.terminate_step_when(&mut run, &node, handle, Terminate::OnlyRunning).await?;
+        let terminal = self.terminate_step_when(&mut run, &node, handle, Terminate::OnlyRunning, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
         let exit = records
             .put_exit(&node, terminal.exit_code, "terminate-runtime")
             .await
@@ -2206,8 +2206,10 @@ impl DeploymentPipeline<'_> {
             self.terminate_step(&mut run, &node, handle).await?
         } else if self.stop_skipped_os_stopped(&run, &node, handle).await {
             // An OS-suspended target (node-delete.md): it answers no call, so no stop is sent; the
-            // delete begins at TerminateRuntime on the exact handle, whose Exited is the proof.
-            self.terminate_step(&mut run, &node, handle).await?
+            // delete begins at TerminateRuntime on the exact handle, whose Exited is the proof. A
+            // suspended runtime runs no handler, so the terminate is Immediate: no graceful wait, and
+            // nothing of it is resumed (i144 R23).
+            self.terminate_step_when(&mut run, &node, handle, Terminate::Always, TerminationMode::Immediate).await?
         } else {
             // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
             // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
@@ -2380,14 +2382,14 @@ impl DeploymentPipeline<'_> {
     /// is terminal proof, and the receipt binds the exact birth and runtime. A delete of a birth the
     /// provider already proves terminal asks only this.
     pub(crate) async fn terminate_step(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        self.terminate_step_when(run, node, handle, Terminate::Always).await
+        self.terminate_step_when(run, node, handle, Terminate::Always, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await
     }
 
     /// [`Self::terminate_step`], firing as `when` says: a hung runtime's hold (R-FM1) terminates only
     /// a runtime the provider reads `Running` at the step's instant (deployment-provider.md §2.5: an
     /// `OsStopped` there voids it, and nothing uncertain is terminated); an `Exited` runtime is proven
     /// with no signal.
-    async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate) -> Result<TerminalReceipt, PipelineError> {
+    async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate, mode: TerminationMode) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
         self.step_with(run, RetireStep::TerminateRuntime.name(), async {
             use crate::build_state::{InspectionVerdict, TerminateStage};
@@ -2410,7 +2412,7 @@ impl DeploymentPipeline<'_> {
                     }
                 }
             }
-            if let Err(e) = self.provider.terminate(handle, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await {
+            if let Err(e) = self.provider.terminate(handle, mode).await {
                 let error = e.to_string();
                 return Err(StepFailure::at(TerminateStage::Provider { error: error.clone() }, error));
             }
