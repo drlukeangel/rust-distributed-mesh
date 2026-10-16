@@ -45,6 +45,7 @@ pub fn node(name: &str, node_id: &NodeId, endpoint: Option<String>, addr: Option
         held_running: None,
         data_dir_lost: None,
         data_dir_unreadable: None,
+        os_stopped: None,
     }
 }
 

@@ -919,6 +919,15 @@ pub(crate) enum StopEnd {
     Terminate { publish_stopped: bool },
 }
 
+/// When a `TerminateRuntime` step fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Terminate {
+    /// On any runtime that is not exited: a delete's terminate.
+    Always,
+    /// Only on a runtime the provider reads `Running` at the step's instant: a hung runtime's hold (R-FM1).
+    OnlyRunning,
+}
+
 /// What a stop's wait step must have seen to complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StopProof {
@@ -2056,7 +2065,7 @@ impl DeploymentPipeline<'_> {
         let mut node = req.node.clone();
         let handle = &req.handle;
         let incarnation = node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth") })?;
-        let terminal = self.terminate_step(&mut run, &node, handle).await?;
+        let terminal = self.terminate_step_when(&mut run, &node, handle, Terminate::OnlyRunning).await?;
         let exit = records
             .put_exit(&node, terminal.exit_code, "terminate-runtime")
             .await
@@ -2319,8 +2328,34 @@ impl DeploymentPipeline<'_> {
     /// is terminal proof, and the receipt binds the exact birth and runtime. A delete of a birth the
     /// provider already proves terminal asks only this.
     pub(crate) async fn terminate_step(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
+        self.terminate_step_when(run, node, handle, Terminate::Always).await
+    }
+
+    /// [`Self::terminate_step`], firing as `when` says: a hung runtime's hold (R-FM1) terminates only
+    /// a runtime the provider reads `Running` at the step's instant (deployment-provider.md §2.5: an
+    /// `OsStopped` there voids it, and nothing uncertain is terminated); an `Exited` runtime is proven
+    /// with no signal.
+    async fn terminate_step_when(&self, run: &mut Run<'_>, node: &Node, handle: &DeploymentHandle, when: Terminate) -> Result<TerminalReceipt, PipelineError> {
         let name = node.name.clone();
         self.step(run, RetireStep::TerminateRuntime.name(), async {
+            if when == Terminate::OnlyRunning {
+                // node.runtime.inspect at the terminate's instant: its span is the evidence (node-runtime-inspect.md).
+                let status = self.provider.inspect(handle).await;
+                let verdict = match &status {
+                    DeploymentStatus::Running => "running",
+                    DeploymentStatus::OsStopped => "os-stopped",
+                    DeploymentStatus::Exited { .. } => "exited",
+                    DeploymentStatus::Unknown => "unavailable",
+                };
+                let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+                tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), caller = "terminate", verdict)
+                    .in_scope(|| tracing::info!("the hold's terminate inspects the exact runtime at its instant and fires only on Running"));
+                match status {
+                    DeploymentStatus::Running | DeploymentStatus::Exited { .. } => {}
+                    DeploymentStatus::OsStopped => return Err(format!("{name}: the operating system holds its exact runtime suspended at the terminate's instant (os-stopped): the hold is void and nothing is terminated")),
+                    DeploymentStatus::Unknown => return Err(format!("{name}: the provider cannot tell its exact runtime's state at the terminate's instant: nothing is terminated")),
+                }
+            }
             self.provider
                 .terminate(handle, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
                 .await
@@ -2502,6 +2537,104 @@ mod tests {
         let mut half = lost.clone();
         half.push(receipt(1, "MakeRuntimeFactAvailableToBirth", StepOutcome::Failed { reason: "disk".into() }));
         assert_eq!(ready_prerequisites_missing(&half, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
+    }
+
+    /// A provider that answers every inspection `status` and counts the terminates asked of it.
+    struct Answers {
+        status: DeploymentStatus,
+        terminated: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for Answers {
+        fn kind(&self) -> crate::model::ProviderKind {
+            crate::model::ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            "process:cell".into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+            Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+            self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            self.status.clone()
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+            Ok(Found::NeverLaunched)
+        }
+    }
+
+    struct NoSink;
+    impl TopologySink for NoSink {
+        fn publish(&self, _: Node) {}
+        fn remove(&self, _: &PathName) {}
+        fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
+    }
+
+    struct NoObserver;
+    #[async_trait::async_trait]
+    impl NodeObserver for NoObserver {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            None
+        }
+        async fn ready(&self, _: &Node) -> Result<(), String> {
+            Err("this cell observes nothing".into())
+        }
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5: "the terminate step re-inspects the exact runtime at its
+    /// instant and fires only on `Running`"; node-recovery.md step 4): a hung birth's hold expired and
+    /// its recovery's `TerminateRuntime` runs, but the provider now reads the exact runtime `OsStopped`
+    /// (or cannot tell, `Unknown`). The step fails by name, its receipt `Failed` naming the state, and
+    /// no terminate is asked of the provider. Must NOT happen: a signal to a runtime the operating
+    /// system holds suspended, or to one whose state cannot be told.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_holds_terminate_reinspects_and_never_fires_on_an_os_stopped_or_unknown_runtime() {
+        for (status, named) in [(DeploymentStatus::OsStopped, "os-stopped"), (DeploymentStatus::Unknown, "cannot tell")] {
+            let provider = Answers { status: status.clone(), terminated: Default::default() };
+            let builds = crate::build_state::MemoryBuildStateAdapter::new();
+            let build_id = BuildId::mint();
+            builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+            let data_root = tempdir("hold-terminate");
+            let template = LaunchTemplate {
+                fabric: "fabric1".into(),
+                fabric_id: rdm_core::FabricId::mint(),
+                executable: "/nonexistent/rafka-rpc-node".into(),
+                seeds: vec![],
+                launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+                env: BTreeMap::new(),
+                data_root: data_root.clone(),
+                store_dir: data_root.clone(),
+                mesh_issuer: None,
+                connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+            };
+            let joins = Joins::default();
+            let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+            let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+            node.incarnation_id = Some(IncarnationId::mint());
+            let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: crate::model::ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("process:cell".into()) };
+            let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
+            let capture = crate::span_capture::Capture::new("i144-e2-hold-terminate");
+            let err = {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                pipeline.delete_hung(&req, &crate::admin::Records::default()).await.expect_err("the hold's terminate does not fire")
+            };
+            let inspected = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+            assert_eq!(inspected.iter().map(|c| (c.attributes.get("caller").cloned().unwrap_or_default(), c.attributes.get("verdict").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("terminate".to_string(), if status == DeploymentStatus::OsStopped { "os-stopped".to_string() } else { "unavailable".to_string() })], "the re-inspection is spanned");
+            assert_eq!(err.step, RetireStep::TerminateRuntime.name(), "{err}");
+            assert!(err.reason.contains(named) && err.reason.contains("nothing is terminated"), "{status:?}: {err}");
+            assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 0, "{status:?}: no terminate was asked of the provider");
+            let receipts = builds.read_build(&build_id).await.unwrap().steps;
+            assert!(receipts.iter().any(|r| r.step == RetireStep::TerminateRuntime.name() && matches!(&r.outcome, StepOutcome::Failed { reason } if reason.contains(named))), "{status:?}: the step's receipt is Failed by name: {receipts:?}");
+        }
     }
 
     #[tokio::test]

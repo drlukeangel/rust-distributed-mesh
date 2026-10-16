@@ -52,6 +52,66 @@ pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model:
         .collect()
 }
 
+/// A command its birth never received for a reachability reason (node-tickle.md step 1): the
+/// mesh-primary marks the birth `PendingReconnect` at once, so its tickle ladder runs from this mark
+/// instead of after the staleness floor. An observer mark: it ends when the birth is heard after it,
+/// answers its tickle, or leaves the view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreachableMark {
+    /// The exact birth the command named.
+    pub incarnation: crate::model::IncarnationId,
+    /// When the command ended unsent.
+    pub at: std::time::Instant,
+    /// The same instant on the local clock, ms since the Unix epoch.
+    pub at_ms: u64,
+    /// `connect-refused`, `connect-timed-out`, `connect-failed` or `endpoint-unresolved`.
+    pub reason: &'static str,
+}
+
+/// Whether a reachability `NotSent` marks a birth whose mesh-primary authored `authored`
+/// (node-tickle.md step 1): an observer mark beside a live status (`Pending`, `ReadyForTraffic`, or
+/// none held), never over a lifecycle one (connections-deleting, stopping), which the birth's own
+/// workflow owns.
+pub(crate) fn marks_over(authored: Option<rdm_core::MemberStatus>) -> bool {
+    match authored {
+        Some(rdm_core::MemberStatus::Draining | rdm_core::MemberStatus::Leaving) => false,
+        Some(rdm_core::MemberStatus::Pending | rdm_core::MemberStatus::ReadyForTraffic) | None => true,
+    }
+}
+
+/// The marks a mesh-primary holds, by node id: written by its executor's observer, read by its tick.
+pub type UnreachableMarks = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<crate::model::NodeId, UnreachableMark>>>;
+
+/// The marks of `mesh`'s births that stand at `now`: a mark ends when the view no longer holds that
+/// exact birth of `mesh`, or when `book` heard the birth after the mark. The ended ones are dropped
+/// from `marks`.
+pub(crate) fn held_marks(marks: &UnreachableMarks, view: &crate::topology::Topology, mesh: &str, book: &rdm_transport::membership::DigestBook, now: std::time::Instant) -> std::collections::HashMap<crate::model::NodeId, UnreachableMark> {
+    let mut marks = marks.lock().unwrap();
+    marks.retain(|id, m| {
+        let held = view.births().any(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && n.mesh == mesh);
+        let heard_after = book.get_at(id.as_str(), now).is_some_and(|(d, unheard)| d.node.incarnation == m.incarnation && now.saturating_duration_since(m.at) > unheard);
+        held && !heard_after
+    });
+    marks.clone()
+}
+
+/// Every marked birth the view holds, other than this admin itself, is watched `PendingReconnect`.
+pub(crate) fn watch_marked(watched: &mut std::collections::BTreeMap<String, crate::model::Node>, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>, view: &crate::topology::Topology, me: &crate::model::NodeId) {
+    for (id, m) in marks {
+        if let Some(n) = view.births().find(|n| &n.node_id == id && n.incarnation_id.as_ref() == Some(&m.incarnation) && &n.node_id != me) {
+            watched.entry(id.to_string()).or_insert_with(|| crate::model::Node { status: crate::model::NodeStatus::PendingReconnect, ..n.clone() });
+        }
+    }
+}
+
+/// A silent birth's mark is the earlier of its book's floor mark and its unreachable mark.
+pub(crate) fn marked_from(mut s: SilentNode, marks: &std::collections::HashMap<crate::model::NodeId, UnreachableMark>) -> SilentNode {
+    if let Some((_, m)) = marks.iter().find(|(id, m)| id.as_str() == s.node_id && s.incarnation.as_ref() == Some(&m.incarnation)) {
+        s.marked_at_ms = Some(s.marked_at_ms.map_or(m.at_ms, |at| at.min(m.at_ms)));
+    }
+    s
+}
+
 /// How many live peers the via-peer step asks.
 pub const VIA_PEER_TICKLE_FANOUT: usize = 2;
 
@@ -548,6 +608,21 @@ pub(crate) async fn put_exit_proof(store: &dyn crate::status_storage::StatusStor
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// CONTRACT (node-tickle.md step 1; i144 R9): a command its birth never received for a
+    /// reachability reason marks the birth `PendingReconnect` beside a live status, and never over a
+    /// lifecycle status its mesh-primary authored on an admitted command (stopping, connections-deleting).
+    // @feature: node-lifecycle
+    #[test]
+    fn a_pending_reconnect_mark_never_overwrites_an_admitted_stopping() {
+        use rdm_core::MemberStatus as M;
+        for live in [None, Some(M::Pending), Some(M::ReadyForTraffic)] {
+            assert!(marks_over(live), "{live:?}: marked");
+        }
+        for lifecycle in [M::Leaving, M::Draining] {
+            assert!(!marks_over(Some(lifecycle)), "{lifecycle:?}: kept, never overwritten");
+        }
+    }
 
     const FLOOR: u64 = 30_000;
     const PROBE_DELAY: u64 = FLOOR / 2;

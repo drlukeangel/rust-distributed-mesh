@@ -27,6 +27,10 @@ pub enum CallEnd {
     NotSent {
         /// Why, as the transport named it.
         reason: String,
+        /// The transport's own reason, typed: what a caller reads to tell a reachability failure
+        /// (the target refused or did not answer the connect, or its endpoint did not resolve) from a
+        /// local one.
+        cause: rdm_core::outcome::NotSentReason,
     },
     /// The request committed and no stronger proof exists that it did or did not run.
     Indeterminate {
@@ -86,7 +90,7 @@ pub enum CallEnd {
 impl std::fmt::Display for CallEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotSent { reason } => write!(f, "not sent: {reason}"),
+            Self::NotSent { reason, .. } => write!(f, "not sent: {reason}"),
             Self::Indeterminate { reason } => write!(f, "indeterminate: {reason}"),
             Self::Unserved { op } => write!(f, "unserved op {op:#04x}"),
             Self::RejectedStale { target_node_id } => write!(f, "stale target {target_node_id}"),
@@ -136,7 +140,10 @@ impl From<ClientError> for CallEnd {
     fn from(e: ClientError) -> Self {
         match e {
             ClientError::Refused { status, error, detail } => Self::Refused { status, error, detail },
-            ClientError::Transport { url, reason, request_written: false } => Self::NotSent { reason: format!("{url}: {reason}") },
+            ClientError::Transport { url, reason, request_written: false } => {
+                let reason = format!("{url}: {reason}");
+                Self::NotSent { cause: rdm_core::outcome::NotSentReason::Connection(reason.clone()), reason }
+            }
             ClientError::Transport { url, reason, request_written: true } => Self::Indeterminate { reason: format!("{url}: {reason}") },
         }
     }
@@ -149,7 +156,7 @@ fn target_name(t: &NodeTarget) -> String {
 pub(crate) fn ended<R>(out: RpcOutcome<R>) -> Result<R, CallEnd> {
     match out {
         RpcOutcome::Reply(r) => Ok(r.into_value()),
-        RpcOutcome::NotSent(n) => Err(CallEnd::NotSent { reason: format!("{:?}", n.reason()) }),
+        RpcOutcome::NotSent(n) => Err(CallEnd::NotSent { reason: format!("{:?}", n.reason()), cause: n.reason().clone() }),
         RpcOutcome::Unserved(u) => Err(CallEnd::Unserved { op: u.op() }),
         RpcOutcome::RejectedStale(r) => Err(CallEnd::RejectedStale { target_node_id: r.target_node_id().to_string() }),
         RpcOutcome::Indeterminate(i) => Err(CallEnd::Indeterminate { reason: format!("{:?}", i.reason()) }),

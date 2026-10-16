@@ -269,6 +269,9 @@ pub struct Records {
     /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
     /// `Dead` while they stay silent.
     pub offline: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// The births a command of this admin's executor never reached for a reachability reason, marked
+    /// `PendingReconnect` at once (node-tickle.md step 1): read by the mesh primary's tick.
+    pub unreachable: crate::offline::UnreachableMarks,
     /// Per peer mesh the fabric primary gave a new node-admin (the investigation's carrier-edge-lost
     /// verdict, or the fully crashed mesh's proof): the fabric is `degraded` from that moment until
     /// each such mesh's new primary has reported its round.
@@ -713,6 +716,7 @@ impl Records {
             incarnation_id = %row.incarnation_id.as_str(),
             since = row.since as i64,
             verdicts = row.verdicts as i64,
+            outcome = "recorded",
             "otel.kind" = "internal",
         )
         .in_scope(|| tracing::info!("recorded held-running verdict"));

@@ -73,6 +73,17 @@ pub struct HeldRunning {
     pub verdicts: u64,
 }
 
+/// The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provider.md §2.5): the
+/// provider inspected the exact runtime and the operating system holds it suspended. An observation,
+/// never a hold: it proves neither a hung nor a gone runtime.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OsStopped {
+    /// When the first `OsStopped` verdict was observed, ms since the Unix epoch.
+    pub since: u64,
+    /// How many inspections have read the runtime `OsStopped` since.
+    pub inspections: u64,
+}
+
 /// The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
 /// absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth
 /// `Exited`.
@@ -161,6 +172,10 @@ pub struct NodeView {
     /// inherited data dir exists on disk with a missing, unreadable, or corrupt `node-key`.
     #[serde(default)]
     pub data_dir_unreadable: Option<DataDirUnreadable>,
+    /// The durable `os-stopped` fact on this birth's status row (R-PV1), when the provider inspected
+    /// its exact runtime and the operating system holds it suspended.
+    #[serde(default)]
+    pub os_stopped: Option<OsStopped>,
 }
 
 impl NodeView {

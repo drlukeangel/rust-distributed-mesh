@@ -238,7 +238,7 @@ mod tests {
         let mut node = Node::allocated(d.node.name.clone());
         node.node_id = d.node.node_id.clone();
         node.incarnation_id = Some(d.node.incarnation.clone());
-        let observer = MembershipObserver { book, client: None, commands: Arc::default(), authority: Arc::default(), handover: Arc::default() };
+        let observer = MembershipObserver { book, client: None, commands: Arc::default(), authority: Arc::default(), handover: Arc::default(), unreachable: Arc::default() };
         assert_eq!(crate::deployment::pipeline::NodeObserver::ready(&observer, &node).await, Ok(()));
     }
 
@@ -1092,6 +1092,7 @@ mod tests {
             builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
+            os_stopped_confirmed: Arc::default(),
         };
         (recovery, status, member)
     }
@@ -1117,7 +1118,7 @@ mod tests {
     /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
     /// durably. Still running is no proof"; operation summary "Trigger: Exact provider proof only"):
     /// the mesh primary asks the provider about a TRUE OFFLINE member's exact runtime and the
-    /// provider cannot tell (`Unknown`). That is no proof: the verdict is not-exited with the
+    /// provider cannot tell (`Unknown`). That is no proof: the verdict is unavailable with the
     /// provider's answer as its reason, named once over two ticks, and nothing is recorded or
     /// submitted. Must NOT happen: an exit-proof row, a recovery submit, a verdict spanned every tick.
     // @feature: node-lifecycle
@@ -1134,16 +1135,176 @@ mod tests {
         let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Unknown, inspected: Default::default() });
         let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
         let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-provider-unknown").await;
-        assert_eq!(outcome, Inspected::NotExited("its runtime is not proven exited: Unknown".into()), "Unknown is no proof");
+        assert_eq!(outcome, Inspected::Unavailable("its runtime is not proven exited: Unknown".into()), "Unknown is no proof");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 2, "the provider was asked about the exact runtime on each tick");
         assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
         let a = &inspections[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
         assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.to_string()), "the exact birth: {a:?}");
-        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("not-exited".to_string(), "none".to_string(), "its runtime is not proven exited: Unknown".to_string()), "{a:?}");
+        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("unavailable".to_string(), "none".to_string(), "its runtime is not proven exited: Unknown".to_string()), "{a:?}");
         assert_eq!(attr("inspector"), "mesh2.admin.1", "{a:?}");
         assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
         eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
+    }
+
+    /// A TRUE OFFLINE member `mesh2.rpc.1` whose exact runtime the provider `answers`: its view, its
+    /// book, the provider and a memory status store.
+    fn os_stopped_member(answers: crate::deployment::provider::DeploymentStatus, cell: &str) -> (RecoverySubmitter, Arc<dyn crate::status_storage::StatusStorage>, Node, Arc<Answers>, DigestBook, Topology) {
+        let fact = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60(cell)).unwrap();
+        let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        member.node.runtime = Some(fact.clone());
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member] {
+            book.record(d);
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: answers, inspected: Default::default() });
+        let (recovery, status, node) = recovery_of(&view, book.clone(), provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+        (recovery, status, node, provider, book, view)
+    }
+
+    fn attrs(c: &crate::span_capture::Captured) -> impl Fn(&str) -> String + '_ {
+        move |k: &str| c.attributes.get(k).cloned().unwrap_or_default()
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5; node-recovery.md step 3; R-PV1): the provider reads a
+    /// TRUE OFFLINE member's exact runtime `OsStopped`. The mesh primary names the verdict
+    /// `os-stopped` once, records the birth's `os-stopped` row (`since` kept, its inspections
+    /// counted on every tick) on `rdm.node_admin.node.update.via-os-stopped` (`recorded`, once), and
+    /// that is all: no `held-running` row, no exit proof, no recovery submit. An `OsStopped` verdict
+    /// never counts toward a hung runtime's hold. Must NOT happen: a hold, a terminate, an exit
+    /// proof or a submit from an os-stopped observation.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_os_stopped_birth_is_recorded_and_opens_no_hold_and_never_counts_toward_held_running() {
+        let (recovery, status, node, provider, _, _) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-os-stopped");
+        let inc = node.incarnation_id.clone().unwrap();
+        let capture = crate::span_capture::Capture::new("i144-e2-os-stopped-recorded");
+        let verdicts = Mutex::new(HashMap::new());
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            for _ in 0..3 {
+                assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+            }
+        }
+        assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 3, "the exact runtime is inspected on every tick");
+        let row = status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().expect("the os-stopped row stands");
+        assert_eq!((row.inspections, row.name.to_string(), row.incarnation_id.clone()), (3, "mesh2.rpc.1".to_string(), inc.clone()), "{row:?}");
+        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "no hold opens for an os-stopped runtime");
+        assert_eq!(status.node_exit(&node.node_id, &inc).await.unwrap(), None, "os-stopped is never exit proof");
+        let inspections = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+        assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
+        assert_eq!(attrs(&inspections[0])("verdict"), "os-stopped");
+        let facts = capture.named("rdm.node_admin.node.update.via-os-stopped");
+        assert_eq!(facts.iter().map(|c| attrs(c)("outcome")).collect::<Vec<_>>(), vec!["recorded".to_string()], "recorded once: {facts:?}");
+        assert_eq!(attrs(&facts[0])("since"), row.since.to_string());
+        assert!(capture.named("rdm.node_admin.node.update.via-held-running").is_empty(), "no held-running verdict");
+        assert!(capture.named("rdm.node_admin.build.update.via-node-recovery").is_empty(), "no recovery submit");
+        eprintln!("span rdm.node_admin.node.update.via-os-stopped trace_id={}", facts[0].trace_id);
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5: "Entering it from `Running` cancels an open R-FM1 hold:
+    /// the `held-running` row is removed and its pending `TerminateRuntime` is void"): a member held
+    /// (`held-running` with two verdicts) is then read `OsStopped`. The hold is cancelled on
+    /// `via-held-running` with outcome `cancelled-os-stopped`, naming the voided deadline, its row is
+    /// gone, the `os-stopped` row is recorded, and no recovery is submitted however long past the old
+    /// deadline. Read `Running` again, the os-stopped row clears (`cleared`, `running`) and a fresh
+    /// hold opens with its own `since`.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_os_stopped_verdict_cancels_an_open_hold_and_running_again_clears_it_and_opens_a_fresh_one() {
+        let (recovery, status, node, _, book, view) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-hold-cancel");
+        let inc = node.incarnation_id.clone().unwrap();
+        let old = crate::status_storage::NodeHeldRunningRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), since: 1, verdicts: 2 };
+        status.put_node_held_running_of("mesh2", &old).await.unwrap();
+        let capture = crate::span_capture::Capture::new("i144-e2-hold-cancel");
+        let verdicts = Mutex::new(HashMap::new());
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+        }
+        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "the hold's row is removed");
+        assert!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some(), "the os-stopped fact is recorded");
+        let cancelled: Vec<_> = capture.named("rdm.node_admin.node.update.via-held-running").into_iter().filter(|c| attrs(c)("outcome") == "cancelled-os-stopped").collect();
+        assert_eq!(cancelled.len(), 1, "the hold is cancelled once: {cancelled:?}");
+        assert_eq!((attrs(&cancelled[0])("since"), attrs(&cancelled[0])("verdicts"), attrs(&cancelled[0])("voided_deadline")), ("1".to_string(), "2".to_string(), (1 + hung_hold_ms()).to_string()), "the voided deadline is named");
+        assert!(capture.named("rdm.node_admin.build.update.via-node-recovery").is_empty(), "no terminate is submitted past the old deadline");
+        // The runtime runs again and stays unreachable: the fact clears and a fresh hold opens.
+        let running = Arc::new(Answers { domain: recovery.provider.control_domain(), status: crate::deployment::provider::DeploymentStatus::Running, inspected: Default::default() });
+        let (resumed, _, _) = recovery_of(&view, book, running, recovery.nodes_storage.clone(), status.clone());
+        let capture = crate::span_capture::Capture::new("i144-e2-hold-fresh");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            assert_eq!(resumed.recover_if_proven(&node, &verdicts).await, Inspected::Running);
+        }
+        assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "Running again clears the os-stopped fact");
+        let cleared = capture.named("rdm.node_admin.node.update.via-os-stopped");
+        assert_eq!(cleared.iter().map(|c| (attrs(c)("outcome"), attrs(c)("detail"))).collect::<Vec<_>>(), vec![("cleared".to_string(), "running".to_string())]);
+        let fresh = status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap().expect("a fresh hold opens");
+        assert!(fresh.since > 1 && fresh.verdicts == 1, "a fresh hold, its own since: {fresh:?}");
+        eprintln!("span via-held-running cancelled-os-stopped trace_id={}", cancelled[0].trace_id);
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5: "A new authority revalidates the stored fact with its own
+    /// inspection"; i144 R10): an `os-stopped` row another admin wrote stands when a successor
+    /// mesh-primary first inspects the birth. Its own `OsStopped` verdict confirms it once
+    /// (`revalidated`, the row's `since` kept, its inspections counted on); its own `Exited` verdict
+    /// instead clears it (`cleared`, `exited`) and the exit proof stands. Must NOT happen: the
+    /// predecessor's row taken as the successor's own without an inspection, or a new `since`.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_successor_mesh_primary_revalidates_a_held_os_stopped_fact_with_its_own_inspection() {
+        let (recovery, status, node, _, book, view) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-revalidate");
+        let inc = node.incarnation_id.clone().unwrap();
+        let held = crate::status_storage::NodeOsStoppedRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), since: 7, inspections: 4 };
+        status.put_node_os_stopped_of("mesh2", &held).await.unwrap();
+        let capture = crate::span_capture::Capture::new("i144-e2-revalidate");
+        let verdicts = Mutex::new(HashMap::new());
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+            assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+        }
+        let row = status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().unwrap();
+        assert_eq!((row.since, row.inspections), (7, 6), "the predecessor's since is kept and the successor's inspections count on");
+        let facts = capture.named("rdm.node_admin.node.update.via-os-stopped");
+        assert_eq!(facts.iter().map(|c| attrs(c)("outcome")).collect::<Vec<_>>(), vec!["revalidated".to_string()], "confirmed once, by its own inspection: {facts:?}");
+        // Another successor whose inspection reads the runtime exited clears the fact.
+        let exited = Arc::new(Answers { domain: recovery.provider.control_domain(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(9) }, inspected: Default::default() });
+        let (next, _, _) = recovery_of(&view, book, exited, recovery.nodes_storage.clone(), status.clone());
+        let capture = crate::span_capture::Capture::new("i144-e2-revalidate-exited");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            assert_eq!(next.recover_if_proven(&node, &Mutex::new(HashMap::new())).await, Inspected::Exited(Some(9), "provider"));
+        }
+        assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "an exit clears the os-stopped fact");
+        assert_eq!(capture.named("rdm.node_admin.node.update.via-os-stopped").iter().map(|c| (attrs(c)("outcome"), attrs(c)("detail"))).collect::<Vec<_>>(), vec![("cleared".to_string(), "exited".to_string())]);
+        assert!(status.node_exit(&node.node_id, &inc).await.unwrap().is_some(), "the exit proof stands");
+        eprintln!("span via-os-stopped revalidated trace_id={}", facts[0].trace_id);
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5 `Unknown`: "recorded as uncertainty; no hold, no
+    /// terminate, no exit proof is inferred"): a provider that cannot tell leaves an `os-stopped` row
+    /// that stands as it is (no new inspection counted, never cleared), opens no hold and proves no
+    /// exit.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_unknown_inspection_records_uncertainty_and_infers_nothing() {
+        let (recovery, status, node, _, _, _) = os_stopped_member(crate::deployment::provider::DeploymentStatus::Unknown, "dep-unknown-os");
+        let inc = node.incarnation_id.clone().unwrap();
+        let held = crate::status_storage::NodeOsStoppedRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: inc.clone(), since: 3, inspections: 2 };
+        status.put_node_os_stopped_of("mesh2", &held).await.unwrap();
+        let capture = crate::span_capture::Capture::new("i144-e2-unknown");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            assert!(matches!(recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await, Inspected::Unavailable(_)));
+        }
+        assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), Some(held), "the fact stands untouched");
+        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None);
+        assert_eq!(status.node_exit(&node.node_id, &inc).await.unwrap(), None);
+        assert_eq!(capture.named("rdm.node_admin.node.resolve.via-provider-inspection").iter().map(|c| attrs(c)("verdict")).collect::<Vec<_>>(), vec!["unavailable".to_string()]);
+        assert!(capture.named("rdm.node_admin.node.update.via-os-stopped").is_empty());
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
@@ -1247,6 +1408,7 @@ mod tests {
             builds,
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
+            os_stopped_confirmed: Arc::default(),
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
@@ -1717,12 +1879,12 @@ mod tests {
         let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(RuntimeRowUnreadable::default()), Arc::new(crate::status_storage::MemoryStatusStorage::default()));
         let (outcome, inspections, submits, proof) = two_ticks(&recovery, &*status, &node, "i143-3051-runtime-row-unreadable").await;
         let why = format!("the durable runtime row of {} at {} could not be read: runtimes/{}--{}.json is not a record this build recognises: format runtime/9 is not one this build reads", node.node_id, member.node.incarnation.as_str(), node.node_id, member.node.incarnation.as_str());
-        assert_eq!(outcome, Inspected::NotExited(why.clone()), "an unreadable row is no proof, and is named as unreadable");
+        assert_eq!(outcome, Inspected::Unavailable(why.clone()), "an unreadable row is no proof, and is named as unreadable");
         assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 0, "with no runtime fact the provider is not asked");
         assert_eq!(inspections.len(), 1, "the verdict is named once: {inspections:?}");
         let a = &inspections[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("not-exited".to_string(), "none".to_string(), why), "{a:?}");
+        assert_eq!((attr("verdict"), attr("exit_proof"), attr("reason")), ("unavailable".to_string(), "none".to_string(), why), "{a:?}");
         assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
         eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
     }
@@ -1858,6 +2020,49 @@ mod tests {
         }
         let watched: Vec<String> = watched_births(&t, &me.node.node_id, "mesh1", &[]).values().map(|n| n.name.to_string()).collect();
         assert_eq!(watched, vec!["mesh1.rpc.1".to_string()], "only its own mesh's silent member is watched");
+    }
+
+    /// CONTRACT (node-tickle.md step 1; R-PV1: a `NotSent` command "is a reason to ask now"; i144 R9): a
+    /// member heard a moment ago (well within the floor) that a command never reached for a
+    /// reachability reason is watched `PendingReconnect` by its mesh-primary's tick, counted silent,
+    /// and its silence window starts at the mark, not at the floor. A digest of the birth heard after
+    /// the mark ends it; so does a mark of another mesh's birth or of a birth the view no longer holds.
+    /// Must NOT happen: a marked member left out of the silent set because its last digest is recent.
+    // @feature: node-lifecycle
+    #[test]
+    fn an_unreachable_mark_watches_the_member_at_once_and_ends_when_it_is_heard_after_it() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let me = with_id(digest("mesh1.admin.1", ReadyForTraffic), "200000000000");
+        let own = with_id(digest("mesh1.rpc.1", ReadyForTraffic), "300000000000");
+        let peer = with_id(digest("mesh2.rpc.1", ReadyForTraffic), "500000000000");
+        for d in [&me, &own, &peer] {
+            book.record((*d).clone());
+        }
+        let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+        let floor = std::time::Duration::from_secs(30);
+        let marks: crate::offline::UnreachableMarks = Arc::default();
+        let at = std::time::Instant::now();
+        for d in [&own, &peer] {
+            marks.lock().unwrap().insert(d.node.node_id.clone(), crate::offline::UnreachableMark { incarnation: d.node.incarnation.clone(), at, at_ms: 1_000, reason: "connect-timed-out" });
+        }
+        let now = at + std::time::Duration::from_millis(1);
+        let held = crate::offline::held_marks(&marks, &view, "mesh1", &book, now);
+        assert_eq!(held.keys().cloned().collect::<Vec<_>>(), vec![own.node.node_id.clone()], "another mesh's birth is not this mesh-primary's to mark");
+        let mut watched = watched_births(&view, &me.node.node_id, "mesh1", &[]);
+        assert!(watched.is_empty(), "nothing is silent past the floor");
+        crate::offline::watch_marked(&mut watched, &held, &view, &me.node.node_id);
+        let n = watched.get(own.node.node_id.as_str()).expect("the marked member is watched");
+        assert_eq!(n.status, NodeStatus::PendingReconnect);
+        let silent: Vec<_> = crate::offline::silent_set(watched.values(), &book, now, 5_000, floor).into_iter().map(|s| crate::offline::marked_from(s, &held)).collect();
+        assert_eq!(silent.iter().map(|s| (s.node_id.clone(), s.marked_at_ms)).collect::<Vec<_>>(), vec![(own.node.node_id.to_string(), Some(1_000))], "silent from the mark, its window from the mark's instant");
+        // A digest heard after the mark (the birth's next, a higher digest_seq) ends it.
+        let mut next = own.clone();
+        next.digest_seq += 1;
+        book.record(next);
+        let later = std::time::Instant::now() + std::time::Duration::from_millis(5);
+        assert!(crate::offline::held_marks(&marks, &view, "mesh1", &book, later).is_empty(), "heard after the mark: the mark ends");
+        assert!(marks.lock().unwrap().is_empty(), "an ended mark is dropped");
     }
 
     /// CONTRACT (node-recovery.md, Detection: "The mesh-primary's tick (every gossip interval) reads
