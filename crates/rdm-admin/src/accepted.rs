@@ -1145,6 +1145,25 @@ mod tests {
         assert_eq!(plan(&cur, &leaving, Some(&restart)).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None }]);
     }
 
+    /// CONTRACT (R-PV1: "The pending lifecycle action is resumed per its receipts: `node.start` when
+    /// start is the pending step (the node did stop)"; node-restart.md: a restart runs on the stopped
+    /// process, which never exits): an attempt carrying the restart of the exact birth its own earlier
+    /// attempt parked (the view holds it `Leaving` and parked, the same incarnation) plans that restart
+    /// once, whose run resumes at its start. Must NOT happen: a create planned at the path of a parked
+    /// birth that is still alive and still the restart's.
+    #[test]
+    fn a_restart_of_a_birth_its_own_restart_parked_plans_the_restart_never_a_create() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.2".parse().unwrap();
+        let mut parked = mn();
+        let birth = parked.nodes.iter_mut().find(|x| x.name == path).unwrap();
+        birth.status = NodeStatus::Leaving;
+        birth.parked = true;
+        let from = parked.node(&path).unwrap().incarnation_id.clone().unwrap();
+        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from };
+        assert_eq!(plan(&cur, &parked, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
+    }
+
     /// CONTRACT: an attempt that carries an action repairs exactly its birth, from whichever admin's
     /// view plans it. Another member the view does not hold (silent longer than this view keeps it)
     /// is that member's own attempt, never swept into this plan: two admins whose views keep a

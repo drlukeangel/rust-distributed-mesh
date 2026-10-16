@@ -9,7 +9,7 @@
 //! container-proof step) and skips by name otherwise; `RDM_REQUIRE_CONTAINER=1` fails a host that
 //! cannot run containers instead of skipping.
 
-use rdm_admin::deployment::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus};
+use rdm_admin::deployment::provider::{DeploymentHandle, DeploymentProvider, DeploymentStatus, TerminationMode};
 use std::time::{Duration, Instant};
 
 /// The host's own hand on one runtime: what it suspends, continues and kills with, and what it shows.
@@ -75,6 +75,22 @@ async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code(hand: &dyn
         assert!(Instant::now() < until && matches!(status, DeploymentStatus::Exited { .. }), "a killed suspended runtime reads Exited {{ code: {:?} }}: {status:?}", hand.killed_code());
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// CONTRACT (deployment-provider.md §2.5: an explicit `node.delete` of an OS-stopped birth "runs
+/// `TerminateRuntime` on the exact handle, takes the exit proof and continues"; §3: "skips the stop by
+/// name and begins at `TerminateRuntime`"): a runtime the operating system holds suspended is ended by
+/// the provider's own terminate of its exact handle, and then reads `Exited`: the suspension is never
+/// in the way of the exit proof. Must NOT happen: a terminate that returns while the runtime still
+/// exists, or an `OsStopped` or `Running` read after it.
+async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(hand: &dyn Hand) {
+    hand.suspend().await;
+    until_host(hand, &["os-stopped"], "the runtime suspended").await;
+    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::OsStopped);
+    hand.provider().terminate(hand.handle(), TerminationMode::Graceful { grace: Duration::from_secs(1) }).await.expect("the terminate of the exact handle");
+    until_host(hand, &["exited"], "the terminated runtime gone").await;
+    let status = hand.provider().inspect(hand.handle()).await;
+    assert!(matches!(status, DeploymentStatus::Exited { .. }), "a terminated suspended runtime reads Exited: {status:?}");
 }
 
 /// CONTRACT (deployment-provider.md §2.5 R19: `Running` is nonterminal and not OS-suspended, nothing
@@ -184,6 +200,11 @@ mod process {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code() {
         super::a_stopped_runtime_that_then_exits_reads_exited_with_its_code(&sleeper("exit").await).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited() {
+        super::a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(&sleeper("terminate").await).await;
     }
 
     /// The process side of R19: a runtime whose every task sleeps.
@@ -334,6 +355,12 @@ mod container {
     async fn a_stopped_runtime_that_then_exits_reads_exited_with_its_code() {
         let Some(c) = sleeper("state-exit").await else { return };
         super::a_stopped_runtime_that_then_exits_reads_exited_with_its_code(&c).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited() {
+        let Some(c) = sleeper("state-terminate").await else { return };
+        super::a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(&c).await;
     }
 
     /// The container side of R19: a container created and not started.

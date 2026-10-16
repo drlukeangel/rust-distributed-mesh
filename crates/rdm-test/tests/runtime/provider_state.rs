@@ -29,6 +29,13 @@ fn attr(sp: &Value, k: &str) -> String {
     }
 }
 
+/// Whether span `sp` names Build `bare` (its bare id): step spans carry the `bid_xxxx-xxxx-xxxx`
+/// rendering (`BuildId::log`), command spans the bare id.
+fn same_build(sp: &Value, bare: &str) -> bool {
+    let a = attr(sp, "build_id");
+    a == bare || a.strip_prefix("bid_").is_some_and(|l| l.replace('-', "") == bare)
+}
+
 fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
@@ -131,4 +138,50 @@ async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recove
     assert!(start_ns(&submit) >= start_ns(&exited), "the recovery follows the exit proof");
     println!("exit proof: http://192.168.68.99:16687/trace/{}", s(&exited["trace_id"]));
     estate.record_trace_url(&s(&exited["trace_id"]));
+}
+
+/// CONTRACT (deployment-provider.md §2.5 and §3: "A `node.delete` of a target whose provider state is
+/// `OsStopped` skips the stop by name and begins at `TerminateRuntime`: the stop cannot execute, and
+/// the delete was explicitly commanded"; node-delete.md "OS-suspended target"): a member the operating
+/// system holds suspended (recorded `os-stopped` on `node.get`, silent to every view) is deleted by an
+/// explicit `node.delete`: the fabric-primary accepts it, the executor inspects the exact runtime at
+/// the delete's instant (`via-provider-inspection`, caller `delete`, verdict `os-stopped`), names the
+/// skipped stop (`rdm.node_admin.node.delete.via-os-stopped`), runs `TerminateRuntime` on the exact
+/// handle, takes the exit proof, writes NodeDeleted and removes the `os-stopped` row (`cleared`,
+/// `deleted`). `node.get` lists the path no more and the suspended process is gone. Must NOT happen: a
+/// `node-not-live` refusal of the delete, a `stop-node` sent to the suspended birth (a StopNode or
+/// AwaitNodeLeft step of the delete), the process continued, or a recovery of the deleted birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_explicit_delete_of_an_os_stopped_birth_skips_the_stop_by_name_and_terminates_the_exact_runtime() {
+    let test = "an_explicit_delete_of_an_os_stopped_birth_skips_the_stop_by_name_and_terminates_the_exact_runtime";
+    let (mut estate, member, rt) = mesh_with_a_member(test, &[]).await;
+    let before = estate.node_value(&member).await;
+    let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
+    assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
+    node_where(&estate, &member, &format!("{member} lists os_stopped on node.get"), crate::node_recovery_due(), |n| n["os_stopped"]["since"].as_u64().unwrap_or(0) > 0).await;
+    let asked_at = now_ns();
+    let path: rdm_core::PathName = member.parse().unwrap();
+    let mut removal = estate.nodes_obj().await.delete(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of the os-stopped {member}: {e}"));
+    let build_id = Estate::complete(&mut removal).await.build_id.to_string();
+    estate.settled_views(&[("mesh1", 1, 1)]).await;
+    assert!(estate.node_value_opt(&member).await.is_none(), "node.get lists {member} no more");
+    assert!(rt.check().is_err(), "the suspended runtime is gone after the delete's terminate");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| same_build(sp, &build_id) && attr(sp, "node") == member).map(|sp| format!("{}={}", attr(sp, "step"), attr(sp, "outcome"))).collect();
+    assert!(steps.iter().all(|st| !st.starts_with("StopNode=") && !st.starts_with("AwaitNodeLeft=")), "no stop step of the delete: {steps:?}");
+    assert!(steps.contains(&"TerminateRuntime=complete".to_string()) && steps.contains(&"NodeDeleted=complete".to_string()), "the delete terminates and deletes: {steps:?}");
+    let inspected = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "caller") == "delete" && sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the delete inspects the exact runtime at its instant");
+    assert_eq!(attr(&inspected, "verdict"), "os-stopped", "{inspected}");
+    let skipped = named(&spans, "rdm.node_admin.node.delete.via-os-stopped").into_iter().find(|sp| same_build(sp, &build_id) && sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the skipped stop is named");
+    assert!(start_ns(&skipped) >= asked_at, "the skip follows the request");
+    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| same_build(sp, &build_id) && attr(sp, "node") == member).collect();
+    assert!(sent.is_empty(), "no command was sent to the suspended birth: {sent:#?}");
+    let facts: Vec<(String, String)> = named(&spans, "rdm.node_admin.node.update.via-os-stopped").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).map(|sp| (attr(sp, "outcome"), attr(sp, "detail"))).collect();
+    assert_eq!(facts.last(), Some(&("cleared".to_string(), "deleted".to_string())), "the delete removes the os-stopped row: {facts:?}");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "no recovery of the deleted birth");
+    let trace = s(&skipped["trace_id"]);
+    println!("os-stopped delete: http://192.168.68.99:16687/trace/{trace}");
+    estate.record_trace_url(&trace);
 }

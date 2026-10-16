@@ -2660,19 +2660,7 @@ mod tests {
             let builds = crate::build_state::MemoryBuildStateAdapter::new();
             let build_id = BuildId::mint();
             builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
-            let data_root = tempdir("hold-terminate");
-            let template = LaunchTemplate {
-                fabric: "fabric1".into(),
-                fabric_id: rdm_core::FabricId::mint(),
-                executable: "/nonexistent/rafka-rpc-node".into(),
-                seeds: vec![],
-                launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
-                env: BTreeMap::new(),
-                data_root: data_root.clone(),
-                store_dir: data_root.clone(),
-                mesh_issuer: None,
-                connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
-            };
+            let template = cell_template("hold-terminate");
             let joins = Joins::default();
             let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
             let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
@@ -2757,6 +2745,175 @@ mod tests {
             assert_eq!(stepped.attributes.get("stage").map(String::as_str), Some(stage.name()), "the step's span names the stage: {stepped:?}");
         }
         assert!(!TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped }.stops_resubmission() && !TerminateStage::Inspection { verdict: InspectionVerdict::Unknown }.stops_resubmission(), "a failure at the step's own inspection voids the hold, never stops it");
+    }
+
+    /// The launch template of a cell whose provider never spawns: mesh1.admin.1's, its data root a
+    /// fresh directory named `cell`.
+    fn cell_template(cell: &str) -> LaunchTemplate {
+        let data_root = tempdir(cell);
+        LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: rdm_core::FabricId::mint(),
+            executable: "/nonexistent/rafka-rpc-node".into(),
+            seeds: vec![],
+            launcher: rdm_core::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            store_dir: data_root,
+            mesh_issuer: None,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        }
+    }
+
+    /// A Build accepted in `builds` for a cell: mesh1 rooted, nothing else.
+    async fn accepted_build(builds: &crate::build_state::MemoryBuildStateAdapter) -> BuildId {
+        let build_id = BuildId::mint();
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
+        build_id
+    }
+
+    /// A provider whose exact runtime the operating system holds suspended until it is terminated:
+    /// `OsStopped` until then, `Exited` (SIGKILL's code) after.
+    struct Suspended {
+        terminated: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for Suspended {
+        fn kind(&self) -> crate::model::ProviderKind {
+            crate::model::ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            "process:cell".into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+            Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+            self.terminated.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            if self.terminated.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                DeploymentStatus::OsStopped
+            } else {
+                DeploymentStatus::Exited { code: Some(137) }
+            }
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+            Ok(Found::NeverLaunched)
+        }
+    }
+
+    /// An observer of one birth that answers `stop-node` with `stop`, answers `start-node` with
+    /// `Started`, reports it ready, and records every command sent to it, in order.
+    struct Birth {
+        stop: CommandAdmission,
+        sent: std::sync::Mutex<Vec<crate::node_commands::NodeCommand>>,
+    }
+
+    #[async_trait::async_trait]
+    impl NodeObserver for Birth {
+        async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+            None
+        }
+        async fn ready(&self, _: &Node) -> Result<(), String> {
+            Ok(())
+        }
+        async fn send_command(&self, _: &Node, cmd: crate::node_commands::NodeCommand, _: &CommandContext) -> CommandAdmission {
+            self.sent.lock().unwrap().push(cmd);
+            match cmd {
+                crate::node_commands::NodeCommand::Stop => self.stop.clone(),
+                crate::node_commands::NodeCommand::Start => CommandAdmission::Started {},
+                crate::node_commands::NodeCommand::DeleteConnections => CommandAdmission::NotSent { reason: "this cell sends no node.connections.delete".into() },
+            }
+        }
+    }
+
+    fn process_handle() -> DeploymentHandle {
+        DeploymentHandle { deployment_id: DeploymentId::mint(), provider: crate::model::ProviderKind::Process, pid: Some(1), start: Some(1), container: None, domain: Some("process:cell".into()) }
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5: "An explicit `node.delete` of an OS-stopped birth stays
+    /// available: it skips the Node RPC stop by name (a suspended process answers no call), runs
+    /// `TerminateRuntime` on the exact handle, takes the exit proof and continues"; node-delete.md
+    /// "OS-suspended target"): the delete of a live (not parked) birth whose provider reads its exact
+    /// runtime `OsStopped` at the delete's instant sends it no command; the inspection is spanned
+    /// (`caller = delete`, `os-stopped`), the skip is named (`rdm.node_admin.node.delete.via-os-stopped`),
+    /// and the run's receipts are NodeDeleting, TerminateRuntime, NodeDeleted,
+    /// RemoveTopologyMembership, Complete: one terminate of the exact runtime, whose `Exited` is the
+    /// proof. Must NOT happen: a `stop-node` or `node.connections.delete` sent to the suspended birth, a
+    /// StopNode or AwaitNodeLeft receipt.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn an_explicit_delete_of_an_os_stopped_birth_sends_no_stop_and_terminates_its_exact_runtime() {
+        let provider = Suspended { terminated: Default::default() };
+        let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into() }, sent: Default::default() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        let template = cell_template("os-stopped-delete");
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        node.status = NodeStatus::PendingReconnect;
+        node.incarnation_id = Some(IncarnationId::mint());
+        let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: process_handle(), exit: None };
+        let capture = crate::span_capture::Capture::new("i144-e3-os-stopped-delete");
+        let terminal = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            pipeline.retire(&req).await.expect("the delete of an os-stopped birth completes")
+        };
+        assert_eq!(terminal.exit_code, Some(137), "the terminate's Exited is the proof: {terminal:?}");
+        assert!(observer.sent.lock().unwrap().is_empty(), "no command is sent to the suspended birth: {:?}", observer.sent.lock().unwrap());
+        assert_eq!(provider.terminated.load(std::sync::atomic::Ordering::SeqCst), 1, "one terminate of the exact runtime");
+        let inspected = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+        assert!(inspected.iter().any(|c| c.attributes.get("caller").map(String::as_str) == Some("delete") && c.attributes.get("verdict").map(String::as_str) == Some("os-stopped")), "the delete's inspection is spanned: {inspected:?}");
+        assert_eq!(capture.named("rdm.node_admin.node.delete.via-os-stopped").len(), 1, "the skipped stop is named once");
+        let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().map(|r| r.step).collect();
+        assert_eq!(steps, ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"].map(String::from).to_vec(), "the delete begins at TerminateRuntime");
+    }
+
+    /// CONTRACT (R-PV1: "The pending lifecycle action is resumed per its receipts: `node.start` when
+    /// start is the pending step (the node did stop)"; node-restart.md steps 2-4): a restart whose
+    /// earlier attempt parked the birth (its stop completed; its start failed) is resumed by its next
+    /// attempt at the start: the birth is parked, so `start-node` is the one command sent, and the run's
+    /// receipts are NodeRestarting, StartNode, WaitForNodeReady, Complete. Must NOT happen: a
+    /// `stop-node` sent again to the parked birth, a StopNode or AwaitNodeLeft receipt in the resumed run.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_restart_of_a_birth_its_own_restart_parked_resumes_at_start() {
+        let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default() };
+        let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its parked birth no stop".into() }, sent: Default::default() };
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        let template = cell_template("restart-resumed");
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &observer, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        node.status = NodeStatus::Leaving;
+        node.parked = true;
+        node.incarnation_id = Some(IncarnationId::mint());
+        node.endpoint_id = Some(EndpointId("key-mesh1.rpc.1".into()));
+        let handle = process_handle();
+        let deployed = Deployed {
+            name: node.name.clone(),
+            node_id: node.node_id.clone(),
+            incarnation: node.incarnation_id.clone().unwrap(),
+            supersedes: None,
+            endpoint_id: EndpointId("key-mesh1.rpc.1".into()),
+            runtime: handle.fact().expect("a process handle names its exact runtime"),
+            data_dir: template.data_root.join("mesh1.rpc.1").display().to_string(),
+            last_accepted_name: Some(node.name.clone()),
+            held: true,
+        };
+        let req = StartRequest { build_id: build_id.clone(), attempt: 2, node, handle, deployed };
+        pipeline.restart(&req).await.expect("the resumed restart completes");
+        assert_eq!(*observer.sent.lock().unwrap(), vec![crate::node_commands::NodeCommand::Start], "start-node is the one command the parked birth is sent");
+        let steps: Vec<String> = builds.read_build(&build_id).await.unwrap().steps.into_iter().filter(|r| r.attempt == 2).map(|r| r.step).collect();
+        assert_eq!(steps, ["NodeRestarting", "StartNode", "WaitForNodeReady", "Complete"].map(String::from).to_vec(), "the resumed restart begins at its start");
     }
 
     #[tokio::test]

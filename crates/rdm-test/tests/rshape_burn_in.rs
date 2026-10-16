@@ -1894,6 +1894,23 @@ impl Run {
         build_id
     }
 
+    /// The caller's resubmit of `build_id`, whose restart of `node` ended at `failed_attempt`
+    /// (node-rpc-envelope.md build.create: "existing build_id for resubmission"; R-PV1: "the
+    /// uncompleted stop-then-start sequence runs again through the caller's resubmit"): never a second
+    /// Build. Its `Started` names the attempt the caller resubmits from; the attempt it drives is the
+    /// next one, which [`Self::finish`] waits for. The caller's stream is read on a task of its own.
+    async fn write_resubmit(&mut self, f: &Formed, st: &Stable, what: &str, node: &str, build_id: &str, failed_attempt: u32) {
+        use rdm_client::{Nodes, WorkflowKind};
+        let t0 = now_ms();
+        let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
+        let accepted = rdm_core::dto::Accepted { build_id: build_id.parse().unwrap_or_else(|e| panic!("{what}: {build_id} is not a Build id: {e:?}")), attempt: failed_attempt };
+        let mut stream = nodes.resume(WorkflowKind::Restart(node.parse().unwrap()), &accepted).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the resubmit of {build_id}: {e}", st.fp_name()));
+        tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
+        self.attempts.insert(build_id.to_string(), u64::from(failed_attempt) + 1);
+        self.actions.push(json!({"t_ms": t0, "action": what, "via": "build.create resubmit", "subject": node, "build_id": build_id, "from_attempt": failed_attempt, "accepted_by": st.fp["name"]}));
+        progress(&format!("{what}: {build_id} resubmitted from attempt {failed_attempt} to {}", st.fp_name()));
+    }
+
     /// Submit the replace recipe of `node` (lifecycles/node-replace.md: one Build of node primitives)
     /// to the fabric-primary over the `node` objects: the Build it runs on. The attempt it opened is
     /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
@@ -4193,16 +4210,12 @@ async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv:
     let after_hold = a.build(f, &build_id).await.unwrap_or(Value::Null);
     let resubmitted = (!completed_while_held && after_hold["state"] == "failed").then(|| json!({"failed_attempt": after_hold["failed_at"], "last_failure": after_hold["last_failure"]}));
     if resubmitted.is_some() {
-        // The fabric-primary refuses a restart of a node its live view does not hold live, by name
-        // (`node-not-live`, control_plane.rs `not_live`): the released runtime is resubmitted once that
-        // view holds it ready again, which its first digests after the release bring (two floors bound it).
-        let fp = st.fp_name();
-        wait_for(&format!("{fp}'s view holds the released {node} ready again"), rdm_core::cadence::staleness_floor() * 2, || async {
-            nodes_at(&f.estate, &fp).await.and_then(|v| v.iter().any(|x| x["name"] == node && x["node_id"] == json!(node_id) && x["status"] == "ready-for-traffic").then_some(()))
-        })
-        .await;
-        let again = a.write(f, st, "C17: node.restart resubmitted after the held attempt failed", Write::Restart(node.to_string())).await;
-        assert_eq!(again, build_id, "{node}: the resubmitted restart is an attempt of the same accepted Build");
+        // The failed attempt leaves the restart open: every view lists the birth `restarting` (commanded
+        // silence its executor owns) until its node.started, and a fresh node.restart of it is refused
+        // `node-not-live`. The caller resubmits the Build; its next attempt runs the whole stop, then the
+        // whole start (R-PV1).
+        let failed_attempt = u32::try_from(a.attempts[&build_id]).expect("an attempt number");
+        a.write_resubmit(f, st, "C17: the failed restart resubmitted after the hold's release", node, &build_id, failed_attempt).await;
     }
     let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: node_id.clone(), incarnation: inc.clone() }, "after-hold-release").await;
     let after = f.estate.node_value(node).await;
