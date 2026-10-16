@@ -2297,6 +2297,10 @@ mod tests {
         let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, "node.create:mesh1.rpc.1") };
         let back: BuildStepReceipt = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(back, with);
+        // i144 R21: a Failed line written before the stage existed replays with none.
+        let old_failed = format!(r#"{{"fact":"step","build_id":"{}","attempt":1,"operation":"node.delete:mesh1.rpc.1","step":"TerminateRuntime","outcome":{{"failed":{{"reason":"x"}}}}}}"#, rdm_core::fixture_crockford60("b1"));
+        let fact: BuildFact = serde_json::from_str(&old_failed).unwrap();
+        assert!(matches!(fact, BuildFact::Step(BuildStepReceipt { outcome: StepOutcome::Failed { stage: None, .. }, .. })), "{fact:?}");
     }
 
     use super::*;
