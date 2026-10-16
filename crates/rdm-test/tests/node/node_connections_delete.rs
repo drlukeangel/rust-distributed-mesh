@@ -87,3 +87,58 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).expect("the node operation span");
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
 }
+
+/// CONTRACT (i144 R22; Luke Q6, Q7: "The node reports admission and completion on the same command's
+/// ordered reply stream", on op 0x22 NodeCommand; "Remove both pre-send writes"): a standalone
+/// `node.connections.delete { All }` of a member. The mesh-primary records nothing for it before its
+/// command leaves: no connections-deleting record precedes its call to the node. The call is the node
+/// command op 0x22 (34). The node accepts it, establishes its block on new application work and
+/// reports `ConnectionsDeleting` on the call's stream; only then does the mesh-primary record the
+/// birth connections-deleting; the node's completion comes after. Must NOT happen: a record before
+/// the send, the command on Status 0x1B, or the record before the node's report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_nothing_is_recorded_before_the_send() {
+    let test = "a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_nothing_is_recorded_before_the_send";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let birth_build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await.build_id.to_string();
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+
+    const NODE: &str = "mesh1.rpc.1";
+    let before = estate.node_value(NODE).await;
+    let mut deleting = estate.nodes_obj().await.delete_connections(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connections.delete of {NODE}: {e}"));
+    let frames = Estate::frames_of(&mut deleting).await;
+    assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
+    estate.stop().await;
+    let spans = estate.spans();
+    // The operation's own run: its DeleteConnections step and everything in its trace.
+    let step = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["node"]) == NODE && s(&sp["attributes"]["step"]) == "DeleteConnections").cloned().expect("the DeleteConnections step");
+    let trace = s(&step["trace_id"]);
+    let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
+    let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let node_id = s(&before["node_id"]);
+    // The mesh-primary's records of connections-deleting for this birth, in the run.
+    let records: Vec<&Value> = run
+        .iter()
+        .copied()
+        .filter(|sp| start(sp) >= start(&step))
+        .filter(|sp| {
+            let n = sp["name"].as_str().unwrap_or_default();
+            (n == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == NODE)
+                || ((n == "rdm.mesh.membership.update.from-command-admitted" || n == "rdm.mesh.membership.update.from-status-report") && s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["status"]) == "Draining")
+        })
+        .collect();
+    // The mesh-primary's call carrying the command to the node.
+    let (step_start, step_end) = (start(&step), step["end_unix_nano"].as_u64().unwrap_or(0));
+    let calls: Vec<&Value> = run.iter().copied().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && sp["attributes"]["target"].as_str().is_some_and(|t| t.contains(&node_id)) && start(sp) >= step_start && start(sp) <= step_end).collect();
+    let first_call = calls.iter().map(|sp| start(sp)).min().expect("the mesh-primary's call to the node");
+    let early: Vec<&&Value> = records.iter().filter(|sp| start(sp) < first_call).collect();
+    assert!(early.is_empty(), "nothing is recorded for {NODE} before its command leaves: {early:#?}");
+    let command = calls.iter().find(|sp| s(&sp["attributes"]["op"]) == "34").unwrap_or_else(|| panic!("the command rides NodeCommand op 0x22 (34): {calls:#?}"));
+    let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-connections-deleting").expect("the node reports its admission on the stream");
+    let recorded = records.iter().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting").expect("the mesh-primary records connections-deleting");
+    let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-delete-connections").expect("the node's completion span");
+    assert!(start(command) <= start(admitted) && start(admitted) <= start(recorded) && start(recorded) <= completed["end_unix_nano"].as_u64().unwrap_or(0), "the send, the node's admission, the mesh-primary's record, then the completion: {command} {admitted} {recorded} {completed}");
+    println!("connections.delete on its command stream: http://192.168.68.99:16687/trace/{trace}");
+    estate.record_trace_url(&trace);
+}
