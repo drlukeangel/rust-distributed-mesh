@@ -218,6 +218,20 @@ struct Owed {
     pushing: bool,
     kick: Arc<tokio::sync::Notify>,
     acked: watch::Sender<u64>,
+    /// The request's W3C context: a resend of its response is a step of the caller's trace.
+    parent: Option<(String, Option<String>)>,
+}
+
+/// `span` as a child of the remote context `parent` (`traceparent`, `tracestate`), when there is one.
+pub(crate) fn parent_on(span: &tracing::Span, parent: Option<&(String, Option<String>)>) {
+    if let Some((tp, ts)) = parent {
+        crate::set_remote_parent(span, tp, ts.as_deref());
+    }
+}
+
+/// The remote context a request carried, as [`parent_on`] takes it.
+pub(crate) fn parent_of(context: &rdm_core::context::CallContext) -> Option<(String, Option<String>)> {
+    context.traceparent.clone().map(|tp| (tp, context.tracestate.clone()))
 }
 
 struct St {
@@ -651,6 +665,11 @@ impl Delivery {
 
     /// Open the owed response of invocation `id`, answered toward `reply_to`.
     pub(crate) fn owe_response(&self, id: &DeliveryId, reply_to: iroh::PublicKey) -> watch::Receiver<u64> {
+        self.owe_response_in(id, reply_to, None)
+    }
+
+    /// [`Self::owe_response`] for a request that carried the remote context `parent`.
+    pub(crate) fn owe_response_in(&self, id: &DeliveryId, reply_to: iroh::PublicKey, parent: Option<(String, Option<String>)>) -> watch::Receiver<u64> {
         let mut st = self.inner.st.lock().unwrap();
         let o = st.owed.entry(id.clone()).or_insert_with(|| Owed {
             reply_to,
@@ -659,15 +678,21 @@ impl Delivery {
             pushing: false,
             kick: Arc::new(tokio::sync::Notify::new()),
             acked: watch::Sender::new(0),
+            parent: None,
         });
         o.reply_to = reply_to;
+        if parent.is_some() {
+            o.parent = parent;
+        }
         o.acked.subscribe()
     }
 
-    /// Record the response frame at `seq` of invocation `id` as owed, and return its encoded frame.
-    pub(crate) fn owe_frame(&self, id: &DeliveryId, seq: u32, body: Vec<u8>, terminal: bool) -> Vec<u8> {
+    /// Record the response frame at `seq` of invocation `id` as owed, and return its encoded frame:
+    /// `None` when its response is owed no longer (its caller ended the invocation), and nothing is
+    /// to be written.
+    pub(crate) fn owe_frame(&self, id: &DeliveryId, seq: u32, body: Vec<u8>, terminal: bool) -> Option<Vec<u8>> {
         let mut st = self.inner.st.lock().unwrap();
-        let reply_to = st.owed.get(id).map(|o| o.reply_to).expect("a frame is owed only on an open owed response");
+        let reply_to = st.owed.get(id).map(|o| o.reply_to)?;
         let delivery_seq = st.send.mint(&[reply_to]);
         let mine = DeliveryId { sender: self.inner.me.clone(), delivery_seq };
         st.sent.insert(mine, Sent::Response { invocation: id.clone(), seq });
@@ -677,7 +702,7 @@ impl Delivery {
         let frame = encode_response_frame(&h, &body);
         o.frames.insert(seq, (delivery_seq, body));
         o.complete |= terminal;
-        frame
+        Some(frame)
     }
 
     /// How many frames of `id`'s response are owed.
@@ -723,8 +748,11 @@ impl Delivery {
         if let Some(r) = reply_to {
             o.reply_to = r;
         }
-        if o.frames.is_empty() && o.complete {
-            st.owed.remove(id);
+        if o.frames.is_empty() {
+            // Nothing owed yet: the frames to come are written where the caller now is.
+            if o.complete {
+                st.owed.remove(id);
+            }
             return;
         }
         if o.pushing {
@@ -732,9 +760,10 @@ impl Delivery {
             return;
         }
         o.pushing = true;
+        let parent = o.parent.clone();
         drop(st);
         // The loop holds the delivery state weakly: a process that ends its server ends its resends.
-        tokio::spawn(push_loop(Arc::downgrade(&self.inner), id.clone(), why.to_string()));
+        tokio::spawn(push_loop(Arc::downgrade(&self.inner), id.clone(), why.to_string(), parent));
     }
 
     fn birth_ended(&self, birth: &Birth) -> Option<String> {
@@ -782,6 +811,10 @@ impl Delivery {
         tracing::info!(parent: span, attempt, frames = frames.len(), via, peer = %reply_to.fmt_short(), "owed response frames resent on a new stream");
         if let Some(conn) = conn {
             self.resend_frames(id, &conn, frames).instrument_in(span).await;
+            // Acked on that stream: the response is owed no longer, said now, not a round later.
+            if !self.inner.st.lock().unwrap().owed.contains_key(id) {
+                return Err("acked");
+            }
         }
         Ok((kick, conns))
     }
@@ -924,8 +957,9 @@ impl Delivery {
 
 /// Resend `id`'s owed response, on the schedule, until it is acked, its receiving birth ends, or the
 /// process's delivery state is gone.
-async fn push_loop(weak: std::sync::Weak<Inner>, id: DeliveryId, why: String) {
+async fn push_loop(weak: std::sync::Weak<Inner>, id: DeliveryId, why: String, parent: Option<(String, Option<String>)>) {
     let span = tracing::info_span!("rdm.node_rpc.delivery.update.via-response-resend", delivery_id = %id, reason = %why, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
+    parent_on(&span, parent.as_ref());
     let mut attempt = 0u32;
     let outcome = loop {
         let Some(inner) = weak.upgrade() else { break "process-ended" };
