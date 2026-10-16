@@ -234,3 +234,5 @@ mod process_env;
 mod role_process;
 #[path = "gossip/receive_rules.rs"]
 mod receive_rules;
+#[path = "gossip/operation_facts.rs"]
+mod operation_facts;

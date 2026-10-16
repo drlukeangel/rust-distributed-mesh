@@ -2008,8 +2008,22 @@ impl View {
                 }
                 Vec::new()
             }
-            Frame::NodeDeleted { op, .. } => {
-                self.book.depart(op.clone());
+            Frame::NodeDeleted { op, forwarded_by } => {
+                let span = tracing::info_span!(
+                    "rdm.mesh.membership.update.via-node-deleted",
+                    node = %self.current_name(),
+                    subject = %op.name,
+                    subject_id = %op.node_id,
+                    incarnation_id = %op.incarnation,
+                    build_id = %op.build_id,
+                    attempt = op.attempt,
+                    operation = %op.operation,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    via,
+                    applied = tracing::field::Empty,
+                );
+                let _in = span.enter();
+                span.record("applied", self.book.depart(op.clone()));
                 Vec::new()
             }
             Frame::NodeLeft { op, forwarded_by } => {
