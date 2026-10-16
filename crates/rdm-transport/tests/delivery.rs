@@ -535,12 +535,17 @@ async fn resends_arrive_at_the_cadence_then_doubling_capped_at_the_floor() {
     let conn = r.conns.recv().await.unwrap();
     let mut arrivals = Vec::new();
     let mut ids = Vec::new();
-    while arrivals.len() < 6 {
-        let (_send, mut recv) = conn.accept_bi().await.unwrap();
-        let (h, _) = read_request(&mut recv).await;
-        arrivals.push(Instant::now());
-        ids.push(h.delivery_id());
-    }
+    // The schedule puts six attempts inside 2.3 s: bounded, so a request that is never resent fails here.
+    tokio::time::timeout(Duration::from_secs(4), async {
+        while arrivals.len() < 6 {
+            let (_send, mut recv) = conn.accept_bi().await.unwrap();
+            let (h, _) = read_request(&mut recv).await;
+            arrivals.push(Instant::now());
+            ids.push(h.delivery_id());
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("six attempts of the one request within the schedule; {} arrived", arrivals.len()));
     call.abort();
     assert!(ids.windows(2).all(|w| w[0] == w[1]), "every attempt carries the one identity: {ids:?}");
     let gaps: Vec<u128> = arrivals.windows(2).map(|w| (w[1] - w[0]).as_millis()).collect();
@@ -863,7 +868,8 @@ async fn reordering_past_its_positions_or_its_bytes_is_refused() {
     let (client, _) = client_of(&[&r.node]).await;
     let (mut stream, id, mut send, _recv, _conn) = tick_stream(&mut r, &client).await;
     write(&mut send, &response(&r.me, 1, &id, 65, &TickFrame::Item { i: 65 })).await;
-    assert!(matches!(stream.next().await, Some(StreamItem::Failed(StreamFailure::Violation(_)))), "65 past the next expected position");
+    let refused = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
+    assert!(matches!(refused, Ok(Some(StreamItem::Failed(StreamFailure::Violation(_))))), "65 past the next expected position: {refused:?}");
     let mut r = raw().await;
     let (client, _) = client_of(&[&r.node]).await;
     let (mut stream, id, mut send, _recv, _conn) = tick_stream(&mut r, &client).await;
