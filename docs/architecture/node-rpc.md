@@ -1124,7 +1124,7 @@ Node RPC consumes those facts and adds typed invocation semantics. It is not a n
 The following are architecture violations:
 
 - `call_role("gateway", ...)` inside node-rpc;
-- automatic retry after commit;
+- a delivery-retry loop in a primitive or a workflow (delivery is the runtime's, §43);
 - hidden second pool-slot attempt inside one call;
 - a generic success/error RPC envelope around every protocol;
 - observability context that affects dispatch, authorization, routing or execution;
@@ -1137,7 +1137,8 @@ The following are architecture violations:
 - treating gossip staleness as an RPC eviction rule;
 - `From<anyhow::Error> for HandlerFault`;
 - detached handler tasks;
-- a Node RPC deduplication cache;
+- a cache of handler results (the runtime holds an owed response frame only until its ack, §43,
+  and suppresses repeated deliveries, §33);
 - a `rafka-broker-rpc` pass-through crate with no independent domain abstraction;
 - moving reader/writer retry policy into the connections/reachability layer;
 - letting node-rpc choose a replica, role, carrier or fallback;
