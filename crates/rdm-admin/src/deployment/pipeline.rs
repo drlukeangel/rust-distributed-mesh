@@ -2931,7 +2931,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_restart_of_a_birth_its_own_restart_parked_resumes_at_start() {
-        let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default() };
+        let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default(), refuse: None };
         let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its parked birth no stop".into() }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;

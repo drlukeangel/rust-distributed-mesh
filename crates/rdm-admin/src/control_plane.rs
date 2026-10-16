@@ -1178,7 +1178,7 @@ mod tests {
         let restart_op = format!("node.restart:{path}");
         let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: inc.clone() };
         let mut facts = vec![accepted, claim(1), ended(1, AttemptOutcome::Converged), opened(2, restart.clone()), claim(2)];
-        for (s, outcome) in [("NodeRestarting", StepOutcome::Complete), ("StopNode", StepOutcome::Complete), ("AwaitNodeLeft", StepOutcome::Complete), ("StartNode", StepOutcome::Failed { reason: "start-node was not answered Started".into() })] {
+        for (s, outcome) in [("NodeRestarting", StepOutcome::Complete), ("StopNode", StepOutcome::Complete), ("AwaitNodeLeft", StepOutcome::Complete), ("StartNode", StepOutcome::failed("start-node was not answered Started"))] {
             facts.push(step(2, &restart_op, s, outcome));
         }
         facts.push(ended(2, AttemptOutcome::Failed { reason: "StartNode".into() }));
