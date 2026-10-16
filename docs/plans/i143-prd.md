@@ -976,6 +976,7 @@ e12.s84 (issue to generate)  R-CY1: the canary red read and fixed (Root 1: cohor
 e12.s85 (issue to generate)  layout pre-step: `fence.rs` -> `seat_revision.rs`, `departed_status.rs` -> `deleted_status.rs`, and the 32 `i143_acceptance_*.rs` files renamed into their crates' test binaries with 100% discovery parity and 0 stem violations
 e12.s86 (issue to generate)  R-FM1: hung runtime hold (`RDM_HUNG_HOLD_FLOORS`, default 10), `TerminateRuntime` first step of recovery Build, and `held-running` store fact (`NodeView`/`FabricView`, gossip wire untouched; RED 505d99eb, landed 549493fe, gate 59 s; traces `07f3b640645fb9621219d50fa3135604`, `6f2cee1c90c07a9a7ce03607ded20cdb`, `88f6435305841044a5468305d6c1f66e`, `ed394bca8f94b70380f4cf4ff249b2fa`)
 e12.s87 (issue to generate)  R-FM2: gone vs broken inherited `data_dir` (`RDM_DATA_DIR_GONE_FLOORS`, default 2; `data-dir-lost` and `data-dir-unreadable` store facts + `node.get` fields, gossip wire untouched; RED 5068c55d; traces `3afc5ad0a17c48afa65aebd97fa550b4`, `b969d8fa8549ea89be5403ec5c232a8b`, `1d467f78873ef57f1d928f6e156e24d2`, `d7f84fcf6d32c35ceb719b6db6263a9c`, `3398e9d6a778824a3336aa83c29442ac`, `af93811d9ec896682b5c0ec249c0a3bd`, `2302862bb508b7b0584913877b8b491d`)
+e12.s90 (issue to generate)  open: the builder block `e12.s90` below (R-PV1: the provider reports an OS-stopped runtime; os-stopped is a fact, never a hold or a terminate)
 e12.s89 (issue to generate)  the R-shape release cells: nine red cells across the authority, lifecycle, routing and partition chaos-process jobs, each read from its own trace and fixed where it lives
 e12.s49 #3078  mesh.delete ends at mesh.deleted: the fabric-primary's leave completes at the
                validated handoff; the final admin stays alive publishing MeshStatus Dead; its
@@ -2472,6 +2473,8 @@ open (added 2026-10-15 from the `7257ff09` release run). Landed: `f877a260` (For
 - [ ] `i143-rshape-lifecycle-chaos-process`: `mock_role_restarts_preserve_identity_and_birth` (`:3289`: `mesh1.admin.2`: the birth left no `rdm.mesh.node.update.via-ready` span after NodeRestarting); `mock_node_replacement_creates_distinct_logical_identity` and `mock_drain_and_retire_preserve_status_and_terminal_proof` (`:1937`: the Build did not complete with its effect visible within 120 s).
 - [ ] `i143-rshape-routing-chaos-process`: `mock_connection_churn_releases_superseded_resources` (`:2220`: attempt 1 executed by `mesh1.admin.1` and `mesh2.admin.1`); `mock_routes_survive_connection_and_birth_supersession` (`:2228`: attempt 2 began before attempt 1); `mock_proxy_cutback_requires_durable_retirement` stays green on `f877a260`.
 - [ ] `i143-rshape-partition-chaos-process`: `mock_control_loss_recovers_without_status_heartbeat` (`:5306`: the observer heard both births of the restarted broker: one incarnation).
+- [ ] C17 (`mock_drain_and_retire_preserve_status_and_terminal_proof`, trace `3100a0ae262f62d82e02953ef3c98d36`), read 2026-10-15 (R-PV1 note): the mesh-primary sets `stopping` before the node admits the stop (pipeline.rs:2249, runner.rs:151) and publishes the reserved `NodeLeaving` frame (runner.rs:148; gossip.md:160, R-CR4). Fix: `stopping` on the stop call's admission (states.md:30), never before; the `NodeLeaving` sender deleted, the variant kept (R-G3 pattern), the frame's publish in the C17 trace its flame (gossip change: Luke's permission is R-PV1's note). D1 is not a defect (R-BI1: an attempt of the accepted Build, no Build minted); D3 falls with D2 (`is_live`, model.rs:46)
+- [ ] for Luke (one doc line or a ruling): `node-not-live` is in no page; states.md:108 says a lifecycle op reaches a stopping or stopped birth, while control_plane.rs:618 refuses a restart of a parked node ("a restart needs a live node"). Is a restart of a stopped node refused, or served as its start?
 - [ ] An assertion that states a rule the architecture does not hold is corrected to the doc line it cites; one the architecture does hold and the code breaks is fixed in the code, with the red and green traces cited here.
 
 ### Acceptance criteria
@@ -2491,6 +2494,48 @@ open (added 2026-10-15 from the `7257ff09` release run). Landed: `f877a260` (For
 
 - sections: [the-plan-of-record, story-bar, 14-export-import-gate]
 <!-- /epic:e12.s89 -->
+
+<!-- epic:e12.s90 -->
+## e12.s90 — R-PV1: the deployment provider reports an OS-stopped runtime; os-stopped is a recorded fact, never a hold or a terminate
+
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-PV1; proposal `docs/plans/proposal/update-provider-abstraction-to-actually-work.md` items 1-4, 6, Q1; `deployment-provider.md`; `lifecycles/node-runtime-inspect.md`; `lifecycles/node-recovery.md` step 3; `lifecycles/node-tickle.md` step 1
+
+### State
+
+not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md §6)
+
+### Remaining
+
+- [ ] `DeploymentStatus::OsStopped` (provider.rs:298); every match on `DeploymentStatus` (42 `Running` arms across rdm-admin and rdm-node) handles it by name, container.rs:630 `signal_stop` included (it signals a `Running` runtime only)
+- [ ] process.rs `inspect` (:443) and `alive` (:127): the state letter of every task of the live thread group and of tracked children; all live tasks `T`/`t` → `OsStopped`; any other live task → `Running`; none live → `Exited`; start identity unchanged. container.rs:621: `paused` → `OsStopped`
+- [ ] `node.runtime.inspect` answers `os-stopped`; span verdict `os-stopped` (node-runtime-inspect.md:31)
+- [ ] the durable status-row fact `os-stopped { since }` written by the mesh-primary, surfaced on `node.get`, not a gossip `MemberStatus` (wire untouched); cleared when the runtime runs again; no R-FM1 hold and no `TerminateRuntime` from this observation (Q1)
+- [ ] the recovery tick re-inspects an `os-stopped` birth every tick: `Exited` → the ordinary exit proof; `Unknown` → the report, no hold; `Running` → RPC recovery permitted, fact cleared
+- [ ] a `NotSent` command marks the birth `PendingReconnect` at once (recovery's ladder now, not after the floor); no second ladder in the executor; node-tickle.md step 1 gains the reason
+- [ ] the pending-action rule: `node.start` only when start is the pending receipted step; a restart whose stop was never admitted resumes stop-then-start through the resubmit or the lane's next attempt
+- [ ] page text (deployment-provider.md inspect, node-runtime-inspect.md result/sequence/verdict, node-recovery.md step 3, node-tickle.md step 1) lands with the code; exact old and new text recorded here for Luke's yes before the landing
+- [ ] cells: the process provider on a child it SIGSTOPs (`os-stopped`) and SIGCONTs (`running`), with a second thread running during the stop of one (`Running`, the thread-group rule); the container provider on `docker pause` / `unpause` (named skip on a host without docker, `RDM_REQUIRE_CONTAINER`); a stopped birth re-inspected to `Exited` after SIGKILL; each with its Jaeger flame
+
+### Acceptance criteria
+
+<!-- crit:e12.s90.1 -->
+- [ ] the four cells green at gate cadence, traces cited here; no `TerminateRuntime` and no `held-running` in the os-stopped traces
+<!-- /crit:e12.s90.1 -->
+<!-- crit:e12.s90.2 -->
+- [ ] C17's os-stopped window shows `rdm.node_admin.node.resolve.via-provider-inspection` with verdict `os-stopped` within one tick of the NotSent (depends on e12.s89's D2 fix landing first)
+<!-- /crit:e12.s90.2 -->
+<!-- crit:e12.s90.3 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s90.3 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar]
+<!-- /epic:e12.s90 -->
 <!-- epic:e12.s23 -->
 ## e12.s23 — seats and the Build-door admission: a seat moves only by explicit yield or proven loss (R-EL1 = Y + D, R-MT1 node.primary.update), and nothing that moves a seat or writes caller state runs before the initial fabric is ready-for-traffic
 
