@@ -24,8 +24,8 @@
 //!   "updated" is the later: a late "updating" of that epoch is ignored. A frame naming both seats is
 //!   ignored when either cohort holds a newer key, and then neither key moves.
 //!
-//! Every other frame carries none of these keys and is taken as it arrives; its handler applies the
-//! data rules it already has (a status's `changed_at_rafka_ms`, a lifecycle key already applied).
+//! MeshStatus is classified by [`admit_mesh_status`] against its held projection under the
+//! status book lock. Other unkeyed frames retain their existing handler data rules.
 //!
 //! A frame whose key equals the held one is taken: the chunks of one publication share its key, and
 //! a copy is the handler's to absorb (a chunk already held, a delta already applied).
@@ -41,6 +41,32 @@
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;
 use std::collections::HashMap;
+
+/// Admit a mesh status against the projection held under the status book's lock. The declared
+/// mesh, publisher and change instant identify the revision; forwarding metadata is not content.
+/// This also serves statuses installed by a read, so classification and installation share the
+/// same held fact instead of maintaining a separate receive history.
+pub(crate) fn admit_mesh_status(mesh: &str, held: Option<&crate::membership::MeshStatus>, status: &str, publisher: &str, revision: u64) -> bool {
+    let Some(held) = held else { return true };
+    if revision < held.changed_at_rafka_ms {
+        tracing::info!(reason = "older-than-held", what = %format!("mesh {mesh}"), held_at_rafka_ms = held.changed_at_rafka_ms, offered_at_rafka_ms = revision, "a status older than the one held is refused");
+        return false;
+    }
+    if publisher == held.publisher && revision == held.changed_at_rafka_ms {
+        if status != held.status {
+            tracing::info_span!(
+                "rdm.mesh.membership.reject.via-inconsistent",
+                frame = "mesh-status",
+                subject = %format!("{mesh} {publisher}"),
+                revision,
+                held_status = %held.status,
+                frame_status = status,
+            ).in_scope(|| tracing::info!("a mesh status at the held revision has different content: refused"));
+        }
+        return false;
+    }
+    true
+}
 
 /// The source a frame's order key orders within.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -57,5 +57,5 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
     for span in spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" || s["name"] == "rdm.mesh.membership.reject.via-inconsistent") {
         println!("{}", serde_json::to_string(span).unwrap());
     }
-    assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-inconsistent"), "equal revision with different content must be refused by name, never silently treated as a duplicate; evidence {}", capture.path().display());
+    assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-inconsistent" && s["attributes"]["frame"] == "mesh-status" && s["attributes"]["subject"] == "mesh1 mesh1.admin.1" && s["attributes"]["revision"] == "100"), "equal revision with different content must be refused by name, never silently treated as a duplicate; evidence {}", capture.path().display());
 }

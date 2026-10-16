@@ -895,7 +895,7 @@ impl StatusBook {
         match f {
             Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, .. } => {
                 let mut held = self.meshes.lock().unwrap();
-                if Self::refuse(held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms)), (publisher.as_str(), *changed_at_rafka_ms), &format!("mesh {mesh}")) {
+                if !crate::receive_order::admit_mesh_status(mesh, held.get(mesh), status, publisher, *changed_at_rafka_ms) {
                     return false;
                 }
                 held.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });

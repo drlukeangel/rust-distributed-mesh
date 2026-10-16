@@ -81,15 +81,14 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 
 #### e1 — the table and the first proven regression
 
-- **Goal → gap.** The frame-contract table on gossip.md; one unkeyed frame applied out of order, with
-  its flame (the dev's offer, 2026-10-16).
+- **Goal → gap.** The frame-contract table on gossip.md; one unkeyed MeshStatus with equal revision and different content refused as inconsistent, with its RED and GREEN flames (Luke, Q19=A).
 - **Deliverables.** The red cell of the regression (the table is on the page); its fix in the receive
   path by the frame's own identity; the flame before and after; the gossip.md section as exact old →
   new to Luke; a gossip change, so Luke's permission is Q17 and the flame is required.
-- **Acceptance cells.** `an_unkeyed_<frame>_delivered_after_a_newer_frame_about_its_subject_is_refused_stale`
+- **Acceptance cells.** `an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_inconsistent`
   (the regression); `every_frame_kind_has_a_row_in_the_receive_rules` (a unit cell over the catalog against the page's table).
   RED first.
-- **State.** awaiting Q19 ([packet](rulings/i147-q19-first-regression.md)) in lane `e7s3`, branch `codex/i147-e1-gossip-conformance`. RED test commit `35af8ca1`: MeshStatus equal revision/different content lacks the required named inconsistency refusal; 0 passed, 1 failed (0.08 s), owned by i147.e1 pending Q19 selection. Before trace `f6fc35d858049ff6c75782276d66a969` (conflict), control trace `9d29876ac4d6d6d455aecd531c775469` (initial hold). Catalog cell: 1 passed, 0 failed. GREEN SHA/after trace: none; no receive-path fix, architecture edit, wire change or landing. Q19 asks whether this inconsistency may replace e1’s stale-only acceptance selection; e2 remains not started.
+- **State.** Q19=A approved by Luke, 2026-10-16; targeted GREEN in lane `e7s3`, branch `codex/i147-e1-gossip-conformance`. RED SHA `35af8ca1`, before trace `f6fc35d858049ff6c75782276d66a969`; after trace `7af27c38a6aa16ca6f5dbf040b0ebd1e` shows `via-inconsistent` with frame, subject and revision, held status unchanged. Live cell: 1 passed, 0 failed (0.08 s); catalog: 1 passed, 0 failed. Full gate and landing pending. Classification uses the held status projection under its installation lock. No wire or architecture change; R10 and e2 remain outside this landing.
 
 #### e2 — every row, one defect at a time
 

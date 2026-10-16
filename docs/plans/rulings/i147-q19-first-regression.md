@@ -1,4 +1,6 @@
-# Q19 — May the proven MeshStatus inconsistency be e1’s first regression?
+# Q19 — MeshStatus inconsistency is e1’s first regression
+
+**Ruling: Luke selected A, 2026-10-16.** Use the proven inconsistency regression for e1; fix it in the receive path and prove GREEN. No architecture or wire change.
 
 ## 1. Spec
 
