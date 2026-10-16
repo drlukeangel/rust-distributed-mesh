@@ -5,7 +5,8 @@
 //! - Silent, it is marked `pending-reconnect` at the staleness floor, tickled by its mesh's
 //!   primary (one QUIC connect, direct then via a peer: `via-offline-tickle-failed`), the hold-down
 //!   opens, and a floor later it is `dead`.
-//! - Its runtime still runs, so it is held, never replaced: no Build removes it and no other birth
+//! - Its runtime still exists (the operating system holds it suspended: `os-stopped`, never exit
+//!   proof), so it is held, never replaced: no Build removes it and no other birth
 //!   takes its path. Thawed, the same birth is back `ready-for-traffic` (`via-offline-returned`).
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};

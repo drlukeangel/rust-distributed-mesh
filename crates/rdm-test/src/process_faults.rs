@@ -222,6 +222,130 @@ impl ExactRuntime {
     }
 }
 
+/// A hung runtime ([`ExactRuntime::hang`]): every task of its thread group but the leader is held in
+/// a tracer's stop (`t`), so the operating system shows the group running (the leader sleeps) while
+/// the runtime does nothing: the case no provider can see (deployment-provider.md §2.5, "What stays
+/// inference"). Released, or dropped, every held task is detached and runs on.
+pub struct Hung {
+    /// The exact runtime held.
+    pub runtime: ExactRuntime,
+    /// The tasks the tracer holds, by tid.
+    pub held: Vec<u32>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+    tracer: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Hung {
+    /// Detach every held task: the runtime runs on, the same birth.
+    pub fn release(self) {}
+}
+
+impl Drop for Hung {
+    fn drop(&mut self) {
+        if let Some(tx) = self.release.take() {
+            let _ = tx.send(());
+        }
+        if let Some(t) = self.tracer.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+impl ExactRuntime {
+    /// Hang this exact runtime: one tracer thread seizes and interrupts every task of its thread group
+    /// but the leader (`PTRACE_SEIZE`, `PTRACE_INTERRUPT`; every ptrace request of a tracee comes from
+    /// the thread that attached it) and holds them until [`Hung`] is released or dropped. Acknowledged
+    /// by the OS: every held task shows `t` and the leader is not stopped. One span,
+    /// `rdm.testkit.fault.update.via-process-trace`.
+    pub fn hang(&self) -> Result<Hung, Refusal> {
+        let span = tracing::info_span!("rdm.testkit.fault.update.via-process-trace", fault = "hang", pid = self.pid, start = self.start, control_domain = %self.control_domain, deployment_id = %self.deployment_id, outcome = tracing::field::Empty);
+        let _g = span.enter();
+        let out = self.hang_inner();
+        span.record("outcome", tracing::field::display(match &out {
+            Ok(h) => json!({"applied": "hang", "held": h.held.len(), "leader": proc_state(self.pid).map(String::from)}),
+            Err(r) => serde_json::to_value(r).unwrap_or(Value::Null),
+        }));
+        out
+    }
+
+    fn hang_inner(&self) -> Result<Hung, Refusal> {
+        self.check()?;
+        let pid = self.pid;
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<Vec<u32>, Refusal>>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let tracer = std::thread::spawn(move || {
+            let none = std::ptr::null_mut::<libc::c_void>();
+            let tids: Vec<u32> = std::fs::read_dir(format!("/proc/{pid}/task")).map(|d| d.flatten().filter_map(|t| t.file_name().to_str()?.parse().ok()).filter(|t| *t != pid).collect()).unwrap_or_default();
+            let mut held = Vec::new();
+            for tid in tids {
+                // SAFETY: ptrace(2) and waitpid(2) on a task of the exact runtime checked above; no memory is touched.
+                unsafe {
+                    if libc::ptrace(libc::PTRACE_SEIZE, tid as libc::pid_t, none, none) != 0 {
+                        let err = std::io::Error::last_os_error();
+                        // A task that exited between the listing and the seize holds nothing.
+                        if err.raw_os_error() == Some(libc::ESRCH) {
+                            continue;
+                        }
+                        for t in &held {
+                            libc::ptrace(libc::PTRACE_DETACH, *t as libc::pid_t, none, none);
+                        }
+                        let _ = ready_tx.send(Err(Refusal::SignalFailed { pid: tid, errno: err.raw_os_error().unwrap_or(0) }));
+                        return;
+                    }
+                    libc::ptrace(libc::PTRACE_INTERRUPT, tid as libc::pid_t, none, none);
+                    let mut status = 0;
+                    libc::waitpid(tid as libc::pid_t, &mut status, libc::__WALL);
+                }
+                held.push(tid);
+            }
+            let _ = ready_tx.send(Ok(held.clone()));
+            // Held until released; a held task that exits meanwhile (the runtime was killed) is reaped
+            // here, its tracer, so the process it belongs to can be reaped by its parent.
+            let mut live = held;
+            loop {
+                match release_rx.recv_timeout(Duration::from_millis(50)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        live.retain(|t| {
+                            let mut status = 0;
+                            // SAFETY: waitpid(2) on a tracee this thread attached, without blocking.
+                            let r = unsafe { libc::waitpid(*t as libc::pid_t, &mut status, libc::WNOHANG | libc::__WALL) };
+                            !(r == *t as libc::pid_t && (libc::WIFEXITED(status) || libc::WIFSIGNALED(status))) && !(r < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
+                        });
+                        if live.is_empty() {
+                            return;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            for t in live {
+                // SAFETY: detach of a tracee this thread attached; it is in a ptrace stop.
+                unsafe {
+                    libc::ptrace(libc::PTRACE_DETACH, t as libc::pid_t, none, none);
+                }
+            }
+        });
+        let held = match ready_rx.recv() {
+            Ok(Ok(held)) => held,
+            Ok(Err(refusal)) => {
+                let _ = tracer.join();
+                return Err(refusal);
+            }
+            Err(_) => {
+                let _ = tracer.join();
+                return Err(Refusal::NotAcknowledged { fault: Fault::Stop, pid, state_after: proc_state(pid) });
+            }
+        };
+        let hung = Hung { runtime: self.clone(), held, release: Some(release_tx), tracer: Some(tracer) };
+        let traced = |tid: &u32| std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok().and_then(|s| s.rsplit(')').next()?.split_whitespace().next()?.chars().next()) == Some('t');
+        let leader = proc_state(pid);
+        if hung.held.is_empty() || !hung.held.iter().all(traced) || leader.is_none_or(|c| c == 'T' || c == 't') {
+            return Err(Refusal::NotAcknowledged { fault: Fault::Stop, pid, state_after: leader });
+        }
+        Ok(hung)
+    }
+}
+
 /// Why a burst kill signalled nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "burst_refusal", rename_all = "snake_case")]
@@ -382,6 +506,37 @@ mod tests {
         assert!(killed.exited);
         let _ = child.wait();
         assert!(matches!(rt.apply(Fault::Kill), Err(Refusal::AlreadyExited { .. })));
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5 "What stays inference"): a hung runtime is one the
+    /// operating system shows running while it does nothing: every task but the leader is held in a
+    /// tracer's stop (`t`) and the leader is not stopped, so the group is not OS-stopped; released,
+    /// no task is held and the same process runs on.
+    #[test]
+    fn a_hung_runtime_holds_every_task_but_its_leader_and_releases_them() {
+        let mut child = Command::new("python3").args(["-c", "import threading, time\nfor _ in range(3): threading.Thread(target=lambda: time.sleep(60), daemon=True).start()\ntime.sleep(60)"]).spawn().unwrap();
+        let pid = child.id();
+        let until = Instant::now() + Duration::from_secs(10);
+        while std::fs::read_dir(format!("/proc/{pid}/task")).map(|d| d.count()).unwrap_or(0) < 4 {
+            assert!(Instant::now() < until, "the child's threads never started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let rt = ExactRuntime { deployment_id: "dep".into(), control_domain: local_control_domain(), pid, start: start_token(pid).unwrap() };
+        let letters = || -> Vec<char> { std::fs::read_dir(format!("/proc/{pid}/task")).unwrap().flatten().filter_map(|t| std::fs::read_to_string(t.path().join("stat")).ok()?.rsplit(')').next()?.split_whitespace().next()?.chars().next()).collect() };
+        let hung = rt.hang().unwrap();
+        assert_eq!(hung.held.len(), 3, "every task but the leader is held");
+        let held = letters();
+        assert_eq!(held.iter().filter(|c| **c == 't').count(), 3, "the held tasks are in a tracer's stop: {held:?}");
+        assert!(proc_state(pid).is_some_and(|c| c != 'T' && c != 't'), "the leader is not stopped: {held:?}");
+        hung.release();
+        let until = Instant::now() + Duration::from_secs(5);
+        while letters().contains(&'t') {
+            assert!(Instant::now() < until, "a released task is still held: {:?}", letters());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!gone(pid) && start_token(pid) == Some(rt.start), "the same process runs on");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

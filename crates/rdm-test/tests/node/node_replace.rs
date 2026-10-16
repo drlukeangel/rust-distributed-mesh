@@ -1101,7 +1101,8 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
 /// verdict writes the durable `held-running { since, verdicts }` fact on the birth's status row,
 /// surfaced on `node.get`, holds for `RDM_HUNG_HOLD_FLOORS` staleness floors while keeping the
 /// ladder running every tick, and clears the fact on the birth's answer or returning digest): a
-/// member of the mesh that does not hold the fabric-primary is held (SIGSTOP of its exact runtime).
+/// member of the mesh that does not hold the fabric-primary is hung (every task of its exact runtime but
+/// the leader held by a tracer: the operating system shows it running, deployment-provider.md §2.5).
 /// Its mesh-primary sees it silent, its tickle finds no path twice (TRUE OFFLINE), and it asks the
 /// provider about the exact runtime: still running, so the inspection is spanned with verdict
 /// not-exited, `held_running` is surfaced on `node.get`, and no recovery is submitted during the
@@ -1118,8 +1119,8 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
     let mesh = s(&before["mesh"]);
     let attempt_before = lane_attempt_at(&estate, &fp, &birth_build, &mesh).await;
     let rt = exact_runtime(&estate, &node).await;
-    let held = rt.apply(Fault::Stop).expect("the exact runtime is held");
-    assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
+    let held = rt.hang().expect("the exact runtime is hung");
+    assert!(!held.held.is_empty(), "every task but the leader is held: the provider sees it running");
 
     // The ladder: silent at the floor, one tickle half a floor later, TRUE OFFLINE at least one floor
     // after the first no-path, then the inspection on that tick.
@@ -1144,8 +1145,7 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
     assert_eq!(lane_attempt_at(&estate, &fp, &birth_build, &mesh).await, attempt_before, "no attempt is opened in {mesh}'s lane for a hung member inside the hold");
     assert_eq!(held_view["node_id"], before["node_id"], "the held member is not replaced inside the hold");
 
-    let thawed = rt.apply(Fault::Continue).expect("the hold is released");
-    assert_ne!(thawed.state_after, Some('T'), "{thawed:?}");
+    held.release();
     let resumed = until_node_where(&estate, &node, &format!("{node} back as its own birth with held_running cleared"), floor * 2 + Duration::from_secs(30), |n| {
         ready(n) && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"] && n["held_running"].is_null()
     })
@@ -1167,7 +1167,7 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
 /// provider still reporting `Running`, the mesh-primary submits the recovery Build for that birth
 /// whose first step is `TerminateRuntime { node_id, incarnation, handle }`: provider `terminate`
 /// records `exit_proof` durably, then ordinary recovery continues in the same attempt): a member is
-/// SIGSTOP'd with `RDM_HUNG_HOLD_FLOORS=2`, surfaces `held_running` on `node.get` during the hold,
+/// hung (every task but the leader held by a tracer) with `RDM_HUNG_HOLD_FLOORS=2`, surfaces `held_running` on `node.get` during the hold,
 /// and after the hold expires its mesh-primary terminates the exact runtime, records exit proof, and
 /// recovers the member as a new birth at the same `path.name`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1183,8 +1183,8 @@ async fn a_hung_member_held_past_the_hold_is_terminated_and_recovered() {
     let before = estate.node_value(&node).await;
     let mesh = s(&before["mesh"]);
     let rt = exact_runtime(&estate, &node).await;
-    let held = rt.apply(Fault::Stop).expect("the exact runtime is held");
-    assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
+    let held = rt.hang().expect("the exact runtime is hung");
+    assert!(!held.held.is_empty(), "every task but the leader is held: the provider sees it running");
 
     let held_view = until_node_where(&estate, &node, &format!("{node} surfaces held_running on node.get before terminate"), crate::node_recovery_due(), |n| {
         n["node_id"] == before["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
@@ -1240,7 +1240,7 @@ async fn a_hung_member_held_past_the_hold_is_terminated_and_recovered() {
 /// CONTRACT (R-FM1, fabric-node-lifecycle-elections.md: for a hung mesh-primary, the fabric-primary
 /// runs the same hold and submits the same Build; R-EL1 seats the successor on exit proof only, never
 /// before the proof): `mesh2` has two node-admins (`mesh2.admin.1` primary, `mesh2.admin.2` standby).
-/// `mesh2.admin.1` is SIGSTOP'd with `RDM_HUNG_HOLD_FLOORS=2`. During the hold, `held_running` is
+/// `mesh2.admin.1` is hung (every task but the leader held by a tracer) with `RDM_HUNG_HOLD_FLOORS=2`. During the hold, `held_running` is
 /// surfaced on `node.get` and `mesh2.admin.2` does NOT take the seat. When the hold expires, the
 /// fabric-primary submits the recovery Build with `TerminateRuntime`, records `exit_proof`, R-EL1
 /// seats `mesh2.admin.2` on the exit proof, and `mesh2.admin.1` recovers as a new birth.
@@ -1260,8 +1260,8 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
     assert!(!fp.starts_with("mesh2."), "the fabric-primary is in mesh1: {fp}");
 
     let rt = exact_runtime(&estate, &mp_name).await;
-    let held = rt.apply(Fault::Stop).expect("mesh2's primary runtime is held");
-    assert_eq!(held.state_after, Some('T'), "the OS holds mesh2's primary runtime: {held:?}");
+    let held = rt.hang().expect("mesh2's primary runtime is hung");
+    assert!(!held.held.is_empty(), "every task of mesh2's primary but the leader is held: the provider sees it running");
 
     let held_view = until_node_where(&estate, &mp_name, &format!("{mp_name} surfaces held_running on node.get"), crate::node_recovery_due(), |n| {
         n["node_id"] == mp["node_id"] && n["held_running"]["since"].as_u64().unwrap_or(0) > 0 && n["held_running"]["verdicts"].as_u64().unwrap_or(0) >= 1
@@ -1318,7 +1318,8 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
 /// CONTRACT (R-FM1, fabric-node-lifecycle-elections.md: for a hung fabric-primary, no node below it
 /// commands its termination; every seat watch publishes its Concern as today, the `held-running` fact
 /// is written by the watching admins on the holder's row and surfaced by `node.get` and `fabric.get`,
-/// and the fabric seat never moves on silence): `mesh1.admin.1` (the fabric-primary) is SIGSTOP'd with
+/// and the fabric seat never moves on silence): `mesh1.admin.1` (the fabric-primary) is hung (every task
+/// but the leader held by a tracer) with
 /// `RDM_HUNG_HOLD_FLOORS=2`. Watching admins (`mesh1.admin.2`, `mesh2.admin.1`) publish Concern and
 /// record `held_running` surfaced on both `node.get` and `fabric.get`; even past the hold window,
 /// nothing terminates `mesh1.admin.1`. When thawed, `held_running` clears on `node.get` and `fabric.get`.
@@ -1338,8 +1339,8 @@ async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
     estate.enter(&watcher_path).await;
 
     let rt = exact_runtime(&estate, &fp_name).await;
-    let held = rt.apply(Fault::Stop).expect("the fabric-primary runtime is held");
-    assert_eq!(held.state_after, Some('T'), "the OS holds the fabric-primary runtime: {held:?}");
+    let held = rt.hang().expect("the fabric-primary runtime is hung");
+    assert!(!held.held.is_empty(), "every task of the fabric-primary but the leader is held: the provider sees it running");
 
     let floor = rdm_transport::membership::staleness_floor();
     let held_node = until_node_where(&estate, &fp_name, &format!("{fp_name} surfaces held_running on node.get at {watcher}"), crate::node_recovery_due(), |n| {
@@ -1363,8 +1364,7 @@ async fn a_hung_fabric_primary_is_marked_held_running_and_never_terminated() {
         .collect();
     assert!(submits.is_empty(), "no admin submits a recovery for the hung fabric-primary: {submits:?}");
 
-    let thawed = rt.apply(Fault::Continue).expect("the fabric-primary hold is released");
-    assert_ne!(thawed.state_after, Some('T'), "{thawed:?}");
+    held.release();
     let resumed_node = until_node_where(&estate, &fp_name, &format!("{fp_name} back ready with held_running cleared"), floor * 3 + Duration::from_secs(30), |n| {
         ready(n) && n["node_id"] == fp["node_id"] && n["held_running"].is_null()
     })

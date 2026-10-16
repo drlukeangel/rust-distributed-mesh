@@ -244,7 +244,8 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     estate.record_trace_url(&s(&proof["trace_id"]));
 }
 
-/// A member that is unheard (frozen: its process runs but says nothing) is dead in the view, but
+/// A member that is unheard (hung: every task of its process but the leader is held by a tracer, so
+/// the operating system shows it running while it says nothing) is dead in the view, but
 /// silence is never death proof (Luke 2026-10-05): the desired Build resubmitted holds it. No new
 /// birth takes the path, nothing is terminated, and the fence names the hold (`held-running`).
 /// Must NOT happen: a replacement birth at the path, or `via-fence outcome=terminated`.
@@ -260,7 +261,8 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     estate.reconcile(&desired).await;
     let frozen = estate.until_node("mesh1.rpc.2", "this admin hears mesh1.rpc.2", Duration::from_secs(30), |n| n.cloned()).await;
     let pid = estate.pid_of("mesh1.rpc.2").await;
-    assert!(Command::new("kill").args(["-STOP", &pid.to_string()]).status().unwrap().success());
+    let rt = rdm_test::process_faults::ExactRuntime::published(std::path::Path::new(&estate.data_dir("mesh1.rpc.2").await)).expect("the member's published runtime");
+    let hung = rt.hang().expect("the member's exact runtime is hung");
     estate
         .until_node("mesh1.rpc.2", "the frozen member is unheard in the view", rdm_transport::membership::staleness_floor() + Duration::from_secs(30), |n| n.filter(|n| matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect)).map(|_| ()))
         .await;
@@ -271,7 +273,7 @@ async fn a_silent_member_whose_runtime_still_runs_is_held_not_replaced() {
     assert_eq!(u64::from(at_path[0].1), pid, "the frozen predecessor is held, never terminated");
     assert_eq!(estate.node_view("mesh1.rpc.2").await.incarnation_id, frozen.incarnation_id, "no new birth at the path");
 
-    assert!(Command::new("kill").args(["-CONT", &pid.to_string()]).status().unwrap().success());
+    hung.release();
     estate.stop().await;
     let spans = estate.spans();
     let fences: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.2").collect();
