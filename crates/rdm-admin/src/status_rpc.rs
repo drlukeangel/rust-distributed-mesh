@@ -1587,6 +1587,33 @@ mod tests {
         assert!(effect.is_none());
     }
 
+    /// CONTRACT (R24, Luke Q11: "the same variant at every Status door that can lack a handler for a
+    /// request it receives"): the node-admin's declaration decision has no handler for a request its
+    /// door answers before the decision (here `fabric.get`). It answers `RequestNotHandled` naming the
+    /// request, decided by dispatch alone, on the reject span `rdm.node.status.reject.via-request-not-handled`
+    /// naming the request and the admin, and changes nothing. Must NOT happen: an authority refusal or
+    /// `NotReady` for a request it has no handler for.
+    #[test]
+    fn a_request_the_declaration_decision_has_no_handler_for_is_answered_not_handled_by_name() {
+        let mut me = node("mesh1.admin.1");
+        me.kind = NodeKind::NodeAdmin;
+        me.is_primary = true;
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![me.clone()],
+        };
+        let capture = crate::span_capture::Capture::new("i144-r24-admin-door");
+        let (reply, effect) = {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            decide(&authority_of(&me, view.clone()), &view, &Declared::default(), &StatusRequest::GetFabric)
+        };
+        assert_eq!(reply.name(), "request-not-handled", "{reply:?}");
+        assert!(effect.is_none(), "{effect:?}");
+        let rejected: Vec<(String, String)> = capture.named("rdm.node.status.reject.via-request-not-handled").into_iter().map(|s| (s.attributes["request"].clone(), s.attributes["node"].clone())).collect();
+        assert_eq!(rejected, vec![("fabric.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");
+    }
+
     /// CONTRACT (node-identity-and-state.md 4.3: "Once a node-admin is created in a mesh it is that
     /// mesh's primary ... and writes every status from then on"): the fabric-primary's
     /// ApplyMeshState is applied by the mesh's primary. A receiver whose view names ANOTHER admin

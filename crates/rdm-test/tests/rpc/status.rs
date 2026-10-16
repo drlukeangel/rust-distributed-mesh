@@ -19,14 +19,14 @@ use rdm_test::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
-fn owner() -> Owner {
+fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-rpc".into(),
         subfeature: "status".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "a_node_declares_its_state_to_its_authority_and_the_authority_decides".into(),
+        test: test.into(),
     }
 }
 
@@ -39,7 +39,7 @@ fn declared(out: &Value) -> (String, String) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() {
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("a_node_declares_its_state_to_its_authority_and_the_authority_decides"), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
     let nodes = estate.node_values().await;
@@ -140,4 +140,32 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
         decided.iter().any(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["sender"] == primary["name"] && s["attributes"]["op"] == "declare-node-state" && s["attributes"]["outcome"] == "applied"),
         "the authority applied its own declaration to itself: {decided:?}"
     );
+}
+
+/// CONTRACT (R24, Luke Q11: "dispatch the request to its implementation; if this endpoint has no
+/// implementation for it, answer request not handled here"): an rpc node's Status door has no handler
+/// for an upward declaration. The declare probe makes `mesh1.rpc.2` declare its state straight to
+/// `mesh1.rpc.1`, which answers `RequestNotHandled` naming the request (`declare-node-state`), decided by
+/// dispatch alone, on its reject span `rdm.node.status.reject.via-request-not-handled` (`request`, and
+/// `node` the receiver's held name) in the probe's own trace. Must NOT happen: `RejectedNotAuthority {
+/// ReceiverNotPrimary }`, a missing handler answered as an authority refusal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_reject_span() {
+    let mut estate = Estate::bootstrap(owner("a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_reject_span"), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
+    let (rpc1, rpc2) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.rpc.2").await);
+    let node = format!("exact:{}", rpc2["node_id"].as_str().unwrap());
+    let to = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining"]);
+    assert_eq!(declared(&r).0, "request-not-handled", "an rpc node answers a declaration it has no handler for not handled here: {r}");
+    estate.stop().await;
+    let spans = estate.spans();
+    let rejected: Vec<&Value> = named(&spans, "rdm.node.status.reject.via-request-not-handled").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1").collect();
+    assert_eq!(rejected.len(), 1, "mesh1.rpc.1 answers the one declaration on its reject span: {rejected:#?}");
+    assert_eq!(rejected[0]["attributes"]["request"], "declare-node-state", "{}", rejected[0]);
+    let trace = rejected[0]["trace_id"].as_str().unwrap_or_default().to_string();
+    assert!(r["traceparent"].as_str().is_some_and(|tp| tp.contains(&trace)), "the reject span is in the probe's trace: {r} {}", rejected[0]);
+    println!("request not handled at an rpc node: http://192.168.68.99:16687/trace/{trace}");
+    estate.record_trace_url(&trace);
 }
