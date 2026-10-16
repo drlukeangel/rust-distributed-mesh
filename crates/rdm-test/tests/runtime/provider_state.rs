@@ -147,8 +147,9 @@ async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recove
 /// explicit `node.delete`: the fabric-primary accepts it, the executor inspects the exact runtime at
 /// the delete's instant (`via-provider-inspection`, caller `delete`, verdict `os-stopped`), names the
 /// skipped stop (`rdm.node_admin.node.delete.via-os-stopped`), runs `TerminateRuntime` on the exact
-/// handle, takes the exit proof, writes NodeDeleted and removes the `os-stopped` row (`cleared`,
-/// `deleted`). `node.get` lists the path no more and the suspended process is gone. Must NOT happen: a
+/// handle, takes the exit proof and writes NodeDeleted; the `os-stopped` row is removed once
+/// (`cleared`: `deleted`, or `exited` when the mesh-primary's tick reads the exit first). `node.get`
+/// lists the path no more and the suspended process is gone. Must NOT happen: a
 /// `node-not-live` refusal of the delete, a `stop-node` sent to the suspended birth (a StopNode or
 /// AwaitNodeLeft step of the delete), the process continued, or a recovery of the deleted birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -179,7 +180,10 @@ async fn an_explicit_delete_of_an_os_stopped_birth_skips_the_stop_by_name_and_te
     let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| same_build(sp, &build_id) && attr(sp, "node") == member).collect();
     assert!(sent.is_empty(), "no command was sent to the suspended birth: {sent:#?}");
     let facts: Vec<(String, String)> = named(&spans, "rdm.node_admin.node.update.via-os-stopped").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).map(|sp| (attr(sp, "outcome"), attr(sp, "detail"))).collect();
-    assert_eq!(facts.last(), Some(&("cleared".to_string(), "deleted".to_string())), "the delete removes the os-stopped row: {facts:?}");
+    // The row's writer removes it once: the delete after its exit proof (`deleted`), or its own recovery
+    // tick when that tick reads the terminated runtime `Exited` first (`exited`).
+    let cleared: Vec<&(String, String)> = facts.iter().filter(|(outcome, _)| outcome == "cleared").collect();
+    assert!(cleared.len() == 1 && ["deleted", "exited"].contains(&cleared[0].1.as_str()), "the os-stopped row is removed once, by the delete or the exit it proved: {facts:?}");
     assert!(named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "no recovery of the deleted birth");
     let trace = s(&skipped["trace_id"]);
     println!("os-stopped delete: http://192.168.68.99:16687/trace/{trace}");

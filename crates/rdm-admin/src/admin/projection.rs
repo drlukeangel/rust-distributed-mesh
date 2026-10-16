@@ -117,6 +117,7 @@ impl ViewReads {
     pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId) -> Self {
         let me = book.held_path_name().unwrap_or_else(|| me.clone());
         records.read_exits(book).await;
+        records.read_os_stopped(book).await;
         let at = std::time::Instant::now();
         Self { at, rows: RowNames::read(&me, book, records, fabric_id, at).await }
     }
@@ -338,6 +339,11 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         };
         // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the book
         // holds it and its mesh ready-for-traffic. Anything else is a routing stop.
+        // A silent birth its mesh-primary recorded os-stopped carries the fact (deployment-provider.md
+        // §2.5); a heard one never does.
+        if silent && !restarting {
+            n.os_stopped = records.os_stopped_of(&d.node.node_id, &d.node.incarnation);
+        }
         n.routable = n.status == NodeStatus::ReadyForTraffic && book.routable(d.node.node_id.as_str());
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();

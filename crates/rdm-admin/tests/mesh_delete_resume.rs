@@ -163,7 +163,9 @@ impl BuildStateAdapter for WireBuilds {
     }
 }
 
-/// The host's runtimes: every termination, and the one inspection the provider cannot answer.
+/// The host's runtimes: every termination, and the one inspection the provider cannot answer: the
+/// first that follows the terminate of `blind_once`'s runtime (the stop ladder's terminal inspection,
+/// never the delete's inspection at its instant, which precedes it).
 #[derive(Default)]
 struct Fleet {
     pids: BTreeMap<u32, String>,
@@ -188,7 +190,8 @@ impl DeploymentProvider for Fleet {
     }
     async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
         let mut blind = self.blind_once.lock().unwrap();
-        if *blind == h.pid {
+        let terminated = h.pid.and_then(|pid| self.pids.get(&pid)).is_some_and(|n| self.terminated.lock().unwrap().contains(n));
+        if *blind == h.pid && terminated {
             *blind = None;
             return DeploymentStatus::Unknown;
         }

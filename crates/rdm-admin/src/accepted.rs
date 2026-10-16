@@ -427,11 +427,11 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
                 return Err(BuildReject::UnknownNode { node: node.to_string() });
             }
             // The authority removes a birth it sees: a view that has not heard the node yet refuses
-            // by name rather than accepting a Build it would close with nothing to do.
-            match observed.node(node) {
-                None => return Err(BuildReject::UnknownNode { node: node.to_string() }),
-                Some(n) if !n.status.is_live() && !n.parked => return Err(BuildReject::NodeNotLive { node: node.to_string() }),
-                Some(_) => {}
+            // by name rather than accepting a Build it would close with nothing to do. Which birth it
+            // sees may be deleted (live, stopped, or recorded os-stopped) is its door's, which reads the
+            // status rows (`ControlPlane::submit_checked`).
+            if observed.node(node).is_none() {
+                return Err(BuildReject::UnknownNode { node: node.to_string() });
             }
             if node.kind == NodeKind::NodeAdmin && m.count(NodeKind::NodeAdmin) <= 1 {
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
@@ -723,10 +723,12 @@ fn plan_with(
     }
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
     // A restart's birth: the one the attempt is fenced to, when the view still holds exactly it and
-    // it is not already leaving (a leaving birth keeps the path to its departure). The action owns
-    // its path: the generic create below never plans it a second time.
+    // it is not leaving to a departure (a leaving birth keeps the path to its departure). A parked
+    // birth is the restart's own: only this restart's attempts carry a restart of a parked birth (the
+    // door refuses a fresh one, `node-not-live`), and its run resumes at the start (R-PV1). The action
+    // owns its path: the generic create below never plans it a second time.
     let restarted: Option<&PathName> = match action {
-        Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| path),
+        Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && (n.status != NodeStatus::Leaving || n.parked)).map(|_| path),
         _ => None,
     };
     for (name, m) in &topology.meshes {
@@ -756,8 +758,10 @@ fn plan_with(
         ops.push(BuildOperation::RestartNode { node: path.clone() });
     }
     // A live or stopped (parked) node of a kept mesh that the topology no longer names is retired
-    // (a node.delete of a stopped node retires it: lifecycles/node-delete.md); a node leaving under
-    // another operation is that operation's. A mesh the topology no longer names is retired whole
+    // (a node.delete of a stopped node retires it: lifecycles/node-delete.md), and so is one its
+    // mesh-primary recorded os-stopped, silent as it is (node-delete.md "OS-suspended target": its
+    // delete skips the stop by name); a birth that is only silent is never retired for its silence. A
+    // node leaving under another operation is that operation's. A mesh the topology no longer names is retired whole
     // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
@@ -766,7 +770,7 @@ fn plan_with(
     // "Rollback").
     let mut extra: Vec<&PathName> = observed
         .members()
-        .filter(|n| action.is_none() && !n.name.new && (n.status.is_live() || n.parked) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .filter(|n| action.is_none() && !n.name.new && (n.status.is_live() || n.parked || n.os_stopped.is_some()) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
     extra.sort();
@@ -1151,6 +1155,26 @@ mod tests {
     /// attempt parked (the view holds it `Leaving` and parked, the same incarnation) plans that restart
     /// once, whose run resumes at its start. Must NOT happen: a create planned at the path of a parked
     /// birth that is still alive and still the restart's.
+    /// CONTRACT (node-delete.md "OS-suspended target"; deployment-provider.md §2.5: "An explicit
+    /// `node.delete` of an OS-stopped birth stays available"; model.rs: silence is "never a reason to
+    /// restart or delete" a node): a birth of a kept mesh the topology no longer names is retired when
+    /// the view holds it live, parked, or recorded os-stopped (silent as it is); a birth that is only
+    /// silent (`PendingReconnect`, or true offline `Dead`) is never retired for its silence.
+    #[test]
+    fn an_os_stopped_birth_the_topology_no_longer_names_is_retired_and_a_merely_silent_one_is_not() {
+        let cur = t(&[("mesh1", 2, 3)]);
+        for status in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
+            let mut o = mn();
+            let mut silent = n("mesh1.rpc.7", status, false);
+            o.nodes.push(silent.clone());
+            assert_eq!(plan(&cur, &o, None).operations, vec![], "{status:?}: a silent birth is not retired for its silence");
+            silent.os_stopped = Some(rdm_core::views::OsStopped { since: 1, inspections: 2 });
+            o.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.7");
+            o.nodes.push(silent);
+            assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), exited: None }], "{status:?}: an os-stopped birth is retired");
+        }
+    }
+
     #[test]
     fn a_restart_of_a_birth_its_own_restart_parked_plans_the_restart_never_a_create() {
         let cur = t(&[("mesh1", 2, 3)]);

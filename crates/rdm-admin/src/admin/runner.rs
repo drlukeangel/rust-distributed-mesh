@@ -787,7 +787,10 @@ impl AdminRunner {
     /// `node.restart:<path>` (node-restart.md): stop, then start, on the same process: the same node id,
     /// incarnation, endpoint key and port. The process never exits and no runtime is deployed.
     pub(crate) async fn restart_in_place(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<(), String> {
-        let (record, handle, deployed) = self.stopped_birth_or_live("node.restart", node).await?;
+        // A birth this restart's own earlier attempt parked is held as a parked one (its digest the
+        // stopped one its rejoin is verified against), and its run resumes at the start.
+        let parked = self.topology.read().await.node(node).is_some_and(|n| n.parked);
+        let (record, handle, deployed) = if parked { self.stopped_birth("node.restart", node, None).await? } else { self.stopped_birth_or_live("node.restart", node).await? };
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = crate::deployment::pipeline::StartRequest { build_id: build_id.clone(), attempt, node: record, handle, deployed };
         self.pipeline(&template).restart(&req).await.map_err(|e| e.to_string())
@@ -863,6 +866,9 @@ impl AdminRunner {
         let template = self.template_for(record.kind, &record.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, exit: None };
         let terminal = self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
+        // The deleted birth's os-stopped fact ends with it (deployment-provider.md §2.5: the row is
+        // removed on `Exited`).
+        self.records.clear_os_stopped(&record, "deleted").await;
         self.after_exit(&record);
         self.handles.lock().unwrap().remove(&record.name);
         Ok(terminal)

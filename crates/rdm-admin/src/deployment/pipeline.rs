@@ -1915,9 +1915,18 @@ impl DeploymentPipeline<'_> {
             };
             let op = self.step(&mut run, RetireStep::NodeRestarting.name(), async { Ok(op.clone()) }).await?;
             self.lifecycle.restarting(&op).await;
-            // The stop of the live process: it parks and stays, and its `stopped` is the stop's
-            // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
-            self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
+            if node.parked {
+                // The birth is parked: this restart's own earlier attempt stopped it and ended before its
+                // start completed (only this restart's attempts carry a restart of a parked birth: the
+                // door refuses a fresh one, `node-not-live`). Its stop is done in the world; the run
+                // resumes at the start (R-PV1: "`node.start` when start is the pending step").
+                tracing::info_span!("rdm.node_admin.node.update.via-restart-resumed", build_id = %req.build_id.log(), attempt = req.attempt, node = %name, node_id = %node.node_id, incarnation_id = %op.incarnation.as_str(), resumes_at = StartStep::StartNode.name())
+                    .in_scope(|| tracing::info!("the restart's birth is parked by its own stop: the run resumes at its start"));
+            } else {
+                // The stop of the live process: it parks and stays, and its `stopped` is the stop's
+                // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
+                self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
+            }
             // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
             self.step(&mut run, CreateStep::Complete.name(), async {
@@ -2195,6 +2204,10 @@ impl DeploymentPipeline<'_> {
             // are already done, and no node reply or receipt is fabricated for the exited process
             // (node-delete.md step 1); the provider's exact inspection is all that is asked.
             self.terminate_step(&mut run, &node, handle).await?
+        } else if self.stop_skipped_os_stopped(&run, &node, handle).await {
+            // An OS-suspended target (node-delete.md): it answers no call, so no stop is sent; the
+            // delete begins at TerminateRuntime on the exact handle, whose Exited is the proof.
+            self.terminate_step(&mut run, &node, handle).await?
         } else {
             // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
             // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
@@ -2380,16 +2393,7 @@ impl DeploymentPipeline<'_> {
             use crate::build_state::{InspectionVerdict, TerminateStage};
             if when == Terminate::OnlyRunning {
                 // node.runtime.inspect at the terminate's instant: its span is the evidence (node-runtime-inspect.md).
-                let status = self.provider.inspect(handle).await;
-                let verdict = match &status {
-                    DeploymentStatus::Running => "running",
-                    DeploymentStatus::OsStopped => "os-stopped",
-                    DeploymentStatus::Exited { .. } => "exited",
-                    DeploymentStatus::Unknown => "unavailable",
-                };
-                let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-                tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), caller = "terminate", verdict)
-                    .in_scope(|| tracing::info!("the hold's terminate inspects the exact runtime at its instant and fires only on Running"));
+                let status = self.inspected_at(node, handle, "terminate", "the hold's terminate inspects the exact runtime at its instant and fires only on Running").await;
                 match status {
                     DeploymentStatus::Running | DeploymentStatus::Exited { .. } => {}
                     DeploymentStatus::OsStopped => {
@@ -2475,6 +2479,48 @@ impl DeploymentPipeline<'_> {
             })
         })
         .await
+    }
+
+    /// node.runtime.inspect of `node`'s exact runtime by this pipeline's executor for `caller`, at the
+    /// caller's instant (node-runtime-inspect.md): the provider's answer, spanned with its verdict.
+    async fn inspected_at(&self, node: &Node, handle: &DeploymentHandle, caller: &'static str, why: &'static str) -> DeploymentStatus {
+        let status = self.provider.inspect(handle).await;
+        let verdict = match &status {
+            DeploymentStatus::Running => "running",
+            DeploymentStatus::OsStopped => "os-stopped",
+            DeploymentStatus::Exited { .. } => "exited",
+            DeploymentStatus::Unknown => "unavailable",
+        };
+        let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.template.executor(), caller, verdict).in_scope(|| tracing::info!("{why}"));
+        status
+    }
+
+    /// Whether the delete of the live birth `node` skips its stop (deployment-provider.md §3: "A
+    /// `node.delete` of a target whose provider state is `OsStopped` skips the stop by name and begins
+    /// at `TerminateRuntime`: the stop cannot execute, and the delete was explicitly commanded"): the
+    /// provider reads its exact runtime `OsStopped` at the delete's instant. The skip is named
+    /// (`rdm.node_admin.node.delete.via-os-stopped`). Any other answer leaves the ordinary stop to run:
+    /// `Running` is the live target, and an `Exited` or `Unknown` runtime is asked nothing more than
+    /// the stop's call already asks it.
+    async fn stop_skipped_os_stopped(&self, run: &Run<'_>, node: &Node, handle: &DeploymentHandle) -> bool {
+        let status = self.inspected_at(node, handle, "delete", "the delete inspects the exact runtime at its instant: an os-stopped one answers no stop").await;
+        if status != DeploymentStatus::OsStopped {
+            return false;
+        }
+        let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
+        tracing::info_span!(
+            "rdm.node_admin.node.delete.via-os-stopped",
+            build_id = %run.build_id.log(),
+            attempt = run.attempt,
+            node = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %incarnation,
+            skipped = "StopNode AwaitNodeLeft",
+            begins_at = "TerminateRuntime",
+        )
+        .in_scope(|| tracing::info!("the operating system holds the exact runtime suspended: its stop is skipped by name (a suspended process answers no call) and the delete begins at TerminateRuntime"));
+        true
     }
 
     /// The directory of `node`'s birth as it is now: the data dir its record names, else the

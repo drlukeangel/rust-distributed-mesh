@@ -297,6 +297,10 @@ pub struct Records {
     /// fed by a prover. Shown `Dead` whatever their last digest said, and the proof an election takes
     /// that a seat's holder is gone (fabric-node-lifecycle-elections.md §4.1).
     pub(crate) exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// The `os-stopped` facts (deployment-provider.md §2.5) of the silent births the installing
+    /// projection read ([`Self::read_os_stopped`]): a point read of each silent birth's own row at
+    /// every install, never fed by the recorder. Folded into the view as `Node::os_stopped`.
+    pub(crate) os_stopped: Mutex<HashMap<(NodeId, IncarnationId), rdm_core::views::OsStopped>>,
     /// The membership book whose seat records name holders the exit read covers beside the view's
     /// births (a holder the view no longer lists). Set once at start.
     pub(crate) book: std::sync::OnceLock<DigestBook>,
@@ -731,6 +735,13 @@ impl Records {
         let _ = storage.remove_node_held_running_of(&node.mesh, &node.node_id, inc).await;
     }
 
+    /// Remove the `os-stopped` row of `node`'s exact birth (deployment-provider.md §2.5, R20), its
+    /// runtime proven `verdict`; spanned `cleared` when a row stood.
+    pub async fn clear_os_stopped(&self, node: &Node, verdict: &str) {
+        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
+        crate::admin::recovery::remove_os_stopped(&*storage, node, verdict).await;
+    }
+
     /// Read the durable `held-running` row of `node` among its mesh's status rows (`R-FM1`).
     pub async fn held_running_row_of(&self, node: &Node) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, String> {
         let Some(inc) = node.incarnation_id.as_ref() else { return Ok(None) };
@@ -799,6 +810,44 @@ impl Records {
             tracing::info_span!("rdm.node_admin.node.resolve.via-exit-proof-row", node = %row.name, node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), mesh = %mesh, exit_code = row.exit_code.map(|c| c.to_string()).unwrap_or_default(), proof = %row.proof)
                 .in_scope(|| tracing::info!("the projection reads the birth's exit-proof row: it is held exited, Dead and gone from every seat"));
         }
+    }
+
+    /// The view's read of the `os-stopped` rows (deployment-provider.md §2.5, R20): the row of every
+    /// birth the book holds silent past the staleness floor, a point read among its own mesh's status
+    /// rows. An os-stopped runtime answers nothing, so a birth that is heard has no fact to read and
+    /// none is held for it. What this pass read replaces what was held; a row that cannot be read
+    /// holds nothing for that birth and is named on one
+    /// `rdm.node_admin.node.reject.via-os-stopped-row-unreadable` span.
+    pub async fn read_os_stopped(&self, book: &DigestBook) {
+        let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
+        let now = std::time::Instant::now();
+        let silent: Vec<(NodeId, IncarnationId, String, String)> = book
+            .all()
+            .into_iter()
+            .filter(|d| book.get_at(d.node.node_id.as_str(), now).is_some_and(|(_, age)| age > book.staleness_floor()))
+            .map(|d| (d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.mesh.clone(), d.node.name.to_string()))
+            .collect();
+        let mut read = HashMap::new();
+        let mut unreadable = Vec::new();
+        for (node_id, inc, mesh, named) in silent {
+            match storage.node_os_stopped_of(&mesh, &node_id, &inc).await {
+                Ok(Some(row)) => {
+                    read.insert((node_id, inc), rdm_core::views::OsStopped { since: row.since, inspections: row.inspections });
+                }
+                Ok(None) => {}
+                Err(e) => unreadable.push(format!("{named} ({node_id} at {}) among {mesh}'s status rows: {e}", inc.as_str())),
+            }
+        }
+        if !unreadable.is_empty() {
+            tracing::info_span!("rdm.node_admin.node.reject.via-os-stopped-row-unreadable", rows = unreadable.len(), detail = %unreadable.join("; "))
+                .in_scope(|| tracing::info!("an os-stopped row could not be read: the view holds no such fact of that birth"));
+        }
+        *self.os_stopped.lock().unwrap() = read;
+    }
+
+    /// The `os-stopped` fact the installed projection read for the birth, when one stands.
+    pub fn os_stopped_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<rdm_core::views::OsStopped> {
+        self.os_stopped.lock().unwrap().get(&(node_id.clone(), incarnation.clone())).cloned()
     }
 
     /// Whether the birth's exit-proof row was read by the installed projection.

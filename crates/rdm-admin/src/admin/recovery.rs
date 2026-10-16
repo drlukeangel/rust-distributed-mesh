@@ -68,6 +68,22 @@ pub(crate) fn hold_gate(failures: &[crate::build_state::FailedTerminate], since:
 /// ([`reconcile_drift`]) each hold one, and record through [`record_verdict_once`].
 pub type ExitVerdicts = Mutex<HashMap<(NodeId, IncarnationId), Inspected>>;
 
+/// Remove the `os-stopped` row of `n`'s exact birth from `storage` (deployment-provider.md §2.5: the
+/// mesh-primary removes it on `Running` or `Exited`), `verdict` naming what ended it (`running`,
+/// `exited`, `returned`, `reached`, `deleted`). Spanned `cleared` when a row stood, `refused` when its
+/// removal was refused; nothing when no row stood.
+pub(crate) async fn remove_os_stopped(storage: &dyn crate::status_storage::StatusStorage, n: &Node, verdict: &str) {
+    let Some(inc) = n.incarnation_id.as_ref() else { return };
+    let Ok(Some(row)) = storage.node_os_stopped_of(&n.mesh, &n.node_id, inc).await else { return };
+    let removed = storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, inc).await;
+    let (outcome, detail) = match &removed {
+        Ok(()) => ("cleared", verdict.to_string()),
+        Err(e) => ("refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
+    };
+    tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = row.since as i64, outcome, detail = %detail, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the os-stopped fact is cleared"));
+}
+
 /// The verdict rule of a loop that proves exits (node-recovery.md "Exited is the proof, recorded
 /// durably"): `outcome` of `birth` is recorded when it differs from what `verdicts` holds for that
 /// birth, by `record` (its span, and for an exit the birth's exit-proof row, a blind put of its own
@@ -469,15 +485,8 @@ impl RecoverySubmitter {
     /// stood.
     pub(crate) async fn clear_os_stopped(&self, n: &Node, verdict: &str) {
         let Some(inc) = n.incarnation_id.clone() else { return };
-        self.os_stopped_confirmed.lock().unwrap().remove(&(n.node_id.clone(), inc.clone()));
-        let Ok(Some(row)) = self.status_storage.node_os_stopped_of(&n.mesh, &n.node_id, &inc).await else { return };
-        let removed = self.status_storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, &inc).await;
-        let (outcome, detail) = match &removed {
-            Ok(()) => ("cleared", verdict.to_string()),
-            Err(e) => ("refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
-        };
-        tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = row.since as i64, outcome, detail = %detail, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the os-stopped fact is cleared"));
+        self.os_stopped_confirmed.lock().unwrap().remove(&(n.node_id.clone(), inc));
+        remove_os_stopped(&*self.status_storage, n, verdict).await;
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
