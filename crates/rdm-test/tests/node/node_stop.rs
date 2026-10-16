@@ -435,6 +435,108 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (states.md "Who sets each state": node stopping is set by the node's mesh-primary on the
+/// stop call's admission; gossip.md frame catalog: `NodeLeaving` is a reserved position, never
+/// published): `mesh1.rpc.1`'s process is held by the operating system (SIGSTOP) and `node.stop` of it
+/// is submitted. The mesh-primary's stop-node call never reaches the birth, so the stop ends `Failed`
+/// naming the unadmitted command, and the mesh-primary sets nothing: `node.get` lists the birth
+/// neither stopping nor parked, and no `from-command-admitted` sets it `Leaving`. Released (SIGCONT),
+/// the same stop submitted again is accepted, not refused `node-not-live`, and parks the same birth:
+/// its stopping follows the command's admission (`via-command-sent` admission `stopped`, then
+/// `from-command-admitted` status `Leaving`, then NodeStopped). Must NOT happen: stopping set before
+/// or without admission, a node-leaving frame sent or heard by anyone, a resubmission refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth() {
+    let test = "a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
+    let nodes = estate.nodes_obj().await;
+    let path: PathName = NODE.parse().unwrap();
+    let before = view_of(&nodes, &path).await;
+    let pid = estate.pid_of(NODE).await;
+
+    // The hold: the operating system suspends the exact runtime; the stop's call cannot reach it.
+    let mut held = Held { pid, held: false };
+    held.signal("-STOP", true);
+    let refused = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
+    let Some(Frame::Started { build_id, attempt: unadmitted }) = refused.first().cloned() else { panic!("{refused:?}") };
+    assert!(matches!(refused.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the stop fails naming the unadmitted command: {refused:?}");
+
+    // Released: once its mesh-primary hears the birth again (its silence mark gone), node.get shows the
+    // status the mesh-primary authored. Nothing was admitted, so nothing is stopping.
+    held.signal("-CONT", false);
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    let heard = loop {
+        let v = view_of(&nodes, &path).await;
+        if v.status != NodeStatus::PendingReconnect {
+            break v;
+        }
+        assert!(std::time::Instant::now() < until, "the released birth is heard again within 30 s: {v:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert!(heard.status == NodeStatus::ReadyForTraffic && !heard.parked, "a stop the birth never admitted leaves it neither stopping nor parked: {heard:?}");
+    assert_eq!((&heard.node_id, &heard.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
+
+    // The same stop, submitted again, is accepted and parks the same birth.
+    let stopped = frames(nodes.stop(&path).await.expect("the resubmitted stop was accepted")).await;
+    let Some(Frame::Started { attempt: admitted, .. }) = stopped.first().cloned() else { panic!("{stopped:?}") };
+    assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    let parked = view_of(&nodes, &path).await;
+    assert!(parked.parked && parked.status == NodeStatus::Leaving, "node.get lists {NODE} parked: {parked:?}");
+    assert_eq!((&parked.node_id, &parked.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let (build, first, second) = (build_id.to_string(), unadmitted.to_string(), admitted.to_string());
+    let of = |name: &str, attempt: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "attempt") == attempt && attr(sp, "operation") == format!("node.stop:{NODE}")).collect() };
+    let sent = of("rdm.node_admin.node.update.via-command-sent", &first);
+    assert_eq!(sent.iter().map(|sp| attr(sp, "admission")).collect::<Vec<_>>(), vec!["not-sent".to_string()], "the first stop-node never reached the held birth: {sent:#?}");
+    let stopping = |attempt: &str| -> Vec<&Value> { of("rdm.mesh.membership.update.from-command-admitted", attempt).into_iter().filter(|sp| attr(sp, "member") == NODE && attr(sp, "status") == "Leaving").collect() };
+    assert!(stopping(&first).is_empty(), "nothing set the unadmitted birth stopping: {:#?}", stopping(&first));
+    let admitted_sent = of("rdm.node_admin.node.update.via-command-sent", &second);
+    assert_eq!(admitted_sent.iter().map(|sp| attr(sp, "admission")).collect::<Vec<_>>(), vec!["stopped".to_string()], "{admitted_sent:#?}");
+    let set = stopping(&second);
+    assert_eq!(set.len(), 1, "the admitted stop sets the birth stopping once: {set:#?}");
+    let node_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "attempt") == second).expect("NodeStopped is published for the admitted stop");
+    assert!(end_ns(admitted_sent[0]) <= start_ns(set[0]) && start_ns(set[0]) <= start_ns(node_stopped), "stopping is set on the admission, before NodeStopped");
+    for kind in ["node-leaving", "node-left"] {
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
+        assert!(heard.is_empty(), "no {kind} frame is published or heard: {heard:#?}");
+    }
+    assert!(named(&spans, "rdm.mesh.membership.reject.via-node-leaving").is_empty(), "no node-leaving frame reached any receiver");
+    assert!(named(&spans, "rdm.node_admin.node.reject.via-not-live").into_iter().all(|sp| attr(sp, "node") != NODE), "the resubmitted stop was not refused node-not-live");
+    let trace = sent[0]["trace_id"].as_str().unwrap_or("").to_string();
+    println!("unadmitted stop: http://192.168.68.99:16687/trace/{trace}");
+    println!("admitted stop:   http://192.168.68.99:16687/trace/{}", admitted_sent[0]["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(&trace);
+}
+
+/// SIGCONT on drop: a held node is never left stopped.
+struct Held {
+    pid: u64,
+    held: bool,
+}
+
+impl Held {
+    fn signal(&mut self, sig: &str, held: bool) {
+        let ok = std::process::Command::new("kill").args([sig, &self.pid.to_string()]).status().unwrap().success();
+        assert!(ok, "kill {sig} {}", self.pid);
+        self.held = held;
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if self.held {
+            let _ = std::process::Command::new("kill").args(["-CONT", &self.pid.to_string()]).status();
+        }
+    }
+}
+
 /// CONTRACT (node-identity-and-state.md §6.9, R-GC1; node-stop.md step 6): on a fabric whose
 /// `RDM_STOPPED_NODE_TTL` is 3 s, `mesh1.rpc.1` is stopped and left alone. The fabric-primary's sweep
 /// ages it from its stop receipt and submits one ordinary node.delete Build
