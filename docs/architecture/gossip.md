@@ -494,6 +494,48 @@ The same birth's own `Digest` heartbeat on its mesh channel is
 `{ "frame": "digest", "digest": { … } }`, where the `digest` object is the
 [`MeshDigest`](node-rpc-envelope.md#join-op-0x1d-rdm) shown as the one entry of `digests` above.
 
+#### Receive rules: stale, duplicate and gap, per frame
+
+No stale frame may undo a newer fact, and no required fact may be lost because another frame arrived
+first ([i147](../plans/i147-gossip-conformance-prd.md)). Three outcomes, decided using the frame's
+declared identity and ordering fields, never the transport sender's identity: *stale* (older than what
+the receiver holds about the same subject: refused by name), *duplicate* (the same frame again, by its
+identity, with identical content: nothing happens), *gap* (ahead of what the receiver holds in a way it
+cannot apply: it requests repair, §3.3 and §6, and logs a gap, never "stale"). A frame equal in revision
+to the held one but different in content is an inconsistency, refused by name, for every state
+projection, seat record and snapshot publication. Four categories:
+
+| category | stale | duplicate | gap |
+|---|---|---|---|
+| replacement state | a lower revision of the same source projection than the one held, including one installed by a topology read | the held revision with identical content | — |
+| snapshot or delta | a publication older than the installed one; a delta older than the installed version | a chunk of a publication already installed, or an already-applied delta; distinct chunks of an unfinished publication stay admissible | a delta whose base is ahead of the installed version: repair, never applied, never stale |
+| operation fact | — ; an unrelated newer frame does not supersede it, and its effect is reconciled against the same operation's completion and the exact birth's later lifecycle evidence: a completed operation is never reopened | the same operation identity already applied | — |
+| reserved | — | — | — ; refused by name, nothing applied |
+
+| frame | category | subject | ordering | identity |
+|---|---|---|---|---|
+| `Digest` | replacement state | the exact birth | `digest_seq`, higher is newer | `(birth, digest_seq)` |
+| `Members` (source publication and forwarded full) | snapshot | `(mesh, source_publisher)` | `topology_version` against the installed-version floor: within one publisher revision a lower version never overwrites a higher installed one whatever its `published_at_rafka_ms`, including a version installed by a topology read | `(mesh, source_publisher, topology_version, snapshot_id, chunk_index)` |
+| `MembersDelta` | delta | `(mesh, source_publisher)` | `base_version` = installed: apply; `topology_version` ≤ installed: stale (duplicate if already applied); `base_version` > installed: gap, repair | `(mesh, source_publisher, base_version, topology_version)` |
+| `NodeDeleting`, `NodeRestarting`, `NodeStopped` | operation fact, carrying the publisher's `topology_version` as the projection it rides | `(build_id, attempt, operation, node_id, incarnation)` | the fact: reconciled against the operation's completion and the birth's later lifecycle (a `NodeRestarting` after that restart's `node.started` reopens nothing); the carried `topology_version`: replacement state for the projection | the operation identity |
+| `NodeDeleted` | operation fact, terminal | `(build_id, attempt, operation, node_id, incarnation)` | stands after any unrelated frame; never discarded because other traffic arrived first | the operation identity |
+| `MeshStatus`, `FabricStatus` | replacement state | `(mesh \| fabric, publisher)` | `changed_at_rafka_ms`, higher is newer. **Gap:** they carry a publisher string and a timestamp, not the publisher's revision, so a delayed predecessor's frame is not refused by revision; closing it is an i147 packet (a field, or the status riding the publisher's projection) | `(subject, publisher, changed_at_rafka_ms)` |
+| `Seated` | replacement state | the cohort `(mesh, node_type)`, or the fabric seat | the committed `revision` | `(cohort, revision)` |
+| `PrimaryUpdating`, `PrimaryUpdated` | replacement state | each named cohort `(mesh, node_type)` or the fabric seat | the committed `revision` per cohort; at one revision `updated` is later than `updating`; a frame naming two cohorts is ignored when either holds a newer key | `(cohort, revision, stage)` |
+| `Concern` | advisory observation | `(seat, node_id, incarnation, observer)` | none; it establishes neither exit nor vacancy. It is an idempotent investigation wake for the current concern episode: a repeat while the observer's silence mark on that birth stands does nothing; the episode ends when the receiver itself hears the birth again, after which a new `Concern` is a new wake | `(seat, node_id, incarnation, observer)` within the episode |
+| `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` | operation fact | `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)` | reconciled against the round's completion; a hook after the round moved on reopens nothing | the identity |
+| `NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`, `NodeLeft`, `NewFabricPrimary` | reserved | — | — | refused by name, nothing applied |
+
+A publisher change: a delayed frame from a predecessor publisher cannot overwrite the successor's
+projection where the frame carries the publisher's committed revision (`Members`, `Seated`,
+`PrimaryUpdated`); for `MeshStatus` and `FabricStatus` this is the gap above until closed. A recovery
+through a topology read installs the held version under the receiver's one hold; stale gossip after
+it is refused by these rules and never rolls it back. Spans: `rdm.mesh.membership.reject.via-stale`
+(frame, subject, held key, frame key), `rdm.mesh.membership.update.via-duplicate` (frame, identity,
+`ignored`), `rdm.mesh.membership.update.via-gap` (frame, subject, installed, frame key,
+`repair-requested`), `rdm.mesh.membership.reject.via-inconsistent` (frame, subject, revision),
+`rdm.mesh.membership.reject.via-reserved` (position).
+
 ### 3.2 Cadence: timers only for heartbeat and anti-entropy
 
 ```text

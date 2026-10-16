@@ -42,8 +42,9 @@ covered by a cell.
 | Operation fact | Match the exact operation and birth; a duplicate does nothing; an unrelated message cannot supersede it |
 | Reserved frame | Refuse by name and apply nothing |
 
-The table over all 22 kinds, one row each with its category and exact rule, is e1's first deliverable
-and lands on gossip.md as its own section beside the frame catalog (§3.1), as exact old → new to Luke.
+The table over all 22 kinds landed on gossip.md §3.1 "Receive rules: stale, duplicate and gap, per frame"
+(Luke's yes 2026-10-16, with the a1 architect's seven corrections). e1's deliverable is the first proven
+regression against it; e2's are the cells for every row.
 
 ## Requirements
 
@@ -58,6 +59,9 @@ and lands on gossip.md as its own section beside the frame catalog (§3.1), as e
 | R7 | recovery through a topology read followed by stale gossip: no rollback | BUILD | — | e2 |
 | R8 | duplicated or contradictory checks removed from the receive path; a field added only where a demonstrated gap cannot be closed with the information already carried, each as its own packet with reseal and marker | BUILD | five key shapes | e2 |
 | R9 | gossip stays best-effort: no global counter, no acks, no reliable layer; nothing from i146 enters it | HOLDS | §7 | every epic |
+| R10 | `MeshStatus` and `FabricStatus` carry no publisher revision, so a delayed predecessor's frame is not refused by revision; closed by its own packet (a field, or the status riding the publisher's projection), reseal and marker if a field | BUILD (gap, recorded on gossip.md) | `(publisher: String, changed_at_rafka_ms)` only | e2 |
+| R11 | `Concern` is an idempotent investigation wake for the current episode: a repeat while the observer's silence mark stands does nothing; the episode ends when the receiver hears the birth again; it never establishes exit or vacancy | BUILD | the tuple is deduplicated without an episode | e2 |
+| R12 | a delta whose base is ahead of the installed version is a gap: repair requested (§3.3, §6), spanned `via-gap`, never logged stale; equal revision with different content is `via-inconsistent`, refused by name | BUILD | mismatched base handling unproven; no inconsistency refusal | e2 |
 
 ## § OTLP span-assertion bar
 
@@ -79,11 +83,11 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 
 - **Goal → gap.** The frame-contract table on gossip.md; one unkeyed frame applied out of order, with
   its flame (the dev's offer, 2026-10-16).
-- **Deliverables.** The table (all 22 kinds); the red cell of the regression; its fix in the receive
+- **Deliverables.** The red cell of the regression (the table is on the page); its fix in the receive
   path by the frame's own identity; the flame before and after; the gossip.md section as exact old →
   new to Luke; a gossip change, so Luke's permission is Q17 and the flame is required.
 - **Acceptance cells.** `an_unkeyed_<frame>_delivered_after_a_newer_frame_about_its_subject_is_refused_stale`
-  (the regression); `the_frame_contract_table_names_every_frame_kind` (a unit cell over the catalog).
+  (the regression); `every_frame_kind_has_a_row_in_the_receive_rules` (a unit cell over the catalog against the page's table).
   RED first.
 - **State.** not started.
 
