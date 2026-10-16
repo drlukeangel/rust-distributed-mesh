@@ -237,6 +237,10 @@ until step 3 is done. That is the lead's sequencing, not a ruling.
 **Name check.** From step 2 on, the land script refuses a diff that adds an id-named test file or a
 retired word in an identifier or a filename. Scoped to identifiers and filenames: prose, quoted
 evidence, rulings and commit bodies are not matched (the "durable format moved" substring lesson).
+From R24 onward, the land script also rejects added runtime calls to `unauthorized(..)` and added runtime
+construction of `NotAuthority::SenderNotSubject`. Codec definitions, classifiers, reserved-byte fixtures and
+test assertions are exempt; comments are not matched. Location under `rdm-core/src` or `rdm-test/src` alone
+does not exempt executable handler code. Reserved discriminants remain inert.
 
 **Durability.** Pure relocation preserves formats: a package, crate, module or file move changes no
 postcard row, topic address, descriptor or catalog output, and each such landing proves it by
