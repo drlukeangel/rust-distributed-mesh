@@ -127,6 +127,9 @@ pub enum IndeterminateReason {
     ProtocolViolation(String),
     /// The inner call committed at the final target; the carrier could not learn its outcome.
     Carried(String),
+    /// The receiving birth's proven exit or accepted removal ended the owed request after its
+    /// commit (node-rpc.md §43): named with what the resolver holds instead.
+    ReceiverGone(String),
 }
 
 /// A decoded reply and how its protocol classified it.
@@ -249,6 +252,19 @@ impl<R> RpcOutcome<R> {
     }
 }
 
+impl RpcOutcome<()> {
+    /// An outcome that carries no reply, typed for any reply: `None` for a `Reply`.
+    pub fn retyped<R>(self) -> Option<RpcOutcome<R>> {
+        match self {
+            Self::Reply(_) => None,
+            Self::NotSent(n) => Some(RpcOutcome::NotSent(n)),
+            Self::Unserved(u) => Some(RpcOutcome::Unserved(u)),
+            Self::RejectedStale(s) => Some(RpcOutcome::RejectedStale(s)),
+            Self::Indeterminate(i) => Some(RpcOutcome::Indeterminate(i)),
+        }
+    }
+}
+
 /// A call that has not crossed its commit cut.
 #[derive(Debug)]
 pub struct PreCommit {
@@ -267,6 +283,13 @@ impl RequestFinished {
     /// succeeded. An unfinished send gets no proof and stays `PreCommit`.
     pub fn after_clean_finish(bytes_written: usize, frame_len: usize, finish_ok: bool) -> Option<Self> {
         (finish_ok && bytes_written == frame_len).then_some(Self { _private: () })
+    }
+
+    /// Issued only when every byte of the request frame was written. The frame is self-delimited,
+    /// so its receiver dispatches it once it is complete; the request direction stays open for the
+    /// caller's acks of the response (node-rpc-envelope.md "Transport frames").
+    pub fn after_complete_write(bytes_written: usize, frame_len: usize) -> Option<Self> {
+        (bytes_written == frame_len).then_some(Self { _private: () })
     }
 }
 

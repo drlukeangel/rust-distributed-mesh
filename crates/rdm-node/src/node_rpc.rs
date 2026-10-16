@@ -45,6 +45,13 @@ impl ProcessNodeRpc {
         Self { resolver, client: Arc::new(client) }
     }
 
+    /// Send as the process `delivery` is: its birth, its window, the open invocations its server
+    /// shares (node-rpc.md §43).
+    pub fn with_delivery(self, delivery: rdm_transport::Delivery) -> Self {
+        let client = (*self.client).clone().with_delivery(delivery);
+        Self { resolver: self.resolver, client: Arc::new(client) }
+    }
+
     /// Feed this process's resolver from `book` for as long as the returned task runs.
     pub fn feed(&self, book: &DigestBook, node: &str) -> tokio::task::JoinHandle<()> {
         spawn_feed(book.clone(), self.resolver.clone(), node.to_string())

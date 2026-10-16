@@ -245,6 +245,16 @@ fn node_command_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 }
 
 #[test]
+fn transport_header_reseal_is_atomic_fails_a_moved_golden_or_a_moved_bound() {
+    let t = Planted::of_tree();
+    t.edit("crates/rdm-core/src/framing.rs", "(47, 88, 37)", "(47, 88, 38)");
+    only(check(t.root()), Ratchet::TransportHeaderResealIsAtomic);
+    let g = Planted::of_tree();
+    g.edit("crates/rdm-core/src/framing.rs", r#"format!("1c02{BIRTH}01")"#, r#"format!("1c03{BIRTH}01")"#);
+    only(check(g.root()), Ratchet::TransportHeaderResealIsAtomic);
+}
+
+#[test]
 fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
     let t = Planted::of_tree();
     t.write("crates/rdm-test/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");

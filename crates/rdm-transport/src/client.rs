@@ -1,26 +1,31 @@
-//! The Node RPC client (node-rpc.md §20–§24; ownership amendment §6).
+//! The Node RPC client (node-rpc.md §20–§24, §43; ownership amendment §6).
 //!
-//! One call is one attempt against one exact target. Pre-commit work —
-//! resolve, dial, `open_bi`, writing the request —
-//! spends the send budget and can only end `NotSent`. The commit cut is the
-//! complete request written *and* the request direction finished cleanly; an
-//! unfinished request is reset with `499 FRAME_NOT_SENT`. After the cut the
-//! call ends `Reply`, `Unserved` (a `421`) or `Indeterminate`. Node RPC never
-//! dials a second peer or target inside one call and never replays.
+//! One call is one owed request to one exact target (node-rpc.md §43): its identity is minted once,
+//! and the runtime resends it with that identity on the schedule until it is acked, its receiver's
+//! exit is proven, or its owner ends it. A call's budget is its owner's bound: when it lapses the
+//! call ends and its request is owed no longer. Each attempt is resolve, the ordinary dial,
+//! `open_bi` and the request frame; pre-commit work can only end `NotSent`. The commit cut is the
+//! complete request frame written: the frame is self-delimited, and the request direction stays
+//! open for the caller's acks of the response. An unfinished request is reset with
+//! `499 FRAME_NOT_SENT`. After the cut the call ends `Reply`, `Unserved` (a `421`) or
+//! `Indeterminate`. A resend is the same invocation, never a new execution; Node RPC never dials a
+//! second target inside one call.
 
+use crate::delivery::{AckOf, AckTo, CallGuard, Delivery, FrameOut, FrameReader, ReadEnd, ResponseVerdict, SlotEvent, SlotState};
 use crate::pool::{DialError, DialSpec, Failpoint, Pool, PoolKey};
 use crate::resolve::{NodeResolver, NodeTarget, ResolvedNode};
-use iroh::endpoint::{ReadError, ReadToEndError, VarInt, WriteError};
+use iroh::endpoint::{VarInt, WriteError};
 use iroh::Endpoint;
 use rdm_core::NodeId;
 use rdm_core::codes::ResetCode;
 use rdm_core::context::{dropped_as_str, CallContext};
-use rdm_core::framing::{decode_single_frame, encode_request, Target, RequestHeader, MAX_VARINT_LEN};
-use rdm_core::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
+use rdm_core::framing::{encode_header, encode_request, DeliveryId, Target, RequestHeader, TransportHeader};
+use rdm_core::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, ResolveFailure, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout_at, Instant};
 
 /// The two budget shapes (ownership amendment §6.1).
@@ -61,6 +66,18 @@ pub struct CallOptions {
     /// The observability context to carry, verbatim (a carrier hands the original through).
     /// `None`: the current span's trace context under the client's `caller_system`.
     pub context: Option<CallContext>,
+    /// A carried call's origin identity: the carrier's inner call keeps it, so the final target's
+    /// duplicate window is the origin's, never the carrier's. `None`: this client mints the identity.
+    pub carried: Option<CarriedIdentity>,
+}
+
+/// The origin's delivery identity a carrier's inner call keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedIdentity {
+    /// The origin's identity of the request.
+    pub id: DeliveryId,
+    /// The origin's `retire_below`, valid for the final target too.
+    pub retire_below: u64,
 }
 
 impl Default for CallOptions {
@@ -71,6 +88,7 @@ impl Default for CallOptions {
             scope: None,
             after_connect: None,
             context: None,
+            carried: None,
         }
     }
 }
@@ -123,7 +141,9 @@ pub trait AcceptTrigger: Send + Sync {
 }
 
 /// A Node RPC client: dials the exact target a resolver names, pools one connection per peer, scope
-/// and incarnation, and returns a typed outcome per call.
+/// and incarnation, and returns a typed outcome per call. A clone shares its pool, its admission
+/// block and its delivery state.
+#[derive(Clone)]
 pub struct NodeRpcClient {
     endpoint: Endpoint,
     pub(crate) resolver: Arc<dyn NodeResolver>,
@@ -135,6 +155,8 @@ pub struct NodeRpcClient {
     /// Why this client opens no new connection now, while its source admits none
     /// ([`Self::block_new_connections`]); `None` admits.
     admission: crate::pool::Admission,
+    /// The process's delivery state: its birth, its window, its open invocations.
+    delivery: Delivery,
 }
 
 /// How the reply direction is decoded: after the commit cut, or after an
@@ -148,8 +170,13 @@ pub enum Decode<'a> {
 
 /// Where an invocation stands after the commit-cut phase.
 pub(crate) enum Phase<R> {
-    Done(RpcOutcome<R>, Option<CallEvidence>),
-    Committed(Opened),
+    /// The attempt ended before the commit cut.
+    Done(RpcOutcome<R>),
+    /// The complete request frame is written: the frame's length.
+    Committed(Opened, usize),
+    /// The receiver stopped the request direction before the frame was complete: its refusal
+    /// follows on the other direction.
+    Stopped(Opened),
 }
 
 /// Whom one call reaches: the birth its resolver named, or the process at an endpoint it holds no
@@ -167,29 +194,89 @@ pub(crate) struct Reach {
     pub(crate) addr: SocketAddr,
 }
 
-/// A committed invocation: the commit proof and the reply direction.
+/// One attempt past its commit cut: both directions of its stream.
 pub(crate) struct Opened {
-    pub(crate) committed: rdm_core::outcome::Committed,
+    pub(crate) send: iroh::endpoint::SendStream,
     pub(crate) recv: iroh::endpoint::RecvStream,
-    pub(crate) evidence: CallEvidence,
     pub(crate) key: PoolKey,
     pub(crate) conn: iroh::endpoint::Connection,
-    pub(crate) node: Reach,
-    /// `None` for a `Budget::Stream` call: nothing bounds the reply but the transport's liveness.
-    pub(crate) reply_deadline: Option<Instant>,
 }
 
-/// What came back after the commit cut, before protocol decoding.
-enum Committed {
-    Reply(Vec<u8>),
+/// What the attempt task tells the call's owner.
+#[derive(Debug)]
+pub(crate) enum Attempted {
+    /// An attempt crossed the commit cut (the first one counts).
+    Committed { frame_len: usize },
+    /// An attempt ended before the cut, and the request is resent: the latest reason.
+    NotSent(NotSentReason),
+    /// The request ended before any attempt committed, definitively: no resend.
+    EndedPreCommit(RpcOutcome<()>),
+    /// The receiver stopped the request before it was complete; its refusal reached the invocation.
+    StoppedBeforeComplete,
+    /// The stream was reset with this code after the request: definitive, no resend.
     Reset(u64),
-    Lost(IndeterminateReason),
+    /// The receiving birth's exit or removal is proven: the owed request ends.
+    ReceiverGone(String),
+    /// No attempt committed within the send budget: the latest attempt's reason. The attempt task
+    /// alone bounds every pre-commit step by the send budget, so the outcome of a dial cut by it is
+    /// recorded before the call ends.
+    SendDeadline(NotSentReason),
 }
 
 impl NodeRpcClient {
-    /// A client on `endpoint` that resolves its targets through `resolver`.
+    /// A client on `endpoint` that resolves its targets through `resolver`. It is a process of its
+    /// own: its delivery identities are a birth it mints once ([`Self::with_delivery`] gives it a
+    /// node's).
     pub fn new(endpoint: Endpoint, resolver: Arc<dyn NodeResolver>) -> Self {
-        Self { endpoint, resolver, pool: Pool::default(), observer: None, caller_system: None, admission: crate::pool::Admission::default() }
+        let me = Self {
+            endpoint,
+            resolver,
+            pool: Pool::default(),
+            observer: None,
+            caller_system: None,
+            admission: crate::pool::Admission::default(),
+            delivery: Delivery::new(crate::delivery::minted_birth()),
+        };
+        me.attach();
+        me
+    }
+
+    /// Send as the process `delivery` is, sharing its window and its open invocations with the
+    /// process's server.
+    pub fn with_delivery(mut self, delivery: Delivery) -> Self {
+        self.delivery = delivery;
+        self.attach();
+        self
+    }
+
+    /// The process's delivery state.
+    pub fn delivery(&self) -> &Delivery {
+        &self.delivery
+    }
+
+    fn attach(&self) {
+        let (endpoint, resolver, pool, admission, delivery) = (self.endpoint.clone(), self.resolver.clone(), self.pool.clone(), self.admission.clone(), self.delivery.clone());
+        // A resent response whose caller holds no live connection here takes the ordinary dial
+        // to the birth the resolver names at that endpoint.
+        let dial = Arc::new(move |peer: iroh::PublicKey| {
+            let (endpoint, resolver, pool, admission, delivery) = (endpoint.clone(), resolver.clone(), pool.clone(), admission.clone(), delivery.clone());
+            Box::pin(async move {
+                let node = resolver.by_endpoint(&peer)?;
+                let key = PoolKey { scope: None, peer, incarnation: Some(node.incarnation.clone()) };
+                let spec = DialSpec {
+                    endpoint,
+                    resolver: resolver.clone(),
+                    target: Some(NodeTarget::ExactNode(node.node_id.clone())),
+                    addr: node.transport_addr,
+                    failpoint: None,
+                    opened: None,
+                    admission,
+                    delivery: Some(delivery),
+                };
+                pool.get_or_dial(&key, spec, Instant::now() + rdm_core::cadence::staleness_floor()).await.ok().map(|(c, _)| c)
+            }) as crate::delivery::BoxFut<Option<iroh::endpoint::Connection>>
+        });
+        self.delivery.attach_client(self.resolver.clone(), dial);
     }
 
     /// Open no new connection from now on, naming `why`, until [`Self::admit_new_connections`]: a
@@ -300,28 +387,9 @@ impl NodeRpcClient {
         .await
     }
 
-    /// Everything up to the commit cut: resolve, dial, open_bi, the request
-    /// write and the clean finish. Ends `Done` with a pre-commit or early-refusal outcome, or
-    /// `Committed` holding the reply direction.
-    pub(crate) async fn open<R, E>(
-        &self,
-        target: &NodeTarget,
-        op: u8,
-        payload: Payload,
-        max_reply: usize,
-        opts: &CallOptions,
-        early_decode: E,
-    ) -> Phase<R>
-    where
-        E: FnOnce(EarlyRefusal, Option<&[u8]>) -> RpcOutcome<R>,
-    {
-        let start = Instant::now();
-        let (send_deadline, overall) = match opts.budget {
-            Budget::Overall(d) => (start + d, Some(start + d)),
-            Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
-        };
-        let pre = PreCommit::begin(op);
-        let node = match target {
+    /// Where `target` is now, or the reason the call cannot be sent.
+    pub(crate) fn reach(&self, target: &NodeTarget) -> Result<Reach, NotSentReason> {
+        Ok(match target {
             // The process at an endpoint the caller holds no record of: dialled as named, its target
             // naming no node.
             NodeTarget::Endpoint { endpoint_id, addr } => {
@@ -339,20 +407,30 @@ impl NodeRpcClient {
                     self.pool.purge_stale(&n);
                     Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }
                 }
-                Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
+                Err(f) => return Err(NotSentReason::Resolve(f)),
             },
-        };
+        })
+    }
+
+    /// One attempt up to the commit cut: the ordinary dial, open_bi and the complete request frame
+    /// `header | sections`. Ends `Done` with a pre-commit outcome, or `Committed` holding both
+    /// directions of the stream; the request direction is not finished.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn attempt(
+        &self,
+        target: &NodeTarget,
+        node: &Reach,
+        op: u8,
+        header: &TransportHeader,
+        payload: &mut Payload,
+        opts: &CallOptions,
+        send_deadline: Instant,
+        evidence: &Mutex<CallEvidence>,
+    ) -> Phase<()> {
+        let pre = PreCommit::begin(op);
         // The request's target: the node the caller resolved and the op, never a dial target. A call to an
         // endpoint names no node; no receiver reads the node id to refuse the call (R-UC1a).
         let request_target = Target { node_id: node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), op };
-        let mut evidence = CallEvidence {
-            node_id: node.node.as_ref().map(|n| n.node_id.clone()),
-            addr: node.addr,
-            committed: false,
-            connection: None,
-            reused: false,
-            dial_failure: None,
-        };
         let key = PoolKey { scope: opts.scope.clone(), peer: node.peer, incarnation: node.observed.as_ref().map(|n| n.incarnation.clone()) };
         let spec = DialSpec {
             endpoint: self.endpoint.clone(),
@@ -366,28 +444,30 @@ impl NodeRpcClient {
                 _ => None,
             },
             admission: self.admission.clone(),
+            delivery: Some(self.delivery.clone()),
         };
         let dial_started = Instant::now();
         let conn = match self.pool.get_or_dial(&key, spec, send_deadline).await {
             Ok((c, reused)) => {
                 tracing::info!(step = if reused { "pooled" } else { "dialed" }, waited_ms = dial_started.elapsed().as_millis() as u64, "a connection to the target is held");
-                evidence.connection = Some(c.stable_id());
-                evidence.reused = reused;
+                let mut ev = evidence.lock().unwrap();
+                ev.connection = Some(c.stable_id());
+                ev.reused = reused;
                 c
             }
             Err(DialError::Superseded) => {
                 // The birth moved while this dial was in flight: the target is stale.
                 let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.to_string()).unwrap_or_default();
                 stale_span(&request_target, &format!("incarnation {} superseded by {now}", key.birth()));
-                return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
+                return Phase::Done(pre.stale_before_finish(&request_target));
             }
             Err(DialError::Deadline) => {
                 tracing::info!(step = "dial-deadline", waited_ms = dial_started.elapsed().as_millis() as u64, "no connection to the target within the send budget");
-                evidence.dial_failure = Some("dial deadline".to_string());
+                evidence.lock().unwrap().dial_failure = Some("dial deadline".to_string());
                 if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_failed(n, "dial deadline");
                 }
-                return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
+                return Phase::Done(pre.not_sent(NotSentReason::Deadline));
             }
             Err(DialError::Blocked { at, why }) => {
                 // Not a dial that failed: the source admits no new connection, so no Direct fact
@@ -403,19 +483,19 @@ impl NodeRpcClient {
                     waited_ms = dial_started.elapsed().as_millis() as u64,
                 )
                 .in_scope(|| tracing::info!("the source admits no new connection: the call is not sent"));
-                return Phase::Done(pre.not_sent(NotSentReason::AdmissionBlocked(why)), Some(evidence));
+                return Phase::Done(pre.not_sent(NotSentReason::AdmissionBlocked(why)));
             }
             Err(DialError::Failed(e)) => {
                 tracing::info!(step = "dial-failed", waited_ms = dial_started.elapsed().as_millis() as u64, error = %e, "the dial to the target failed");
-                evidence.dial_failure = Some(e.clone());
+                evidence.lock().unwrap().dial_failure = Some(e.clone());
                 if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_failed(n, &e);
                 }
-                return Phase::Done(pre.not_sent(NotSentReason::Connection(e)), Some(evidence));
+                return Phase::Done(pre.not_sent(NotSentReason::Connection(e)));
             }
         };
         let opened_at = Instant::now();
-        let (mut send, mut recv) = match timeout_at(send_deadline, conn.open_bi()).await {
+        let (mut send, recv) = match timeout_at(send_deadline, conn.open_bi()).await {
             Ok(Ok(s)) => {
                 tracing::info!(step = "stream-opened", waited_ms = opened_at.elapsed().as_millis() as u64, "a request stream is open");
                 s
@@ -425,61 +505,53 @@ impl NodeRpcClient {
                 if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
                     o.direct_broken(n, &e.to_string());
                 }
-                return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())), Some(evidence));
+                return Phase::Done(pre.not_sent(NotSentReason::Connection(e.to_string())));
             }
             Err(_) => {
                 tracing::info!(step = "stream-open-deadline", waited_ms = opened_at.elapsed().as_millis() as u64, "no request stream opened within the send budget");
-                return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
+                return Phase::Done(pre.not_sent(NotSentReason::Deadline));
             }
         };
-        let payload = match payload {
-            Payload::Ready(bytes) => bytes,
-            Payload::AtWrite(build) => {
-                // The remaining budget is measured here, after resolve, dial and stream open,
-                // immediately before the request is written.
-                let remaining = match (opts.budget, overall) {
-                    (_, Some(d)) => d.saturating_duration_since(Instant::now()),
-                    (Budget::Split { reply, .. }, None) => reply,
-                    (Budget::Stream { send }, None) => send,
-                    (Budget::Overall(_), None) => unreachable!(),
-                };
-                tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "the remaining budget at the request write");
-                match build(remaining) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        let _ = send.reset(VarInt::from_u32(ResetCode::FrameNotSent.code()));
-                        return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("request does not encode: {e}"))), Some(evidence));
-                    }
+        if let Payload::AtWrite(_) = payload {
+            let Payload::AtWrite(build) = std::mem::replace(payload, Payload::Ready(Vec::new())) else { unreachable!("matched above") };
+            // The remaining budget is measured here, after resolve, dial and stream open,
+            // immediately before the request is first written; a resend carries the same bytes.
+            let remaining = match opts.budget {
+                Budget::Overall(_) => send_deadline.saturating_duration_since(Instant::now()),
+                Budget::Split { reply, .. } => reply,
+                Budget::Stream { send } => send,
+            };
+            tracing::info!(step = "remaining-measured", remaining_ms = remaining.as_millis() as u64, "the remaining budget at the request write");
+            match build(remaining) {
+                Ok(bytes) => *payload = Payload::Ready(bytes),
+                Err(e) => {
+                    let _ = send.reset(VarInt::from_u32(ResetCode::FrameNotSent.code()));
+                    return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("request does not encode: {e}"))));
                 }
             }
-        };
-        let header = RequestHeader { target: request_target.clone(), context: self.context_for(opts) };
-        let frame = encode_request(&header, &payload);
+        }
+        let Payload::Ready(payload) = &*payload else { unreachable!("built above") };
+        let sections = RequestHeader { target: request_target.clone(), context: self.context_for(opts) };
+        let mut frame = Vec::new();
+        encode_header(header, &mut frame);
+        frame.extend(encode_request(&sections, payload));
         let frame_not_sent = VarInt::from_u32(ResetCode::FrameNotSent.code());
         if opts.cut_before_finish {
             let half = (frame.len() / 2).max(1);
             let _ = send.write_all(&frame[..half]).await;
             let _ = send.reset(frame_not_sent);
             let (_, out) = pre.cut_before_finish();
-            return Phase::Done(out, Some(evidence));
+            return Phase::Done(out);
         }
         let written = timeout_at(send_deadline, send.write_all(&frame)).await;
         if let Ok(Err(WriteError::Stopped(stop))) = &written {
-            // The server refused before this request finished (node-rpc.md §27):
-            // a healthy answer on a healthy connection.
+            // The server refused before this request was complete (node-rpc.md §27): a healthy
+            // answer on a healthy connection.
             if stop.into_inner() == u64::from(ResetCode::UnservedOp.code()) {
-                return Phase::Done(pre.unserved_before_finish(), Some(evidence));
+                return Phase::Done(pre.unserved_before_finish());
             }
-            let bytes = timeout_at(send_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await;
-            let early = pre.stopped_before_finish();
-            let out = match bytes {
-                Ok(Ok(b)) => match decode_single_frame(&b, max_reply) {
-                    Ok(payload) => early_decode(early, Some(payload)),
-                    Err(_) => early_decode(early, None),
-                },
-                _ => early_decode(early, None),
-            };
-            return Phase::Done(out, Some(evidence));
+            // Its refusal is a response frame on the stream's other direction.
+            return Phase::Stopped(Opened { send, recv, key, conn });
         }
         if !matches!(written, Ok(Ok(()))) {
             if let Ok(Err(WriteError::ConnectionLost(_))) = &written {
@@ -487,23 +559,10 @@ impl NodeRpcClient {
             }
             let _ = send.reset(frame_not_sent);
             let (_, out) = pre.cut_before_finish();
-            return Phase::Done(out, Some(evidence));
+            return Phase::Done(out);
         }
-        let finished = send.finish().is_ok();
-        let Some(proof) = RequestFinished::after_clean_finish(frame.len(), frame.len(), finished) else {
-            let _ = send.reset(frame_not_sent);
-            let (_, out) = pre.cut_before_finish();
-            return Phase::Done(out, Some(evidence));
-        };
-        let committed = pre.commit(proof);
-        evidence.committed = true;
-        let reply_deadline = match (opts.budget, overall) {
-            (_, Some(d)) => Some(d),
-            (Budget::Split { reply, .. }, None) => Some(Instant::now() + reply),
-            (Budget::Stream { .. }, None) => None,
-            (Budget::Overall(_), None) => unreachable!(),
-        };
-        Phase::Committed(Opened { committed, recv, evidence, key, conn, node, reply_deadline })
+        evidence.lock().unwrap().committed = true;
+        Phase::Committed(Opened { send, recv, key, conn }, frame.len())
     }
 
     /// Invoke a raw op (any op, served or not) — the unknown-op cell uses it.
@@ -534,10 +593,30 @@ impl NodeRpcClient {
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
+        self.invoke_via(target, None, op, payload, max_reply, opts, decode).await
+    }
+
+    /// [`Self::invoke_payload`] for a request that also reaches `final_target` (a carried call's
+    /// final target): its frames are held toward the carrier and the final target both.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn invoke_via<R, D>(
+        &self,
+        target: &NodeTarget,
+        final_target: Option<&NodeId>,
+        op: u8,
+        payload: Payload,
+        max_reply: usize,
+        opts: &CallOptions,
+        decode: D,
+    ) -> (RpcOutcome<R>, Option<CallEvidence>)
+    where
+        D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
+    {
         use tracing::Instrument;
         // The caller's side of one call: its outcome, why, and how long it took; the steps it
         // reached are the log lines inside it (resolved, connection pooled or dialed, stream
-        // opened, request written, reply read).
+        // opened, request written, reply read), and its delivery: the identity, how many attempts
+        // it took and how its owed request ended.
         let span = tracing::info_span!(
             "rdm.node_rpc.request.update.via-call",
             target = ?target,
@@ -546,9 +625,12 @@ impl NodeRpcClient {
             reason = tracing::field::Empty,
             reused = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
+            delivery_id = tracing::field::Empty,
+            attempts = tracing::field::Empty,
+            delivery = tracing::field::Empty,
         );
         let started = Instant::now();
-        let (out, evidence) = self.invoke_raw_steps(target, op, payload, max_reply, opts, decode).instrument(span.clone()).await;
+        let (out, evidence) = self.owe_steps(target, final_target, op, payload, max_reply, opts, decode, &span).instrument(span.clone()).await;
         span.record("outcome", out.name());
         let reason = match &out {
             RpcOutcome::NotSent(n) => format!("{:?}", n.reason()),
@@ -566,55 +648,538 @@ impl NodeRpcClient {
         (out, evidence)
     }
 
-    async fn invoke_raw_steps<R, D>(
+    /// Open one owed request (node-rpc.md §43): resolve once, mint its identity, open its invocation
+    /// and start the task that sends and resends it. `Err` is an outcome before anything was owed.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn owe(
         &self,
         target: &NodeTarget,
+        final_target: Option<&NodeId>,
+        op: u8,
+        payload: Payload,
+        max_reply: usize,
+        opts: &CallOptions,
+        unary: bool,
+        deadlines: (Instant, Option<Instant>),
+        span: &tracing::Span,
+    ) -> Result<OwedCall, (RpcOutcome<()>, Option<CallEvidence>)> {
+        let node = match self.reach(target) {
+            Ok(n) => n,
+            Err(r) => return Err((PreCommit::begin(op).not_sent(r), None)),
+        };
+        let mut receivers = vec![node.peer];
+        if let Some(f) = final_target {
+            if let Ok(n) = self.resolver.resolve(&NodeTarget::ExactNode(f.clone())) {
+                receivers.push(n.endpoint_id);
+            }
+        }
+        let (id, retire_floor) = match &opts.carried {
+            Some(c) => (c.id.clone(), Some(c.retire_below)),
+            None => (self.delivery.mint(&receivers), None),
+        };
+        span.record("delivery_id", tracing::field::display(&id));
+        let (guard, frames, state) = self.delivery.open_call(id.clone(), max_reply, unary);
+        let evidence = Arc::new(Mutex::new(CallEvidence {
+            node_id: node.node.as_ref().map(|n| n.node_id.clone()),
+            addr: node.addr,
+            committed: false,
+            connection: None,
+            reused: false,
+            dial_failure: None,
+        }));
+        let (tx, attempted) = mpsc::unbounded_channel();
+        let attempts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let task = Attempts {
+            client: self.clone(),
+            target: target.clone(),
+            birth: node.observed.as_ref().filter(|_| node.node.is_some()).map(|n| n.incarnation.clone()),
+            op,
+            id: id.clone(),
+            receivers,
+            retire_floor,
+            payload,
+            opts: opts.clone(),
+            deadlines,
+            evidence: evidence.clone(),
+            tx,
+            state: state.clone(),
+            attempts: attempts.clone(),
+        };
+        let handle = tokio::spawn(tracing::Instrument::instrument(task.run(), span.clone()));
+        Ok(OwedCall { guard, frames, attempted, evidence, attempts, _task: AbortOnDrop(handle) })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn owe_steps<R, D>(
+        &self,
+        target: &NodeTarget,
+        final_target: Option<&NodeId>,
         op: u8,
         payload: Payload,
         max_reply: usize,
         opts: &CallOptions,
         decode: D,
+        span: &tracing::Span,
     ) -> (RpcOutcome<R>, Option<CallEvidence>)
     where
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
-        let decode = std::sync::Mutex::new(Some(decode));
-        let take = || decode.lock().unwrap().take().expect("decode runs once");
-        let Opened { committed, mut recv, evidence, key, conn, node, reply_deadline } =
-            match self.open(target, op, payload, max_reply, opts, |early, bytes| take()(Decode::Early(early, bytes))).await {
-                Phase::Done(out, evidence) => return (out, evidence),
-                Phase::Committed(o) => o,
-            };
-        let decode = take();
-        tracing::info!(step = "request-written", "the request is written and finished; awaiting the reply");
-        let read_at = Instant::now();
-        let got = match crate::stream::bounded(reply_deadline, recv.read_to_end(max_reply + MAX_VARINT_LEN)).await {
-            Err(_) => Committed::Lost(IndeterminateReason::ReplyDeadline),
-            Ok(Ok(bytes)) => Committed::Reply(bytes),
-            Ok(Err(ReadToEndError::Read(ReadError::Reset(c)))) => Committed::Reset(c.into_inner()),
-            Ok(Err(ReadToEndError::TooLong)) => Committed::Lost(IndeterminateReason::ProtocolViolation("reply longer than the protocol ceiling".into())),
-            Ok(Err(e)) => Committed::Lost(IndeterminateReason::ReplyLost(e.to_string())),
+        let start = Instant::now();
+        let (send_deadline, overall) = match opts.budget {
+            Budget::Overall(d) => (start + d, Some(start + d)),
+            Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
         };
-        tracing::info!(step = "reply-read", waited_ms = read_at.elapsed().as_millis() as u64, "the reply direction ended");
-        // A reply lost with the connection evicts it (node-rpc.md §21; never reachability), and the pooled
-        // connection leaving the pool is a Direct edge that broke: told through the observer's one door for it.
-        // A reply deadline is no evidence about the connection: it stays pooled.
-        if let Committed::Lost(IndeterminateReason::ReplyLost(why)) = &got {
-            if self.pool.broken(&key, &conn) {
-                if let (Some(o), Some(n)) = (&self.observer, &node.observed) {
-                    o.direct_broken(n, why);
+        let after_commit = |at: Instant| match (opts.budget, overall) {
+            (_, Some(d)) => Some(d),
+            (Budget::Split { reply, .. }, None) => Some(at + reply),
+            (Budget::Stream { .. }, None) => None,
+            (Budget::Overall(_), None) => unreachable!(),
+        };
+        let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, true, (send_deadline, overall), span) {
+            Ok(o) => o,
+            Err((out, ev)) => return (out.retyped().expect("no reply before anything is owed"), ev),
+        };
+        let mut pre = Some(PreCommit::begin(op));
+        let mut committed: Option<rdm_core::outcome::Committed> = None;
+        let mut stopped: Option<EarlyRefusal> = None;
+        let mut last = NotSentReason::Deadline;
+        // Before the commit the attempt task bounds every step by the send budget and says when it
+        // lapsed; after it, the reply budget is this owner's.
+        let mut deadline: Option<Instant> = None;
+        let out = loop {
+            let wait = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                // A frame already delivered is taken before anything the attempt task said after it.
+                biased;
+                f = owed.frames.recv() => match f {
+                    Some(SlotEvent::Frame(bytes, _)) => {
+                        span.record("delivery", "acked");
+                        break match (committed.take(), stopped.take(), pre.take()) {
+                            (Some(c), _, _) => decode(Decode::Committed(c, &bytes)),
+                            (None, Some(e), _) => decode(Decode::Early(e, Some(&bytes))),
+                            // A frame before the commit event: the event is still queued behind it.
+                            (None, None, Some(p)) => decode(Decode::Committed(p.commit(RequestFinished::after_complete_write(0, 0).expect("complete")), &bytes)),
+                            (None, None, None) => unreachable!("a call is committed, stopped or pre-commit"),
+                        };
+                    }
+                    Some(SlotEvent::Violation(why)) => {
+                        break match (committed.take(), pre.take()) {
+                            (Some(c), _) => c.indeterminate(IndeterminateReason::ProtocolViolation(why)),
+                            (None, Some(p)) => p.not_sent(NotSentReason::Connection(why)),
+                            (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Connection(why)),
+                        };
+                    }
+                    None => continue,
+                },
+                ev = owed.attempted.recv() => match ev {
+                    Some(Attempted::Committed { frame_len }) => {
+                        if let Some(p) = pre.take() {
+                            committed = Some(p.commit(RequestFinished::after_complete_write(frame_len, frame_len).expect("a complete write")));
+                            deadline = after_commit(Instant::now());
+                        }
+                    }
+                    Some(Attempted::NotSent(r)) => last = r,
+                    Some(Attempted::SendDeadline(r)) => {
+                        span.record("delivery", "cancelled");
+                        break match (committed.take(), stopped.take(), pre.take()) {
+                            (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
+                            (None, Some(e), _) => decode(Decode::Early(e, None)),
+                            (None, None, Some(p)) => p.not_sent(r),
+                            (None, None, None) => unreachable!("a call is committed, stopped or pre-commit"),
+                        };
+                    }
+                    Some(Attempted::StoppedBeforeComplete) => {
+                        if let Some(p) = pre.take() {
+                            stopped = Some(p.stopped_before_finish());
+                        }
+                    }
+                    Some(Attempted::EndedPreCommit(o)) => {
+                        // Definitive before anything was dispatched (unserved, stale, the owner's cut).
+                        break match committed.take() {
+                            None => o.retyped().expect("no reply before the commit cut"),
+                            Some(c) => c.indeterminate(IndeterminateReason::ReplyLost("a resend ended before its commit cut".into())),
+                        };
+                    }
+                    Some(Attempted::Reset(code)) => {
+                        break match (committed.take(), pre.take()) {
+                            (Some(c), _) => c.reset(code),
+                            (None, Some(p)) if code == u64::from(ResetCode::UnservedOp.code()) => p.unserved_before_finish(),
+                            (None, Some(p)) => p.not_sent(NotSentReason::Connection(format!("reset {code} before the commit cut"))),
+                            (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Connection(format!("reset {code}"))),
+                        };
+                    }
+                    Some(Attempted::ReceiverGone(why)) => {
+                        span.record("delivery", "receiver-gone");
+                        break match (committed.take(), pre.take()) {
+                            (Some(c), _) => c.indeterminate(IndeterminateReason::ReceiverGone(why)),
+                            (None, Some(p)) => p.not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
+                            (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
+                        };
+                    }
+                    None => {
+                        break match (committed.take(), stopped.take(), pre.take()) {
+                            (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyLost("the request's attempts ended".into())),
+                            (None, Some(e), _) => decode(Decode::Early(e, None)),
+                            (None, None, Some(p)) => p.not_sent(last.clone()),
+                            (None, None, None) => PreCommit::begin(op).not_sent(last.clone()),
+                        };
+                    }
+                },
+                () = wait => {
+                    // The owner's budget lapsed: the call ends, and its request is owed no longer.
+                    span.record("delivery", "cancelled");
+                    break match (committed.take(), stopped.take(), pre.take()) {
+                        (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyDeadline),
+                        (None, Some(e), _) => decode(Decode::Early(e, None)),
+                        (None, None, Some(p)) => p.not_sent(last.clone()),
+                        (None, None, None) => unreachable!("a call is committed, stopped or pre-commit"),
+                    };
+                }
+            }
+        };
+        span.record("attempts", owed.attempts.load(std::sync::atomic::Ordering::SeqCst));
+        let evidence = owed.evidence.lock().unwrap().clone();
+        (out, Some(evidence))
+    }
+}
+
+/// One owed request, held by its owner: dropped, the invocation ends and its request is owed no
+/// longer (the owner's cancellation).
+pub(crate) struct OwedCall {
+    pub(crate) guard: CallGuard,
+    pub(crate) frames: mpsc::UnboundedReceiver<SlotEvent>,
+    pub(crate) attempted: mpsc::UnboundedReceiver<Attempted>,
+    pub(crate) evidence: Arc<Mutex<CallEvidence>>,
+    pub(crate) attempts: Arc<std::sync::atomic::AtomicU32>,
+    /// The attempt task: aborted with the owner's hold.
+    pub(crate) _task: AbortOnDrop,
+}
+
+/// A task that ends when its handle is dropped.
+pub(crate) struct AbortOnDrop(pub(crate) tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// How one attempt's stream ended.
+enum StreamEnd {
+    /// The invocation is complete.
+    Complete,
+    /// Reset with a code that ends the request (`421`, `423`, `424`).
+    Definitive(u64),
+    /// The stream broke the framing; the invocation was told.
+    Violation,
+    /// No ack in time: the attempt is abandoned, the request resent.
+    NoAck,
+    /// The stream (or its connection) is gone.
+    Lost,
+}
+
+/// The task that sends one owed request and resends it, with the same identity, until it is acked,
+/// its receiver's exit is proven, or its owner drops it.
+struct Attempts {
+    client: NodeRpcClient,
+    target: NodeTarget,
+    /// The receiving birth the identity was minted toward: a resolver naming another incarnation
+    /// proves this one ended. `None` for a call to an endpoint no record names.
+    birth: Option<rdm_core::IncarnationId>,
+    op: u8,
+    id: DeliveryId,
+    receivers: Vec<iroh::PublicKey>,
+    retire_floor: Option<u64>,
+    payload: Payload,
+    opts: CallOptions,
+    deadlines: (Instant, Option<Instant>),
+    evidence: Arc<Mutex<CallEvidence>>,
+    tx: mpsc::UnboundedSender<Attempted>,
+    state: watch::Receiver<SlotState>,
+    attempts: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl Attempts {
+    fn receiver_gone(&self) -> Option<String> {
+        let held = self.birth.as_ref()?;
+        match self.client.resolver.resolve(&self.target) {
+            Ok(n) if &n.incarnation == held => None,
+            Ok(n) => Some(format!("incarnation {} superseded by {}", held.as_str(), n.incarnation.as_str())),
+            Err(ResolveFailure::Gone) => Some(format!("incarnation {} exited or removed", held.as_str())),
+            Err(_) => None,
+        }
+    }
+
+    fn retire_below(&self) -> u64 {
+        let own = self.client.delivery.retire_below(&self.receivers);
+        match self.retire_floor {
+            Some(r) => r,
+            None => own,
+        }
+    }
+
+    async fn pause(&mut self, until: Instant) {
+        let mut changes = self.client.resolver.changes();
+        let resolver_moved = async {
+            match changes.as_mut() {
+                Some(c) => {
+                    let _ = c.changed().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            () = tokio::time::sleep_until(until) => {}
+            () = resolver_moved => {}
+            _ = self.state.changed() => {}
+        }
+    }
+
+    async fn run(mut self) {
+        let pacing = self.client.delivery.pacing();
+        let mut attempt = 0u32;
+        let mut committed = false;
+        let mut last = NotSentReason::Deadline;
+        loop {
+            if self.state.borrow().complete {
+                return;
+            }
+            if !committed && Instant::now() >= self.deadlines.0 {
+                let _ = self.tx.send(Attempted::SendDeadline(last));
+                return;
+            }
+            if let Some(why) = self.receiver_gone() {
+                tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", delivery_id = %self.id, attempts = attempt, reason = %why)
+                    .in_scope(|| tracing::info!("the receiving birth ended: the request is owed no longer"));
+                let _ = self.tx.send(Attempted::ReceiverGone(why));
+                return;
+            }
+            if self.state.borrow().acked {
+                // Acked, its response not complete: hold a connection the responder can resend on.
+                self.hold_connection(attempt).await;
+                attempt += 1;
+                continue;
+            }
+            attempt += 1;
+            self.attempts.store(attempt, std::sync::atomic::Ordering::SeqCst);
+            let started = Instant::now();
+            let next_at = started + pacing.after(attempt);
+            // Before the commit no pause outlasts the send budget.
+            let resume_at = if committed { next_at } else { next_at.min(self.deadlines.0) };
+            if attempt > 1 {
+                self.client.delivery.stats().resends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                tracing::info_span!("rdm.node_rpc.delivery.update.via-resend", delivery_id = %self.id, attempt, backoff_ms = pacing.after(attempt - 1).as_millis() as u64)
+                    .in_scope(|| tracing::info!("no ack: the request is resent with the same identity"));
+            }
+            let deadline = if committed { self.deadlines.1.unwrap_or(started + pacing.floor) } else { self.deadlines.0 };
+            let node = match self.client.reach(&self.target) {
+                Ok(n) => n,
+                Err(r) => {
+                    last = r.clone();
+                    let _ = self.tx.send(Attempted::NotSent(r));
+                    self.pause(resume_at).await;
+                    continue;
+                }
+            };
+            let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, retire_below: self.retire_below() };
+            let phase = self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await;
+            match phase {
+                Phase::Done(out) => {
+                    let resend = matches!(&out, RpcOutcome::NotSent(n) if !matches!(n.reason(), NotSentReason::FrameNotSent));
+                    if resend {
+                        if let RpcOutcome::NotSent(n) = out {
+                            last = n.reason().clone();
+                            let _ = self.tx.send(Attempted::NotSent(last.clone()));
+                        }
+                        self.pause(resume_at).await;
+                        continue;
+                    }
+                    let _ = self.tx.send(Attempted::EndedPreCommit(out));
+                    return;
+                }
+                Phase::Stopped(opened) => {
+                    let _ = self.tx.send(Attempted::StoppedBeforeComplete);
+                    self.read_refusal(opened).await;
+                    return;
+                }
+                Phase::Committed(opened, frame_len) => {
+                    if !committed {
+                        committed = true;
+                        let _ = self.tx.send(Attempted::Committed { frame_len });
+                    }
+                    let ack_by = (!self.state.borrow().acked).then_some(next_at);
+                    match self.read(opened, ack_by).await {
+                        StreamEnd::Complete | StreamEnd::Violation => return,
+                        StreamEnd::Definitive(code) => {
+                            let _ = self.tx.send(Attempted::Reset(code));
+                            return;
+                        }
+                        StreamEnd::NoAck => continue,
+                        StreamEnd::Lost => {
+                            if !self.state.borrow().acked {
+                                self.pause(next_at).await;
+                            }
+                        }
+                    }
                 }
             }
         }
-        let out = match got {
-            Committed::Reply(bytes) => match decode_single_frame(&bytes, max_reply) {
-                Ok(payload) => decode(Decode::Committed(committed, payload)),
-                Err(e) => committed.indeterminate(IndeterminateReason::ProtocolViolation(format!("reply frame: {e:?}"))),
-            },
-            Committed::Reset(c) => committed.reset(c),
-            Committed::Lost(r) => committed.indeterminate(r),
+    }
+
+    /// Acked, response not complete, its stream gone: keep a pooled connection to the responder,
+    /// on the schedule, until the response completes there.
+    async fn hold_connection(&mut self, attempt: u32) {
+        let pacing = self.client.delivery.pacing();
+        if let Ok(node) = self.client.reach(&self.target) {
+            let key = PoolKey { scope: self.opts.scope.clone(), peer: node.peer, incarnation: node.observed.as_ref().map(|n| n.incarnation.clone()) };
+            let spec = DialSpec {
+                endpoint: self.client.endpoint.clone(),
+                resolver: self.client.resolver.clone(),
+                target: node.node.as_ref().map(|_| self.target.clone()),
+                addr: node.addr,
+                failpoint: None,
+                opened: None,
+                admission: self.client.admission.clone(),
+                delivery: Some(self.client.delivery.clone()),
+            };
+            let _ = self.client.pool.get_or_dial(&key, spec, Instant::now() + pacing.floor).await;
+        }
+        let until = Instant::now() + pacing.after(attempt.max(1));
+        self.pause(until).await;
+    }
+
+    /// The refusal of a request the receiver stopped before it was complete: its response frame is
+    /// delivered, and acked on an ack stream of the connection (this stream's request direction is
+    /// stopped).
+    async fn read_refusal(&mut self, opened: Opened) {
+        let d = self.client.delivery.clone();
+        let mut reader = FrameReader::new(opened.recv, Vec::new());
+        while let Ok(Some(h)) = reader.header().await {
+            match &h {
+                TransportHeader::Ack { .. } => d.on_ack(&h),
+                TransportHeader::Response { invocation_id, .. } => {
+                    let Ok(body) = reader.body(d.reply_bound(invocation_id)).await else { return };
+                    if let ResponseVerdict::Ack(acks) = d.on_response(&h, body, AckTo::NewStream(opened.conn.clone())) {
+                        for a in acks {
+                            d.ack_on_new_stream(&opened.conn, &a, AckOf::Response).await;
+                        }
+                    }
+                }
+                TransportHeader::Request { .. } => return,
+            }
+        }
+    }
+
+    /// Read one attempt's stream: acks of the request and response frames, delivered to the
+    /// invocation and acked on the request direction. `ack_by`: when an unacked request is resent.
+    async fn read(&mut self, opened: Opened, ack_by: Option<Instant>) -> StreamEnd {
+        let d = self.client.delivery.clone();
+        let Opened { send, recv, key, conn } = opened;
+        let out = FrameOut::new(send);
+        let mut reader = FrameReader::new(recv, Vec::new());
+        let mut ack_by = ack_by;
+        let violation = |why: &'static str| {
+            tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = why, delivery_id = %self.id).in_scope(|| tracing::info!("424"));
+            d.fail_call(&self.id, why);
         };
-        (out, Some(evidence))
+        loop {
+            let resend_at = async {
+                match ack_by {
+                    Some(t) => tokio::time::sleep_until(t).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = self.state.changed() => {
+                    let s = *self.state.borrow();
+                    if s.complete {
+                        out.finish().await;
+                        return StreamEnd::Complete;
+                    }
+                    if s.acked {
+                        ack_by = None;
+                    }
+                }
+                h = reader.header() => match h {
+                    Ok(Some(h @ TransportHeader::Ack { .. })) => d.on_ack(&h),
+                    Ok(Some(h @ TransportHeader::Response { .. })) => {
+                        let TransportHeader::Response { invocation_id, .. } = &h else { unreachable!() };
+                        let body = match reader.body(d.reply_bound(invocation_id)).await {
+                            Ok(b) => b,
+                            Err(ReadEnd::Violation(why)) => {
+                                violation(why);
+                                out.reset(ResetCode::ProtocolViolation).await;
+                                reader.stop(ResetCode::ProtocolViolation);
+                                return StreamEnd::Violation;
+                            }
+                            Err(_) => return self.lost(&key, &conn),
+                        };
+                        match d.on_response(&h, body, AckTo::Stream(out.clone())) {
+                            ResponseVerdict::Ack(acks) => {
+                                for a in acks {
+                                    d.write_ack_header(&out, &a).await;
+                                }
+                            }
+                            ResponseVerdict::Held | ResponseVerdict::Drop => {}
+                            ResponseVerdict::Violation(_) => {
+                                violation("a response frame broke its invocation's order");
+                                out.reset(ResetCode::ProtocolViolation).await;
+                                reader.stop(ResetCode::ProtocolViolation);
+                                return StreamEnd::Violation;
+                            }
+                        }
+                    }
+                    Ok(Some(TransportHeader::Request { .. })) => {
+                        violation("a request frame on a request's reply direction");
+                        out.reset(ResetCode::ProtocolViolation).await;
+                        reader.stop(ResetCode::ProtocolViolation);
+                        return StreamEnd::Violation;
+                    }
+                    // The responder ended its direction: after a repeat's ack, or after its terminal.
+                    Ok(None) => {
+                        if self.state.borrow().complete {
+                            out.finish().await;
+                            return StreamEnd::Complete;
+                        }
+                        out.finish().await;
+                        return StreamEnd::Lost;
+                    }
+                    Err(ReadEnd::Reset(code)) if [ResetCode::UnservedOp, ResetCode::InternalRpcFailure, ResetCode::ProtocolViolation].iter().any(|c| u64::from(c.code()) == code) => {
+                        return StreamEnd::Definitive(code);
+                    }
+                    Err(ReadEnd::Violation(why)) => {
+                        violation(why);
+                        out.reset(ResetCode::ProtocolViolation).await;
+                        reader.stop(ResetCode::ProtocolViolation);
+                        return StreamEnd::Violation;
+                    }
+                    Err(_) => return self.lost(&key, &conn),
+                },
+                () = resend_at => {
+                    // One attempt in flight: this one is abandoned before the resend.
+                    out.reset(ResetCode::RequestStop).await;
+                    reader.stop(ResetCode::RequestStop);
+                    return StreamEnd::NoAck;
+                }
+            }
+        }
+    }
+
+    fn lost(&self, key: &PoolKey, conn: &iroh::endpoint::Connection) -> StreamEnd {
+        if conn.close_reason().is_some() && self.client.pool.broken(key, conn) {
+            if let (Some(o), Ok(node)) = (&self.client.observer, self.client.reach(&self.target)) {
+                if let Some(n) = &node.observed {
+                    o.direct_broken(n, "connection lost");
+                }
+            }
+        }
+        StreamEnd::Lost
     }
 }
 

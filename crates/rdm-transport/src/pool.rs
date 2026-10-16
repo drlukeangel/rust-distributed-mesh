@@ -154,6 +154,9 @@ pub(crate) struct DialSpec {
     /// The client's admission block: read before a dial starts or is joined, and again before the
     /// connection it opens is pooled.
     pub admission: Admission,
+    /// The process's delivery state: a pooled connection is one a responder resends on, so its
+    /// incoming streams (resent responses, acks) are served there.
+    pub delivery: Option<crate::delivery::Delivery>,
 }
 
 /// Whether a client opens new connections: `None` admits, `Some(why)` refuses every new one,
@@ -475,6 +478,9 @@ impl Pool {
         }
         let reported = spec.opened.is_some();
         self.inner.conns.lock().unwrap().insert(key.clone(), Pooled { conn: conn.clone(), addr: spec.addr, reported });
+        if let Some(d) = &spec.delivery {
+            d.serve_dialed(conn.clone());
+        }
         if let Some(opened) = &spec.opened {
             opened();
         }

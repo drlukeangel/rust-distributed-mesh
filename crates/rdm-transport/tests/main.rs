@@ -60,6 +60,7 @@ mod connection_cut;
 mod connection_observer;
 mod connections_integration;
 mod context;
+mod delivery;
 mod endpoint_bind_span_stack;
 mod exited_birth;
 mod flood;

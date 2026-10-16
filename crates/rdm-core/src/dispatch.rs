@@ -1,13 +1,13 @@
 //! Dispatch and certainty rules (PRD §13; ownership amendment §6–§7, §11;
 //! node-rpc.md §16, §26, §40).
 //!
-//! [`RequestAssembly`] is the server's request-direction state machine. A
-//! request reaches its protocol handler only after the target was read and its
+//! [`RequestAssembly`] is the server's state machine for one request frame, after its transport
+//! header. A request reaches its protocol handler only after the target was read and its
 //! op checked against what this process serves (no receiver refuses a call for
 //! the node id it names, R-UC1a),
-//! the length decoded, the complete payload read within the protocol ceiling, the
-//! request direction finished cleanly and the payload decoded. An unfinished
-//! or reset request never dispatches. The client's side of the same table is
+//! the length decoded and the complete payload read within the protocol ceiling: the frame is
+//! complete, and the bytes after it are the stream's next frames (the caller's acks). A request
+//! the sender reset or ended before its frame was complete never dispatches. The client's side of the same table is
 //! [`crate::outcome`]; [`replay_verdict`] is the rule that no mutating
 //! `Indeterminate` is silently replayed.
 
@@ -47,7 +47,7 @@ pub enum ServerAction {
         /// Why the request is dropped.
         reason: &'static str,
     },
-    /// The complete, cleanly finished request: decode and dispatch.
+    /// The complete request frame: decode and dispatch.
     Dispatch {
         /// The op.
         op: u8,
@@ -65,6 +65,7 @@ pub struct RequestAssembly<'c> {
     header: Option<RequestHeader>,
     head: Option<(u8, usize, usize)>,
     done: bool,
+    rest: Vec<u8>,
 }
 
 impl std::fmt::Debug for RequestAssembly<'_> {
@@ -76,7 +77,7 @@ impl std::fmt::Debug for RequestAssembly<'_> {
 impl<'c> RequestAssembly<'c> {
     /// The request direction of a server serving what `catalog` seals.
     pub fn new(catalog: &'c SealedCatalog) -> Self {
-        Self { catalog, buf: Vec::new(), header: None, head: None, done: false }
+        Self { catalog, buf: Vec::new(), header: None, head: None, done: false, rest: Vec::new() }
     }
 
     /// The op, once the head has been read and the op is served.
@@ -114,23 +115,28 @@ impl<'c> RequestAssembly<'c> {
             }
         }
         let (op, len, head) = self.head.expect("set above");
-        if self.buf.len() > head + len {
-            return self.end(ServerAction::ResetViolation { op: Some(op), reason: "bytes past the declared request length" });
+        if self.buf.len() < head + len {
+            return ServerAction::Continue;
         }
-        ServerAction::Continue
+        // The frame is complete: what follows it is the stream's next frames.
+        self.rest = self.buf.split_off(head + len);
+        let payload = self.buf.split_off(head);
+        let header = self.header.clone().expect("a head is set only after its header");
+        self.end(ServerAction::Dispatch { op, header, payload })
     }
 
-    /// The sender finished the request direction (FIN).
+    /// The bytes that arrived after the dispatched request frame: the start of the stream's next
+    /// frames.
+    pub fn take_rest(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.rest)
+    }
+
+    /// The sender finished the request direction (FIN) before the request frame was complete.
     pub fn finish(&mut self) -> ServerAction {
         if self.done {
             return ServerAction::Continue;
         }
         match self.head {
-            Some((op, len, head)) if self.buf.len() == head + len => {
-                let payload = self.buf.split_off(head);
-                let header = self.header.clone().expect("a head is set only after its header");
-                self.end(ServerAction::Dispatch { op, header, payload })
-            }
             Some((op, _, _)) => self.end(ServerAction::ResetViolation { op: Some(op), reason: "FIN before the declared length" }),
             None if self.buf.is_empty() => self.end(ServerAction::Drop { reason: "empty request direction" }),
             None => self.end(ServerAction::ResetViolation { op: self.buf.first().copied(), reason: "FIN inside the request head" }),
@@ -210,13 +216,12 @@ mod tests {
     // ---- PRD §13 dispatch table ----
 
     #[test]
-    fn known_tag_and_known_opcode_dispatch_to_the_handler_after_a_clean_finish() {
+    fn known_tag_and_known_opcode_dispatch_to_the_handler_once_the_frame_is_complete() {
         let c = catalog();
         let mut a = assembly(&c);
         let f = echo_frame(b"ping");
         assert_eq!(a.push(&f[..3]), ServerAction::Continue);
-        assert_eq!(a.push(&f[3..]), ServerAction::Continue, "a complete frame waits for FIN");
-        match a.finish() {
+        match a.push(&f[3..]) {
             ServerAction::Dispatch { op, header: t, payload } => {
                 assert_eq!(op, 0x01);
                 assert_eq!(t, a_request(), "the dispatched request carries the target it named");
@@ -233,8 +238,7 @@ mod tests {
         let f = encode_request(&a_request(), &body);
         let c = catalog();
         let mut a = assembly(&c);
-        a.push(&f);
-        let ServerAction::Dispatch { payload, .. } = a.finish() else { panic!() };
+        let ServerAction::Dispatch { payload, .. } = a.push(&f) else { panic!() };
         // Decode is the dispatcher's first step; its failure is the typed reply.
         assert_eq!(Ping::decode_request(&payload), Err(DecodeFailure::UnknownVariant));
         let reply = Ping::malformed(DecodeFailure::UnknownVariant.into());
@@ -272,8 +276,7 @@ mod tests {
         let req = Ping::encode_request(&PingRequest::Ping { payload: b"x".to_vec() }).unwrap();
         for named in [Target { node_id: "n2".into(), op: 0x01 }, Target { node_id: "".into(), op: 0x01 }] {
             let mut a = assembly(&c);
-            assert_eq!(a.push(&encode_request(&RequestHeader::target(named.clone()), &req)), ServerAction::Continue, "{named:?}");
-            match a.finish() {
+            match a.push(&encode_request(&RequestHeader::target(named.clone()), &req)) {
                 ServerAction::Dispatch { op, header, .. } => {
                     assert_eq!(op, 0x01);
                     assert_eq!(header.target, named, "the dispatched request carries the target as it came");
@@ -304,17 +307,14 @@ mod tests {
         a.push(&f[..f.len() - 2]);
         assert!(matches!(a.reset(499), ServerAction::Drop { reason } if reason.contains("499")));
         assert_eq!(a.finish(), ServerAction::Continue, "a dropped request never dispatches later");
-        // Even a complete frame that was reset instead of finished is never dispatched.
-        let mut b = assembly(&c);
-        b.push(&f);
-        assert!(matches!(b.reset(499), ServerAction::Drop { .. }));
+        assert_eq!(a.push(&f[f.len() - 2..]), ServerAction::Continue, "nor when its last bytes arrive after the reset");
         let (code, outcome): (_, RpcOutcome<PingReply>) = PreCommit::begin(0x01).cut_before_finish();
         assert_eq!(code, ResetCode::FrameNotSent);
         assert!(matches!(&outcome, RpcOutcome::NotSent(n) if *n.reason() == NotSentReason::FrameNotSent));
     }
 
     #[test]
-    fn a_fin_before_the_declared_length_or_bytes_past_it_is_a_violation_not_a_dispatch() {
+    fn a_fin_before_the_declared_length_is_a_violation_and_bytes_past_it_are_the_next_frames() {
         let c = catalog();
         let f = echo_frame(b"abc");
         let mut a = assembly(&c);
@@ -322,8 +322,9 @@ mod tests {
         assert!(matches!(a.finish(), ServerAction::ResetViolation { .. }));
         let mut b = assembly(&c);
         let mut long = f.clone();
-        long.push(0);
-        assert!(matches!(b.push(&long), ServerAction::ResetViolation { .. }));
+        long.extend([7, 7]);
+        assert!(matches!(b.push(&long), ServerAction::Dispatch { .. }), "the request frame is complete");
+        assert_eq!(b.take_rest(), vec![7, 7], "what follows it is held for the stream's next frames");
     }
 
     fn committed() -> crate::outcome::Committed {

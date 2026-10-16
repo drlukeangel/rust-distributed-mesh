@@ -134,7 +134,14 @@ async fn carry_once(
     if let Some(tp) = peer.context.traceparent.as_deref() {
         crate::set_remote_parent(&span, tp, peer.context.tracestate.as_deref());
     }
-    let opts = CallOptions { budget: Budget::Overall(std::time::Duration::from_millis(inner_ms)), context: Some(peer.context.clone()), ..CallOptions::default() };
+    // The inner call keeps the origin's delivery identity: the final target's duplicate window is
+    // the origin's, so a resend of the same request through another carrier is suppressed there.
+    let opts = CallOptions {
+        budget: Budget::Overall(std::time::Duration::from_millis(inner_ms)),
+        context: Some(peer.context.clone()),
+        carried: peer.delivery.clone(),
+        ..CallOptions::default()
+    };
     let (out, _evidence) = client
         .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_op, inner, max_reply, &opts, |d| match d {
             Decode::Committed(c, bytes) => c.forwarded(bytes),
@@ -202,13 +209,15 @@ impl NodeRpcClient {
             Ok(b) => b,
             Err(e) => return (pre.not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None),
         };
+        let target_id = target.clone();
         let target = target.clone();
         let build = move |remaining: std::time::Duration| {
             let forward = ForwardRequest::Forward { target, inner_op: P::OP, inner, remaining_ms: remaining.as_millis() as u64 };
             Forward::encode_request(&forward).map_err(|e| e.0)
         };
+        let final_target = target_id.clone();
         let (outer, evidence) = self
-            .invoke_payload::<ForwardReply, _>(carrier, Forward::OP, Payload::AtWrite(Box::new(build)), Forward::MAX_REPLY_FRAME_BYTES, opts, |d| match d {
+            .invoke_via::<ForwardReply, _>(carrier, Some(&final_target), Forward::OP, Payload::AtWrite(Box::new(build)), Forward::MAX_REPLY_FRAME_BYTES, opts, |d| match d {
                 Decode::Committed(c, bytes) => c.reply::<Forward>(bytes),
                 Decode::Early(e, bytes) => e.reply::<Forward>(bytes),
             })

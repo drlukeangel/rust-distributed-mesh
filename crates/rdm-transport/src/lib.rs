@@ -20,6 +20,7 @@ pub mod wire;
 // node-rpc modules & re-exports
 pub mod admission;
 pub mod client;
+pub mod delivery;
 pub mod endpoint;
 pub mod forward;
 pub mod hydration;
@@ -33,7 +34,8 @@ pub mod stream;
 /// The Node RPC ALPN.
 pub const ALPN: &[u8] = b"rafka-node-rpc/1";
 
-pub use client::{AcceptTrigger, Budget, CallEvidence, CallOptions, ConnectionObserver, Decode, NodeRpcClient};
+pub use client::{AcceptTrigger, Budget, CallEvidence, CallOptions, CarriedIdentity, ConnectionObserver, Decode, NodeRpcClient};
+pub use delivery::{Acceptance, Delivery, DeliverySeams, DeliveryStats, Pacing};
 pub use forward::CarrierEdges;
 pub use hydration::{CancelToken, HydrationGate, Retirement};
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
