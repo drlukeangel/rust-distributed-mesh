@@ -91,27 +91,75 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 - **Goal → gap.** node-rpc.md §43, §33, §41; envelope "Caller execution and certainty". The runtime
   has no delivery id, no ack and no resend.
 - **Requirements.** R1, R2, R3, R4, R6, R9 (the protocols), R10, R11.
-- **Design points.** The id in the request context; the ack as a reserved control frame on the same
-  connection (one frame, the id); the sender's in-flight table in memory, keyed by id, with the
-  schedule; the receiver's duplicate table keyed by id with two states (pending, acked) and a bound
-  (ids older than the staleness floor past their ack are forgotten: a resend after that is a new
-  delivery the owner's operation identity recognises); the handler's acceptance report through
-  `HandlerScope` (recorded / read-only); resends through the ordinary dial and pool, never the
-  application connections log.
-- **Acceptance cells.** `a_message_whose_connection_drops_before_the_ack_is_resent_with_the_same_id_and_acked`;
-  `a_lost_ack_is_repaired_by_the_resend_and_the_handler_runs_once`;
-  `a_duplicate_during_execution_stays_pending_unacked_then_is_acked_once_without_dispatch`;
-  `a_read_only_request_is_acked_at_once`;
-  `a_named_refusal_ends_the_requests_retry_and_its_response_is_delivered_until_acked`;
-  `a_receiver_proven_exited_ends_the_owed_message_and_a_silent_one_does_not`;
-  `an_owner_cancellation_ends_it`;
-  `the_resend_schedule_is_publish_cadence_then_doubling_with_jitter_capped_at_the_floor`;
-  `a_resend_uses_the_ordinary_dial_and_reads_no_connections_log`. RED first.
-- **Page text.** Landed 2026-10-16 (§43, §33, §41, the certainty paragraph). The envelope's §1 context
-  row for the delivery id and the reserved control frame: exact old → new to Luke at e1's landing.
+- **Reuse (Q16 addendum, Luke 2026-10-16).** What exists is used for what it provides: the ordinary
+  dial and pool (`rdm-transport/src/client.rs:285` `call`, `pool.rs`: a superseded birth's connections
+  evicted, `:14-15`, `:181`), so a resend is an ordinary call's dial; the publish cadence as the first
+  retry interval (`rdm-core/src/cadence.rs:62` `gossip_interval`); the staleness floor as the cap
+  (`:56` `staleness_floor`); the operation receipts for recovery (the round checklist counts a
+  completion once, `rdm-admin/src/fabric_state.rs:426`; the Build's receipts). Added only: the `Ack`,
+  delivery tracking (the per-receiver `delivery_seq` counter per (sender birth, receiver birth), the
+  in-flight table, `retire_below`) and the duplicate window. Heartbeat sequence numbers are never
+  reused for `delivery_seq`: they order heartbeats, not command receipt. Operation receipts and
+  transport duplicate suppression both stay: the transport suppresses repeated delivery of one
+  invocation; receipts stop an operation repeating during recovery.
+- **Frozen bytes** (against node-rpc-envelope.md "Transport frames"). Every frame, both directions,
+  begins with `header_len: LEB128 | header: postcard(TransportHeader)`, the header a section like
+  every other, its declared length checked against 128 bytes before it is read:
+  ```text
+  TransportHeader (postcard enum, discriminant a varint position):
+    0  Request  { sender: Birth, delivery_seq: u64, retire_below: u64 }                                   then sections 0-2
+    1  Response { sender: Birth, delivery_seq: u64, retire_below: u64, invocation_id: DeliveryId, seq: u32 } then reply_len | reply
+    2  Ack      { sender: Birth, delivery_seq: u64 }      the acknowledged frame's identity; nothing follows
+  Birth      { node_id: NodeId, incarnation: IncarnationId }   each its existing postcard string (len + 12)
+  DeliveryId { sender: Birth, delivery_seq: u64 }              u64 and u32 are postcard varints
+  ```
+  Encoded at most: Request 47 bytes, Response 88, Ack 37. A stream's first frame decides what it
+  carries: a `Request` opens an invocation (its reverse direction carries the request's `Ack` and the
+  response frames; its request direction then carries the caller's `Ack`s of those response frames
+  and finishes once the terminal frame is acked); a `Response` first carries resent response frames
+  after a reconnect; an `Ack` first is an Ack stream of the current connection. A stream's FIN ends
+  that stream, never an invocation.
+- **Bounds and refusals.** Reset `424 PROTOCOL_VIOLATION`: a header over 128 bytes, undecodable, or
+  of an unknown kind; a stream whose first frame is a protocol section with no header; two different
+  frames at one `(invocation_id, seq)`; a response frame more than 64 positions past the next
+  expected `seq`, or buffered reorder bytes past 64 of the op's reply ceiling; a frame after
+  `seq = u32::MAX`. `delivery_seq` starts at 1 per (sender birth, receiver birth) and is never reused
+  by the sending birth; `retire_below` is the lowest `delivery_seq` the sender holds unacked toward that
+  receiver. The receiver retires duplicate state only below the watermark, or on the sender birth's
+  proven exit or accepted removal; never by time. A carried call keeps its origin's `(sender,
+  delivery_seq)`: the window is per origin birth. Schedule: send at once; first resend at the publish
+  cadence, then doubling with ±25 % jitter, capped at the staleness floor; one attempt in flight per
+  delivery identity. Response and `Ack` frames reach the delivery demultiplexer before dispatch and
+  before lifecycle admission.
+- **Reseal.** `rdm-core` framing goldens by hand for the three header kinds and a request, response
+  and ack frame; a mesh-audit ratchet `transport_header_reseal_is_atomic` pinning the kinds and the
+  goldens; `PostcardSectionBounds` gains the 128-byte header bound; `docs/reference/rdm/wire.md`
+  regenerated; `wire format moved`.
+- **Acceptance cells, 1-21.** (1) a message whose connection drops before the ack is resent with the
+  same identity and acked; (2) a lost ack is repaired by the resend and the handler runs once; (3) a
+  duplicate during execution stays pending unacked, then is acked once without dispatch; (4) a
+  read-only request is acked at once; (5) a named refusal ends the request's retry and its response is
+  delivered until acked; (6) a receiver proven exited ends the owed message and a silent one does not;
+  (7) an owner cancellation ends it; (8) the resend schedule is the publish cadence, then doubling with
+  jitter, capped at the floor; (9) a resend uses the ordinary dial and reads no connections log; (10) a
+  lost ack on a response frame is repaired by its resend; (11) a response frame is delivered on a new
+  stream after a reconnect; (12) a duplicate request's `Ack` then EOF leaves the caller's invocation open
+  and the original's result arrives; (13) two different frames at one `(invocation_id, seq)` are refused
+  424; (14) a terminal is held while an earlier position is missing; (15) a response for a completed
+  invocation is acked and dropped, and one for an invocation merely absent from the map is not; (16)
+  duplicate state outlives the staleness floor until the sender's `retire_below` passes it; (17) a
+  carried call's resend through another carrier is suppressed by its origin's identity; (18) an `Ack` on
+  an Ack stream of the current connection is consumed and correlates by identity; (19) an endpoint
+  that admits no new command (connections-deleting) still receives an owed response; (20) reordering
+  past 64 positions or past its byte bound is refused 424; (21) a new birth of the sender starts its
+  `delivery_seq` at 1 and the receiver keeps the old birth's window until its proven exit or removal.
+  RED first.
+- **Page text.** Landed 2026-10-16 (§43, §33, §41, the certainty paragraph, "Transport frames"). To
+  Luke as exact old → new before e1 lands: the envelope's opening paragraph and stream diagram
+  (:12-19), the §1 context sentence, node-rpc.md §52's two forbidden designs.
 - **Sizing.** Two seats; `rdm-transport/src/{client,server,framer,wire,stream}.rs`,
   `rdm-core/src/{framing,outcome,codes}.rs`, `tools/mesh-audit`.
-- **State.** not started.
+- **State.** started 2026-10-16 on `i146-e1-delivery-layer` (lane e4s8, from main `556f3cd4`); bytes frozen above; RED cells next.
 
 #### e2 — the ordered stream: identity and sequence on every frame
 
