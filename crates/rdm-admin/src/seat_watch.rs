@@ -253,15 +253,17 @@ impl Looker {
         };
         // Every probe names the same exact birth: one kick, by node id and incarnation.
         let kick = rdm_core::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
-        // 1. A direct ping; when it answers, the status kick makes the birth say it is there.
+        // 1. A direct ping, one QUIC connect (node-recovery.md step 2): asked once, never resent; when
+        // it answers, the status kick makes the birth say it is there.
+        let once = CallOptions { once: true, ..CallOptions::default() };
         let direct = async {
             let ping = rdm_core::ping::PingRequest::Ping { payload: b"seat-watch".to_vec() };
-            let (out, _) = self.client.call::<rdm_core::ping::Ping>(&target, &ping, &CallOptions::default()).await;
+            let (out, _) = self.client.call::<rdm_core::ping::Ping>(&target, &ping, &once).await;
             if out.reply().is_none() {
                 return false;
             }
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone() };
-            let _ = rdm_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
+            let _ = rdm_client::NodeRpc::new(&self.client).get(&birth, &once).await;
             true
         };
         // 2. The same kick through up to two live members of the birth's mesh, at once.
