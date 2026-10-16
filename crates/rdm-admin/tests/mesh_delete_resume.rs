@@ -303,7 +303,8 @@ fn artifact_dir() -> PathBuf {
 /// CONTRACT: a resumed mesh leave runs only the members without an Exited receipt and proves the
 /// whole accepted roster. Attempt 1: one ordinary node exits, the other's exit cannot be proven, so
 /// the ordinary tier is incomplete and the node-admin tier does not start. Attempt 2 (the view no
-/// longer shows either ordinary node live) keeps the roster both sides accepted at admission, keeps
+/// longer holds the exited node, and the unproven node, whose stop-node was never admitted, is not
+/// shown stopping: states.md "Who sets each state") keeps the roster both sides accepted at admission, keeps
 /// the exited node's receipt and does not run it again, runs the unproven node and then the other
 /// node-admin; the exit manifest and the MeshLeft proof set cover every accepted birth. Every
 /// receipt goes through the Build-fact wire codec, as a node-admin's Build state sends it.
@@ -410,7 +411,11 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
     assert_eq!(ran(1), BTreeSet::from([FAILING.to_string(), EXITING.to_string()]), "attempt 1 ran the ordinary tier only");
     assert!(records2.iter().all(|n| n.name.to_string() != EXITING), "the resumed attempt's view no longer holds the node attempt 1's node.delete removed: {records2:?}");
-    assert!(records2.iter().filter(|n| n.kind == rdm_admin::model::NodeKind::RpcNode).all(|n| !n.status.is_live()), "the resumed attempt's view shows neither ordinary node live: {records2:?}");
+    // This cell's observer holds no Node RPC client, so the unproven node's stop-node was never sent: nothing
+    // set it stopping (states.md "Who sets each state": stopping on the stop call's admission, never before).
+    let unproven = records2.iter().find(|n| n.name.to_string() == FAILING).expect("the resumed attempt's view still holds the unproven node");
+    let held = records.iter().find(|n| n.name.to_string() == FAILING).unwrap();
+    assert_eq!(unproven.status, held.status, "a member whose stop-node was never admitted keeps its status, never stopping: {unproven:?}");
 
     // The accepted roster is the one captured at admission, on both sides, in every attempt.
     let accepted = sorted(fp1.clone());
