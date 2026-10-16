@@ -146,6 +146,8 @@ mod container_kill;
 mod rafka_time_discipline;
 #[path = "runtime/role_wedge.rs"]
 mod role_wedge;
+#[path = "runtime/provider_state.rs"]
+mod provider_state;
 #[path = "runtime/successor_adoption.rs"]
 mod successor_adoption;
 #[path = "build/live_resize.rs"]
