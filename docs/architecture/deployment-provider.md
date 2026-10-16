@@ -188,7 +188,9 @@ A cross-domain locator cannot be acted on as though it were local: it is refused
 
 ```rust
 pub enum DeploymentStatus {
-    /// The exact runtime exists and at least one of its tasks is executing or runnable.
+    /// The exact runtime exists, is nonterminal and is not observed OS-suspended. It proves
+    /// neither responsiveness nor readiness: a sleeping task, a runtime still starting and a
+    /// deadlocked one all read `Running`.
     Running,
     /// The exact runtime exists and the operating system holds every task of it suspended
     /// (a process in state `T`/`t`; a paused container). Observed suspension: it is NOT the
@@ -207,12 +209,12 @@ What each state is, and what the mesh does with it:
 
 | state | meaning | proof value | the caller's act |
 |---|---|---|---|
-| `Running` | the exact runtime is alive and executing | the runtime can still accept work, however silent the node | nothing is recovered or deleted; a silent `Running` birth follows [node recovery](lifecycles/node-recovery.md) steps 2-4 (tickle, TRUE OFFLINE, `held-running`, the R-FM1 hold and terminate) |
+| `Running` | the exact runtime exists, is nonterminal and is not observed OS-suspended | the runtime is not gone; this proves neither that it answers nor that it is ready, however silent or loud the node | nothing is recovered or deleted; a silent `Running` birth follows [node recovery](lifecycles/node-recovery.md) steps 2-4 (tickle, TRUE OFFLINE, `held-running`, the R-FM1 hold and terminate) |
 | `OsStopped` | the operating system holds every task suspended | the runtime is neither hung nor gone; it answers nothing but a continue from whoever suspended it | the mesh-primary records the durable status-row fact `os-stopped { since }` (surfaced on `node.get`, never a gossip `MemberStatus`), opens no R-FM1 hold, runs no `TerminateRuntime` for this observation, sends no signal, and re-inspects every recovery tick |
 | `Exited { code }` | the exact runtime ended | the only proof that the concrete runtime can no longer accept work | the caller writes the birth's exit-proof row durably before anything else, then its page continues (recovery, `node.deleted`) |
 | `Unknown` | the inspection could not tell | neither life nor exit | recorded as uncertainty; no hold, no terminate, no exit proof is inferred; the next tick asks again |
 
-`OsStopped` changes state only through the operating system. While the fact is held, the recovery tick keeps inspecting the exact runtime: `Running` again clears the fact and RPC recovery proceeds through the ordinary ladder (a reached tickle; the pending lifecycle step resumes from its receipts, never a `node.start` selected because the provider reports `Running`); `Exited` is the ordinary exit proof; `Unknown` records the uncertainty. A new authority revalidates the stored fact with its own inspection: the fact is an observation, not permanent runtime truth. An explicit `node.delete` or an explicitly commanded terminate stays available through its defined exact-runtime path.
+`OsStopped` changes state only through the operating system. Entering it from `Running` cancels an open R-FM1 hold: the `held-running` row is removed and its pending `TerminateRuntime` is void; a runtime that resumes but stays unreachable opens a fresh hold under the ordinary rule, and the terminate step re-inspects the exact runtime at its instant and fires only on `Running`. While the `os-stopped` fact is held, the recovery tick keeps inspecting the exact runtime: `Running` again clears the fact and RPC recovery proceeds through the ordinary ladder (a reached tickle; the pending lifecycle step resumes from its receipts, never a `node.start` selected because the provider reports `Running`); `Exited` is the ordinary exit proof; `Unknown` records the uncertainty. A new authority revalidates the stored fact with its own inspection: the fact is an observation, not permanent runtime truth. The fact is a typed keyed row like `held-running`: `NodeOsStoppedRow { node_id, name, incarnation_id, since, inspections }`, keyed by the exact birth, under `os-stopped` among the mesh's status rows with its own format marker, written and removed by the mesh-primary (removed on `Running` or `Exited`), folded by a successor only after its own inspection confirms it. An explicit `node.delete` of an OS-stopped birth stays available: it skips the Node RPC stop by name (a suspended process answers no call), runs `TerminateRuntime` on the exact handle, takes the exit proof and continues ([node.delete](lifecycles/node-delete.md)); explicit only, never from recovery, which respects suspension.
 
 What stays inference: a runtime the operating system shows `Running` that answers nothing (a deadlock). No provider can see it; RPC silence and the R-FM1 hold are the only signal.
 
@@ -231,7 +233,7 @@ The control domain is one Docker daemon. The handle is `{ container id, init pid
 
 - **Network.** Each fabric gets a bridge network `rafka-<fabric>` carved from `RDM_CONTAINER_SUBNET_POOL` (a `/24` another network uses is skipped); node-admin assigns every container's address (`--ip`) so a node's bind address is known before it runs.
 - **Spawn and find.** The launch is recorded in the data dir, the container named deterministically for `find`, and the immutable id learned after `docker run`. `find` reads the daemon's state and the record: running, exited, or never created.
-- **Inspect** maps the daemon's state: `running`, `restarting` and `created` are `Running`; `paused` is `OsStopped` (the daemon freezes the container's cgroup: this reports container suspension, not a stopped process inside a running container); `exited` and `dead` are `Exited { code }` with Docker's own code; a daemon that cannot answer is `Unknown`. An unreachable daemon refuses the provider by name at bootstrap.
+- **Inspect** maps the daemon's state conservatively: `running`, and also `restarting` and `created` (a container not yet executing or between executions: nonterminal, not suspended, nothing more claimed), are `Running`; `paused` is `OsStopped` (the daemon freezes the container's cgroup: this reports container suspension, not a stopped process inside a running container); `exited` and `dead` are `Exited { code }` with Docker's own code; a daemon that cannot answer is `Unknown`. An unreachable daemon refuses the provider by name at bootstrap.
 - **Signal stop and terminate** are the daemon's stop and kill of the exact id.
 
 ### 2.8 Exit proof
@@ -263,7 +265,7 @@ The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRunt
 
 The successor's management cut: from a current membership birth's RuntimeFact and runtime metadata, resolve the control domain, adopt the published runtime (or route to an executor of its domain), and inspect or terminate as the Build requires.
 
-A `node.delete` runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the exact handle, the provider's exit proof, then identity release with storage retained. The R-FM1 recovery of a hung runtime begins with the same `TerminateRuntime { node_id, incarnation, handle }` step after its hold, and only then. Externally visible steps reconcile forward; published topology is never blindly reversed.
+A `node.delete` of a live target runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the exact handle, the provider's exit proof, then identity release with storage retained. A `node.delete` of a target whose provider state is `OsStopped` skips the stop by name and begins at `TerminateRuntime`: the stop cannot execute, and the delete was explicitly commanded. The R-FM1 recovery of a hung runtime begins with the same `TerminateRuntime { node_id, incarnation, handle }` step after its hold, and only then. Externally visible steps reconcile forward; published topology is never blindly reversed.
 
 ## 4. Storage policy and the data dir
 
