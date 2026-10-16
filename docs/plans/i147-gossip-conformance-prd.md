@@ -62,6 +62,7 @@ regression against it; e2's are the cells for every row.
 | R10 | `MeshStatus` and `FabricStatus` carry no publisher revision, so a delayed predecessor's frame is not refused by revision; closed by the envelope's `order` (the author's committed revision), e3 | BUILD (gap, recorded on gossip.md) | `(publisher: String, changed_at_rafka_ms)` only | e3 |
 | R11 | `Concern` is an idempotent investigation wake for the current episode: a repeat while the observer's silence mark stands does nothing; the episode ends when the receiver hears the birth again; it never establishes exit or vacancy | BUILD | the tuple is deduplicated without an episode | e2 |
 | R12 | a delta whose base is ahead of the installed version is a gap: repair requested (§3.3, §6), spanned `via-gap`, never logged stale; equal revision with different content is `via-inconsistent`, refused by name | BUILD | mismatched base handling unproven; no inconsistency refusal | e2 |
+| R13 | round hooks drive no checklist and reopen nothing by construction; their receive effects are the span and the mesh-admin's carrier, which carries an ordinary node's check-in only while its book holds the round open (`carried = closed-round` otherwise); no round evidence is exposed to passive receivers (Luke Q21: x, 2026-10-16) | BUILD (the dedupe and the named carrier outcome) | boot.rs:1773-1781 carries on `is_open`; no dedupe; no named closed-round outcome | e2 |
 
 ## § OTLP span-assertion bar
 
