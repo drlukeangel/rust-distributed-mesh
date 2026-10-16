@@ -16,7 +16,7 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Node RPC runtime](node-rpc.md) | how one invocation executes: resolver, pool, dispatch after the target, admission and memory, supervision, HandlerScope/ReplySink, the RpcOutcome algebra, budgets, connections-deleting runtime behaviour, retry guidance |
 | workflow pages under `lifecycles/` (including [fabric.create](lifecycles/fabric-create.md) and [node.name.update](lifecycles/node-name-update.md)) | one workflow each: its sequence, actors, completion proof, failure, diagram and observability table (tables below) |
 | [Fabric and node hooks](fabric-node-hooks.md) | where application work enters a lifecycle (`hydrate_before_ready`, `after_ready`, `sync_state`, `traffic_opened`), HydrateContext, outcomes, the rafka-time handle |
-| [Fabric certs](fabric-certs.md) | the cert chain and issuance |
+| [Fabric certs](fabric-certs.md) | the cert chain, issuance, renewal and verification at a connection; the cert workflows table |
 | [Elections](fabric-node-lifecycle-elections.md) | elections, seats, the sticky holder, seat watch, the committed seat row as resolver input |
 | [Node-admin lifecycle](node-admin-lifecycle.md) | node-admin launch inputs and start modes, who starts a node-admin of an existing mesh, the Rafka relaunch copy |
 | [Build](build.md) | the Build engine: accepted topology, the Build/attempt/claim model, BuildStateAdapter, storage interfaces, crash safety, lifecycle transitions, the RDM/Rafka boundary and import rule |
@@ -59,6 +59,8 @@ progress wait.
 | [Ready-for-traffic](lifecycles/fabric-ready-for-traffic.md) | Completing the round and notifying Rafka |
 | [node.primary.update](lifecycles/node-primary-update.md) | Moving the primary of a (mesh, node_type) cohort to its successor, first in every stop, delete, restart, replace or `node.connections.delete { scope: All }` of a primary |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) | Moving the fabric-primary seat, the first step of a mesh.delete of the seat's mesh |
+| [fabric.ca.renew](lifecycles/fabric-ca-renew.md) | RDM's CA rotated internally on policy under the same anchor: every issuer re-minted, no node's trust set touched |
+| [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | The trust anchor rotated on a caller's new root, through an overlap in which every node trusts both, then the CA re-minted under it and the old anchor retired |
 | [Recovery](lifecycles/fabric-recovery.md) | Relaunching after loss of every node-admin |
 | [fabric.delete](lifecycles/fabric-delete.md) | Deleting the fabric, mesh by mesh, the fabric-primary's own mesh last |
 
@@ -66,6 +68,7 @@ progress wait.
 
 | Workflow | Read when |
 |---|---|
+| [mesh.issuer.renew](lifecycles/mesh-issuer-renew.md) | The fabric-primary re-minting a mesh's issuing cert at two thirds of its TTL and carrying it to that mesh's node-admins |
 | [mesh.create](lifecycles/mesh-create.md) | A mesh's first node-admin: the mesh-absent arm of node.create, the MeshId minted at acceptance, the channel, the first mesh-primary, the mesh's first states |
 | [Investigation](lifecycles/mesh-investigation.md) | Probing an unheard peer mesh and deciding whether to run node.create of a node-admin into it; the node-admin's join |
 | [mesh.delete](lifecycles/mesh-delete.md) | Deleting a mesh and its members |
@@ -95,6 +98,10 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.get](node-rpc-envelope.md#typed-object-contract) | Reading a node |
 | [node.connections.get](node-rpc-envelope.md#typed-object-contract) | Reading a node's held connections |
 | [node.config.get/update](lifecycles/node-config-update.md) | Reading or putting a node's application config |
+| [node.cert.renew](lifecycles/node-cert-renew.md) (primitive) | The issuing authority installing a fresh member cert on a running node before the old one expires; presented on new connections, terminates nothing |
+| [node.issuer.update](lifecycles/node-issuer-update.md) (primitive) | The fabric-primary installing a mesh's re-minted issuing material on a running node-admin |
+| [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) (primitive) | The fabric-primary installing the fabric's root set on one node; one or two roots through a rotation |
+| [node.connections.admit](lifecycles/node-connections-admit.md) (primitive) | The acceptor's verification of a dialer's member cert on an inbound connection of a registered ALPN; admitted or refused, a connection fact |
 | [build.create/get/delete](node-rpc-envelope.md#build-op-0x20-rdm) | Submitting a Build, reattaching to it, or deleting its history |
 
 ## Wire-op-to-workflow index
@@ -107,7 +114,7 @@ are explicit.
 |---|---|---|
 | 0x01 Ping | [Ping](node-rpc-envelope.md#ping-op-0x01-core) | [Mesh investigation](lifecycles/mesh-investigation.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
 | 0x1A Forward | [Forward](node-rpc-envelope.md#forward-op-0x1a-core) | [Mesh investigation](lifecycles/mesh-investigation.md) |
-| 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [Node status](lifecycles/node-status.md), [restart](lifecycles/node-restart.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [state-commit](lifecycles/fabric-state-commit.md), [ready-for-traffic](lifecycles/fabric-ready-for-traffic.md), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connections.delete](lifecycles/node-connections-delete.md) |
+| 0x1B Status | [Status](node-rpc-envelope.md#status-op-0x1b-rdm) | [node.cert.renew](lifecycles/node-cert-renew.md), [node.issuer.update](lifecycles/node-issuer-update.md), [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive), [Node status](lifecycles/node-status.md), [restart](lifecycles/node-restart.md), [replace](lifecycles/node-replace.md), [delete](lifecycles/node-delete.md), [state-commit](lifecycles/fabric-state-commit.md), [ready-for-traffic](lifecycles/fabric-ready-for-traffic.md), [mesh.delete](lifecycles/mesh-delete.md), [start](lifecycles/node-start.md), [create](lifecycles/node-create.md), [node recovery](lifecycles/node-recovery.md), [stop](lifecycles/node-stop.md), [node.connections.delete](lifecycles/node-connections-delete.md) |
 | 0x1C BuildClaim | [BuildClaim](node-rpc-envelope.md#buildclaim-op-0x1c-rdm) | [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) claim-and-dispatch, [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md) |
 | 0x1D JoinNode (node.mesh.join's report) | [Join](node-rpc-envelope.md#join-op-0x1d-rdm) | [node.mesh.join](lifecycles/node-mesh-join.md), [create](lifecycles/node-create.md), [restart](lifecycles/node-restart.md), [replace](lifecycles/node-replace.md), [node recovery](lifecycles/node-recovery.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) |
 | 0x1E GetTopology (node.topology.get) | [Topology](node-rpc-envelope.md#topology-op-0x1e-rdm) | [Create](lifecycles/node-create.md), [restart](lifecycles/node-restart.md), [replace](lifecycles/node-replace.md), [a node-admin joining a live mesh](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh), [fabric recovery](lifecycles/fabric-recovery.md), [node.topology.get and running reconnect](lifecycles/node-topology-get.md), [node recovery](lifecycles/node-recovery.md) |

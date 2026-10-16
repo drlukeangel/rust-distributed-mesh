@@ -1759,7 +1759,7 @@ landed 207172f5, 98b5fcb5 (node.get/mesh.get/fabric.get/connections.get over Sta
 <!-- epic:e12.s69 -->
 ## e12.s69 — Rafka side: the entry pull moves off the rafka-mesh-ops projection frames; no cert check between mesh nodes (R-SV1)
 
-**Builder:** Rafka engineer (rafka-v2; coordinate the landing with the dev lead) · **Tracking issue:** #3100 (generated once; not read back) · **Architecture:** gossip.md §8; fabric-node-hooks.md; fabric-certs.md#inside-the-mesh; internal-mesh-auth.md; rulings R-SV1
+**Builder:** Rafka engineer (rafka-v2; coordinate the landing with the dev lead) · **Tracking issue:** #3100 (generated once; not read back) · **Architecture:** gossip.md §8; fabric-node-hooks.md; fabric-certs.md#on-a-connection; internal-mesh-auth.md; rulings R-SV1
 
 ### State
 
@@ -1767,7 +1767,7 @@ not started; absorbed s70
 
 ### Remaining
 
-- [ ] rafka-mesh-ops tags 16/18/19 (ControlFrame::ProjectionPull / ProjectionSnapshotPart / ProjectionRefused; rafka-node-base serve_projections, read_projection_answer) move to node.topology.get; delete dialer_send_svid / acceptor_verify_svid and the admission verdict, connect_verified becomes a plain connect. Rafka repo: coordinate the landing with the dev lead
+- [ ] rafka-mesh-ops tags 16/18/19 (ControlFrame::ProjectionPull / ProjectionSnapshotPart / ProjectionRefused; rafka-node-base serve_projections, read_projection_answer) move to node.topology.get. The SVID belt, Rafka's accept loop and Rafka's node-admin minting do not get deleted here: they move to RDM under the cert epic (`docs/plans/i145-cert-ownership-prd.md`, from `docs/plans/proposal/cert-verification-ownership.md`; Luke 2026-10-16 superseded R-SV1's sentence). Rafka repo: coordinate the landing with the dev lead
 
 ### Acceptance criteria
 
@@ -1775,7 +1775,7 @@ not started; absorbed s70
 - [ ] a Rafka node enters through node.topology.get
 <!-- /crit:e12.s69.1 -->
 <!-- crit:e12.s69.2 -->
-- [ ] no SVID frame on rafka-mesh-v1
+- [ ] no `rafka.mesh.auth.*` span on rafka-mesh-v1; the admission fact and span are RDM's (`node.connections.admit`)
 <!-- /crit:e12.s69.2 -->
 <!-- crit:e12.s69.3 -->
 - [ ] the Rafka gate green

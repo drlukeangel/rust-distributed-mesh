@@ -22,7 +22,9 @@ page that owns each step is linked at the step.
 
 ## Numbered end-to-end sequence
 
-1. Mint the fabric id; its status is pending.
+1. Mint the fabric id; its status is pending. `fabric.root.create`: the bootstrap admin takes the fabric
+   root from `CertChoice::Ca` or, with no seeds and no anchor, mints one; `fabric.ca.create`: it mints RDM's
+   CA under that root ([fabric certs](../fabric-certs.md#the-cert-workflows)).
 2. [node.create](node-create.md) for each mesh's first node-admin. A mesh comes into being with
    its first node-admin ([mesh absent](node-create.md#mesh-absent)).
 3. The first mesh's first node-admin is the first fabric-primary. It holds both seats, accepts the

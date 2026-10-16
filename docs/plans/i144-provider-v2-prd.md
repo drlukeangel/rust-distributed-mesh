@@ -326,4 +326,5 @@ Critical path: wave 0 → e1 → e2 → e3. e1 and the red canary run concurrent
 - `docs/plans/proposal/update-provider-abstraction-to-actually-work.md` (the proposal; items 1-4, 6, Q1 approved; 5, 7, D1 not)
 - `docs/plans/rulings/i143-rulings-2026-10-14-g3-claim-ids.md` R-FM1, R-FM2 (landed `549493fe`, s87)
 - `docs/plans/i143-prd.md` e12.s86, e12.s87 (landed), e12.s89 (the D2/D2b rows and C17), e12.s90 (superseded by this PRD's e1-e2 once approved)
+- `docs/plans/i146-owed-messages-prd.md` (R-MSG1: the one delivery mechanism, from Q13's lost round check-in in e2b's release run; supersedes the Q13 addendum and Q14)
 - `docs/architecture/deployment-provider.md`, `lifecycles/node-runtime-inspect.md`, `lifecycles/node-recovery.md`, `lifecycles/node-tickle.md`, `lifecycles/node-restart.md`, `build.md` §4.1

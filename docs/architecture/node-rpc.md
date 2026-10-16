@@ -5,7 +5,7 @@ This page owns the Node RPC runtime, how one invocation executes: the resolver, 
 
 **Crates:** RDM `rafka-node-rpc` (the runtime) and `rafka-node-rpc-contract` (descriptor, framing and outcome vocabulary).
 
-**Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability, the protocol carrier-policy hook and direct reconnect reconciliation; [`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md) owns Iroh/QUIC transport mechanics; [`ops-protocol-and-usage.md`](/home/admin/rafka-v2/docs/architecture/ops-protocol-and-usage.md) owns broker `DataFrame` operation semantics; [`readers-and-writers.md`](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md) owns reader/writer attempt policy; [`lifecycles/states.md`](lifecycles/states.md) owns node states and authority, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; [`internal-mesh-auth.md`](/home/admin/rafka-v2/docs/architecture/internal-mesh-auth.md) owns the gateway↔broker trust model; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#inside-the-mesh).
+**Companion architecture:** [`connections.md`](connections.md) owns Direct/Proxy/Failed connection facts, effective node-to-node reachability, the protocol carrier-policy hook and direct reconnect reconciliation; [`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md) owns Iroh/QUIC transport mechanics; [`ops-protocol-and-usage.md`](/home/admin/rafka-v2/docs/architecture/ops-protocol-and-usage.md) owns broker `DataFrame` operation semantics; [`readers-and-writers.md`](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md) owns reader/writer attempt policy; [`lifecycles/states.md`](lifecycles/states.md) owns node states and authority, and [`node-identity-and-state.md`](node-identity-and-state.md) node identity and topology; [`internal-mesh-auth.md`](/home/admin/rafka-v2/docs/architecture/internal-mesh-auth.md) owns the gateway↔broker trust model; trust between mesh nodes is [`fabric-certs.md`](fabric-certs.md#on-a-connection).
 
 ---
 
@@ -263,6 +263,14 @@ EOF/reset after `Started` without `Terminal` is `Indeterminate`.
 `Data` before `Started`, a second `Started`, a refusal after `Started`, a second terminal, or anything after terminal is `PROTOCOL_VIOLATION`.
 
 There is no generic START/DATA/ERROR wire envelope. The runtime enforces order using the protocol's classifier.
+
+Below this grammar sits the transport's delivery layer
+([envelope: transport frames](node-rpc-envelope.md#transport-frames-delivery-below-the-protocol)): every
+frame carries a transport header and is acknowledged by an `Ack` control frame the runtime consumes
+before protocol parsing. The orders above are the sequence of an invocation's response frames by
+`seq` after that layer has deduplicated and ordered them; a unary reply is one response frame at
+`seq 0`. An `Ack` is never a protocol frame, never completes an invocation, and never appears in the
+orders above.
 
 ---
 
@@ -840,13 +848,15 @@ A panic, explicit `HandlerFault`, impossible codec failure or unexpected supervi
 
 ---
 
-## 33. No deduplication in Node RPC
+## 33. One execution per invocation; the runtime deduplicates deliveries, protocols deduplicate operations
 
-Node RPC keeps no idempotency cache, replay table or completed-call registry.
+Node RPC keeps no cache of handler results. It suppresses a resent delivery id (§43): the duplicate
+never reaches the handler. The runtime dispatches an invocation to its handler at most once for that
+delivery id. This does not guarantee successful completion: execution may fail or be interrupted.
+Recovery and recognition of an already-applied operation remain the owner's responsibility.
 
-Every admitted, decoded invocation starts exactly one handler execution.
-
-A later call is a new attempt even if it carries the same domain identity.
+A new invocation has a new delivery identity even when it carries the same operation identity; recognising it as
+`already-applied`, `stale` or `completed` is the protocol's, by the operation's identity and receipts.
 
 Protocol state machines own:
 
@@ -982,9 +992,11 @@ Node RPC communicates facts. State machines decide the next action.
 
 ---
 
-## 41. Protocol retry guidance is descriptive, not policy
+## 41. Refusal classes and what a caller may conclude
 
-The runtime itself does not retry, but callers may use these semantic facts:
+Delivery is retried by the runtime (§43), never by a refusal class: a named refusal ends the request's
+retry, and its response is delivered like any other. This table says only what a caller may conclude
+from each class:
 
 | class | same target later? | same request, same build, immediate retry? |
 |---|---|---|
@@ -998,7 +1010,39 @@ The runtime itself does not retry, but callers may use these semantic facts:
 | `Unauthorized` | never sent by a mesh receiver | no |
 | `ProtocolRefusal` | protocol-defined | protocol-defined |
 
-No branch of this table appears as an automatic retry inside Node RPC.
+No branch of this table is a retry of the refused request; whether the caller sends a different
+request later is the domain's decision.
+
+---
+
+## 43. Owed messages: delivery is the runtime's
+
+Retry automatically in Node RPC. Send immediately. Without an ack, resend the same message with the
+same delivery id: first retry at the publish cadence, then exponential backoff with jitter, capped at
+the staleness floor; one attempt in flight per message. The receiver suppresses duplicate delivery ids, including duplicates received while the
+original invocation is executing. Before recoverable acceptance, duplicates remain pending without an
+ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's proven exit or accepted removal, or on
+explicit cancellation or retargeting by the owning workflow; never on a timer, never on absence from a
+view, never on a newer message of its kind.
+
+An ack proves receipt, never execution. The receiver acks only once the operation owner has made the
+accepted work recoverable (a durable acceptance record, or the result already recorded); a read-only
+request needs no new write. The handler supplies that boundary; the runtime sends the ack and holds
+no durable queue. Each owner defines how its pending commands, check-ins and responses are
+reconstructed from durable evidence with their operation identity; a relaunch as a new birth follows
+lifecycle recovery, never a replay.
+
+Delivery identity is not operation identity (§33). The delivery id and the ack live in the transport
+frame header ([envelope: transport frames](node-rpc-envelope.md#transport-frames-delivery-below-the-protocol)),
+in both directions: a response is itself an owed message, correlated to its invocation and acknowledged
+by the caller once its owner can recover it. Tiny ack frames are never themselves owed; a lost
+ack is repaired by the original being resent and acked again. A named refusal ends the request's
+retry; its response is retransmitted until acked like any response. Every frame of a streaming op
+carries stream identity and sequence (§11), and a reconnect never delivers an old admission after the
+terminal frame. Every directed Node RPC protocol rides this; gossip stays best-effort. Above it,
+unchanged: the Build's resubmit by `build_id` and the application connections reconnect scheduler
+([connections.md §9](connections.md#9-direct-reconnect-is-owned-by-every-node)); a resend uses
+ordinary dialing and never depends on the application connections log.
 
 ---
 

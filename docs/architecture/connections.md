@@ -97,6 +97,7 @@ The durable state is:
 Connected
 Disconnected
 Failed
+Refused
 ```
 
 Virtual-topic classification maps those values to the architectural vocabulary:
@@ -105,10 +106,16 @@ Virtual-topic classification maps those values to the architectural vocabulary:
 Connected    -> state=active
 Disconnected -> state=dead
 Failed       -> state=failed
+Refused      -> state=refused
 ```
 
 `Failed` is valid for Direct recovery attempts. It means only that this source failed to establish the
 named direct connection. It is never global proof that the destination node is dead.
+
+`Refused` is written by an acceptor for an inbound connection it dropped at admission
+([fabric-certs.md](fabric-certs.md#on-a-connection), [node.connections.admit](lifecycles/node-connections-admit.md)),
+naming the reason (`no-credential`, `bad-signature`, `expired`, `issuer-mesh-mismatch`). It is the
+acceptor's fact about one dial, never proof about the dialer.
 
 ---
 
@@ -619,7 +626,8 @@ reason
 ```
 
 Proxy transitions additionally identify the carrier. Reconnect attempts identify the recovery round and
-attempt ordinal.
+attempt ordinal. An admission verdict is spanned `rdm.node.connections.create.via-admitted` or
+`rdm.node.connections.reject.via-refused` with the named reason, on the acceptor.
 
 The reconnect attempt span is owned by node-base and records whether it:
 

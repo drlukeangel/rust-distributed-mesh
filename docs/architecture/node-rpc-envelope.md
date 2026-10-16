@@ -19,6 +19,63 @@ unary reply:      reply_len | body | FIN
 server streaming: (frame_len | frame)* | FIN
 ```
 
+## Transport frames: delivery below the protocol
+
+Every frame on a Node RPC stream, in either direction, begins with a transport header the runtime
+consumes before any protocol bytes are parsed. Three shapes, tagged by kind, each field held once:
+
+```text
+Request  { sender: Birth, delivery_seq: u64, retire_below: u64 }                             then sections 0-2
+Response { sender: Birth, delivery_seq: u64, retire_below: u64, invocation_id: DeliveryId, seq: u32 } then the protocol's reply bytes
+Ack      { sender: Birth, delivery_seq: u64 }                                                nothing follows
+```
+
+`Birth` is the sending node's exact `(node.id, incarnation)`; a `DeliveryId` is `(sender, delivery_seq)`.
+
+A frame's delivery identity is `(sender, delivery_seq)`, minted by its sender, the same on every resend
+([node-rpc.md §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)): `delivery_seq` is a
+per-receiver sequence the sending birth never reuses. Every frame carries the sender's
+`retire_below`, the lowest `delivery_seq` it still holds unacked toward that receiver and a promise
+never to resend anything below it; the receiver forgets duplicate state only below that watermark or
+on the sender birth's proven exit or accepted removal, never by time elapsed. Until then a resend keeps
+its identity and cannot dispatch again. A carried call keeps its origin's identity: the duplicate
+window is per origin birth, never per carrier. A request's
+`invocation_id` is its own delivery identity, derived and never stored a second time; every response
+frame carries that `invocation_id` as its correlation and its `seq` as its position in the
+invocation's response (`0` for a unary reply; `Started` is `0`, each `Data` the next, `Terminal`
+the last). A missing or malformed header resets `424 PROTOCOL_VIOLATION`, like any section.
+
+`Ack` is the runtime's control frame: it names the frame it acknowledges and nothing else; it travels on
+the acknowledged stream's reverse direction or on an Ack stream of the current connection, and
+correlates by delivery identity, independent of any stream, is never
+classified by a protocol and is never itself owed. The responder acks request frames; the caller
+acks response frames. Any response frame for an invocation acks the request implicitly, valid only
+when the response was produced after the request's recoverable-acceptance boundary; the explicit
+`Ack` is for acceptance that precedes the first response frame. A named refusal is a response frame
+and so acks the request by itself; no acceptance write is invented for it.
+
+Responses are routed by `invocation_id`, not by stream. The caller keeps its open invocations keyed
+by `invocation_id`; a response frame arriving on any stream from that birth is delivered to its
+invocation and ordered by `seq`. After a reconnect the responder resends its unacked response frames,
+same ids and `seq`, on a new stream. The caller acknowledges a response frame only once its owner can
+recover the accepted progress or result; a frame held only in a reorder buffer is not acknowledged.
+Reordering is bounded in positions and in bytes (the op's reply ceiling per frame); two different frames
+at the same `(invocation_id, seq)` are a `424 PROTOCOL_VIOLATION` whatever their delivery identities; `seq`
+never wraps; a `Terminal` completes nothing while an earlier position is missing. A response is
+acked and dropped only when the owner has completed, explicitly cancelled or superseded the
+invocation, or the exact receiving birth has ended; absence from an in-memory invocation map alone
+establishes none of that.
+
+Response and `Ack` frames reach the delivery demultiplexer before handler dispatch and before lifecycle
+admission: an endpoint that admits no new command still receives an owed result.
+
+A duplicate request is suppressed. Before recoverable acceptance it is pending and unacked; after
+it, the responder acks it and closes that stream. That `Ack` then EOF is delivery only: the caller's
+invocation stays open and the original's response frames reach it by `invocation_id`. It is never a
+result and never a failed command. The protocol-visible grammar
+([node-rpc.md §11](node-rpc.md#11-unary-and-streaming-response-order)) is the sequence of an
+invocation's response frames in `seq` order after this layer; it is unchanged by it.
+
 ## Section 0: the target
 
 ```text
@@ -198,7 +255,9 @@ publish no lifecycle event. A failure is `Failed { step, reason }`: no downstrea
 success event follows it.
 
 Transport uncertainty is NotSent before the request commit cut and Indeterminate
-after it. A broken stream proves neither step failure nor completion. The Build's
+after it; both are statements about execution certainty, and under either the runtime keeps
+delivering the same invocation ([node-rpc.md §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)),
+which authorises no new execution. A broken stream proves neither step failure nor completion. The Build's
 only durable step outcomes are Complete and Failed { step, reason }. build.get is a read for reattachment, never a resume. The caller resubmits the
 same build_id to the fabric-primary under the [Build carrier](#build-op-0x20-rdm). Reissuing a naturally
 idempotent uncertain step can settle it with AlreadyApplied. A Build adds durability, not
@@ -249,7 +308,13 @@ These are adapter mappings, not new enum definitions.
 | node.connections.get/[delete](lifecycles/node-connections-delete.md) | Held-connection read; `node.connections.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connections.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connections.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` |
 | node.tags.get/create/delete | A node's tags are its own property, not config. `node.tags.get` answers the node's labels; `node.tags.create { label \| [labels] }` adds one label or a list; `node.tags.delete { All \| [labels] }` removes every label or the named ones, the same scope shape as `node.connections.delete`. One item or a list, uniform: a single item is the same as a list of one. Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put of that key, so creating a label the node already carries is ignored and writes no duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All | Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated |
+| [node.cert.renew](lifecycles/node-cert-renew.md) | The issuing authority to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert |
+| [node.issuer.update](lifecycles/node-issuer-update.md) | The fabric-primary to one node-admin, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateIssuer { node_id, incarnation, key, cert }`, answered `IssuerUpdated`; refused by name for another mesh or another birth | node.issuer.updated |
+| [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) | The fabric-primary to one node, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoots { node_id, incarnation, roots, phase }`, answered `RootsUpdated`; a set that drops a root the node still admits a chain under is refused `retire-before-rotated` | node.roots.updated |
+| node.cert.get | A field of node.get: `NodeView.cert { issued_at, expires_at, issuer_expires_at }` on the `Nodes` reply, from the birth's cert row ([fabric-certs.md](fabric-certs.md#tracking)) | read result; no event |
+| [node.connections.admit](lifecycles/node-connections-admit.md) | The acceptor's verification of the dialer's member cert on the first bi-stream of an inbound connection of a registered product ALPN; RDM framing, not a Node RPC op | `admitted` or `refused { reason }`, a connection fact ([connections.md](connections.md#12-connection-state)) |
 | mesh.get, mesh.update, mesh.nodes.get, mesh.config.get/update | mesh.get answers one mesh, or every mesh of a fabric; mesh.update puts the full mesh meta as a blind put and never changes status; mesh.nodes.get answers the mesh's members; mesh.config.get/update hold the application's attributes on the mesh row, as node.config does on a node; a mesh's tags are its own property, mesh.tags.get / mesh.tags.create { label | [labels] } / mesh.tags.delete { All | [labels] }, the same shape and label grammar as node.tags; dedicated request mapping is open | read result / mesh.updated / mesh.config.updated |
+| [fabric.root.update](lifecycles/fabric-ca-renew.md#fabricrootupdate-the-caller-op) | A single call to the fabric-primary with a new root secret, the trust anchor; starts the root rotation's phases; refused `rotation-in-progress` or `root-already-trusted` by name; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | fabric.root.updated |
 | fabric.get, fabric.update, fabric.meshes.get, fabric.nodes.get, fabric.config.get/update | fabric.get answers from memory; fabric.update puts the full fabric meta as a blind put and never changes status; fabric.meshes.get lists the meshes; fabric.nodes.get answers the fabric topology; fabric.config.get/update hold the application's attributes on the fabric row; dedicated request mapping is open | read result / fabric.updated / fabric.config.updated |
 | [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh holds the fabric-primary seat; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic |
 | [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready-for-traffic |
@@ -571,7 +636,7 @@ Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contra
 
 Direction: upward for declarations; downward for applies and probes. An ordinary node declares to its mesh-primary node-admin. Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own ([node.status](lifecycles/node-status.md)); a mesh-primary declares its mesh state to the fabric-primary. Authority applies/probes the exact node birth; fabric-primary applies mesh state at its bootstrap admin and fabric events at its mesh-primary.
 
-The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, authority and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
+The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, not-the-writer (`RejectedNotAuthority`), not-handled (`RequestNotHandled`) and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
 The [node stop pair](#node-stop-command-pair), the
@@ -884,7 +949,7 @@ pub enum BuildClaimReply {
 
 Direction: upward. An ordinary node calls its mesh-primary node-admin; a node-admin birth
 calls its maker, the node-admin that deploys it. JoinNode is the managed birth's FIRST call after it
-binds port 0 and the OS assigns its port. The deploying authority serves it. Not forwardable: the report is authenticated directly from the
+binds port 0 and the OS assigns its port. The deploying authority serves it. Not forwardable: the report is attributed directly to the
 joining birth.
 
 ```rust

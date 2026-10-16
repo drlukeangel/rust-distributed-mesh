@@ -34,6 +34,9 @@ used again is this arm under a new MeshId (R-ML2, R-MN1): a MeshId is never reis
    itself: the mesh has no primary, so the fabric-primary is maker and executor. It records the
    deployment, prepares the data dir and seed, and launches the executable in the Create start
    mode ([node-admin lifecycle §3](../node-admin-lifecycle.md#3-start-modes)).
+   `mesh.issuer.create`: at the mesh's acceptance the fabric-primary mints `mesh2`'s issuing cert, signed
+   by the root, and writes it into the first admin's launch environment (`RDM_ISSUING_KEY`,
+   `RDM_ISSUING_CERT`; [fabric certs](../fabric-certs.md#the-cert-workflows)).
 3. The node-admin binds port 0 and runs [node.mesh.join](node-mesh-join.md): its report goes to its maker, the fabric-primary.
    The answer hands it the fabric identity, rafka-time, its cert, its name and config.
 4. The node-admin creates `mesh2`'s channel, `f(FabricId, MeshId)`, as its first listener, and

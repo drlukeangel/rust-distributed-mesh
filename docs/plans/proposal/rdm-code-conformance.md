@@ -146,7 +146,7 @@ Suggested layout: `src/workflows/<page>.rs` and `src/primitives/*`, folded into 
 | 23 | the view reads a stopped birth's renamed name by node id through the node-row id index, before the view lock | CLAUDE.md read rule (indexes); R12 | s42 follow-up (after s41; `durable format moved`: the id index) |
 | 24 | the graceful connections cut replaces the drain (R-CR4 ruled A; R-CR5 ruled A: `All` is just connections) | rulings page R-CR4, R-CR5 | #3083 |
 | 25 | Rafka side: the entry pull moves from `ControlFrame::ProjectionPull` / `ProjectionSnapshotPart` / `ProjectionRefused` (rafka-mesh-ops tags 16, 19, 18; rafka-node-base `serve_projections` in `crates/rafka-node-base/src/birth.rs` and `read_projection_answer` in `crates/rafka-node-base/src/lib.rs`) to node.topology.get | gossip.md §8; fabric-node-hooks.md | Rafka story (#3100) |
-| 26 | Rafka side (R-SV1): delete `dialer_send_svid` / `acceptor_verify_svid` and the admission verdict; `connect_verified` becomes a plain connect; the first-bi-stream cert frame on rafka-mesh-v1 goes | fabric-certs.md#inside-the-mesh; internal-mesh-auth.md | Rafka story; wire change, the mesh moves together (#3101) |
+| 26 | Rafka side (R-SV1): delete `dialer_send_svid` / `acceptor_verify_svid` and the admission verdict; `connect_verified` becomes a plain connect; the first-bi-stream cert frame on rafka-mesh-v1 goes | fabric-certs.md#on-a-connection; internal-mesh-auth.md | Rafka story; wire change, the mesh moves together (#3101) |
 
 ## 3. Questions and their answers
 
@@ -174,7 +174,7 @@ Suggested layout: `src/workflows/<page>.rs` and `src/primitives/*`, folded into 
    status; a heartbeat is liveness only and is refused by name after node.stopped; only the
    mesh-primary's node.joined or node.delete ends a stop.
 9. Answered (R-SV1): no cert is verified between mesh nodes; the internal data plane carries no
-   SVID cert belt ([fabric-certs.md](../../architecture/fabric-certs.md#inside-the-mesh)).
+   SVID cert belt ([fabric-certs.md](../../architecture/fabric-certs.md#on-a-connection)).
 
 Open in the findings, carried here until answered (IDs as in
 [rdm-code-conformance-findings.md](rdm-code-conformance-findings.md)):
