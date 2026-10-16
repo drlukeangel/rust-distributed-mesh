@@ -50,7 +50,7 @@ regression against it; e2's are the cells for every row.
 
 | # | Requirement | State | Evidence today | Epic |
 |---|---|---|---|---|
-| R1 | the frame-contract table: every frame kind in one of the four categories with its exact stale and duplicate rule | BUILD | receive_order.rs keys 9 of 22; gossip.md §3.1 states no receive rule | e1 |
+| R1 | the frame-contract table: every frame kind maps to its receive category, subject, ordering and identity | HOLDS | gossip.md §3.1 approved table; `every_frame_kind_has_a_row_in_the_receive_rules` covers all 22 Frame variants; e1 gate GREEN | e1 |
 | R2 | replacement-state frames install only a newer revision of the same source projection; an equal revision is a duplicate and does nothing | BUILD | equal keys accepted and "absorbed" | e2 |
 | R3 | snapshot and delta frames install atomically against the correct source revision and base; reordered chunks still complete; equal-key chunks valid | BUILD | §3.3 states the top-up; the atomic rule is unproven | e2 |
 | R4 | operation facts match the exact operation and birth; duplicates do nothing; an unrelated newer frame never supersedes a terminal fact | BUILD | 13 kinds taken as they arrive | e2 |
@@ -88,7 +88,7 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 - **Acceptance cells.** `an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_inconsistent`
   (the regression); `every_frame_kind_has_a_row_in_the_receive_rules` (a unit cell over the catalog against the page's table).
   RED first.
-- **State.** Q19=A approved by Luke, 2026-10-16; targeted GREEN in lane `e7s3`, branch `codex/i147-e1-gossip-conformance`. RED SHA `35af8ca1`, before trace `f6fc35d858049ff6c75782276d66a969`; after trace `7af27c38a6aa16ca6f5dbf040b0ebd1e` shows `via-inconsistent` with frame, subject and revision, held status unchanged. Live cell: 1 passed, 0 failed (0.08 s); catalog: 1 passed, 0 failed. Full gate and landing pending. Classification uses the held status projection under its installation lock. No wire or architecture change; R10 and e2 remain outside this landing.
+- **State.** **LANDED** through `rebase-gate-land.sh`, 2026-10-16, lane `e7s3`, branch `codex/i147-e1-gossip-conformance`, Q19=A. RED SHA `35af8ca1`; GREEN/landed SHA `1da16141`. Before trace `f6fc35d858049ff6c75782276d66a969`; after trace `7af27c38a6aa16ca6f5dbf040b0ebd1e` shows `rdm.mesh.membership.reject.via-inconsistent` with frame `mesh-status`, subject `mesh1 mesh1.admin.1`, revision `100`, held status unchanged. Verification: live regression 1 passed, 0 failed (0.06 s); receive-order unit stem 8 passed, 0 failed (including the catalog); fast landing gate 1,623 passed, 0 failed, 0 ignored across 62 libtest summaries, 261 s total. Discovery: 1,774 tests against 1,772 on main; release-only jobs excluded by the fast gate. Gate log: `/home/admin/rust-distributed-mesh-deploy/gates-e7s3-1da16141.log`. The receive framework classifies against the held status under its installation lock, replacing the MeshStatus handler check. Span reference regenerated. The approved architecture table was already on main at `ab129725`; code now meets its named inconsistency refusal for MeshStatus. No architecture or wire change. No unanswered packet; R10 and e2 remain outside this landing.
 
 #### e2 — every row, one defect at a time
 
@@ -106,7 +106,7 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 
 ## Verification
 
-- [ ] e1 green in the RDM gate with its flame cited; the gossip.md section landed with it.
+- [x] e1 green in the RDM gate with both flames cited in its row; the approved gossip.md receive table is on main.
 - [ ] Every row of the table has a green cell; no frame kind is "taken as it arrives" without a stated rule.
 - [ ] receive_order.rs has one shape per category and no contradictory check.
 
