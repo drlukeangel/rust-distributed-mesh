@@ -52,6 +52,9 @@ pub enum CutSpec {
         #[serde(default)] operation: Option<String>,
         /// The operation's path.
         #[serde(default)] node: Option<String>,
+        /// The receipt is a Failed one (the step's work ended Failed and its receipt is not yet
+        /// durable); a Complete one when false.
+        #[serde(default)] failed: bool,
     },
     /// A lifecycle event a retirement publishes (`deleting`, `restarting`, `deleted`): the step's
     /// receipt is durable and the event is not yet published.
@@ -114,6 +117,14 @@ pub enum CutSpec {
         /// The channel: `mesh`, `backbone` or `any`.
         channel: String,
     },
+    /// The deployment provider refuses every `terminate` of the runtime at `pid` while the cut is
+    /// armed: the call is answered `DeployError::Terminate`, named as the testkit's, and nothing is
+    /// signalled. It models a provider that refuses a terminate (node-recovery.md step 4, "a
+    /// terminate the provider refuses"); nothing parks.
+    ProviderTerminate {
+        /// The exact runtime's pid; every runtime when absent.
+        #[serde(default)] pid: Option<u32>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -129,6 +140,8 @@ pub enum Probe {
         build_id: String,
         /// The attempt.
         attempt: u32,
+        /// Whether the receipt is a Failed one.
+        failed: bool,
     },
     /// A lifecycle event about to be published.
     Event {
@@ -201,14 +214,21 @@ pub enum Probe {
         /// The authority the read goes to: the admin that answered the join.
         authority: String,
     },
+    /// A provider `terminate` about to be made.
+    ProviderTerminate {
+        /// The runtime's pid, when the handle names one.
+        pid: Option<u32>,
+        /// The deployment the runtime belongs to.
+        deployment_id: String,
+    },
 }
 
 impl CutSpec {
     fn matches(&self, p: &Probe) -> bool {
         let node_is = |want: &Option<String>, got: &str| want.as_deref().is_none_or(|w| got == w || got.ends_with(&format!(":{w}")));
         match (self, p) {
-            (CutSpec::Receipt { step, operation, node }, Probe::Receipt { step: s, operation: o, .. }) => {
-                step == s && operation.as_deref().is_none_or(|prefix| o.starts_with(prefix)) && node_is(node, o)
+            (CutSpec::Receipt { step, operation, node, failed }, Probe::Receipt { step: s, operation: o, failed: f, .. }) => {
+                failed == f && step == s && operation.as_deref().is_none_or(|prefix| o.starts_with(prefix)) && node_is(node, o)
             }
             (CutSpec::Event { event, node }, Probe::Event { event: e, op }) => event == e && node_is(node, &op.name.to_string()),
             (CutSpec::Hook { phase, node }, Probe::Hook { phase: ph, target, .. }) => phase == ph && node_is(node, target),
@@ -220,6 +240,7 @@ impl CutSpec {
             (CutSpec::StateSync, Probe::StateSync { .. }) => true,
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
+            (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
             _ => false,
         }
     }
@@ -229,7 +250,7 @@ impl Probe {
     /// What a cut that holds this call records of it.
     fn hit(&self) -> Hit {
         match self {
-            Probe::Receipt { step, operation, build_id, attempt } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone(), attempt: *attempt },
+            Probe::Receipt { step, operation, build_id, attempt, .. } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone(), attempt: *attempt },
             Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, node: op.name.to_string(), incarnation_id: op.incarnation.as_str().to_string() },
             Probe::Hook { phase, target, transition_id } => Hit::Hook { phase: phase.to_string(), target: target.clone(), transition_id: transition_id.clone() },
             Probe::Accepted { build_id } => Hit::Accepted { build_id: build_id.clone() },
@@ -240,6 +261,7 @@ impl Probe {
             Probe::StateSync { build_id, attempt } => Hit::StateSync { build_id: build_id.clone(), attempt: *attempt },
             Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
+            Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
         }
     }
 }
@@ -300,7 +322,7 @@ impl AdminFaults {
         // A cut that parked nothing is spent by its release too: it can no longer park.
         c.released = true;
         // A condition (not a parked call) has no parked caller to clear it.
-        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. }) {
+        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. }) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             // Dropping the span ends it: the hold span lasts from the first consultation to here.
@@ -432,11 +454,10 @@ impl BuildStateAdapter for FaultedBuilds {
     }
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         self.faults.receipts_seen.fetch_add(1, Ordering::SeqCst);
-        if receipt.outcome == StepOutcome::Complete {
-            self.faults
-                .hold(Probe::Receipt { step: receipt.step.clone(), operation: receipt.operation.clone(), build_id: receipt.build_id.to_string(), attempt: receipt.attempt })
-                .await;
-        }
+        let failed = receipt.outcome != StepOutcome::Complete;
+        self.faults
+            .hold(Probe::Receipt { step: receipt.step.clone(), operation: receipt.operation.clone(), build_id: receipt.build_id.to_string(), attempt: receipt.attempt, failed })
+            .await;
         self.inner.append_step_receipt(receipt).await
     }
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
@@ -485,6 +506,12 @@ impl DeploymentProvider for FaultedProvider {
         self.inner.spawn(spec).await
     }
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
+        if self.faults.in_force(Probe::ProviderTerminate { pid: handle.pid, deployment_id: handle.deployment_id.to_string() }) {
+            return Err(DeployError::Terminate {
+                deployment: handle.deployment_id.to_string(),
+                reason: format!("testkit: {} refuses the terminate of pid {:?} while its provider-terminate cut is armed; nothing was signalled", self.faults.name, handle.pid),
+            });
+        }
         self.inner.terminate(handle, mode).await
     }
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
