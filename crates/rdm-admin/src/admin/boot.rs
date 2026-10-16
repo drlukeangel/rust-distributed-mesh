@@ -1768,24 +1768,21 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
                                         membership.set_completion_carrier(Arc::new(move |f: &rdm_transport::membership::Frame| {
-                                            use rdm_transport::membership::Frame;
-                                            // A fabric round check-in by an ordinary node, carried by the mesh primary holding the round.
-                                            if let Frame::StateCommitted { hook, .. } | Frame::TrafficOpened { hook, .. } = f {
-                                                let kind = if matches!(f, Frame::StateCommitted { .. }) { crate::fabric_state::RoundKind::StateCommit } else { crate::fabric_state::RoundKind::OpenTraffic };
-                                                let key = crate::fabric_state::RoundKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
-                                                // A node-admin author publishes on the backbone itself; only an ordinary node's check-in is carried.
-                                                let ordinary = hook.publisher.parse::<PathName>().is_ok_and(|p| p.kind != NodeKind::NodeAdmin);
-                                                if ordinary && rounds.mesh_book.is_open(&key) {
+                                            use rdm_transport::membership::{CompletionCarry, Frame};
+                                            if matches!(f, Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
+                                                return rounds.mesh_book.carry_check_in(f, |f| {
                                                     let (backbone, f) = (backbone.clone(), f.clone());
                                                     tokio::spawn(async move { backbone.carry_completion(f).await });
-                                                }
-                                                return;
+                                                });
                                             }
-                                            let (Frame::NodeLeft { op, .. } | Frame::NodeConnectionsDeleted { op, .. }) = f else { return };
+                                            let (Frame::NodeLeft { op, .. } | Frame::NodeConnectionsDeleted { op, .. }) = f else { return CompletionCarry::NotHeld };
                                             let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
                                             if commands.is_open(&key) {
                                                 let (backbone, f) = (backbone.clone(), f.clone());
                                                 tokio::spawn(async move { backbone.carry_completion(f).await });
+                                                CompletionCarry::Carried
+                                            } else {
+                                                CompletionCarry::NotHeld
                                             }
                                         }));
                                     }

@@ -1872,6 +1872,8 @@ struct View {
     node: String,
     book: DigestBook,
     concerns: ConcernInbox,
+    /// Hook receipt identities shared by local apply, mesh and backbone.
+    round_receipts: Arc<Mutex<crate::receive_order::RoundReceipts>>,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
     primary: Arc<AtomicBool>,
     via: Arc<Mutex<HashMap<String, &'static str>>>,
@@ -1895,7 +1897,35 @@ struct View {
 }
 
 /// What a node-admin does with a node's own completion frame heard on its mesh channel.
-pub type CompletionCarrier = Arc<dyn Fn(&Frame) + Send + Sync>;
+pub type CompletionCarrier = Arc<dyn Fn(&Frame) -> CompletionCarry + Send + Sync>;
+
+/// What the existing command/round holder decided about carrying a completion onto the backbone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionCarry {
+    /// The completion was handed to the backbone publication task.
+    Carried,
+    /// The mesh-admin's book no longer holds this round open.
+    ClosedRound,
+    /// A node-admin author publishes on the backbone itself.
+    NodeAdmin,
+    /// The publisher path does not identify an ordinary node author.
+    NotOrdinary,
+    /// No applicable lifecycle command is held.
+    NotHeld,
+}
+
+impl CompletionCarry {
+    /// The named outcome on the hook's ordinary receive span.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Carried => "carried",
+            Self::ClosedRound => "closed-round",
+            Self::NodeAdmin => "node-admin",
+            Self::NotOrdinary => "not-ordinary",
+            Self::NotHeld => "not-held",
+        }
+    }
+}
 
 impl View {
     fn new(mesh: &str, node: &str) -> Self {
@@ -1996,6 +2026,9 @@ impl View {
     }
 
     fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
+        if !self.round_receipts.lock().unwrap().admit(f) {
+            return Vec::new();
+        }
         match f {
             Frame::NodeDeleting { op, publisher, topology_version, .. } | Frame::NodeRestarting { op, publisher, topology_version, .. } | Frame::NodeStopped { op, publisher, topology_version, .. } => {
                 let kind = match f {
@@ -2095,7 +2128,7 @@ impl View {
                     Frame::TrafficOpening { .. } => "traffic-opening",
                     _ => "traffic-opened",
                 };
-                tracing::info_span!(
+                let span = tracing::info_span!(
                     "rdm.mesh.membership.update.via-round-frame",
                     node = %self.current_name(),
                     kind,
@@ -2108,15 +2141,23 @@ impl View {
                     publisher = %hook.publisher,
                     forwarded_by = forwarded_by.as_deref().unwrap_or(""),
                     via,
-                )
-                .in_scope(|| tracing::info!("a fabric round hook was heard: evidence of the accepted command or check-in, never liveness, completion or a lifecycle state"));
-                // An ordinary node's check-in, heard on this mesh's channel as its author sent it: the
-                // mesh-admin holding the round carries it onto the backbone (gossip.md, "Fabric round gossip hooks").
-                if let (Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
-                    if let Some(carry) = self.completion_carrier.lock().unwrap().clone() {
-                        carry(f);
+                    carried = tracing::field::Empty,
+                );
+                let _in = span.enter();
+                // Forwarding metadata never changes the fact's identity or its eligibility. The
+                // admin's carrier alone consults its open-round book; passive receipt needs no
+                // round evidence and drives no checklist (Q21: x).
+                let carried = if matches!(f, Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
+                    if via == "mesh-channel" {
+                        self.completion_carrier.lock().unwrap().clone().map(|carry| carry(f).as_str()).unwrap_or("no-carrier")
+                    } else {
+                        "backbone"
                     }
-                }
+                } else {
+                    "not-a-check-in"
+                };
+                span.record("carried", carried);
+                tracing::info!("a fabric round hook was heard: evidence of the accepted command or check-in, never liveness, completion or a lifecycle state");
                 Vec::new()
             }
             Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => {

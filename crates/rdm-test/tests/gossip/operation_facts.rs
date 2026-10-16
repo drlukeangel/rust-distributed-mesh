@@ -134,20 +134,21 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
         let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
         let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![address(&peer_ep)]).await.unwrap();
         let key = RoundKey { kind: if kind.starts_with("state-") { RoundKind::StateCommit } else { RoundKind::OpenTraffic }, fabric_id: fabric.clone(), build_id: "held-round-build".into(), attempt: 1 };
+        let (subject_id, subject_incarnation) = (NodeId::mint(), IncarnationId::mint());
         let book = Arc::new(RoundBook::default());
         assert!(book.open(&key));
+        book.expect(&key, std::collections::BTreeMap::from([(subject_id.clone(), rdm_admin::fabric_state::Expected { incarnation: subject_incarnation.clone(), name: "mesh1.rpc.2".into() })]), Vec::new());
         if matches!(story, HookStory::Closed) { book.close(&key); }
+        let checklist_changes = book.subscribe();
+        let checklist_before = *checklist_changes.borrow();
         let held_book = book.clone();
         receiver.set_completion_carrier(Arc::new(move |f| {
             calls.fetch_add(1, Ordering::SeqCst);
-            if let Frame::StateCommitted { hook, .. } | Frame::TrafficOpened { hook, .. } = f {
-                let key = RoundKey { kind: if matches!(f, Frame::StateCommitted { .. }) { RoundKind::StateCommit } else { RoundKind::OpenTraffic }, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
-                if hook.publisher.parse::<rdm_core::PathName>().is_ok_and(|p| p.kind != rdm_core::NodeKind::NodeAdmin) && held_book.is_open(&key) {
-                    count.fetch_add(1, Ordering::SeqCst);
-                    let (backbone, f) = (backbone.clone(), f.clone());
-                    tokio::spawn(async move { backbone.carry_completion(f).await });
-                }
-            }
+            held_book.carry_check_in(f, |f| {
+                count.fetch_add(1, Ordering::SeqCst);
+                let (backbone, f) = (backbone.clone(), f.clone());
+                tokio::spawn(async move { backbone.carry_completion(f).await });
+            })
         }));
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -165,7 +166,7 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
         let before = *changes.borrow();
         let completion = kind == "state-committed" || kind == "traffic-opened";
         let publisher = if !completion || matches!(story, HookStory::AdminAuthor) { "mesh1.admin.2" } else { "mesh1.rpc.2" };
-        let hook = rdm_core::RoundHook { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.kind.operation(&fabric), publisher: publisher.into(), event_at_rafka_ms: 1 };
+        let hook = rdm_core::RoundHook { fabric_id: fabric.clone(), node_id: subject_id, incarnation: subject_incarnation, build_id: key.build_id.clone(), attempt: key.attempt, operation: key.kind.operation(&fabric), publisher: publisher.into(), event_at_rafka_ms: 1 };
         for receipt in 1..=if matches!(story, HookStory::Repeat | HookStory::ForwardedRepeat) { 2 } else { 1 } {
             let mut offered = hook.clone();
             // Evidence time and forwarding metadata change the wire bytes, never the identity.
@@ -185,12 +186,14 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
                 }).count() < receipt as usize { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the hook reaches the RDM receiver");
         }
-        if completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor) && !matches!(story, HookStory::ForwardedRepeat) {
+        if completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor) {
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1") { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the ordinary check-in reaches the live backbone peer");
         }
         assert_eq!(*changes.borrow(), before, "hooks never change birth lifecycle");
+        assert_eq!(*checklist_changes.borrow(), checklist_before, "gossip never notifies or changes the directed checklist");
+        assert!(!book.complete(&key), "even completion gossip cannot check in the planned birth");
         assert!(if matches!(story, HookStory::Closed) { !book.is_open(&key) } else { book.is_open(&key) }, "gossip never changes the round book");
         sender_ep.close().await;
         receiver_ep.close().await;

@@ -1,3 +1,5 @@
+**Q21 ruled x — Luke, 2026-10-16: no passive round evidence, no wire or snapshot change; hook effects are the receive span and the existing open-round carrier.**
+
 # Q21 — What round evidence may a passive hook receiver install before reconciliation?
 
 ## 1. Spec

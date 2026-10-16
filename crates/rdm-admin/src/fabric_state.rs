@@ -211,6 +211,29 @@ impl RoundBook {
         self.rounds.lock().unwrap().contains_key(key)
     }
 
+    /// Carry an ordinary node's round check-in only while this mesh-admin holds the round open.
+    /// Receipt never drives this checklist. The caller supplies the existing backbone publication;
+    /// its named outcome is returned to the hook's receive span (Q21: x).
+    pub fn carry_check_in(&self, frame: &rdm_transport::membership::Frame, carry: impl FnOnce(&rdm_transport::membership::Frame)) -> rdm_transport::membership::CompletionCarry {
+        use rdm_transport::membership::{CompletionCarry, Frame};
+        let (hook, kind) = match frame {
+            Frame::StateCommitted { hook, .. } => (hook, RoundKind::StateCommit),
+            Frame::TrafficOpened { hook, .. } => (hook, RoundKind::OpenTraffic),
+            _ => return CompletionCarry::NotHeld,
+        };
+        match hook.publisher.parse::<crate::model::PathName>() {
+            Ok(author) if author.kind == crate::model::NodeKind::NodeAdmin => return CompletionCarry::NodeAdmin,
+            Err(_) => return CompletionCarry::NotOrdinary,
+            _ => {}
+        }
+        let key = RoundKey { kind, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
+        if !self.is_open(&key) {
+            return CompletionCarry::ClosedRound;
+        }
+        carry(frame);
+        CompletionCarry::Carried
+    }
+
     /// Forget the round: its completion went up.
     pub fn close(&self, key: &RoundKey) {
         self.rounds.lock().unwrap().remove(key);
