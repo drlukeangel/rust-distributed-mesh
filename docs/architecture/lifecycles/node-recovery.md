@@ -17,7 +17,7 @@ crashed mesh, on exact provider exit proof.)
 | Field | Contract |
 |---|---|
 | Reconciler | The mesh-primary of the member's mesh |
-| Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect` (unheard past the staleness floor) |
+| Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a command to them was never sent for a reachability reason (step 1) |
 | Investigation | The tickle ladder (`offline.rs`), then the provider's exact-exit proof |
 | Trigger | Exact provider proof only. Silence, a failed tickle and TRUE OFFLINE are not proof |
 | Execution | The mesh-primary opens the recovery as the next attempt of the current Build in its mesh's lane, claims it on its mesh's rows and runs it; no call to the fabric-primary, which learns it from the Build topic |
@@ -36,7 +36,12 @@ timer of its own:
    past the staleness floor. Nothing is sent; the mark comes from the digests not arriving.
    Peers stop routing new work to it. Silence is not death. Every node-admin keeps the
    silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
-   continues the window already running.
+   continues the window already running. The mesh-primary also marks a member `PendingReconnect`
+   at once when a command to it was never sent for a reachability reason (the connect refused,
+   timed out or failed; the endpoint unresolved). The mark is an observer mark: it never replaces a
+   lifecycle state the node reported and the mesh-primary recorded (`connections-deleting`,
+   `stopping`, `stopped`), and it ends when a digest of the exact birth arrives after it, when the
+   birth answers its tickle, or when the view no longer holds that birth.
 2. **Tickle.** Only the mesh-primary acts. Half a floor after the mark it makes one QUIC
    connect, direct; if that fails, the same kick through up to two eligible live peers of
    the birth's mesh, sent at once (`rafka-node-admin-core/src/offline.rs`, module doc).
@@ -52,7 +57,13 @@ timer of its own:
 3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment
    backend that launched the runtime) about the exact runtime recorded at launch. Exited
    is the proof, recorded durably. `Unknown` or an unreadable runtime row proves nothing
-   and opens no hold. When the provider reports `Running` for the exact runtime handle,
+   and opens no hold. When the provider reports `OsStopped`, the mesh-primary records the durable
+   status-row fact `os-stopped { since }` (surfaced on `node.get`, never a gossip `MemberStatus`),
+   opens no hold and runs no `TerminateRuntime`; a hold already open on the birth is cancelled (its
+   `held-running` row removed, so no expired hold submits its terminate). It inspects the exact
+   runtime again on every tick: `Running` clears the fact and, if the birth is still unreachable,
+   the rule below opens a fresh hold; `Exited` clears the fact and is the proof; `Unknown` keeps the
+   fact, records the uncertainty and terminates nothing. When the provider reports `Running` for the exact runtime handle,
    the mesh-primary records the durable status-row fact `held-running { since, verdicts }`
    (surfaced on `node.get`, never as a gossip `MemberStatus`: the gossip wire is untouched)
    and opens the hold (step 4).
@@ -62,12 +73,21 @@ timer of its own:
    digest ends the hold and clears `held-running` (`reachable-silent` / `offline-returned`,
    no action). When the hold expires with the provider still reporting `Running`, the
    mesh-primary submits the recovery Build for that birth whose first step is
-   `TerminateRuntime { node_id, incarnation, handle }`: the provider's
+   `TerminateRuntime { node_id, incarnation, handle }`, which inspects the exact runtime again
+   immediately before it asks the provider to terminate (`Running` lets the request go; `OsStopped`
+   or `Unknown` fails the step by name and requests nothing; `Exited` sends no signal and the step
+   takes the exit proof): the provider's
    `terminate(handle, Graceful)` then `Forced` after the stop grace on the exact runtime
    handle recorded at launch, recording `exit_proof` durably and clearing `held-running`,
    then continuing ordinary recovery in the same attempt (a new `node.id` at the same
    `path.name`). A terminate the provider refuses or cannot prove ends the attempt
-   `Failed { step: TerminateRuntime, reason }` by name; the fact stays and a person decides.
+   `Failed { step: TerminateRuntime, reason }` by name, and no hold submits that birth's terminate
+   again: a person decides. The mesh-primary keeps inspecting the exact runtime every tick (step 3):
+   `OsStopped` records the fact and cancels the hold; `Exited` is the proof, and the recovery of an
+   exited member follows (Failure and receipts); neither reopens the failed attempt. A
+   `TerminateRuntime` that failed at its own inspection (`OsStopped` or `Unknown`) asked the provider
+   nothing: it voids the hold, and a birth that reads `Running` and stays unreachable opens a fresh
+   hold under the ordinary rule.
    For a hung mesh-primary, the fabric-primary runs the same hold and submits the same
    Build; for a hung fabric-primary, watching admins record `held-running` (surfaced on
    `node.get` and `fabric.get`) and publish `Concern` as today, and nothing below it
