@@ -124,8 +124,15 @@ async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recove
     node_where(&estate, &member, &format!("{member} lists os_stopped on node.get"), crate::node_recovery_due(), |n| n["os_stopped"]["since"].as_u64().unwrap_or(0) > 0).await;
     let killed_at = now_ns();
     assert!(rt.apply(Fault::Kill).expect("the suspended runtime is killed").exited);
-    let recovered = node_where(&estate, &member, &format!("{member} recovered as a new birth"), crate::node_recovery_due() * 2, |n| n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"] && n["os_stopped"].is_null()).await;
+    let recovery_due = std::time::Instant::now() + crate::node_recovery_due() * 2;
+    let recovered = node_where(&estate, &member, &format!("{member} recovered as a new birth"), recovery_due.saturating_duration_since(std::time::Instant::now()), |n| n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"] && n["os_stopped"].is_null()).await;
     assert_ne!(recovered["node_id"], before["node_id"], "a new node.id at the path: {recovered}");
+    // Ready precedes the recovery attempt's terminal receipt. Observe the settled recovery before
+    // teardown aborts the executor, using the time left in the original recovery bound.
+    wait_for("the recovery reaches its terminal receipt", recovery_due.saturating_duration_since(std::time::Instant::now()), || async {
+        estate.spans().into_iter().find(|sp| sp["name"] == "rdm.node_admin.build.update.via-node-recovery"
+            && sp["attributes"]["node_id"] == before["node_id"] && attr(sp, "outcome").starts_with("complete"))
+    }).await;
 
     estate.stop().await;
     let spans = estate.spans();

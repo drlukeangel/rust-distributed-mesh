@@ -171,8 +171,9 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     let accepted = stream.accepted().clone();
     let failed = frames(stream).await;
     assert!(matches!(failed.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the restart fails naming the unadmitted stop: {failed:?}");
-    rt.apply(Fault::Continue).expect("the runtime is continued");
+    // A queued stop may run before Continue returns; mark the release before sending it.
     let continued_at = now_ns();
+    rt.apply(Fault::Continue).expect("the runtime is continued");
 
     // Nothing reopens the failed attempt on its own.
     tokio::time::sleep(rdm_transport::membership::staleness_floor() * 2).await;
