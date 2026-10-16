@@ -1174,7 +1174,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             me.addressed.note(&peer.endpoint_id);
             let commander = sender.as_ref().map(|d| d.node.node_id.clone());
-            let reply = me.own.serve_node_command(commander.as_ref(), &req, sink).await;
+            let reply = me.own.serve_node_command(commander.as_ref(), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
             tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this node was decided"));
             Ok(reply)
@@ -1218,7 +1218,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
             // counts it, whether or not a record names the caller.
             me.addressed.note(&peer.endpoint_id);
-            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
+            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")

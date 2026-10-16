@@ -13,6 +13,7 @@ use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
+use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest, WhichMesh};
 use rdm_test::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rdm_test::node;
@@ -118,9 +119,9 @@ fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_goss
         std::fs::create_dir_all(&dir).unwrap();
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
-        let all = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
-        let reply = call_on(&admin, &target, &all, None).await;
-        assert!(matches!(&reply, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry: {reply:?}");
+        let all = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        let reply = crate::common::node_command_completion(&admin.observer.client, &target, &all).await;
+        assert!(matches!(&reply, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry: {reply:?}");
 
         // Still heard on gossip: a digest of the same birth published after the All arrives.
         let book = &admin.observer.membership.book;
@@ -161,8 +162,8 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
-        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
+        let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
         // A further call on a pool connection of its own: a new dial from the commander, a new accept at the node.
         let probe = StatusRequest::GetConnections { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let read = call_on(&admin, &target, &probe, Some("after-all")).await;
@@ -197,9 +198,56 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         let retired = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1.new".into() };
         let reply = call_on(&admin, &target, &retired, None).await;
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
-        let all = StatusRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
-        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the node deletes its connections afterwards");
+        let all = NodeCommandRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
+        assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the node deletes its connections afterwards");
         assert_eq!(named(&spans, "rdm.node_admin.status.update.via-drain-node"), 0, "nothing ran for the reserved position");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT (Luke Q9: "dispatch the request to its implementation; if this endpoint has no
+/// implementation for it, answer \"request not handled here\" ... A missing handler is not an
+/// authorization decision"): a Status `DeleteConnections { All }` that reaches a node whose Status door
+/// registers no handler for it performs no closure and records no state. The connection the node
+/// opened stays held in its connections log, no closure or connections-deleting span runs, no block on
+/// new application work is set (the node's next call to its admin is answered on the same entry), and
+/// the node's own `ConnectionsDeleted` is no answer to it. The same node closes that connection when the
+/// request reaches the handler that implements it, the node command op 0x22. The reply's wording is
+/// R24's ("request not handled here") and is not asserted here.
+#[test]
+fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing() {
+    let cell = "a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, serve_ping).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-unhandled-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let opened = ping_admin(&seams, &admin, &CallOptions::default()).await;
+        assert!(matches!(opened, RpcOutcome::Reply(_)), "the node reaches its admin: {opened:?}");
+        let held: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(held.len(), 1, "the node holds the one connection it opened: {held:?}");
+
+        let status = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        let reply = call_on(&admin, &target, &status, None).await;
+        assert!(!matches!(reply, StatusReply::ConnectionsDeleted { .. }), "no handler on the node's Status door performs a closure: {reply:?}");
+        assert_eq!(seams.connections.held_routes().await.into_iter().map(|r| r.id).collect::<Vec<_>>(), held, "the node's connection is still held");
+        let again = ping_admin(&seams, &admin, &CallOptions::default()).await;
+        assert!(matches!(again, RpcOutcome::Reply(_)), "no block on new application work is set: {again:?}");
+        for name in ["rdm.node_admin.node.connections.delete.via-delete-connections", "rdm.node_admin.node.connections.delete.via-connections-deleting", "rdm.node_rpc.connection.reject.via-admission-block"] {
+            assert_eq!(named(&spans, name), 0, "nothing of a closure ran: {name}");
+        }
+
+        // The request at the handler that implements it, the node command op 0x22, closes it.
+        let command = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &command).await;
+        assert!(matches!(&deleted, NodeCommandReply::ConnectionsDeleted { closed, held: still, .. } if still.is_empty() && held.iter().all(|id| closed.contains(id))), "{deleted:?}");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -232,8 +280,8 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         let (launch, running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
-        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
+        let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
 
         // Between the row's write and the apply the node opens nothing.
         let why = admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
@@ -283,18 +331,18 @@ fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
         let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
         let stop = std::sync::Arc::new(rdm_transport::Failpoint::default());
         let opts = CallOptions { after_connect: Some(stop.clone()), ..CallOptions::default() };
         let dial = ping_admin(&seams, &admin, &opts);
         let steps = async {
             stop.reached.notified().await;
-            let deleted = call_on(&admin, &target, &all, None).await;
+            let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &all).await;
             stop.release.notify_one();
             deleted
         };
         let (out, deleted) = tokio::join!(dial, steps);
-        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All holds nothing while the dial waits unpooled: {deleted:?}");
+        assert!(matches!(&deleted, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All holds nothing while the dial waits unpooled: {deleted:?}");
         admission_blocked(&out);
         assert!(seams.connections.held_routes().await.is_empty(), "the late connection writes no entry");
         let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
@@ -335,13 +383,13 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
         })
         .await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
-        let all = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        let all = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         pull.hold();
         let held_call = async { admin.observer.client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {
             pull.entered(1).await;
-            let deleting = call_on(&admin, &target, &all, None);
+            let deleting = crate::common::node_command_completion(&admin.observer.client, &target, &all);
             tokio::pin!(deleting);
             assert!(tokio::time::timeout(Duration::from_millis(300), &mut deleting).await.is_err(), "All is not answered while the call it admitted is in flight");
             let out = ping_admin(&seams, &admin, &CallOptions::default()).await;
@@ -354,7 +402,7 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
         let (held_out, (opened, deleted)) = tokio::join!(held_call, steps);
         assert!(matches!(held_out, RpcOutcome::Reply(_)), "the held call answers once released: {held_out:?}");
         match &deleted {
-            StatusReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } => {
+            NodeCommandReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } => {
                 assert_eq!(closed, &opened, "All closes the connection opened while it waited: {deleted:?}");
                 assert!(held.is_empty(), "All holds nothing once it answers: {deleted:?}");
             }
@@ -411,8 +459,8 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
         assert_eq!(rejects[0].get("operation").map(String::as_str), Some("leave-mesh:busy"));
 
         // Close all connections, then standalone `LeaveMesh` succeeds.
-        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
-        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()));
+        let all = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()));
         let leave_ok = StatusRequest::LeaveMesh {
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),

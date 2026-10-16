@@ -2199,3 +2199,49 @@ fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_
     });
 }
 
+
+/// CONTRACT (i144 R22; Luke Q9: "Caller → mesh-primary: Status DeleteConnections, direct or forwarded,
+/// for either scope. Mesh-primary → subject node: streaming 0x22 NodeCommand"; "a forwarded caller
+/// request, and the Connections([ids]) scope, stay functional"): `mesh1.rpc.2` sends
+/// `node.connections.delete { Connections([one id]) }` of `mesh1.rpc.1` to mesh1's primary through a
+/// carrier (`ViaPeer` `mesh2.admin.1`, Forward 0x1A). The primary carries it to the exact birth on the
+/// node command op 0x22 (`carried=dialled`) and answers the birth's completion naming the id closed;
+/// the birth received the request once. A list of ids reports no connections-deleting, so nothing is
+/// recorded as connections-deleting. The caller's carried leg (`via-peer`, protocol status) and the
+/// primary's carrying are one trace.
+#[test]
+fn a_forwarded_callers_connections_delete_of_named_ids_is_carried_to_the_birth_on_its_command_op() {
+    let cap = capture();
+    let id = rdm_core::ConnectionId::mint();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let (rpc1, rpc2, m2admin) = (&b["rpc1"], &b["rpc2"], &b["m2admin"]);
+        let node = serve_node_with(rpc1, |req| match req {
+            StatusRequest::DeleteConnections { scope: rdm_core::status::ConnectionScope::Connections(ids), .. } => StatusReply::ConnectionsDeleted { closed: ids.clone(), not_open: vec![], held: vec![], receipt: None },
+            _ => StatusReply::Applied,
+        })
+        .await;
+        configs_door(&rig, &node).await;
+        let (carrier, _carrier_router) = carrier_admin(m2admin, &rig.resolved).await;
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(carrier);
+        let ep = rdm_transport::endpoint::bind(rpc2.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+        let route = rdm_transport::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone(), path: m2admin.node.name.clone() };
+        let scope = rdm_core::status::ConnectionScope::Connections(vec![id.clone()]);
+        let reply = rdm_client::NodeRpc::new(&client).connections_delete(&rig.admin.node.node_id, &route, &exact(rpc1), &scope, &CallOptions::default()).await.expect("a typed reply");
+        assert_eq!(reply, StatusReply::ConnectionsDeleted { closed: vec![id.clone()], not_open: vec![], held: vec![], receipt: None });
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![StatusRequest::DeleteConnections { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), scope }], "the birth received the request once, on its command op");
+    });
+    let carried = cap.spans("rdm.node_admin.node.connections.delete.via-mesh-primary");
+    assert_eq!(carried.len(), 1, "{carried:?}");
+    let (trace_id, attrs) = &carried[0];
+    let attr = |k: &str| attrs.get(k).map(String::as_str);
+    assert_eq!((attr("node"), attr("subject"), attr("scope"), attr("carried"), attr("outcome")), (Some("mesh1.admin.1"), Some("mesh1.rpc.1"), Some("connections"), Some("dialled"), Some("connections-deleted")), "{attrs:?}");
+    assert!(cap.spans("rdm.node_admin.node.update.via-connections-deleting").is_empty(), "a list of ids records no connections-deleting");
+    let routes = cap.spans("rdm.node_rpc.route.resolve.via-connections");
+    let leg: Vec<_> = routes.iter().filter(|(t, a)| t == trace_id && a.get("route").map(String::as_str) == Some("via-peer")).collect();
+    assert_eq!(leg.len(), 1, "the caller's one carried leg is in the primary's carrying trace: {routes:?}");
+    assert_eq!((leg[0].1.get("carrier").map(String::as_str), leg[0].1.get("protocol").map(String::as_str)), (Some("mesh2.admin.1"), Some("status")), "{leg:?}");
+    eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1 > rdm.node_admin.node.connections.delete.via-mesh-primary node=mesh1.admin.1 carried=dialled outcome=connections-deleted");
+}

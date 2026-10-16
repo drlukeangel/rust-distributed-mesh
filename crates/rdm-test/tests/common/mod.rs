@@ -455,3 +455,38 @@ pub fn serve_ping(b: rdm_transport::ServerBuilder) -> rdm_transport::ServerBuild
         Ok(PingReply::Pong { payload })
     })
 }
+
+/// A node command (op 0x22, i144 R22) to the birth `target` reaches, read through its ordered reply
+/// stream: every frame in order, or the failure that ended it. A refusal is its one frame.
+pub async fn node_command(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::node_command::NodeCommandRequest, opts: &rdm_transport::CallOptions) -> Result<Vec<rdm_core::node_command::NodeCommandReply>, String> {
+    use rdm_core::outcome::RpcOutcome;
+    use rdm_transport::stream::StreamItem;
+    let (mut stream, _) = match client.call_stream::<rdm_core::node_command::NodeCommand>(target, req, opts).await {
+        Ok(s) => s,
+        Err((RpcOutcome::Reply(r), _)) => return Ok(vec![r.into_value()]),
+        Err((other, _)) => return Err(format!("{} ended {}: {other:?}", req.op(), other.name())),
+    };
+    let mut frames = Vec::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            StreamItem::Frame(kind, frame) => {
+                frames.push(frame);
+                if matches!(kind, rdm_core::streaming::FrameKind::Terminal | rdm_core::streaming::FrameKind::Refusal(_)) {
+                    return Ok(frames);
+                }
+            }
+            StreamItem::Failed(f) => return Err(format!("{} broke after {frames:?}: {f:?}", req.op())),
+        }
+    }
+    Err(format!("{} ended without its terminal after {frames:?}", req.op()))
+}
+
+/// A node command (op 0x22) to the exact birth `target` reaches, as its mesh-primary commands it: the
+/// command's completion (its last frame; a refusal is its one frame).
+pub async fn node_command_completion(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::node_command::NodeCommandRequest) -> rdm_core::node_command::NodeCommandReply {
+    let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..Default::default() };
+    match node_command(client, target, req, &opts).await {
+        Ok(mut frames) => frames.pop().expect("a command's stream holds at least its completion"),
+        Err(e) => panic!("{} did not complete: {e}", req.op()),
+    }
+}

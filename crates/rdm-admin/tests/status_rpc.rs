@@ -344,9 +344,9 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let subject = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
-    // The node command: node.connections.delete { All } to the exact birth (DrainNode is a reserved
-    // position, refused by name before any birth is checked).
-    let command = |inc: IncarnationId| StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: inc, scope: rdm_core::status::ConnectionScope::All };
+    // The node command: node.stop of the exact birth, a command its mesh-primary sends on Status
+    // (node.connections.delete reaches a birth on the node command op 0x22).
+    let command = |inc: IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: "node.stop:mesh1.admin.2".into() };
 
     // Healthy control before draining: a ping is served.
     let c = client_of(&rig, &executor).await;

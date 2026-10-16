@@ -567,7 +567,6 @@ impl StatusAuthority {
                 return crate::node_commands::refuse_node_left(&me_name.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
             }
             StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
-            StatusRequest::DeleteConnections { node_id, .. } if *node_id == self.node_id => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { node_id, incarnation, scope } => return self.carry_delete_connections(&view, sender.as_ref(), node_id, incarnation, scope).await.status_reply(),
             StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } => {
                 let Some(mesh_deleter) = self.mesh_deleter.get().cloned() else {
@@ -771,16 +770,16 @@ impl StatusAuthority {
     /// birth's rename (an `Established` closure completes it; a `Deadline` one leaves the birth
     /// connections-deleting with its incomplete receipt). A scope that names nothing to cut is refused
     /// here, sending nothing. A command never sent, refused by the node, lost before the node accepted
-    /// it, or broken after it accepted it are each their own end ([`CarryEnd`]).
+    /// it, or broken after it accepted it are each their own end ([`CarryEnd`]). This mesh-primary its
+    /// own subject runs its own birth's command path in-process and reads the same frames (Luke Q9).
     async fn carry_delete_connections(&self, view: &Topology, sender: Option<&crate::model::Node>, node_id: &NodeId, incarnation: &IncarnationId, scope: &rdm_core::status::ConnectionScope) -> CarryEnd {
         use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
-        use rdm_transport::stream::StreamItem;
         use tracing::Instrument;
         let me_name = self.held_name_in(view);
         let span = tracing::info_span!(
             "rdm.node_admin.node.connections.delete.via-mesh-primary",
             node = %me_name, subject_id = %node_id, subject = tracing::field::Empty, sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(),
-            scope = scope.name(), status_at_cut = tracing::field::Empty, closed = tracing::field::Empty, held = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
+            scope = scope.name(), status_at_cut = tracing::field::Empty, carried = tracing::field::Empty, closed = tracing::field::Empty, held = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let end = async {
             // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never
@@ -805,31 +804,51 @@ impl StatusAuthority {
             if let Some(reason) = scope.refusal() {
                 return CarryEnd::Refused(StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", subject.name) });
             }
-            let Some(configs) = self.configs.get() else {
-                return CarryEnd::Refused(StatusReply::NotReady { reason: format!("{me_name} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", subject.name) });
-            };
             let all = matches!(scope, rdm_core::status::ConnectionScope::All);
-            let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
-            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
             let command = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: scope.clone() };
-            let mut stream = match configs.client().call_stream::<NodeCommand>(&target, &command, &opts).await {
-                Ok((stream, _)) => stream,
-                Err((out, _)) => {
-                    let end = match out {
-                        rdm_core::outcome::RpcOutcome::NotSent(n) => CarryEnd::NotSent(n.reason().clone()),
-                        rdm_core::outcome::RpcOutcome::Reply(r) => CarryEnd::RefusedByNode(r.into_value()),
-                        other => CarryEnd::Lost(format!("{me_name} carried node.connections.delete to {} and the call ended {} before the node accepted it: {other:?}", subject.name, other.name())),
-                    };
-                    tracing::Span::current().record("detail", end.detail().as_str());
-                    return end;
+            let mut frames = if *node_id == self.node_id {
+                // This mesh-primary is its own subject: an endpoint does not dial itself, so its own
+                // birth's command path runs in-process and its frames come back on a channel.
+                let Some(own) = self.own.get().cloned() else {
+                    return CarryEnd::Refused(StatusReply::NotReady { reason: format!("{me_name} has not yet joined its mesh; node.connections.delete of its own birth is refused and nothing is cut") });
+                };
+                tracing::Span::current().record("carried", "in-process");
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                let commander = self.node_id.clone();
+                tokio::spawn(
+                    async move {
+                        let completion = own.serve_node_command(Some(&commander), &command, Box::new(crate::node_self::ChannelFrames(tx.clone()))).await;
+                        let _ = tx.send(completion);
+                    }
+                    .instrument(tracing::Span::current()),
+                );
+                CarriedFrames::InProcess(rx)
+            } else {
+                let Some(configs) = self.configs.get() else {
+                    return CarryEnd::Refused(StatusReply::NotReady { reason: format!("{me_name} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", subject.name) });
+                };
+                tracing::Span::current().record("carried", "dialled");
+                let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
+                let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
+                match configs.client().call_stream::<NodeCommand>(&target, &command, &opts).await {
+                    Ok((stream, _)) => CarriedFrames::Dialled(stream),
+                    Err((out, _)) => {
+                        let end = match out {
+                            rdm_core::outcome::RpcOutcome::NotSent(n) => CarryEnd::NotSent(n.reason().clone()),
+                            rdm_core::outcome::RpcOutcome::Reply(r) => CarryEnd::RefusedByNode(r.into_value()),
+                            other => CarryEnd::Lost(format!("{me_name} carried node.connections.delete to {} and the call ended {} before the node accepted it: {other:?}", subject.name, other.name())),
+                        };
+                        tracing::Span::current().record("detail", end.detail().as_str());
+                        return end;
+                    }
                 }
             };
             let mut accepted = false;
             let mut reported = false;
-            while let Some(item) = stream.next().await {
+            while let Some(item) = frames.next().await {
                 match item {
-                    StreamItem::Frame(_, NodeCommandReply::CommandAccepted { .. }) => accepted = true,
-                    StreamItem::Frame(_, NodeCommandReply::ConnectionsDeleting { .. }) => {
+                    Ok(NodeCommandReply::CommandAccepted { .. }) => accepted = true,
+                    Ok(NodeCommandReply::ConnectionsDeleting { .. }) => {
                         // The node reported it: this mesh-primary records and publishes the state the
                         // node entered (states.md "Who sets each state"), never before.
                         reported = true;
@@ -837,7 +856,7 @@ impl StatusAuthority {
                         tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("the node reported connections-deleting on its command's stream: this mesh-primary records it, and its projection carries it from its next round"));
                     }
-                    StreamItem::Frame(_, NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }) => {
+                    Ok(NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }) => {
                         tracing::Span::current().record("closed", closed.len()).record("held", held.len());
                         let kept = ConnectionsDeletedReceipt { all, held: held.clone(), status_at_cut: if all { crate::model::NodeStatus::Draining } else { subject.status } };
                         self.declared.lock().unwrap().connections_deleted.insert((node_id.clone(), incarnation.clone()), kept);
@@ -849,13 +868,13 @@ impl StatusAuthority {
                         }
                         return CarryEnd::Deleted { closed, not_open, held, receipt };
                     }
-                    StreamItem::Frame(_, other) => {
+                    Ok(other) => {
                         let reason = format!("{} answered {} on its command's stream after {}", subject.name, other.name(), if accepted { "accepting it" } else { "nothing" });
                         tracing::Span::current().record("detail", reason.as_str());
                         return if accepted { CarryEnd::Incomplete { reported, reason } } else { CarryEnd::RefusedByNode(other) };
                     }
-                    StreamItem::Failed(f) => {
-                        let reason = format!("{me_name}'s node.connections.delete stream to {} broke {}: {f:?}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
+                    Err(f) => {
+                        let reason = format!("{me_name}'s node.connections.delete stream to {} broke {}: {f}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
                         tracing::Span::current().record("detail", reason.as_str());
                         return if accepted { CarryEnd::Incomplete { reported, reason } } else { CarryEnd::Lost(reason) };
                     }
@@ -875,7 +894,7 @@ impl StatusAuthority {
     /// §14): the commander is the caller as the view holds it, where its completion goes; the
     /// connection spared is the call's own (`peer`).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest) -> StatusReply {
-        let (StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::DeleteConnections { incarnation, .. } | StatusRequest::JoinMesh { incarnation, .. } | StatusRequest::LeaveMesh { incarnation, .. }) = req else {
+        let (StatusRequest::StopNode { incarnation, .. } | StatusRequest::StartNode { incarnation, .. } | StatusRequest::JoinMesh { incarnation, .. } | StatusRequest::LeaveMesh { incarnation, .. }) = req else {
             unreachable!("serve_command is called for commands only")
         };
         let me_name = self.held_name_in(view);
@@ -1154,12 +1173,34 @@ fn serve_node_command(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthor
                 return Ok(NodeCommandReply::NotReady { reason: format!("{} has not yet joined its mesh; {} is refused", auth.me, req.op()) });
             };
             let sender = auth.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
-            let reply = own.serve_node_command(sender.as_ref().map(|n| &n.node_id), &req, sink).await;
+            let reply = own.serve_node_command(sender.as_ref().map(|n| &n.node_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
             tracing::info_span!("rdm.node_admin.status.update.via-command", node = %auth.me, op = req.op(), sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this admin was decided"));
             Ok(reply)
         }
     })
+}
+
+/// The frames of a carried node command, in order (Luke Q9): the dialled node's reply stream on op
+/// 0x22, or, this mesh-primary its own subject, its own birth's command path run in-process. The frames
+/// are the same either way.
+enum CarriedFrames {
+    Dialled(rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>),
+    InProcess(tokio::sync::mpsc::UnboundedReceiver<rdm_core::node_command::NodeCommandReply>),
+}
+
+impl CarriedFrames {
+    /// The next frame, or why the frames broke; `None` once they ended.
+    async fn next(&mut self) -> Option<Result<rdm_core::node_command::NodeCommandReply, String>> {
+        use rdm_transport::stream::StreamItem;
+        match self {
+            Self::Dialled(stream) => stream.next().await.map(|item| match item {
+                StreamItem::Frame(_, reply) => Ok(reply),
+                StreamItem::Failed(f) => Err(format!("{f:?}")),
+            }),
+            Self::InProcess(rx) => rx.recv().await.map(Ok),
+        }
+    }
 }
 
 /// The state a declaration declares (`DeclareNodeState`, `DeclareMeshState`); empty for any other op.

@@ -26,6 +26,7 @@ use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
+use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
 use rdm_test::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rdm_test::node;
@@ -127,8 +128,8 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let held_call = async { client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {
             pull.entered(1).await;
-            let delete = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
-            let deleting = call(delete);
+            let delete = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+            let deleting = crate::common::node_command_completion(&client, &target, &delete);
             tokio::pin!(deleting);
             assert!(tokio::time::timeout(Duration::from_millis(300), &mut deleting).await.is_err(), "All is not answered while the call it admitted is in flight");
             pull.release();
@@ -137,13 +138,13 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let (held_out, deleted) = tokio::join!(held_call, steps);
         assert!(matches!(held_out, RpcOutcome::Reply(_)), "the held call answers once released: {held_out:?}");
         assert!(
-            matches!(&deleted, StatusReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } if held.is_empty() && closed.len() == 1),
+            matches!(&deleted, NodeCommandReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } if held.is_empty() && closed.len() == 1),
             "every connection is deleted, the receipt counting the call in flight: {deleted:?}"
         );
         // The trace: the closed entry's data-plane connection is deleted on its own span, naming the
         // entry and the peer its observed fact named; All hard-cuts no pool.
         let closed = match &deleted {
-            StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Established { closed, .. }), .. } => closed[0].to_string(),
+            NodeCommandReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Established { closed, .. }), .. } => closed[0].to_string(),
             other => panic!("checked above: {other:?}"),
         };
         let fields_of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect() };

@@ -128,6 +128,23 @@ fn spans_named(spans: &Spans, name: &str) -> Vec<std::collections::BTreeMap<Stri
 /// One downward command from the authority to the node, answered by the node whoever sends it
 /// (node-rpc.md §14: nothing inside the mesh checks who is calling).
 async fn command(b: &Birth, req: impl Fn(&MeshDigest) -> StatusRequest) -> StatusReply {
+    let (d, target) = resolved(b).await;
+    let (out, _) = b.admin.observer.client.call::<Status>(&target, &req(&d), &CallOptions::default()).await;
+    match out {
+        RpcOutcome::Reply(r) => r.into_value(),
+        other => panic!("the node never took the command: {other:?}"),
+    }
+}
+
+/// `node.connections.delete { All }` of the node, commanded on op 0x22 as its mesh-primary commands it.
+async fn delete_all(b: &Birth) -> rdm_core::node_command::NodeCommandReply {
+    let (d, target) = resolved(b).await;
+    let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
+    crate::common::node_command_completion(&b.admin.observer.client, &target, &all).await
+}
+
+/// The node's digest as the authority heard it, its birth resolved for a call.
+async fn resolved(b: &Birth) -> (MeshDigest, NodeTarget) {
     let book = &b.admin.observer.membership.book;
     until(book, "the authority heard the node's digest", |book| book.get(b.launch.node_id.as_str()).is_some()).await;
     let (d, _) = book.get(b.launch.node_id.as_str()).unwrap();
@@ -139,19 +156,11 @@ async fn command(b: &Birth, req: impl Fn(&MeshDigest) -> StatusRequest) -> Statu
         transport_addr: d.node.transport_addr,
     });
     let target = NodeTarget::ExactNode(d.node.node_id.clone());
-    let (out, _) = b.admin.observer.client.call::<Status>(&target, &req(&d), &CallOptions::default()).await;
-    match out {
-        RpcOutcome::Reply(r) => r.into_value(),
-        other => panic!("the node never took the command: {other:?}"),
-    }
+    (d, target)
 }
 
 fn probe(d: &MeshDigest) -> StatusRequest {
     StatusRequest::ProbeNodeState { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }
-}
-
-fn delete_all(d: &MeshDigest) -> StatusRequest {
-    StatusRequest::DeleteConnections { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All }
 }
 
 /// CONTRACT: a node whose hook is `Blocked` on its authority stays Pending: it publishes Pending
@@ -273,7 +282,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
         let probed = command(&b, probe).await;
         let d = running.digest.clone();
         assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::AuthorityReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
-        assert!(matches!(command(&b, delete_all).await, StatusReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
+        assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the retirement ends the hook");
         assert_eq!(settled, HydrationState::Retired);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked")[0]["cleared_by"], "retired");
@@ -308,7 +317,7 @@ fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
         let starting = start(&b, &hydrator);
         tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
 
-        assert!(matches!(command(&b, delete_all).await, StatusReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the pull is in flight");
+        assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the pull is in flight");
         let running = tokio::time::timeout(WRONG, starting).await.expect("the retirement ends the first attempt").unwrap().expect("the retired node's start returns");
         assert_eq!(running.hydration().expect("handle").state(), HydrationState::Retired);
         use std::sync::atomic::Ordering::SeqCst;

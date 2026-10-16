@@ -7,6 +7,7 @@
 
 use crate::build_log;
 use rdm_client::{Frame, NodeEvent, NodeStatus};
+use rdm_core::status::StatusReply;
 use rdm_test::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -143,4 +144,66 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     assert!(start(command) <= start(admitted) && start(admitted) <= start(recorded) && start(recorded) <= start(completed), "the send, the node's admission, the mesh-primary's record, then the completion: {command} {admitted} {recorded} {completed}");
     println!("connections.delete on its command stream: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
+}
+
+/// CONTRACT (i144 R22; Luke Q9: "The mesh-primary as its own subject accepts the caller's request and
+/// runs its subject-side NodeCommand execution path, recording connections-deleting and
+/// connections-deleted from its own frames as for any other birth, never refusing because the request
+/// names the receiving node"): a caller's `node.connections.delete` naming mesh1's primary, sent to
+/// that primary. `Connections([an id it never opened])` completes naming the id not open; `All`, last,
+/// completes with its receipt. Each is carried in-process (`carried=in-process`: an endpoint does not
+/// dial itself, so no op 0x22 call leaves it) through the birth's own command path
+/// (`via-delete-connections` on the primary). For `All` the primary's own birth reports
+/// connections-deleting, then the primary records it (`reported_by=node`), then holds the completion.
+/// Must NOT happen: a refusal because the request names the receiver, a record before its own report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames() {
+    let test = "a_mesh_primary_named_in_its_own_connections_delete_runs_its_own_command_path_and_records_from_its_own_frames";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+
+    let nodes = estate.nodes_obj().await;
+    let mesh = nodes.get(&rdm_client::NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
+    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let me = primary.name.to_string();
+    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), node_id: primary.node_id.clone(), incarnation: primary.incarnation_id.clone().expect("the primary's birth") };
+    let route = rdm_transport::RouteChoice::Direct;
+
+    let never = rdm_core::ConnectionId::mint();
+    let named_one = nodes.connections_delete(&birth, &primary.node_id, &route, &rdm_core::status::ConnectionScope::Connections(vec![never.clone()])).await.expect("node.connections.delete answered");
+    assert!(
+        matches!(&named_one, StatusReply::ConnectionsDeleted { closed, not_open, receipt: None, .. } if closed.is_empty() && not_open == &vec![never.clone()]),
+        "the primary completes its own Connections([…]), naming the id it never opened: {named_one:?}"
+    );
+    let all = nodes.connections_delete(&birth, &primary.node_id, &route, &rdm_core::status::ConnectionScope::All).await.expect("node.connections.delete answered");
+    assert!(matches!(&all, StatusReply::ConnectionsDeleted { receipt: Some(_), .. }), "the primary completes its own All with its receipt: {all:?}");
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    for scope in ["connections", "all"] {
+        let carried = named(&spans, "rdm.node_admin.node.connections.delete.via-mesh-primary")
+            .into_iter()
+            .find(|sp| s(&sp["attributes"]["node"]) == me && s(&sp["attributes"]["subject"]) == me && s(&sp["attributes"]["scope"]) == scope)
+            .cloned()
+            .unwrap_or_else(|| panic!("{me} carries its own {scope} node.connections.delete"));
+        assert_eq!((s(&carried["attributes"]["carried"]).as_str(), s(&carried["attributes"]["outcome"]).as_str()), ("in-process", "connections-deleted"), "{carried}");
+        let trace = s(&carried["trace_id"]);
+        let run: Vec<&Value> = spans.iter().filter(|sp| s(&sp["trace_id"]) == trace).collect();
+        let executed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-delete-connections" && s(&sp["attributes"]["node"]) == me).unwrap_or_else(|| panic!("{me}'s own birth runs the {scope} command: trace {trace}"));
+        assert_eq!(s(&executed["attributes"]["scope"]), scope, "{executed}");
+        let dialled: Vec<&&Value> = run.iter().filter(|sp| sp["name"] == "rdm.node_rpc.request.update.via-call" && s(&sp["attributes"]["op"]) == "34").collect();
+        assert!(dialled.is_empty(), "no op 0x22 call leaves {me} for its own birth: {dialled:#?}");
+        if scope == "all" {
+            let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary's own birth reports its admission");
+            let recorded = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == me).expect("the primary records its own connections-deleting");
+            assert_eq!((s(&recorded["attributes"]["recorder"]).as_str(), s(&recorded["attributes"]["reported_by"]).as_str()), (me.as_str(), "node"), "{recorded}");
+            let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node"]) == me).expect("the primary holds its own completion");
+            assert!(start(admitted) <= start(recorded) && start(recorded) <= start(completed), "its own report, then its record, then the completion: {admitted} {recorded} {completed}");
+            println!("the mesh-primary's own node.connections.delete All: http://192.168.68.99:16687/trace/{trace}");
+            estate.record_trace_url(&trace);
+        }
+    }
 }

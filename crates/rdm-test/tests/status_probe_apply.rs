@@ -122,9 +122,9 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // The reserved Reserved6 is refused by name; node.connections.delete { All } is answered with its receipt.
         let retired = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into() };
         assert!(matches!(call(retired).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
-        let all = StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
-        let deleted = call(all).await;
-        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");
+        let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
+        let deleted = common::node_command_completion(&observer.client, &target, &all).await;
+        assert!(matches!(&deleted, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), held, .. } if held.is_empty()), "{deleted:?}");
 
         let _ = provider.terminate(&created.handle, TerminationMode::Graceful { grace: std::time::Duration::from_secs(2) }).await;
     })

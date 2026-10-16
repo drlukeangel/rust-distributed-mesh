@@ -502,50 +502,13 @@ impl NodeSelf {
         }
     }
 
-    /// Serve `DeleteConnections` from `commander` (its connection `spare`): a scope that names
-    /// nothing to cut is refused by name and cuts nothing; any other is the cut, answered
-    /// `node.connections.deleted`. One span names the scope and every count.
-    async fn serve_delete_connections(&self, commander: Option<&NodeId>, scope: &ConnectionScope) -> StatusReply {
-        use tracing::Instrument;
-        let span = tracing::info_span!(
-            "rdm.node_admin.node.connections.delete.via-delete-connections",
-            node = %self.held_name(), commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
-            deadline_ms = tracing::field::Empty, closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, receipt = tracing::field::Empty,
-            outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
-        );
-        let reply = async {
-            if self.connections.lock().unwrap().is_none() {
-                return StatusReply::NotReady { reason: format!("{}: this birth holds no connections writer yet; nothing is cut", self.held_name()) };
-            }
-            if let Some(reason) = scope.refusal() {
-                tracing::Span::current().record("reason", reason.as_str());
-                return StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", self.held_name()) };
-            }
-            if matches!(scope, ConnectionScope::All) {
-                tracing::Span::current().record("deadline_ms", self.connections_delete_deadline.as_millis() as u64);
-            }
-            let d = self.delete_connections(scope).await;
-            let current = tracing::Span::current();
-            current.record("closed", d.closed.len()).record("not_open", d.not_open.len()).record("held", d.held.len());
-            if let Some(r) = &d.receipt {
-                current.record("receipt", r.name());
-            }
-            StatusReply::ConnectionsDeleted { closed: d.closed, not_open: d.not_open, held: d.held, receipt: d.receipt }
-        }
-        .instrument(span.clone())
-        .await;
-        span.record("outcome", reply.name());
-        span.in_scope(|| tracing::info!("node.connections.delete decided at this birth"));
-        reply
-    }
-
     /// Serve a node command from `commander` on its ordered reply stream (op 0x22, i144 R22; Luke Q6,
     /// Q7): every refusal is decided before `CommandAccepted`; after it the stream ends only with the
     /// command's completion. `node.connections.delete { All }` reports `ConnectionsDeleting` once its
     /// block on new application work is in force, then closes and answers `ConnectionsDeleted`;
     /// `Connections([…])` answers its completion right after the acceptance. A caller gone after the
     /// acceptance stops nothing: the node completes what it accepted.
-    pub async fn serve_node_command(&self, commander: Option<&NodeId>, req: &NodeCommandRequest, sink: rdm_transport::stream::ReplySink<NodeCommand, rdm_transport::stream::NotStarted>) -> NodeCommandReply {
+    pub async fn serve_node_command(&self, commander: Option<&NodeId>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         use tracing::Instrument;
         let NodeCommandRequest::DeleteConnections { incarnation, scope, .. } = req;
         if *incarnation != self.incarnation {
@@ -558,21 +521,20 @@ impl NodeSelf {
             return NodeCommandReply::RejectedConnectionScope { reason: format!("{}: {reason}", self.held_name()) };
         }
         let accepted = NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() };
-        let sink = match sink.started(accepted).await {
-            Ok(sink) => sink,
+        if let Err(e) = frames.accepted(accepted).await {
             // Nothing was accepted: the caller is gone before the acceptance left, so nothing runs.
-            Err(e) => return NodeCommandReply::NotReady { reason: format!("{}: the command's caller is gone before its acceptance ({e:?}); nothing is cut", self.held_name()) },
-        };
-        let sink = std::sync::Arc::new(tokio::sync::Mutex::new(sink));
+            return NodeCommandReply::NotReady { reason: format!("{}: the command's caller is gone before its acceptance ({e}); nothing is cut", self.held_name()) };
+        }
+        let sink = std::sync::Arc::new(tokio::sync::Mutex::new(frames));
         let (node, node_id, incarnation) = (self.held_name(), self.node_id.clone(), self.incarnation.clone());
         let commander_name = named(commander);
         let report = {
             let sink = sink.clone();
             move || async move {
-                let sent = sink.lock().await.data(NodeCommandReply::ConnectionsDeleting { node_id, incarnation }).await;
+                let sent = sink.lock().await.progress(NodeCommandReply::ConnectionsDeleting { node_id, incarnation }).await;
                 let outcome = match &sent {
                     Ok(()) => "sent".to_string(),
-                    Err(e) => format!("caller gone: {e:?}"),
+                    Err(e) => format!("caller gone: {e}"),
                 };
                 tracing::info_span!("rdm.node_admin.node.connections.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = %outcome, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("node.connections.delete All is admitted: the block on new application work is in force; the node reports connections-deleting on the command's stream"));
@@ -736,7 +698,8 @@ impl NodeSelf {
             .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
     }
 
-    /// Serve `DeleteConnections`, `StopNode` or `StartNode` on the exact birth it names; `DrainNode`
+    /// Serve `StopNode` or `StartNode` on the exact birth it names (`node.connections.delete` reaches a
+    /// birth on the node command op 0x22, [`Self::serve_node_command`]); `DrainNode`
     /// and `NodeDrained` are reserved positions, refused by name, whoever calls
     /// (node-rpc.md §14: nothing inside the mesh checks who is calling): `commander` is the caller as
     /// the receiver resolved it (`None` when it holds no birth for the calling endpoint), `spare` the
@@ -748,13 +711,6 @@ impl NodeSelf {
                 Some(commander) => self.serve_round(commander, req),
                 None => StatusReply::NotReady { reason: format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op()) },
             });
-        }
-        if let StatusRequest::DeleteConnections { incarnation, .. } = req {
-            if *incarnation != self.incarnation {
-                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
-            }
-            let StatusRequest::DeleteConnections { scope, .. } = req else { unreachable!("matched above") };
-            return Some(self.serve_delete_connections(commander, scope).await);
         }
         if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. }) {
             return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
@@ -1271,3 +1227,53 @@ pub fn connections_answer(held: &HeldConnections) -> StatusReply {
     reply
 }
 
+
+/// Where a node command's frames before its completion go (i144 R22; Luke Q9): the command's own
+/// ordered reply stream (op 0x22, [`StreamFrames`]), or an in-process channel when a mesh-primary is the
+/// subject of the request it carries ([`ChannelFrames`]). The frames are the same either way.
+#[async_trait::async_trait]
+pub trait CommandFrames: Send {
+    /// The command's acceptance: its first frame.
+    async fn accepted(&mut self, frame: NodeCommandReply) -> Result<(), String>;
+    /// A progress frame after the acceptance.
+    async fn progress(&mut self, frame: NodeCommandReply) -> Result<(), String>;
+}
+
+/// A node command's frames on its ordered reply stream (op 0x22).
+pub struct StreamFrames {
+    not_started: Option<rdm_transport::stream::ReplySink<NodeCommand, rdm_transport::stream::NotStarted>>,
+    streaming: Option<rdm_transport::stream::ReplySink<NodeCommand, rdm_transport::stream::Streaming>>,
+}
+
+impl StreamFrames {
+    /// The frames of the stream `sink` writes.
+    pub fn new(sink: rdm_transport::stream::ReplySink<NodeCommand, rdm_transport::stream::NotStarted>) -> Self {
+        Self { not_started: Some(sink), streaming: None }
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandFrames for StreamFrames {
+    async fn accepted(&mut self, frame: NodeCommandReply) -> Result<(), String> {
+        let sink = self.not_started.take().ok_or("the command was already accepted")?;
+        self.streaming = Some(sink.started(frame).await.map_err(|e| format!("{e:?}"))?);
+        Ok(())
+    }
+    async fn progress(&mut self, frame: NodeCommandReply) -> Result<(), String> {
+        self.streaming.as_mut().ok_or("no acceptance was sent")?.data(frame).await.map_err(|e| format!("{e:?}"))
+    }
+}
+
+/// A node command's frames in-process: a mesh-primary that is the subject of the request it carries
+/// runs its own birth's command path and reads the same frames from here.
+pub struct ChannelFrames(pub tokio::sync::mpsc::UnboundedSender<NodeCommandReply>);
+
+#[async_trait::async_trait]
+impl CommandFrames for ChannelFrames {
+    async fn accepted(&mut self, frame: NodeCommandReply) -> Result<(), String> {
+        self.0.send(frame).map_err(|_| "the mesh-primary's carrier is gone".to_string())
+    }
+    async fn progress(&mut self, frame: NodeCommandReply) -> Result<(), String> {
+        self.0.send(frame).map_err(|_| "the mesh-primary's carrier is gone".to_string())
+    }
+}

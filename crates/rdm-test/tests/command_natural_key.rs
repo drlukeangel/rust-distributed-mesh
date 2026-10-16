@@ -148,25 +148,7 @@ impl Birth {
     /// A node command (op 0x22, i144 R22) to the birth, read through its ordered stream: every frame,
     /// or the failure that ended it.
     async fn command(&self, req: &rdm_core::node_command::NodeCommandRequest) -> Result<Vec<rdm_core::node_command::NodeCommandReply>, String> {
-        use rdm_transport::stream::StreamItem;
-        let (mut stream, _) = match self.admin.observer.client.call_stream::<rdm_core::node_command::NodeCommand>(&self.target, req, &Self::opts()).await {
-            Ok(s) => s,
-            Err((RpcOutcome::Reply(r), _)) => return Ok(vec![r.into_value()]),
-            Err((other, _)) => return Err(format!("{} ended {}: {other:?}", req.op(), other.name())),
-        };
-        let mut frames = Vec::new();
-        while let Some(item) = stream.next().await {
-            match item {
-                StreamItem::Frame(kind, frame) => {
-                    frames.push(frame);
-                    if matches!(kind, rdm_core::streaming::FrameKind::Terminal | rdm_core::streaming::FrameKind::Refusal(_)) {
-                        return Ok(frames);
-                    }
-                }
-                StreamItem::Failed(f) => return Err(format!("{} broke after {frames:?}: {f:?}", req.op())),
-            }
-        }
-        Err(format!("{} ended without its terminal after {frames:?}", req.op()))
+        crate::common::node_command(&self.admin.observer.client, &self.target, req, &Self::opts()).await
     }
 
     /// One call into the held op, in flight until [`PullServer::release`]; resolves once it entered.
@@ -475,16 +457,16 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
         let bound = Duration::from_millis(500);
         let birth = std::sync::Arc::new(Birth::up_bounded("connections-delete-bound", bound).await);
         let held = birth.hold_one_call().await;
-        let all = StatusRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
+        let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
         let began = std::time::Instant::now();
-        let reply = tokio::time::timeout(Duration::from_secs(10), birth.call(&all)).await.expect("the closure ends at its bound while the held call is in flight");
+        let reply = tokio::time::timeout(Duration::from_secs(10), birth.command(&all)).await.expect("the closure ends at its bound while the held call is in flight").expect("the command completes").pop().expect("its completion");
         let took = began.elapsed();
         assert!(
             took >= bound && took < Duration::from_secs(2),
             "the closure ends at the launch's 500 ms bound, never at the 5000 ms an unset environment means: it took {took:?}"
         );
         assert!(
-            matches!(&reply, StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { last_in_flight: 1, .. }), .. }),
+            matches!(&reply, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { last_in_flight: 1, .. }), .. }),
             "the Deadline receipt names the one call it last observed in flight, never zero: {reply:?}"
         );
         let decided = spans_named(&spans, "rdm.node_admin.node.connections.delete.via-delete-connections");

@@ -23,6 +23,7 @@ use rdm_core::{ConnectionId, FabricId, IncarnationId, MemberStatus, MeshId, Node
 use rdm_transport::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
+use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, Status, StatusReply, StatusRequest};
 use rdm_test::node;
 use rdm_test::originate::Seams;
@@ -159,11 +160,11 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 }
             }
         };
-        let delete = |ids: Vec<ConnectionId>| StatusRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::Connections(ids) };
+        let delete = |ids: Vec<ConnectionId>| NodeCommandRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::Connections(ids) };
         let never = ConnectionId::mint();
         let to_admin = open("mesh1.admin.1");
-        let deleted = call(delete(vec![to_peer.id.clone(), never.clone()])).await;
-        assert_eq!(deleted, StatusReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()], receipt: None }, "the peer route is cut, the unknown id named, the admin route still held");
+        let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &delete(vec![to_peer.id.clone(), never.clone()])).await;
+        assert_eq!(deleted, NodeCommandReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()], receipt: None }, "the peer route is cut, the unknown id named, the admin route still held");
 
         // Every way the cut can be wrong is named together.
         let mut wrong: Vec<String> = Vec::new();
@@ -181,10 +182,10 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         );
         let admin_now = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.name.to_string() == "mesh1.admin.1");
         expect(admin_now.is_some_and(|e| e.state == ConnectionState::Connected), format!("the admin route was not named and is still connected: {admin_now:?}"));
-        let again = call(delete(vec![to_peer.id.clone()])).await;
-        expect(matches!(&again, StatusReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open == &vec![to_peer.id.clone()]), format!("the same id again is named not open: {again:?}"));
-        let empty = call(delete(vec![])).await;
-        expect(matches!(&empty, StatusReply::RejectedConnectionScope { reason } if reason.contains("at least one")), format!("an empty list is refused by name: {empty:?}"));
+        let again = crate::common::node_command_completion(&admin.observer.client, &target, &delete(vec![to_peer.id.clone()])).await;
+        expect(matches!(&again, NodeCommandReply::ConnectionsDeleted { closed, not_open, .. } if closed.is_empty() && not_open == &vec![to_peer.id.clone()]), format!("the same id again is named not open: {again:?}"));
+        let empty = crate::common::node_command_completion(&admin.observer.client, &target, &delete(vec![])).await;
+        expect(matches!(&empty, NodeCommandReply::RejectedConnectionScope { reason } if reason.contains("at least one")), format!("an empty list is refused by name: {empty:?}"));
         let after = kept_log(&store, &fabric, &born).len();
         expect(after == log.len(), format!("the repeat and the refusal wrote nothing: {} entries, then {after}", log.len()));
         assert!(wrong.is_empty(), "{} wrong after the cut:\n{}", wrong.len(), wrong.join("\n"));
