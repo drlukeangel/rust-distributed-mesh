@@ -158,7 +158,7 @@ A carrier's answer to a Forward call.
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
 | `REQUEST_VARIANTS` | `30` |
-| `REPLY_VARIANTS` | `51` |
+| `REPLY_VARIANTS` | `52` |
 | `MAX_REQUEST_FRAME_BYTES` | `if MAX_CONFIG_REQUEST_BYTES>MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES }` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -318,7 +318,7 @@ A Status call.
 
 ### `StatusReply`
 
-`crates/rdm-core/src/status.rs` · enum · 51 variants · rdm-core
+`crates/rdm-core/src/status.rs` · enum · 52 variants · rdm-core
 
 The typed result of a Status call.
 
@@ -462,6 +462,8 @@ The typed result of a Status call.
 | 50.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that left. |
 | 50.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 50.2 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rdm_core-status-WhichMesh) |  |  | The mesh channels left, in order. |
+| 51 | **`RequestNotHandled`** |  |  | `name() = "request-not-handled"` | The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch |
+| 51.0 | `request` | `String` |  |  | The request's op name. |
 
 ## 0x1C `build-claim`
 

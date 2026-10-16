@@ -90,7 +90,7 @@ fn requests_match_the_frozen_thirty_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_fifty_one_variant_wire_schema() {
+fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -179,6 +179,7 @@ fn replies_match_the_frozen_fifty_one_variant_wire_schema() {
         (MeshJoined { node_id: node(), incarnation: birth(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, "310c3031323334353637383961620c397763707266677776746879020001"),
         // node_id | incarnation | left (len 1: Own (0))
         (MeshLeft { node_id: node(), incarnation: birth(), left: vec![WhichMesh::Own] }, "320c3031323334353637383961620c3977637072666777767468790100"),
+        (RequestNotHandled { request: "declare-node-state".into() }, "33126465636c6172652d6e6f64652d7374617465"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {

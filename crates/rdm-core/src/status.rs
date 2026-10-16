@@ -1247,6 +1247,12 @@ pub enum StatusReply {
         /// The mesh channels left, in order.
         left: Vec<WhichMesh>,
     },
+    /// The receiving endpoint has no handler for the request (R24, Luke Q11): decided by dispatch
+    /// alone, never by node kind, seat or sender; nothing is done.
+    RequestNotHandled {
+        /// The request's op name.
+        request: String,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1474,6 +1480,7 @@ impl StatusReply {
             Self::BusyHoldingConnections { .. } => "busy-holding-connections",
             Self::MeshJoined { .. } => "mesh-joined",
             Self::MeshLeft { .. } => "mesh-left",
+            Self::RequestNotHandled { .. } => "request-not-handled",
         }
     }
 }
@@ -1492,7 +1499,7 @@ impl NodeProtocol for Status {
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 30;
-    const REPLY_VARIANTS: u32 = 51;
+    const REPLY_VARIANTS: u32 = 52;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1522,6 +1529,7 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedStaleMesh { .. }
             | StatusReply::RejectedStaleFabric { .. }
             | StatusReply::RejectedNotAuthority { .. }
+            | StatusReply::RequestNotHandled { .. }
             | StatusReply::RejectedInvalidNodeTransition { .. }
             | StatusReply::RejectedInvalidMeshTransition { .. }
             | StatusReply::RejectedUnmatchedCompletion { .. }
@@ -1679,6 +1687,7 @@ mod tests {
             (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::ProtocolRefusal),
             (StatusReply::MeshJoined { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, ReplyKind::Success),
             (StatusReply::MeshLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::Success),
+            (StatusReply::RequestNotHandled { request: "declare-node-state".into() }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
