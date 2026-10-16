@@ -99,10 +99,8 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
   snapshot chunks reordered: complete and atomic; publishers change: the predecessor's delayed frame
   does not overwrite; recovery through a topology read, then stale gossip: no rollback; each reserved
   frame: named refusal, no mutation.
-- **Order.** Operation facts first (the thirteen unkeyed kinds), then replacement state, then
-  snapshot or delta, then the reserved sweep. Each landing: its cell, its receive-path change, its
-  doc line, and a reseal only if a field was needed.
-- **State.** not started.
+- **Order.** Finish MeshStatus named stale and duplicate outcomes, then FabricStatus; operation facts and Concern episodes; replacement state; snapshot or delta; reserved positions; recovery through a topology read. Each row lands separately and stops for review. R10 stays open with no new field.
+- **State.** MeshStatus row in progress in lane `e7s3`, branch `codex/i147-e2-mesh-status`: live RED cells added for the missing named stale and duplicate spans. Receive-path fix and RED/GREEN flames pending. FabricStatus and all later rows have not started.
 
 ## Verification
 
