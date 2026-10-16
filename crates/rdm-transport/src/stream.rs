@@ -85,7 +85,7 @@ impl StreamOut {
                 g.caller_gone = Some(reason.clone());
                 return Err(SinkError::CallerGone(reason));
             }
-            Written::Stopped(_) | Written::Gone(_) => d.push(&id, None),
+            w @ (Written::Stopped(_) | Written::Gone(_)) => d.push(&id, None, &format!("a stream frame's write {w:?}")),
         }
         g.frames += 1;
         g.bytes += frame.len() as u64;

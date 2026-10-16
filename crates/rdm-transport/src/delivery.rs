@@ -110,7 +110,8 @@ impl DeliverySeams {
         self.drop_next_request_ack.store(true, Ordering::SeqCst);
     }
 
-    /// The caller writes no `Ack` for the next response frame it delivers (a lost ack).
+    /// The caller writes no `Ack` for the next response frame it delivers, and the stream it arrived
+    /// on dies before one could be written (a lost ack: on a live stream an ack is never lost).
     pub fn drop_next_response_ack(&self) {
         self.drop_next_response_ack.store(true, Ordering::SeqCst);
     }
@@ -575,6 +576,10 @@ impl Delivery {
         if DeliverySeams::take(seam) {
             tracing::info_span!("rdm.node_rpc.delivery.remove.via-ack-dropped-by-seam", delivery_id = %h.delivery_id(), of = kind.name())
                 .in_scope(|| tracing::info!("the test seam dropped this ack"));
+            if kind == AckOf::Response {
+                // The stream dies with the ack: the responder sees its request direction reset.
+                out.reset(ResetCode::RequestStop).await;
+            }
             return false;
         }
         let ok = out.write(&encode_ack_frame(&h.ack())).await;
@@ -704,7 +709,7 @@ impl Delivery {
             if let Some(inner) = weak.upgrade() {
                 let d = Delivery { inner };
                 if !d.response_settled(&id) {
-                    d.push(&id, None);
+                    d.push(&id, None, "no ack within the first resend delay of a refusal whose request half was stopped");
                 }
             }
         });
@@ -712,7 +717,7 @@ impl Delivery {
 
     /// The request stream of `id` is gone (or a repeat proved its caller reachable on another
     /// connection, `reply_to`): resend whatever of its response is still owed, on a new stream.
-    pub(crate) fn push(&self, id: &DeliveryId, reply_to: Option<iroh::PublicKey>) {
+    pub(crate) fn push(&self, id: &DeliveryId, reply_to: Option<iroh::PublicKey>, why: &str) {
         let mut st = self.inner.st.lock().unwrap();
         let Some(o) = st.owed.get_mut(id) else { return };
         if let Some(r) = reply_to {
@@ -729,7 +734,7 @@ impl Delivery {
         o.pushing = true;
         drop(st);
         // The loop holds the delivery state weakly: a process that ends its server ends its resends.
-        tokio::spawn(push_loop(Arc::downgrade(&self.inner), id.clone()));
+        tokio::spawn(push_loop(Arc::downgrade(&self.inner), id.clone(), why.to_string()));
     }
 
     fn birth_ended(&self, birth: &Birth) -> Option<String> {
@@ -919,8 +924,8 @@ impl Delivery {
 
 /// Resend `id`'s owed response, on the schedule, until it is acked, its receiving birth ends, or the
 /// process's delivery state is gone.
-async fn push_loop(weak: std::sync::Weak<Inner>, id: DeliveryId) {
-    let span = tracing::info_span!("rdm.node_rpc.delivery.update.via-response-resend", delivery_id = %id, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
+async fn push_loop(weak: std::sync::Weak<Inner>, id: DeliveryId, why: String) {
+    let span = tracing::info_span!("rdm.node_rpc.delivery.update.via-response-resend", delivery_id = %id, reason = %why, attempts = tracing::field::Empty, outcome = tracing::field::Empty);
     let mut attempt = 0u32;
     let outcome = loop {
         let Some(inner) = weak.upgrade() else { break "process-ended" };
