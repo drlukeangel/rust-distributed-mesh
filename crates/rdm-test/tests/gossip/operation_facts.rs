@@ -104,97 +104,138 @@ fn node_deleted_repeat_is_ignored_by_its_operation_and_exact_birth() {
 }
 
 #[derive(Clone, Copy)]
-enum HookStory { AfterUnrelated, Repeat, PastFabric }
+enum HookStory { AfterUnrelated, Repeat, ForwardedRepeat, Closed, AdminAuthor }
 
 fn round_hook_story(kind: &'static str, story: HookStory) {
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-    let suffix = match story { HookStory::AfterUnrelated => "control", HookStory::Repeat => "repeat", HookStory::PastFabric => "past-fabric" };
+    use rdm_admin::fabric_state::{RoundBook, RoundKey, RoundKind};
+    use rdm_transport::membership::Backbone;
+    let suffix = match story { HookStory::AfterUnrelated => "control", HookStory::Repeat => "repeat", HookStory::ForwardedRepeat => "forwarded-repeat", HookStory::Closed => "closed", HookStory::AdminAuthor => "admin-author" };
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");
     std::fs::create_dir_all(&dir).unwrap();
     let capture = rdm_transport::EvidenceCapture::start(&dir, &format!("rdm-{kind}-{suffix}")).unwrap();
     let carried = Arc::new(AtomicUsize::new(0));
-    let count = carried.clone();
-    capture.run(2, async {
+    let called = Arc::new(AtomicUsize::new(0));
+    let (count, calls) = (carried.clone(), called.clone());
+    let hook = capture.run(2, async {
         let (sender_ep, sender_gossip, _sender_router) = endpoint().await;
         let (receiver_ep, receiver_gossip, _receiver_router) = endpoint().await;
-        let socket = sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())));
-        learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
-        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
-        receiver.set_completion_carrier(Arc::new(move |_| { count.fetch_add(1, Ordering::SeqCst); }));
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == "mesh1.rpc.1") { tokio::time::sleep(Duration::from_millis(10)).await; }
-        }).await.unwrap();
-        let status = if matches!(story, HookStory::PastFabric) {
-            Frame::FabricStatus { fabric: fabric.clone(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }
-        } else {
-            Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }
+        let (peer_ep, peer_gossip, _peer_router) = endpoint().await;
+        let address = |ep: &iroh::Endpoint| {
+            let socket = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+            iroh::EndpointAddr::new(ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], socket.port())))
         };
-        sender.forward(&status).await.unwrap();
+        learn_addresses(&receiver_ep, &[address(&sender_ep), address(&peer_ep)]).unwrap();
+        learn_addresses(&peer_ep, &[address(&receiver_ep)]).unwrap();
+        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address(&sender_ep)]).await.unwrap();
+        let peer = Membership::join(&peer_gossip, &peer_ep, &fabric, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![address(&peer_ep)]).await.unwrap();
+        let key = RoundKey { kind: if kind.starts_with("state-") { RoundKind::StateCommit } else { RoundKind::OpenTraffic }, fabric_id: fabric.clone(), build_id: "held-round-build".into(), attempt: 1 };
+        let book = Arc::new(RoundBook::default());
+        assert!(book.open(&key));
+        if matches!(story, HookStory::Closed) { book.close(&key); }
+        let held_book = book.clone();
+        receiver.set_completion_carrier(Arc::new(move |f| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            if let Frame::StateCommitted { hook, .. } | Frame::TrafficOpened { hook, .. } = f {
+                let key = RoundKey { kind: if matches!(f, Frame::StateCommitted { .. }) { RoundKind::StateCommit } else { RoundKind::OpenTraffic }, fabric_id: hook.fabric_id.clone(), build_id: hook.build_id.clone(), attempt: hook.attempt };
+                if hook.publisher.parse::<rdm_core::PathName>().is_ok_and(|p| p.kind != rdm_core::NodeKind::NodeAdmin) && held_book.is_open(&key) {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let (backbone, f) = (backbone.clone(), f.clone());
+                    tokio::spawn(async move { backbone.carry_completion(f).await });
+                }
+            }
+        }));
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !capture.spans().unwrap().iter().any(|s| (s["name"] == "rdm.mesh.membership.update.via-mesh-status" || s["name"] == "rdm.mesh.membership.update.via-fabric-status") && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
+            loop {
+                let spans = capture.spans().unwrap();
+                let up = |channel| spans.iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["channel"] == channel);
+                if up("mesh:mesh1") && up("backbone") { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("live mesh and backbone neighbours");
+        sender.forward(&Frame::MeshStatus { mesh: "mesh3".into(), status: "ready-for-traffic".into(), publisher: "mesh3.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while receiver.mesh_status("mesh3").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
         let changes = receiver.book.birth_changes();
         let before = *changes.borrow();
-        let hook = rdm_core::RoundHook { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "held-round-build".into(), attempt: 1, operation: format!("{}:{fabric}", if kind.starts_with("state-") { "commit-state" } else { "open-traffic" }), publisher: "mesh1.rpc.2".into(), event_at_rafka_ms: 1 };
-        let frame = |time| {
-            let mut hook = hook.clone();
-            hook.event_at_rafka_ms = time;
-            match kind {
-                "state-committing" => Frame::StateCommitting { hook, forwarded_by: None },
-                "state-committed" => Frame::StateCommitted { hook, forwarded_by: None },
-                "traffic-opening" => Frame::TrafficOpening { hook, forwarded_by: None },
-                _ => Frame::TrafficOpened { hook, forwarded_by: None },
-            }
-        };
-        for receipt in 1..=if matches!(story, HookStory::Repeat) { 2 } else { 1 } {
-            // A changed evidence timestamp passes transport byte dedup without changing operation identity.
-            sender.forward(&frame(receipt)).await.unwrap();
+        let completion = kind == "state-committed" || kind == "traffic-opened";
+        let publisher = if !completion || matches!(story, HookStory::AdminAuthor) { "mesh1.admin.2" } else { "mesh1.rpc.2" };
+        let hook = rdm_core::RoundHook { fabric_id: fabric.clone(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.kind.operation(&fabric), publisher: publisher.into(), event_at_rafka_ms: 1 };
+        for receipt in 1..=if matches!(story, HookStory::Repeat | HookStory::ForwardedRepeat) { 2 } else { 1 } {
+            let mut offered = hook.clone();
+            // Evidence time and forwarding metadata change the wire bytes, never the identity.
+            offered.event_at_rafka_ms = receipt;
+            let forwarded_by = matches!(story, HookStory::ForwardedRepeat).then(|| format!("mesh{receipt}.admin.3"));
+            let f = match kind {
+                "state-committing" => Frame::StateCommitting { hook: offered, forwarded_by },
+                "state-committed" => Frame::StateCommitted { hook: offered, forwarded_by },
+                "traffic-opening" => Frame::TrafficOpening { hook: offered, forwarded_by },
+                _ => Frame::TrafficOpened { hook: offered, forwarded_by },
+            };
+            sender.forward(&f).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| {
-                    s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind
-                    || (s["name"] == "rdm.mesh.membership.update.via-duplicate" || s["name"] == "rdm.mesh.membership.update.via-round-reconciled") && s["attributes"]["frame"] == kind
+                    s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1"
+                    || s["name"] == "rdm.mesh.membership.update.via-duplicate" && s["attributes"]["frame"] == kind
                 }).count() < receipt as usize { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the hook reaches the RDM receiver");
         }
-        assert_eq!(*changes.borrow(), before, "a hook never changes a birth's lifecycle");
+        if completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor) && !matches!(story, HookStory::ForwardedRepeat) {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1") { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.expect("the ordinary check-in reaches the live backbone peer");
+        }
+        assert_eq!(*changes.borrow(), before, "hooks never change birth lifecycle");
+        assert!(if matches!(story, HookStory::Closed) { !book.is_open(&key) } else { book.is_open(&key) }, "gossip never changes the round book");
         sender_ep.close().await;
         receiver_ep.close().await;
+        peer_ep.close().await;
+        hook
     });
     let spans = capture.spans().unwrap();
     for sp in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership."))) { println!("{}", serde_json::to_string(sp).unwrap()); }
-    let applies = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind).count();
+    let applies: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1").collect();
     let completion = kind == "state-committed" || kind == "traffic-opened";
-    match story {
-        HookStory::AfterUnrelated => {
-            assert_eq!(applies, 1, "the ordinary apply span controls that unrelated traffic did not discard the hook");
-            assert_eq!(carried.load(Ordering::SeqCst), usize::from(completion));
-        }
-        HookStory::Repeat => {
-            assert_eq!(applies, 1, "a repeat has no second apply effect");
-            assert_eq!(carried.load(Ordering::SeqCst), usize::from(completion), "a repeat is never carried twice");
-            assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-duplicate" && s["attributes"]["frame"] == kind && s["attributes"]["outcome"] == "ignored").count(), 1);
-        }
-        HookStory::PastFabric => {
-            assert_eq!(applies, 0, "a fabric past the round reconciles the delayed hook without applying it");
-            assert_eq!(carried.load(Ordering::SeqCst), 0);
-        }
+    let expected = usize::from(completion && !matches!(story, HookStory::Closed | HookStory::AdminAuthor));
+    assert_eq!(applies.len(), 1, "each identity has exactly one ordinary apply span");
+    assert_eq!(carried.load(Ordering::SeqCst), expected, "only an ordinary check-in of an open round is carried once");
+    assert_eq!(called.load(Ordering::SeqCst), usize::from(completion), "a duplicate never invokes the carrier");
+    assert_eq!(applies[0]["attributes"]["carried"], if !completion { "not-a-check-in" } else if matches!(story, HookStory::Closed) { "closed-round" } else if matches!(story, HookStory::AdminAuthor) { "node-admin" } else { "carried" });
+    let backbone_receipts = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind && s["attributes"]["via"] == "backbone" && s["attributes"]["node"] == "mesh2.admin.1").count();
+    assert_eq!(backbone_receipts, expected, "the real backbone receives exactly the carried fact");
+    if matches!(story, HookStory::Repeat | HookStory::ForwardedRepeat) {
+        let identity = format!("{kind} {} {} {} {} {}/{}", hook.fabric_id, hook.build_id, hook.attempt, hook.operation, hook.node_id, hook.incarnation);
+        assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-duplicate" && s["attributes"]["frame"] == kind && s["attributes"]["identity"] == identity && s["attributes"]["outcome"] == "ignored").count(), 1);
     }
 }
 
 macro_rules! round_cells {
-    ($control:ident, $repeat:ident, $past:ident, $kind:literal) => {
-        /// CONTRACT: unrelated newer traffic does not supersede this operation fact.
+    ($control:ident, $repeat:ident, $kind:literal) => {
+        /// CONTRACT: an unrelated newer frame does not supersede a first hook's span or open-round carry.
         #[test] fn $control() { round_hook_story($kind, HookStory::AfterUnrelated); }
-        /// CONTRACT: the full operation identity is applied once, with a named duplicate on repeat.
+        /// CONTRACT: a repeat by exact operation identity emits via-duplicate with no second apply or carrier invocation.
         #[test] fn $repeat() { round_hook_story($kind, HookStory::Repeat); }
-        /// CONTRACT: a hook after the fabric moved past its round reopens and carries nothing.
-        #[test] fn $past() { round_hook_story($kind, HookStory::PastFabric); }
     };
 }
-round_cells!(state_committing_after_unrelated_traffic_applies, state_committing_repeat_does_nothing, state_committing_after_fabric_round_reopens_nothing, "state-committing");
-round_cells!(state_committed_after_unrelated_traffic_applies, state_committed_repeat_does_nothing, state_committed_after_fabric_round_reopens_nothing, "state-committed");
-round_cells!(traffic_opening_after_unrelated_traffic_applies, traffic_opening_repeat_does_nothing, traffic_opening_after_fabric_round_reopens_nothing, "traffic-opening");
-round_cells!(traffic_opened_after_unrelated_traffic_applies, traffic_opened_repeat_does_nothing, traffic_opened_after_fabric_round_reopens_nothing, "traffic-opened");
+round_cells!(state_committing_after_unrelated_traffic_applies, state_committing_repeat_does_nothing, "state-committing");
+round_cells!(state_committed_after_unrelated_traffic_applies, state_committed_repeat_does_nothing, "state-committed");
+round_cells!(traffic_opening_after_unrelated_traffic_applies, traffic_opening_repeat_does_nothing, "traffic-opening");
+round_cells!(traffic_opened_after_unrelated_traffic_applies, traffic_opened_repeat_does_nothing, "traffic-opened");
+
+/// CONTRACT: forwarded ordinary check-ins of open rounds reach the backbone once; metadata never changes identity.
+#[test] fn forwarded_state_check_in_is_carried_once() { round_hook_story("state-committed", HookStory::ForwardedRepeat); }
+/// CONTRACT: both round kinds use the same open-round carrier after forwarding.
+#[test] fn forwarded_traffic_check_in_is_carried_once() { round_hook_story("traffic-opened", HookStory::ForwardedRepeat); }
+/// CONTRACT: a first hook of a closed round spans carried=closed-round and is never carried or counted as a check-in.
+#[test] fn closed_state_round_check_in_is_not_carried() { round_hook_story("state-committed", HookStory::Closed); }
+/// CONTRACT: closed open-traffic rounds have the same named outcome.
+#[test] fn closed_traffic_round_check_in_is_not_carried() { round_hook_story("traffic-opened", HookStory::Closed); }
+/// CONTRACT: a node-admin author publishes on the backbone itself and is never carried by another admin.
+#[test] fn admin_state_check_in_is_not_carried() { round_hook_story("state-committed", HookStory::AdminAuthor); }
+/// CONTRACT: the author rule also applies to traffic-opened.
+#[test] fn admin_traffic_check_in_is_not_carried() { round_hook_story("traffic-opened", HookStory::AdminAuthor); }
