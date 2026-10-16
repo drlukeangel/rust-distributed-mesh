@@ -179,6 +179,13 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     named) when that connection closes. `Overall` and `Split` calls wait out their reply budget for a
     resent response. A lost stream ends no invocation on its own (the envelope's transport frames).
   - The wait for a request's ack runs from the write, so a slow dial spends none of it.
+  - A response frame is resent only when the stream it was written on dies (its request direction
+    reset or lost: an ack is never lost on a live stream). A caller finishes its request direction
+    only once it is done with the invocation, so a clean finish with a frame unacked is a caller that
+    ended it (its budget lapsed, its stream dropped): nothing more is owed. A resend never abandons
+    the earlier attempt's stream: it stays open, read beside the next attempt, so a handler slower
+    than the ack wait answers on it. The first gate's own logs showed 344 response resends in
+    node_stop from both; after both, 0.
   - A source that admits no new connection (connections-deleting) refuses the call at once,
     `NotSent(AdmissionBlocked)`: nothing was sent, and nothing is owed for a request the source
     refuses to originate.

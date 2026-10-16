@@ -884,6 +884,44 @@ pub(crate) struct OwedCall {
 }
 
 /// A task that ends when its handle is dropped.
+/// An earlier attempt's stream, kept after a resend: its acks and response frames reach the
+/// invocation as any other stream's do, and its response frames are acked on it. It ends with the
+/// invocation, with the stream, or on a frame that breaks the framing.
+async fn keep_reading(d: Delivery, out: FrameOut, mut reader: FrameReader, mut state: watch::Receiver<SlotState>) {
+    loop {
+        tokio::select! {
+            biased;
+            changed = state.changed() => {
+                if changed.is_err() || state.borrow().complete {
+                    out.finish().await;
+                    return;
+                }
+            }
+            h = reader.header() => match h {
+                Ok(Some(h @ TransportHeader::Ack { .. })) => d.on_ack(&h),
+                Ok(Some(h @ TransportHeader::Response { .. })) => {
+                    let TransportHeader::Response { invocation_id, .. } = &h else { unreachable!() };
+                    let Ok(body) = reader.body(d.reply_bound(invocation_id)).await else { return };
+                    match d.on_response(&h, body, AckTo::Stream(out.clone())) {
+                        ResponseVerdict::Ack(acks) => {
+                            for a in acks {
+                                d.write_ack_header(&out, &a).await;
+                            }
+                        }
+                        ResponseVerdict::Held | ResponseVerdict::Drop => {}
+                        ResponseVerdict::Violation(_) => {
+                            out.reset(ResetCode::ProtocolViolation).await;
+                            reader.stop(ResetCode::ProtocolViolation);
+                            return;
+                        }
+                    }
+                }
+                _ => return,
+            },
+        }
+    }
+}
+
 /// A task's future polled, and dropped, under one dispatcher. A span the future holds is closed through
 /// its own dispatcher, but the registry releases that span's parent through the dispatcher of the thread
 /// the close happens on: a runtime that drops a finished or aborted future on a worker holding none would
@@ -1278,9 +1316,14 @@ impl Attempts {
                     Err(_) => return self.lost(&key, &conn),
                 },
                 () = resend_at => {
-                    // One attempt in flight: this one is abandoned before the resend.
-                    out.reset(ResetCode::RequestStop).await;
-                    reader.stop(ResetCode::RequestStop);
+                    // The request goes out again on a new stream; this one stays open to carry the
+                    // invocation's response, read beside the next attempt until the invocation
+                    // completes or this stream ends. A handler slower than the ack wait answers here.
+                    let keep = keep_reading(d.clone(), out, reader, self.state.clone());
+                    match tracing::dispatcher::get_default(|d| d.clone()) {
+                        d if d.is::<tracing::subscriber::NoSubscriber>() => drop(tokio::spawn(keep)),
+                        d => drop(tokio::spawn(UnderDispatch { fut: Some(Box::pin(keep)), dispatch: d })),
+                    }
                     return StreamEnd::NoAck;
                 }
             }

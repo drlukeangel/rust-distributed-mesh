@@ -645,7 +645,7 @@ impl NodeRpcServer {
                 out.finish().await;
                 // The caller is reachable from here: whatever of the original's response is still
                 // owed goes to it.
-                d.push(&id, Some(peer));
+                d.push(&id, Some(peer), "a repeat arrived after acceptance: the caller is reachable on its connection");
             }
             Settled::Ended(c) => {
                 out.reset(ResetCode::from_code(c).unwrap_or(ResetCode::InternalRpcFailure)).await;
@@ -659,27 +659,38 @@ impl NodeRpcServer {
     }
 
     /// Read the caller's acks of `id`'s response on the request direction until the response is
-    /// complete and acked, or the direction ends; what is still owed then goes out again on a new
-    /// stream. While the direction lives its frames are delivered (QUIC loses nothing on a live
-    /// stream): an ack that has not come is a caller whose owner has not read the frame yet, never a
-    /// loss.
-    async fn read_acks(d: Delivery, id: rdm_core::framing::DeliveryId, mut reader: FrameReader) {
-        let Some(mut acked) = d.acked_watch(&id) else { return };
-        loop {
+    /// complete and acked, or the direction ends. While the direction lives its frames are delivered
+    /// (QUIC loses nothing on a live stream): an ack that has not come is a caller whose owner has not
+    /// read the frame yet, never a loss. A caller finishes its request direction only once it is done
+    /// with the invocation, so a clean finish with a frame unacked is a caller that ended it: nothing is
+    /// owed. A direction reset or lost with a frame unacked is a lost ack: the frame goes out again on
+    /// a new stream.
+    async fn read_acks(d: Delivery, id: rdm_core::framing::DeliveryId, mut reader: FrameReader) -> String {
+        let Some(mut acked) = d.acked_watch(&id) else { return "nothing owed".into() };
+        let ended = loop {
             tokio::select! {
                 h = reader.header() => match h {
                     Ok(Some(h @ TransportHeader::Ack { .. })) => d.on_ack(&h),
-                    _ => break,
+                    Ok(Some(other)) => break format!("a {} frame where acks belong", other.kind()),
+                    Ok(None) => break "finished".to_string(),
+                    Err(e) => break format!("{e:?}"),
                 },
                 r = acked.changed() => if r.is_err() {
                     // The response is complete and every frame acked.
-                    return;
+                    return "settled".into();
                 },
             }
-        }
+        };
         if !d.response_settled(&id) {
-            d.push(&id, None);
+            if ended == "finished" {
+                tracing::debug_span!("rdm.node_rpc.delivery.remove.via-caller-finished", delivery_id = %id)
+                    .in_scope(|| tracing::debug!("the caller finished the invocation's request direction: its response is owed no longer"));
+                d.drop_response(&id);
+            } else {
+                d.push(&id, None, &format!("the request direction ended ({ended}) with a response frame unacked"));
+            }
         }
+        ended
     }
 
     /// A named refusal of request `id`: a response frame at `seq` 0, owed until the caller acks it.
@@ -697,7 +708,7 @@ impl NodeRpcServer {
         let _ = out.write(&frame).await;
         out.finish().await;
         match acks {
-            Some(reader) => Self::read_acks(d.clone(), id.clone(), reader).await,
+            Some(reader) => drop(Self::read_acks(d.clone(), id.clone(), reader).await),
             // The request direction was stopped: the caller acks on an ack stream, and the frame is
             // resent if no ack arrives within the first resend's delay.
             None => d.push_after(id, d.pacing().after(1)),
@@ -860,9 +871,9 @@ impl NodeRpcServer {
                     // The stream's end is a step of its serve: its terminal (or refusal) is written and
                     // named under the serve span, which ends once it is written.
                     stream_out.finish(joined, &stats).instrument(serve).await;
-                    let _ = acks.await;
+                    let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
                     if !d.response_settled(&id) {
-                        d.push(&id, None);
+                        d.push(&id, None, &format!("the stream ended with frames unacked; its request direction {ended}"));
                     }
                     return;
                 }
@@ -896,17 +907,25 @@ impl NodeRpcServer {
                                 w.land(&mut send, &frame).await;
                                 let _ = send.finish();
                             }
-                        } else {
-                            gate.implicit();
-                            let frame = d.owe_frame(&id, 0, reply, true);
-                            let _ = out.write(&frame).await;
-                            out.finish().await;
+                            let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
+                            if !d.response_settled(&id) {
+                                d.push(&id, None, &format!("a withheld reply; the request direction {ended}"));
+                            }
+                            return;
                         }
+                        gate.implicit();
+                        let frame = d.owe_frame(&id, 0, reply, true);
+                        let written = out.send(&frame).await;
+                        out.finish().await;
                         // Settled when the caller acks the reply; when its direction ends first, the
-                        // reply is resent on a new stream.
-                        let _ = acks.await;
+                        // reply is resent on a new stream. A caller that dropped the invocation (it
+                        // stopped the stream with code 0) is owed nothing.
+                        if written == crate::delivery::Written::Stopped(0) {
+                            d.drop_response(&id);
+                        }
+                        let ended = acks.await.unwrap_or_else(|e| format!("{e}"));
                         if !d.response_settled(&id) {
-                            d.push(&id, None);
+                            d.push(&id, None, &format!("the reply's write {written:?}; the request direction {ended}"));
                         }
                     }
                     Ok(Ok(_)) => {
