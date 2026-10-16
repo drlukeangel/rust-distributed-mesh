@@ -208,13 +208,30 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     assert!(between.is_empty(), "no step ran for {member} between the release and the resubmit: {between:?}");
     let after: Vec<String> = steps(&|t| t >= resubmit_at).into_iter().map(|(_, step, outcome)| format!("{step}={outcome}")).collect();
     assert_eq!(after, ["NodeRestarting=complete", "StopNode=complete", "AwaitNodeLeft=complete", "StartNode=complete", "WaitForNodeReady=complete", "Complete=complete"].map(String::from).to_vec(), "the resumed attempt runs the whole restart");
-    let sent: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).map(|sp| format!("{}={}", attr(sp, "command"), attr(sp, "admission"))).collect();
-    assert_eq!(sent.first().map(|c| c.ends_with("=stopped")), Some(false), "the first stop-node was never admitted: {sent:?}");
-    // Q2 (Luke 2026-10-16): no completed stop step runs again. The node ran its stop once, in the
-    // resubmitted attempt: the first attempt's stop never reached it.
+    let mut sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).collect();
+    sent.sort_by_key(|sp| start_ns(sp));
+    let sent: Vec<String> = sent.into_iter().map(|sp| format!("{}={}", attr(sp, "command"), attr(sp, "admission"))).collect();
+    // Q2 (Luke 2026-10-16): no completed stop step runs again. The node runs one stop for this Build,
+    // only once the runtime is continued (a suspended runtime runs nothing), and the resubmitted
+    // attempt's stop-node is admitted `stopped`: by running that stop, or from the receipt of the one
+    // it already ran. Whose stop it ran follows how the first stop-node ended. Never sent: no connection
+    // carried it to the node, which runs the resubmitted attempt's stop. Indeterminate (sent on a
+    // connection the executor held, its reply lost): the request either waited in the suspended
+    // runtime's socket and ran once it was continued, before the resubmit, or was lost with its
+    // connection, and the node runs the resubmitted attempt's stop.
     let ran: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).collect();
     assert_eq!(ran.len(), 1, "the node ran one stop for this Build: {ran:#?}");
-    assert!(start_ns(ran[0]) >= resubmit_at, "the one stop the node ran is the resubmitted attempt's: {}", ran[0]);
+    let (one, first_attempt, resubmitted) = (ran[0], accepted.attempt.to_string(), build_after.attempt.to_string());
+    assert!(start_ns(one) >= continued_at, "the stop ran once the runtime was continued: {one}");
+    let ran_first = attr(one, "attempt") == first_attempt && start_ns(one) < resubmit_at;
+    let ran_resubmitted = attr(one, "attempt") == resubmitted && start_ns(one) >= resubmit_at;
+    match sent.first().map(String::as_str) {
+        Some("stop-node=not-sent") => assert!(ran_resubmitted, "a stop-node never sent changes nothing on the node: the one stop it ran is the resubmitted attempt's: {one}"),
+        Some("stop-node=indeterminate") => assert!(ran_first || ran_resubmitted, "the indeterminate stop-node ran once the runtime was continued, before the resubmit, or the node ran the resubmitted attempt's: {one}"),
+        other => panic!("the first stop-node was never admitted, so it ended not-sent or indeterminate, not {other:?}: {sent:?}"),
+    }
+    let stops: Vec<&str> = sent.iter().map(String::as_str).filter(|c| c.starts_with("stop-node=")).collect();
+    assert_eq!((stops.len(), stops.last().copied()), (2, Some("stop-node=stopped")), "the first attempt's stop-node and the resubmitted attempt's, admitted stopped: {sent:?}");
     let refused = not_live(&spans, &member);
     assert_eq!((refused.len(), refused.first().map(|sp| (attr(sp, "status"), attr(sp, "reason")))), (1, Some(("restarting".to_string(), OPEN_RESTART.to_string()))), "{refused:#?}");
     let trace = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string() && attr(sp, "step") == "StartNode").map(|sp| sp["trace_id"].as_str().unwrap_or_default().to_string()).unwrap_or_default();
