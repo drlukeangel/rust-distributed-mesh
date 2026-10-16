@@ -256,6 +256,34 @@ impl ReceiveOrder {
 
 #[cfg(test)]
 mod tests {
+
+    /// CONTRACT: every membership Frame variant has exactly one receive-table row naming its
+    /// category, subject, ordering and identity; a new variant without a rule fails by name.
+    #[test]
+    fn every_frame_kind_has_a_row_in_the_receive_rules() {
+        let source = include_str!("membership.rs");
+        let declaration = source.split_once("pub enum Frame {").unwrap().1.split_once("\n}\n").unwrap().0;
+        let spec = include_str!("../../../docs/architecture/gossip.md");
+        let table = spec.split_once("| frame | category | subject | ordering | identity |").unwrap().1.split_once("\n\n").unwrap().0;
+        let rows: Vec<Vec<&str>> = table.lines().skip(2).map(|line| line.trim_matches('|').split(" | ").map(str::trim).collect()).collect();
+        let mut count = 0;
+        for line in declaration.lines() {
+            let Some(line) = line.strip_prefix("    ") else { continue };
+            let name = line.split([' ', '(', ',', '{']).next().unwrap_or_default();
+            if !name.chars().next().is_some_and(char::is_uppercase) { continue; }
+            count += 1;
+            let named = format!("`{name}`");
+            let matches: Vec<_> = rows.iter().filter(|row| row[0].contains(&named)).collect();
+            assert_eq!(matches.len(), 1, "Frame::{name} must map to exactly one receive-rules row");
+            let row = matches[0];
+            assert_eq!(row.len(), 5, "Frame::{name}: category, subject, ordering and identity are required");
+            for (field, value) in ["category", "subject", "ordering", "identity"].into_iter().zip(&row[1..]) {
+                assert!(!value.is_empty(), "Frame::{name} has no {field} rule");
+            }
+        }
+        assert!(count > 0, "the membership Frame declaration must contain variants");
+    }
+
     use super::*;
     use crate::membership::StatusEvent;
     use crate::snapshot::PublisherId;

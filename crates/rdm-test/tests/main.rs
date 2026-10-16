@@ -232,3 +232,5 @@ mod admin_start_declares;
 mod admin_boot_name;
 mod process_env;
 mod role_process;
+#[path = "gossip/receive_rules.rs"]
+mod receive_rules;

@@ -89,7 +89,7 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 - **Acceptance cells.** `an_unkeyed_<frame>_delivered_after_a_newer_frame_about_its_subject_is_refused_stale`
   (the regression); `every_frame_kind_has_a_row_in_the_receive_rules` (a unit cell over the catalog against the page's table).
   RED first.
-- **State.** not started.
+- **State.** in progress in lane `e7s3`, branch `codex/i147-e1-gossip-conformance`: catalog cell added; investigating equal-revision MeshStatus content disagreement with a live receive-path cell before selecting the e1 regression. No receive-path fix or landing yet; RED/GREEN trace ids pending.
 
 #### e2 — every row, one defect at a time
 
