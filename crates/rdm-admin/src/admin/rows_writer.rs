@@ -380,30 +380,52 @@ impl FabricRowsWriter {
     }
 }
 
-/// The provider's proof that the exact birth a digest or a durable row names exited: the runtime
-/// fact is the digest's (when it is of this birth) or the row's, adopted in this provider's control
-/// domain and inspected, and only the runtime's own terminal status counts. `Ok` carries the exit
-/// code and where it came from; `Err` names why nothing is proven.
-pub async fn exit_proof_of(
+/// What the provider's inspection of the exact birth a digest or a durable row names found, when it
+/// is not an exit (node-runtime-inspect.md "Result"): the runtime runs, the operating system holds it
+/// suspended, or nothing can be told (named why).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotProven {
+    /// The provider read the exact runtime `Running`: alive, however silent.
+    Running,
+    /// The operating system holds the exact runtime suspended (deployment-provider.md §2.5).
+    OsStopped,
+    /// No runtime fact, an adoption the provider refused, an unreadable exit record or the
+    /// provider's `Unknown`: nothing is proven, named why.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for NotProven {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Running => write!(f, "its runtime is not proven exited: Running"),
+            Self::OsStopped => write!(f, "its runtime is not proven exited: OsStopped"),
+            Self::Unavailable(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+/// The provider's inspection of the exact birth a digest or a durable row names: the runtime fact
+/// is the digest's (when it is of this birth) or the row's, adopted in this provider's control
+/// domain and inspected, and only the runtime's own terminal status is an exit. `Ok` carries the exit
+/// code and where it came from; `Err` is what the inspection found instead.
+pub async fn inspection_of(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     held_row: &Option<(MeshDigest, Duration)>,
     row: Option<&crate::storage::RuntimeRow>,
-) -> Result<(Option<i32>, &'static str), String> {
+) -> Result<(Option<i32>, &'static str), NotProven> {
+    use crate::deployment::provider::DeploymentStatus as S;
     let (fact, data_dir, birth) = match (held_row, row) {
         (Some((dg, _)), _) if dg.node.runtime.is_some() => (dg.node.runtime.clone().expect("checked"), dg.data_dir.clone(), dg.node.incarnation.clone()),
         (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
-        _ => return Err(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })),
+        _ => return Err(NotProven::Unavailable(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" }))),
     };
-    // Proof is the exact runtime's own terminal status, in this provider's control domain; anything
-    // else proves nothing.
-    let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| format!("the provider refused to adopt its runtime: {e}"))?;
+    let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| NotProven::Unavailable(format!("the provider refused to adopt its runtime: {e}")))?;
     let inspected = provider.inspect(&handle).await;
-    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.as_str()).await.map_err(|e| format!("its exit record cannot be read: {e}"))?;
+    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.as_str()).await.map_err(|e| NotProven::Unavailable(format!("its exit record cannot be read: {e}")))?;
     match status {
-        crate::deployment::provider::DeploymentStatus::Exited { code } => {
+        S::Exited { code } => {
             // The code is the provider's own when its inspection carried one, else the exit record's
             // (exit_proof turns only an `Exited` with no code into a recorded one).
-            use crate::deployment::provider::DeploymentStatus as S;
             let source = match (&inspected, code) {
                 (_, None) => "none",
                 (S::Exited { code: Some(_) }, Some(_)) => "provider",
@@ -411,8 +433,20 @@ pub async fn exit_proof_of(
             };
             Ok((code, source))
         }
-        status @ (crate::deployment::provider::DeploymentStatus::Running | crate::deployment::provider::DeploymentStatus::OsStopped | crate::deployment::provider::DeploymentStatus::Unknown) => Err(format!("its runtime is not proven exited: {status:?}")),
+        S::Running => Err(NotProven::Running),
+        S::OsStopped => Err(NotProven::OsStopped),
+        S::Unknown => Err(NotProven::Unavailable("its runtime is not proven exited: Unknown".into())),
     }
+}
+
+/// The provider's proof that the exact birth a digest or a durable row names exited
+/// ([`inspection_of`]): `Err` names why nothing is proven.
+pub async fn exit_proof_of(
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    held_row: &Option<(MeshDigest, Duration)>,
+    row: Option<&crate::storage::RuntimeRow>,
+) -> Result<(Option<i32>, &'static str), String> {
+    inspection_of(provider, held_row, row).await.map_err(|n| n.to_string())
 }
 
 /// The workflow an exited member's removal was announced by ([`RecoverySubmitter::removal_announced`]):

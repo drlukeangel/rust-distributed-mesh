@@ -105,9 +105,42 @@ pub struct MembershipObserver {
     pub authority: crate::status_rpc::AuthoritySlot,
     /// This admin's 0x21 door, once it holds a view: node.primary.update goes through it.
     pub handover: crate::fabric_handover::HandoverSlot,
+    /// The births a command never reached for a reachability reason, marked `PendingReconnect` at
+    /// once for the mesh primary's tick (node-tickle.md step 1).
+    pub unreachable: crate::offline::UnreachableMarks,
 }
 
 impl MembershipObserver {
+    /// A command to `node` was never sent for a reachability reason: mark the birth `PendingReconnect`
+    /// at once, an observer mark beside the status its mesh-primary authored, never over it. A birth
+    /// whose authored status is a lifecycle one (connections-deleting, stopping) keeps it and is not
+    /// marked: its own workflow owns it.
+    fn mark_unreachable(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext, why: &crate::node_commands::Unreachable) {
+        let Some(incarnation) = node.incarnation_id.clone() else { return };
+        let authored = self.book.member_status(&node.node_id, &incarnation);
+        let outcome = if crate::offline::marks_over(authored) {
+            let mark = crate::offline::UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::records::local_now_ms(), reason: why.reason };
+            self.unreachable.lock().unwrap().insert(node.node_id.clone(), mark);
+            "marked"
+        } else {
+            "kept-lifecycle-status"
+        };
+        tracing::info_span!(
+            "rdm.node_admin.node.update.via-pending-reconnect",
+            node = %node.name,
+            node_id = %node.node_id,
+            incarnation_id = %incarnation.as_str(),
+            reason = why.reason,
+            detail = %why.detail,
+            command = cmd.operation_prefix(),
+            operation = %ctx.operation,
+            authored = authored.map(|s| format!("{s:?}")).unwrap_or_default(),
+            outcome,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| tracing::info!("a command its birth never received for a reachability reason: the birth is marked pending-reconnect at once, so its tickle ladder runs now"));
+    }
+
     pub(crate) fn digest_of(&self, node: &Node) -> Option<MeshDigest> {
         self.book.get(node.node_id.as_str()).map(|(d, _)| d).filter(|d| Some(&d.node.incarnation) == node.incarnation_id.as_ref())
     }
@@ -200,7 +233,11 @@ impl NodeObserver for MembershipObserver {
         let Some(client) = self.client.as_ref() else {
             return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no Node RPC client".into() };
         };
-        crate::node_commands::send_command(client, &self.commands, &rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node, cmd, ctx).await
+        let (admission, unreachable) = crate::node_commands::send_command_reaching(client, &self.commands, &rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node, cmd, ctx).await;
+        if let Some(why) = &unreachable {
+            self.mark_unreachable(node, cmd, ctx, why);
+        }
+        admission
     }
 
     async fn await_completion(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext, within: Duration) -> crate::deployment::pipeline::Completion {

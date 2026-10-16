@@ -2255,7 +2255,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rdm-core/src/views.rs` · struct · 24 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 25 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2285,6 +2285,7 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 21 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on this birth's status row (R-FM1), when the provider |
 | 22 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rdm_core-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
 | 23 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rdm_core-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
+| 24 | `os_stopped` | `Option<OsStopped>` → [`OsStopped`](#t-rdm_core-views-OsStopped) | `default` | The durable `os-stopped` fact on this birth's status row (R-PV1), when the provider inspected |
 
 <a id="t-rdm_core-status-NotAuthority"></a>
 
@@ -2301,6 +2302,19 @@ Why a declaration was not applied, by name.
 | 1 | **`SenderNotSubject`** |  |  | `as_str() = "sender-not-subject"` | The sender is not the subject (or the subject's current primary). |
 | 1.0 | `sender` | `String` |  |  | The sender, as the receiver resolved it. |
 | 2 | **`SubjectUnknown`** |  |  | `as_str() = "subject-unknown"` | The receiver does not hold the subject at all. |
+
+<a id="t-rdm_core-views-OsStopped"></a>
+
+### `OsStopped`
+
+`crates/rdm-core/src/views.rs` · struct · 2 fields · rdm-core
+
+The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provider.md §2.5): the
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `since` | `u64` |  | When the first `OsStopped` verdict was observed, ms since the Unix epoch. |
+| 1 | `inspections` | `u64` |  | How many inspections have read the runtime `OsStopped` since. |
 
 <a id="t-rdm_core-path-PathName"></a>
 

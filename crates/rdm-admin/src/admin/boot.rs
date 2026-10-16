@@ -1132,7 +1132,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 fabric_storage: fabric_storage.clone(),
                                 provider: provider_dyn.clone(),
                                 joins: joins.clone(),
-                                observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone() }),
+                                observer: Arc::new(MembershipObserver { book: book.clone(), client: Some(node_rpc.client.clone()), commands: commands.clone(), authority: authority.clone(), handover: handover_slot.clone(), unreachable: records.unreachable.clone() }),
                                 records: records.clone(),
                                 builds: builds_dyn.clone(),
                                 local: journal.clone(),
@@ -1856,6 +1856,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         builds: control.builds.clone(),
                                         data_root: cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone()),
                                         gone_dirs: Arc::default(),
+                                        os_stopped_confirmed: Arc::default(),
                                     };
                                     {
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
@@ -1883,22 +1884,30 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let planned = records.planned();
                                                     durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
                                                 };
-                                                let watched = watched_births(&view, &me_id, &mesh, &durable);
+                                                let mut watched = watched_births(&view, &me_id, &mesh, &durable);
                                                 // One reading of the clocks for the tick: each birth's mark is read from the book at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());
-                                                let silent = crate::offline::silent_set(
+                                                // node-tickle.md step 1: a birth a command never reached for a reachability reason is
+                                                // PendingReconnect from that instant, so its ladder runs now.
+                                                let marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.book, now);
+                                                crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
+                                                let silent: Vec<crate::offline::SilentNode> = crate::offline::silent_set(
                                                     watched.values().filter(|n| {
-                                                        !recovery
-                                                            .book
-                                                            .get_at(n.node_id.as_str(), now)
-                                                            .or_else(|| recovery.book.projected_at(n.node_id.as_str(), now))
-                                                            .is_some_and(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && unheard < floor)
+                                                        marks.contains_key(&n.node_id)
+                                                            || !recovery
+                                                                .book
+                                                                .get_at(n.node_id.as_str(), now)
+                                                                .or_else(|| recovery.book.projected_at(n.node_id.as_str(), now))
+                                                                .is_some_and(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && unheard < floor)
                                                     }),
                                                     &recovery.book,
                                                     now,
                                                     now_ms,
                                                     floor,
-                                                );
+                                                )
+                                                .into_iter()
+                                                .map(|s| crate::offline::marked_from(s, &marks))
+                                                .collect();
                                                 let client = Some(runner.node_rpc.client.clone());
                                                 // The tickle: ask the exact birth to reassert itself.
                                                 // Protocol name: ProbeNodeState.
@@ -2017,24 +2026,29 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                     write(id, Some(NodeStatus::Dead), &mut written).await;
                                                 }
+                                                // A birth heard again, or answering its tickle, runs: its hold and its os-stopped
+                                                // fact end (node-recovery.md steps 2-4; deployment-provider.md §2.5).
+                                                for id in report.returned.iter().chain(&report.reachable_silent) {
+                                                    records.unreachable.lock().unwrap().retain(|nid, _| nid.as_str() != id);
+                                                }
                                                 for id in &report.returned {
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                     write(id, None, &mut written).await;
-                                                    if let Some(n) = watched.get(id) {
+                                                    if let Some(n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)) {
                                                         records.clear_held_running(n).await;
-                                                    } else if let Some(n) = view.births().find(|n| n.node_id.as_str() == id) {
-                                                        records.clear_held_running(n).await;
+                                                        recovery.clear_os_stopped(n, "returned").await;
                                                     }
                                                 }
                                                 for id in &report.reachable_silent {
                                                     verdicts.lock().unwrap().retain(|(nid, _), _| nid.as_str() != id);
-                                                    if let Some(n) = watched.get(id) {
+                                                    if let Some(n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)) {
                                                         records.clear_held_running(n).await;
-                                                    } else if let Some(n) = view.births().find(|n| n.node_id.as_str() == id) {
-                                                        records.clear_held_running(n).await;
+                                                        recovery.clear_os_stopped(n, "reached").await;
                                                     }
                                                 }
                                                 clear_unwatched(&watched, &mut records.offline.lock().unwrap(), &mut verdicts.lock().unwrap(), &mut written);
+                                                // An os-stopped confirmation speaks only for a birth this tick still watches.
+                                                recovery.os_stopped_confirmed.lock().unwrap().retain(|(nid, inc)| watched.get(nid.as_str()).is_some_and(|n| n.incarnation_id.as_ref() == Some(inc)));
                                                 // node-recovery.md: on TRUE OFFLINE the mesh primary asks the provider about the exact
                                                 // runtime of each member of its own mesh, its secondary node-admins included
                                                 // (mesh-recovery.md:8-9); Exited is the proof, and the

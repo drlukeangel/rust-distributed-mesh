@@ -1896,6 +1896,7 @@ mod tests {
             held_running: None,
             data_dir_lost: None,
             data_dir_unreadable: None,
+            os_stopped: None,
         }
     }
 

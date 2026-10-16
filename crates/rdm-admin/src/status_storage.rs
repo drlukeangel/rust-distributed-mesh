@@ -193,6 +193,37 @@ impl NodeHeldRunningRow {
     }
 }
 
+/// The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provider.md §2.5): the
+/// provider inspected the exact runtime and the operating system holds it suspended. An observation,
+/// never a hold: written by the mesh-primary, removed when its inspection reads `Running` or
+/// `Exited`, and folded by a successor only after its own inspection confirms it. Keyed by the exact
+/// birth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeOsStoppedRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// When the first `OsStopped` verdict was observed, ms since the Unix epoch.
+    pub since: u64,
+    /// How many inspections have read the runtime `OsStopped` since.
+    pub inspections: u64,
+}
+
+impl NodeOsStoppedRow {
+    /// The row's key: the exact birth.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id)
+    }
+
+    /// The key of the birth `(node_id, incarnation_id)`'s os-stopped row.
+    pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
+        format!("{node_id}--{}", incarnation_id.as_str())
+    }
+}
+
 /// The durable `data-dir-lost` fact on a birth's status row (R-FM2): the inherited data dir was
 /// absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors while the provider reported the birth
 /// `Exited`. Keyed by the exact birth.
@@ -304,6 +335,20 @@ pub trait StatusStorage: Send + Sync {
     async fn remove_node_held_running_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         Ok(())
     }
+    /// The `os-stopped` row of the birth `(node_id, incarnation_id)` among the status rows of the
+    /// mesh named `mesh` (this store's own or another's): a point read of its key (R-PV1).
+    async fn node_os_stopped_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
+        Ok(None)
+    }
+    /// A blind put of the `os-stopped` row `row` among the status rows of the mesh named `mesh` (R-PV1).
+    async fn put_node_os_stopped_of(&self, _mesh: &str, _row: &NodeOsStoppedRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// Remove the `os-stopped` row of the birth `(node_id, incarnation_id)` among the status rows of
+    /// the mesh named `mesh` (R-PV1).
+    async fn remove_node_os_stopped_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        Ok(())
+    }
     /// The `data-dir-lost` row of the birth `(node_id, incarnation_id)` among the status rows of
     /// the mesh named `mesh` (R-FM2).
     async fn node_data_dir_lost_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
@@ -364,6 +409,8 @@ pub struct MemoryStatusStorage {
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
     /// The held-running rows of each mesh named through the `_of` reads and puts, by row key.
     held_running_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeHeldRunningRow>>>,
+    /// The os-stopped rows of each mesh named through the `_of` reads and puts, by row key.
+    os_stopped_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeOsStoppedRow>>>,
     /// The data-dir-lost rows of each mesh named through the `_of` reads and puts, by row key.
     data_dir_lost_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
     /// The data-dir-unreadable rows of each mesh named through the `_of` reads and puts, by row key.
@@ -481,6 +528,21 @@ impl StatusStorage for MemoryStatusStorage {
         }
         Ok(())
     }
+    async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
+        let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
+        Ok(self.os_stopped_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+    }
+    async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError> {
+        self.os_stopped_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
+        if let Some(rows) = self.os_stopped_named.lock().unwrap().get_mut(mesh) {
+            rows.remove(&key);
+        }
+        Ok(())
+    }
     async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
         let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);
         Ok(self.data_dir_lost_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
@@ -518,6 +580,7 @@ const NODE_DECLARED_FORMAT: &str = "node-declared/3";
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
 const NODE_EXIT_FORMAT: &str = "node-exit/1";
 const NODE_HELD_RUNNING_FORMAT: &str = "node-held-running/1";
+const NODE_OS_STOPPED_FORMAT: &str = "node-os-stopped/1";
 const NODE_DATA_DIR_LOST_FORMAT: &str = "node-data-dir-lost/1";
 const NODE_DATA_DIR_UNREADABLE_FORMAT: &str = "node-data-dir-unreadable/1";
 
@@ -525,7 +588,7 @@ const NODE_DATA_DIR_UNREADABLE_FORMAT: &str = "node-data-dir-unreadable/1";
 /// `meshes/<mesh_id>-<state>.json`, `fabric/<fabric_id>-<hex of the event key>.json`,
 /// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json`,
 /// `exits/<node_id>--<incarnation>.json`, `held-running/<node_id>--<incarnation>.json`,
-/// `data-dir-lost/<node_id>--<incarnation>.json` and
+/// `os-stopped/<node_id>--<incarnation>.json`, `data-dir-lost/<node_id>--<incarnation>.json` and
 /// `data-dir-unreadable/<node_id>--<incarnation>.json`. The
 /// mesh's seat holder writes them (node-identity-and-state.md §4.3); every admin of the mesh reads
 /// the same rows.
@@ -537,6 +600,7 @@ pub struct FileStatusStorage {
     silence: FileRecords,
     exits: FileRecords,
     held_running: FileRecords,
+    os_stopped: FileRecords,
     data_dir_lost: FileRecords,
     data_dir_unreadable: FileRecords,
     /// This store's own mesh: its rows are the fields above.
@@ -563,6 +627,7 @@ impl FileStatusStorage {
             silence: root.records(&base, "silence", writer).await?,
             exits: root.records(&base, "exits", writer).await?,
             held_running: root.records(&base, "held-running", writer).await?,
+            os_stopped: root.records(&base, "os-stopped", writer).await?,
             data_dir_lost: root.records(&base, "data-dir-lost", writer).await?,
             data_dir_unreadable: root.records(&base, "data-dir-unreadable", writer).await?,
             mesh: mesh.to_string(),
@@ -575,7 +640,7 @@ impl FileStatusStorage {
 
     /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
     /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 8] {
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 9] {
         [
             &self.meshes,
             &self.fabric,
@@ -583,6 +648,7 @@ impl FileStatusStorage {
             &self.silence,
             &self.exits,
             &self.held_running,
+            &self.os_stopped,
             &self.data_dir_lost,
             &self.data_dir_unreadable,
         ]
@@ -736,6 +802,26 @@ impl StatusStorage for FileStatusStorage {
             return self.held_running.remove(&key).await;
         }
         self.other(mesh, "held-running").await?.remove(&key).await
+    }
+    async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
+        let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.os_stopped.read(&key, NODE_OS_STOPPED_FORMAT).await;
+        }
+        self.other(mesh, "os-stopped").await?.read(&key, NODE_OS_STOPPED_FORMAT).await
+    }
+    async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.os_stopped.write(&row.key(), NODE_OS_STOPPED_FORMAT, row).await;
+        }
+        self.other(mesh, "os-stopped").await?.write(&row.key(), NODE_OS_STOPPED_FORMAT, row).await
+    }
+    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+        let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
+        if mesh == self.mesh {
+            return self.os_stopped.remove(&key).await;
+        }
+        self.other(mesh, "os-stopped").await?.remove(&key).await
     }
     async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
         let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);

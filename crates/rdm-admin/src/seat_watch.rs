@@ -499,7 +499,12 @@ pub async fn run(w: Watch) {
                 Finding::Exited { .. } => {
                     w.records.clear_held_running(&node).await;
                 }
-                Finding::OsStopped | Finding::Unproven { .. } => {}
+                // A seat holder the operating system holds suspended is neither hung nor gone: a hold
+                // this watcher opened while it read Running is cancelled (deployment-provider.md §2.5).
+                Finding::OsStopped => {
+                    w.records.clear_held_running(&node).await;
+                }
+                Finding::Unproven { .. } => {}
             }
             let proven = if let Finding::Exited { code } = &finding {
                 // The verified loss is recorded durably: the holder's exit-proof row is what every

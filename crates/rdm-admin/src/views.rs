@@ -87,6 +87,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         held_running: None,
         data_dir_lost: None,
         data_dir_unreadable: None,
+        os_stopped: None,
     }
 }
 
@@ -145,6 +146,17 @@ async fn held_running_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -
     Some(HeldRunning { since: row.since, verdicts: row.verdicts })
 }
 
+/// The durable `os-stopped` fact of `n`'s exact birth (R-PV1), shown while the birth is not ready
+/// for traffic: a birth heard again has had its fact cleared by its mesh-primary's tick.
+async fn os_stopped_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<rdm_core::views::OsStopped> {
+    if n.status == crate::model::NodeStatus::ReadyForTraffic {
+        return None;
+    }
+    let (s, inc) = (status_storage?, n.incarnation_id.as_ref()?);
+    let row = s.node_os_stopped_of(&n.mesh, &n.node_id, inc).await.ok().flatten()?;
+    Some(rdm_core::views::OsStopped { since: row.since, inspections: row.inspections })
+}
+
 async fn data_dir_lost_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<DataDirLost> {
     let s = status_storage?;
     if let Some(inc) = n.incarnation_id.as_ref() {
@@ -183,6 +195,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
         let mut v = node_view(n, load, gossip, tags_of(storage, n).await?);
         v.held_running = held_running_of(status_storage, n).await;
+        v.os_stopped = os_stopped_of(status_storage, n).await;
         v.data_dir_lost = data_dir_lost_of(status_storage, n).await;
         v.data_dir_unreadable = data_dir_unreadable_of(status_storage, n).await;
         out.push(v);

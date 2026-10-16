@@ -157,19 +157,52 @@ impl CommandBook {
     }
 }
 
+/// Why a command was never sent to its birth, when the cause is the birth's reachability
+/// (node-tickle.md step 1): the connect was refused, it timed out or failed on the wire, or the
+/// birth's endpoint did not resolve. A cause local to the sender (a request that does not encode, a
+/// budget, an admission block, a frame reset) is none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unreachable {
+    /// `connect-refused`, `connect-timed-out`, `connect-failed` or `endpoint-unresolved`.
+    pub reason: &'static str,
+    /// The transport's own account.
+    pub detail: String,
+}
+
+/// The reachability cause of `cause`, or `None` for a cause local to the sender.
+pub fn unreachable_of(cause: &rdm_core::outcome::NotSentReason) -> Option<Unreachable> {
+    use rdm_core::outcome::NotSentReason as R;
+    let reason = match cause {
+        R::Connection(e) if e.starts_with("request does not encode") => return None,
+        R::Connection(e) if e.contains("refused") => "connect-refused",
+        R::Connection(e) if e.contains("timed out") => "connect-timed-out",
+        R::Connection(_) => "connect-failed",
+        R::Deadline => "connect-timed-out",
+        R::Resolve(_) | R::NoActiveRoute => "endpoint-unresolved",
+        R::StreamBudget | R::FrameNotSent | R::AdmissionBlocked(_) | R::Carried(_) | R::CarrierEdgeLost(_) | R::CarrierNoBudget { .. } | R::NotForwardable { .. } => return None,
+    };
+    Some(Unreachable { reason, detail: format!("{cause:?}") })
+}
+
 /// Send `cmd` to the exact birth `node` through `client` at `target`, opening the command before
 /// the send so a completion that races the reply finds it. The outcome is admission, not
 /// completion.
 pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
+    send_command_reaching(client, commands, target, node, cmd, ctx).await.0
+}
+
+/// [`send_command`], with the reachability cause of a command that was never sent ([`unreachable_of`]).
+pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBook, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> (CommandAdmission, Option<Unreachable>) {
     let Some(incarnation) = node.incarnation_id.clone() else {
-        return CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) };
+        return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) }, None);
     };
     let build_id = match rdm_client::BuildId::parse(&ctx.build_id) {
         Ok(build_id) => build_id,
-        Err(e) => return CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) },
+        Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) }, None),
     };
     let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
     let (node_id, attempt) = (node.node_id.clone(), ctx.attempt);
+    let mut unreachable = None;
     let admission = match cmd {
         // The executor's own status authority carries it (status_rpc.rs `carry_delete_connections`):
         // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
@@ -182,13 +215,17 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let stop = rdm_client::StopContext::new(build_id, attempt, node.name.clone());
             let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
-            admission_of(rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
+            let end = rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await;
+            unreachable = not_sent_cause(&end);
+            admission_of(end)
         }
         NodeCommand::Start => {
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let start = rdm_client::StartContext::new(build_id, attempt, node.name.clone());
             let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
-            admission_of(rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await)
+            let end = rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await;
+            unreachable = not_sent_cause(&end);
+            admission_of(end)
         }
     };
     // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
@@ -207,7 +244,15 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     };
     tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the command was sent to the exact birth"));
-    admission
+    (admission, unreachable)
+}
+
+/// The reachability cause of a call that ended never sent.
+fn not_sent_cause(end: &Result<StatusReply, rdm_client::CallEnd>) -> Option<Unreachable> {
+    match end {
+        Err(rdm_client::CallEnd::NotSent { cause, .. }) => unreachable_of(cause),
+        _ => None,
+    }
 }
 
 /// The arm a `node.stop` or `node.start` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
@@ -221,7 +266,7 @@ fn admission_of(r: Result<StatusReply, rdm_client::CallEnd>) -> CommandAdmission
         Ok(StatusReply::Started) => CommandAdmission::Started {},
         Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason },
         Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
-        Err(CallEnd::NotSent { reason }) => CommandAdmission::NotSent { reason },
+        Err(CallEnd::NotSent { reason, .. }) => CommandAdmission::NotSent { reason },
         Err(CallEnd::Indeterminate { reason }) => CommandAdmission::Indeterminate { reason },
         Err(CallEnd::Unserved { op }) => CommandAdmission::Refused { reply: format!("unserved op {op:#04x}") },
         Err(CallEnd::RejectedStale { target_node_id }) => CommandAdmission::Refused { reply: format!("stale target {target_node_id}") },
@@ -264,6 +309,27 @@ mod tests {
 
     fn key(op: &str) -> CommandKey {
         CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op.into(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap() }
+    }
+
+    /// CONTRACT (node-tickle.md step 1; i144 R9): a command never sent because its birth refused or
+    /// did not answer the connect, or because its endpoint did not resolve, is a reachability failure
+    /// named by its cause; a cause local to the sender (a request that does not encode, a stream
+    /// budget, a frame reset, an admission block, a protocol that is not forwardable) is none, and
+    /// marks nothing.
+    // @feature: node-lifecycle
+    #[test]
+    fn a_reachability_not_sent_is_named_and_a_local_not_sent_marks_nothing() {
+        use rdm_core::outcome::{NotSentReason as R, ResolveFailure};
+        let named = |r: R| unreachable_of(&r).map(|u| u.reason);
+        assert_eq!(named(R::Connection("timed out".into())), Some("connect-timed-out"));
+        assert_eq!(named(R::Connection("Failed(\"connection refused\")".into())), Some("connect-refused"));
+        assert_eq!(named(R::Connection("connection lost".into())), Some("connect-failed"));
+        assert_eq!(named(R::Deadline), Some("connect-timed-out"));
+        assert_eq!(named(R::Resolve(ResolveFailure::Unknown)), Some("endpoint-unresolved"));
+        assert_eq!(named(R::NoActiveRoute), Some("endpoint-unresolved"));
+        for local in [R::Connection("request does not encode: too long".into()), R::StreamBudget, R::FrameNotSent, R::AdmissionBlocked("all".into()), R::NotForwardable { op: 0x1b }, R::CarrierNoBudget { remaining_ms: 1, reserve_ms: 2 }] {
+            assert_eq!(unreachable_of(&local), None, "{local:?} is local to the sender");
+        }
     }
 
     /// CONTRACT: a completion resolves its open command once; a repeat is a repeat; a completion

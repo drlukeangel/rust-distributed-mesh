@@ -24,6 +24,9 @@ pub(crate) struct RecoverySubmitter {
     /// Per exited birth whose inherited `data_dir` was observed absent (`Gone`, `R-FM2`):
     /// `(first_seen_ms, consecutive_rounds)`.
     pub gone_dirs: Arc<Mutex<HashMap<(NodeId, IncarnationId), (u64, u64)>>>,
+    /// The births whose `os-stopped` row this admin's own inspection has confirmed (R-PV1): a row
+    /// another admin wrote is folded only after this admin's inspection reads `OsStopped` too.
+    pub os_stopped_confirmed: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
 }
 
 /// What a loop that proves exits last recorded per birth `(node_id, incarnation)`: the mesh primary's
@@ -50,19 +53,23 @@ where
     Ok("put")
 }
 
-/// What the provider's inspection of a TRUE OFFLINE member proved.
+/// What the provider's inspection of a TRUE OFFLINE member found (node-runtime-inspect.md "Result").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inspected {
     /// Exited: the exit code and where it came from.
     Exited(Option<i32>, &'static str),
-    /// Not proven exited (still running, or no runtime fact): why.
-    NotExited(String),
+    /// The exact runtime runs, however silent (`R-FM1`'s hold).
+    Running,
+    /// The operating system holds the exact runtime suspended (R-PV1): an observation, never a hold.
+    OsStopped,
+    /// Nothing proven (no runtime fact, an unreadable row, the provider's `Unknown`): why.
+    Unavailable(String),
 }
 
 impl Inspected {
     /// True when the provider inspection explicitly reported the runtime `Running` (`R-FM1`).
     pub fn is_running(&self) -> bool {
-        matches!(self, Self::NotExited(why) if why.contains("Running"))
+        matches!(self, Self::Running)
     }
 }
 
@@ -96,7 +103,7 @@ impl RecoverySubmitter {
     /// The provider's exact-exit proof of `node`'s birth: the runtime fact the book's digest of that
     /// birth carries, else the birth's own durable runtime row (a point read by its key).
     pub(crate) async fn inspect(&self, node: &Node) -> Inspected {
-        let Some(incarnation) = node.incarnation_id.clone() else { return Inspected::NotExited(format!("{} holds no incarnation to inspect", node.name)) };
+        let Some(incarnation) = node.incarnation_id.clone() else { return Inspected::Unavailable(format!("{} holds no incarnation to inspect", node.name)) };
         // The birth's own digest, else the birth as its mesh-primary's projection carried it to this
         // admin (gossip.md §3: the projection preserves the RuntimeFact an authority-bearing admin
         // needs to manage the birth).
@@ -106,12 +113,14 @@ impl RecoverySubmitter {
         } else {
             match self.nodes_storage.runtime(&node.node_id, &incarnation).await {
                 Ok(r) => r,
-                Err(e) => return Inspected::NotExited(format!("the durable runtime row of {} at {} could not be read: {e}", node.node_id, incarnation.as_str())),
+                Err(e) => return Inspected::Unavailable(format!("the durable runtime row of {} at {} could not be read: {e}", node.node_id, incarnation.as_str())),
             }
         };
-        match exit_proof_of(&*self.provider, &held_row, row.as_ref()).await {
+        match inspection_of(&*self.provider, &held_row, row.as_ref()).await {
             Ok((code, source)) => Inspected::Exited(code, source),
-            Err(why) => Inspected::NotExited(why),
+            Err(NotProven::Running) => Inspected::Running,
+            Err(NotProven::OsStopped) => Inspected::OsStopped,
+            Err(NotProven::Unavailable(why)) => Inspected::Unavailable(why),
         }
     }
 
@@ -143,6 +152,7 @@ impl RecoverySubmitter {
                 if let Some(inc) = n.incarnation_id.as_ref() {
                     let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, inc).await;
                 }
+                self.clear_os_stopped(n, "exited").await;
                 if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
                     let exit_proof_row = match &row {
                         Ok(stands) => stands.to_string(),
@@ -226,7 +236,10 @@ impl RecoverySubmitter {
                     }
                 }
             }
-            Inspected::NotExited(_) if outcome.is_running() => {
+            Inspected::Running => {
+                // Running again: the os-stopped fact clears and the hold rule applies (a runtime that
+                // resumed but stays unreachable opens a fresh hold, deployment-provider.md §2.5).
+                self.clear_os_stopped(n, "running").await;
                 if self.removal_announced(n).await.is_none() {
                     if let Some(inc) = n.incarnation_id.clone() {
                         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
@@ -244,6 +257,7 @@ impl RecoverySubmitter {
                             incarnation_id = %inc.as_str(),
                             since = since as i64,
                             verdicts = count as i64,
+                            outcome = "recorded",
                             "otel.kind" = "internal",
                         )
                         .in_scope(|| tracing::info!("recorded held-running verdict"));
@@ -256,7 +270,9 @@ impl RecoverySubmitter {
                     }
                 }
             }
-            Inspected::NotExited(_) => {}
+            Inspected::OsStopped => self.record_os_stopped(n).await,
+            // Nothing proven: the span names the uncertainty; no hold, no exit proof, the next tick asks again.
+            Inspected::Unavailable(_) => {}
         }
         outcome
     }
@@ -278,6 +294,72 @@ impl RecoverySubmitter {
             Ok(())
         })
         .await
+    }
+
+    /// The `os-stopped` fact of `n`'s exact birth (R-PV1; deployment-provider.md §2.5): this
+    /// mesh-primary puts the birth's own row, its `since` kept and its inspections counted, opens no
+    /// hold and terminates nothing; a `held-running` hold already open on the birth is cancelled (its
+    /// row removed: the pending terminate it would submit is void). Spanned when the fact is first
+    /// recorded, or first confirmed by this admin over a row another admin wrote (`revalidated`).
+    pub(crate) async fn record_os_stopped(&self, n: &Node) {
+        let Some(inc) = n.incarnation_id.clone() else { return };
+        let birth = (n.node_id.clone(), inc.clone());
+        let span = |outcome: &str, since: u64, detail: &str| {
+            tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = since as i64, outcome, detail, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the operating system holds the birth's exact runtime suspended: a recorded fact, no hold and no terminate"));
+        };
+        let prev = match self.status_storage.node_os_stopped_of(&n.mesh, &n.node_id, &inc).await {
+            Ok(prev) => prev,
+            Err(e) => return span("refused", 0, &format!("the os-stopped row could not be read: {e}")),
+        };
+        let first_here = !self.os_stopped_confirmed.lock().unwrap().contains(&birth);
+        let (since, inspections, outcome) = match &prev {
+            None => (local_now_ms(), 1, Some("recorded")),
+            Some(r) => (r.since, r.inspections.saturating_add(1), first_here.then_some("revalidated")),
+        };
+        let row = crate::status_storage::NodeOsStoppedRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), since, inspections };
+        match self.status_storage.put_node_os_stopped_of(&n.mesh, &row).await {
+            // A refused put confirms nothing: the next tick records or revalidates it again.
+            Err(e) => span("refused", since, &format!("the os-stopped row could not be written: {e}")),
+            Ok(()) => {
+                self.os_stopped_confirmed.lock().unwrap().insert(birth);
+                if let Some(outcome) = outcome {
+                    span(outcome, since, "");
+                }
+            }
+        }
+        if let Ok(Some(held)) = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await {
+            let removed = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, &inc).await;
+            tracing::info_span!(
+                "rdm.node_admin.node.update.via-held-running",
+                node = %n.name,
+                node_id = %n.node_id,
+                incarnation_id = %inc.as_str(),
+                since = held.since as i64,
+                verdicts = held.verdicts as i64,
+                outcome = "cancelled-os-stopped",
+                voided_deadline = held.since.saturating_add(hung_hold_ms()) as i64,
+                removed = %removed.as_ref().map(|_| "removed".to_string()).unwrap_or_else(|e| e.to_string()),
+                "otel.kind" = "internal",
+            )
+            .in_scope(|| tracing::info!("the hung-runtime hold is cancelled: the runtime is suspended by the operating system, and the terminate it would submit is void"));
+        }
+    }
+
+    /// Remove the `os-stopped` fact of `n`'s exact birth when an inspection reads its runtime
+    /// `verdict` (`running`, `exited`) or its digest returns (`returned`): spanned `cleared` when a row
+    /// stood.
+    pub(crate) async fn clear_os_stopped(&self, n: &Node, verdict: &str) {
+        let Some(inc) = n.incarnation_id.clone() else { return };
+        self.os_stopped_confirmed.lock().unwrap().remove(&(n.node_id.clone(), inc.clone()));
+        let Ok(Some(row)) = self.status_storage.node_os_stopped_of(&n.mesh, &n.node_id, &inc).await else { return };
+        let removed = self.status_storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, &inc).await;
+        let (outcome, detail) = match &removed {
+            Ok(()) => ("cleared", verdict.to_string()),
+            Err(e) => ("refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
+        };
+        tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = row.since as i64, outcome, detail = %detail, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the os-stopped fact is cleared"));
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
@@ -315,7 +397,9 @@ impl RecoverySubmitter {
     pub(crate) fn span_inspection(&self, node: &Node, outcome: &Inspected) {
         let (verdict, exit_code, exit_proof, reason) = match outcome {
             Inspected::Exited(code, source) => ("exited", code.map(|c| c.to_string()).unwrap_or_default(), *source, String::new()),
-            Inspected::NotExited(why) => ("not-exited", String::new(), "none", why.clone()),
+            Inspected::Running => ("running", String::new(), "none", NotProven::Running.to_string()),
+            Inspected::OsStopped => ("os-stopped", String::new(), "none", NotProven::OsStopped.to_string()),
+            Inspected::Unavailable(why) => ("unavailable", String::new(), "none", why.clone()),
         };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
         tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), verdict, exit_code, exit_proof, reason = %reason)
