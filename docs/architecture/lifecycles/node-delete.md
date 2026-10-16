@@ -14,7 +14,7 @@ removal is separate work.
 | Caller / executor | Typed caller / accepted node-admin executor |
 | Live target | Complete node.stop first; the stopped process remains reachable |
 | Crashed target | Stop steps are already done; no call is required from an exited process |
-| OS-suspended target | The provider reports the exact runtime `os-stopped` ([deployment-provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)): the stop is skipped by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the exact handle; explicit delete only, never recovery, which respects suspension |
+| OS-suspended target | The provider reports the exact runtime `os-stopped` ([deployment-provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)): the stop is skipped by name (a suspended process answers no call) and the delete begins at `TerminateRuntime` on the exact handle, as `terminate(Immediate)`: a suspended runtime runs no handler, so there is no graceful wait, and nothing of it is resumed; the delete completes only on the provider's exit proof. Explicit delete only, never recovery, which respects suspension |
 | Runtime action | Request termination and inspect the exact accepted runtime |
 | Terminal event | Executor emits node.deleted only from exact runtime Exited proof, after releasing node.id and name |
 | Storage | Retain data dir and endpoint key; a later spec can inherit them |

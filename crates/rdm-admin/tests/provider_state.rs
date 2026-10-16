@@ -107,12 +107,14 @@ async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(hand: &d
 }
 
 /// CONTRACT (i144 R23, Luke Q4 B: an explicit delete of an os-stopped runtime calls
-/// `terminate(Immediate)`, then requires exit proof; no application code resumed by RDM, observed from
-/// the child's own execution): a runtime that writes its own heartbeat is suspended by the operating
-/// system; its heartbeat stops. `terminate(Immediate)` ends it well under the 8 s stop grace, it reads
-/// `Exited`, and its heartbeat never grows again: RDM resumed none of its code. Must NOT happen: a
-/// graceful wait on a runtime that cannot run a handler, or a thaw that lets it execute.
-async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again(hand: &dyn Hand) {
+/// `terminate(Immediate)`, then requires exit proof; no application progress after the suspension,
+/// observed from the child's own heartbeat): a runtime that writes its own heartbeat is suspended by
+/// the operating system; its heartbeat stops. `terminate(Immediate)` ends it well under the 8 s stop
+/// grace, it reads `Exited`, and its heartbeat never grows again: no application progress is
+/// observed (the heartbeat shows progress; it does not prove that no instruction executed). Must NOT
+/// happen: a graceful wait on a runtime that cannot run a handler, or a thaw that lets it make
+/// progress.
+async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_application_progress_again(hand: &dyn Hand) {
     let until = Instant::now() + Duration::from_secs(5);
     while hand.heartbeat() < 3 {
         assert!(Instant::now() < until, "the child never wrote its heartbeat");
@@ -130,10 +132,10 @@ async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_a
     let took = t.elapsed();
     assert!(took < Duration::from_secs(2), "the immediate terminate of a suspended runtime takes no grace: {took:?}");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(hand.heartbeat(), held, "RDM resumed none of the suspended runtime's code: its heartbeat never grew again (took {took:?})");
+    assert_eq!(hand.heartbeat(), held, "no application progress is observed after the suspension: its heartbeat never grew again (took {took:?})");
     let status = hand.provider().inspect(hand.handle()).await;
     assert!(matches!(status, DeploymentStatus::Exited { .. }), "the ended runtime reads Exited: {status:?}");
-    eprintln!("immediate terminate of a suspended runtime: {took:?}, heartbeat held at {held}");
+    eprintln!("immediate terminate of a suspended runtime: {took:?}, heartbeat held at {held} (no application progress observed)");
 }
 
 /// CONTRACT (deployment-provider.md §2.5 R19: `Running` is nonterminal and not OS-suspended, nothing
@@ -245,8 +247,8 @@ mod process {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again() {
-        super::a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again(&beating("immediate").await).await;
+    async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_application_progress_again() {
+        super::a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_application_progress_again(&beating("immediate").await).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -421,9 +423,9 @@ mod container {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again() {
+    async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_application_progress_again() {
         let Some(c) = beating("state-immediate").await else { return };
-        super::a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again(&c).await;
+        super::a_suspended_runtime_ended_immediately_takes_no_grace_and_shows_no_application_progress_again(&c).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
