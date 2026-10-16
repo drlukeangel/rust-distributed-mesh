@@ -83,7 +83,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         let initial = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
         sender.forward(&initial).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
-            while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
+            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.expect("the receiver holds the initial status");
         let changes = receiver.book.statuses.mesh_changes();
         let changes_before = *changes.borrow();

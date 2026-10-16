@@ -1961,7 +1961,7 @@ impl View {
         let taken = self.book.statuses.take(f, fabric);
         span.record("taken", taken);
         if !taken {
-            tracing::debug!("a mesh status was heard: a repeat of the change held, or an older one, is not taken");
+            // The receive framework has already named this refusal or duplicate.
             return;
         }
         let births: Vec<MeshDigest> = self.book.all().into_iter().filter(|d| &d.node.name.mesh == mesh).collect();

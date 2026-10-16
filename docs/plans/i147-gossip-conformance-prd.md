@@ -100,7 +100,7 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
   does not overwrite; recovery through a topology read, then stale gossip: no rollback; each reserved
   frame: named refusal, no mutation.
 - **Order.** Finish MeshStatus named stale and duplicate outcomes, then FabricStatus; operation facts and Concern episodes; replacement state; snapshot or delta; reserved positions; recovery through a topology read. Each row lands separately and stops for review. R10 stays open with no new field.
-- **State.** MeshStatus row in progress in lane `e7s3`, branch `codex/i147-e2-mesh-status`: live RED cells added for the missing named stale and duplicate spans. Receive-path fix and RED/GREEN flames pending. FabricStatus and all later rows have not started.
+- **State.** MeshStatus row in progress in lane `e7s3`, branch `codex/i147-e2-mesh-status`: RED SHA `09d42858`: existing inconsistency cell passed, new stale and duplicate cells failed (1 passed, 2 failed). Before flames: stale `ecc86037d4bf8ea46dff8faeb0c9a95c`, duplicate `7f4660d772157e251095c8c1cbfdcb79`. GREEN: all 3 live receive-rule cells passed (0.06 s), including the e1 inconsistency cell; unchanged held projection and no change notification are asserted. After flames: stale `cea209eb2b76c8e7512a2161c0a12859`, duplicate `e7c2c444cc889b9d71011b5fb287a03e`. The receive framework now emits named stale/duplicate outcomes; the handler’s generic debug substitute is removed. Full gate and landing pending. FabricStatus and all later rows have not started.
 
 ## Verification
 

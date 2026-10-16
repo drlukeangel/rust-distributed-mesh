@@ -1,42 +1,31 @@
-//! The one ordering check of the gossip receive path (rafka-v2
-//! docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke 2026-10-12): "a message
-//! received out of order with a previous, earlier version is ignored". A node holds one version per
-//! source (Luke 2026-10-13: "a frame whose order key is earlier than the newest the receiver holds for
-//! the same source is ignored, once, in the gossip receive path", with no channel qualifier): every
-//! frame any of its channels decodes, and every chunk its topology-read install takes, passes here
-//! before any handler reads it; a frame whose order key is earlier than the newest the node holds for
-//! the frame's source is ignored, and nothing else is decided here.
+//! Receive classification for gossip and topology-read installs. Decisions use the frame's
+//! declared subject, identity and ordering fields, never the transport sender.
 //!
-//! The order keys are the ones already on the wire:
-//! - `Members` and `MembersDelta`: `published_at_rafka_ms` then `topology_version`, per mesh;
-//! - `Digest`: `digest_seq`, per exact birth (a new incarnation starts its sequence again at 1,
-//!   gossip.md §3.1);
-//! - the lifecycle facts `NodeDeleting`, `NodeRestarting` and `NodeStopped`: `topology_version`,
-//!   per publisher and subject mesh, for that is whose counter the version is (the publisher's
-//!   version of the subject's mesh, [`crate::membership::Frame::NodeStopped`]); a successor publisher
-//!   counts from 1 again;
-//! - `Seated`: the holder record's `revision`, per complete seat key (`(mesh, node_type)` for a
-//!   cohort, `fabric` for the fabric seat; `docs/architecture/gossip.md`);
-//! - "primary updating" and "primary updated" (`PrimaryUpdating`, `PrimaryUpdated`): each seat's
-//!   committed epoch, per cohort, already in the body (the approved proposal
-//!   node-primary-update-fabric-mesh-and-node-type.md Part C1 step 7: "A late 'updating' never undoes
-//!   an 'updated': the committed epoch, per cohort, is these two frames' order key"). At one epoch the
-//!   "updated" is the later: a late "updating" of that epoch is ignored. A frame naming both seats is
-//!   ignored when either cohort holds a newer key, and then neither key moves.
+//! MeshStatus uses [`admit_mesh_status`] against the actual held projection under the status
+//! book's installation lock. An older timestamp emits `via-stale` with both keys. Equal declared
+//! publisher/timestamp and identical status emits `via-duplicate` with outcome `ignored`;
+//! different status content emits `via-inconsistent`. Forwarding metadata is not status content.
+//! No publisher revision is inferred: the MeshStatus/FabricStatus publisher-revision gap (R10)
+//! remains open, including the existing timestamp comparison across publishers.
 //!
-//! MeshStatus is classified by [`admit_mesh_status`] against its held projection under the
-//! status book lock. Other unkeyed frames retain their existing handler data rules.
+//! [`ReceiveOrder`] holds the existing keyed families' ordering state, shared by all channels
+//! and topology-read installs:
+//! - Digest: `digest_seq` per exact birth; another incarnation starts its sequence again.
+//! - Members and MembersDelta: publication timestamp then topology version per mesh, with the
+//!   installed publisher/version floor also enforced regardless of publication timestamp.
+//! - NodeDeleting, NodeRestarting and NodeStopped: the existing topology-version check per
+//!   publisher and subject mesh; operation-fact conformance is a remaining row.
+//! - Seated: holder revision per complete seat key (mesh and node type, or the fabric seat).
+//! - PrimaryUpdating/PrimaryUpdated: committed revision per cohort, settled after updating at
+//!   one revision; every named cohort is checked before any held key moves.
 //!
-//! A frame whose key equals the held one is taken: the chunks of one publication share its key, and
-//! a copy is the handler's to absorb (a chunk already held, a delta already applied).
+//! Equal keys in those keyed families remain admissible to their handlers, including distinct
+//! chunks of an unfinished publication. A Members or MembersDelta key advances only when the
+//! complete snapshot installs or the delta applies; [`ReceiveOrder::installed`] also records
+//! the source version installed by a topology read, whose chunks carry no publication timestamp.
 //!
-//! A mesh's version moves when its snapshot state does (gossip.md §3.1: "A mesh-channel delta, a
-//! snapshot install and a topology read install move the held source version"): a `Members` key is
-//! held once every chunk of its snapshot arrived and it installed, a `MembersDelta` key once it
-//! applied, and a topology read, which carries a publisher and a `topology_version` and no stamp,
-//! holds that source version ([`ReceiveOrder::installed`]). The publisher's exact identity is the
-//! revision of the versions it publishes (`PublisherId`), so a frame or read chunk of the held
-//! publisher at a `topology_version` below the one installed is earlier, whatever it is stamped.
+//! FabricStatus, the operation facts without keys, Concern and reserved variants retain their
+//! existing handler data rules pending their receive-conformance rows.
 
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;
@@ -49,7 +38,13 @@ use std::collections::HashMap;
 pub(crate) fn admit_mesh_status(mesh: &str, held: Option<&crate::membership::MeshStatus>, status: &str, publisher: &str, revision: u64) -> bool {
     let Some(held) = held else { return true };
     if revision < held.changed_at_rafka_ms {
-        tracing::info!(reason = "older-than-held", what = %format!("mesh {mesh}"), held_at_rafka_ms = held.changed_at_rafka_ms, offered_at_rafka_ms = revision, "a status older than the one held is refused");
+        tracing::info_span!(
+            "rdm.mesh.membership.reject.via-stale",
+            frame = "mesh-status",
+            subject = %format!("{mesh} {publisher}"),
+            held_key = %format!("changed_at_rafka_ms={}", held.changed_at_rafka_ms),
+            frame_key = %format!("changed_at_rafka_ms={revision}"),
+        ).in_scope(|| tracing::info!("a mesh status older than the held revision is refused"));
         return false;
     }
     if publisher == held.publisher && revision == held.changed_at_rafka_ms {
@@ -62,6 +57,13 @@ pub(crate) fn admit_mesh_status(mesh: &str, held: Option<&crate::membership::Mes
                 held_status = %held.status,
                 frame_status = status,
             ).in_scope(|| tracing::info!("a mesh status at the held revision has different content: refused"));
+        } else {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-duplicate",
+                frame = "mesh-status",
+                identity = %format!("{mesh} {publisher} changed_at_rafka_ms={revision}"),
+                outcome = "ignored",
+            ).in_scope(|| tracing::info!("an identical mesh status fact is ignored"));
         }
         return false;
     }
