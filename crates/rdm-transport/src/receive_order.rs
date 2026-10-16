@@ -24,8 +24,13 @@
 //! complete snapshot installs or the delta applies; [`ReceiveOrder::installed`] also records
 //! the source version installed by a topology read, whose chunks carry no publication timestamp.
 //!
-//! Operation facts without keys, Concern and reserved variants retain their
-//! existing handler data rules pending their receive-conformance rows.
+//! NodeDeleted uses [`node_deleted_receipt`] against the retained deletion under its installation
+//! lock: an exact operation/birth repeat emits `via-duplicate`, another deletion of the retained
+//! NodeId is refused by the existing deleted-identity rule, and an unheld terminal fact applies
+//! regardless of unrelated traffic. Event timestamps never order or expire that fact.
+//!
+//! Round hooks, Concern and reserved variants retain their existing handler data rules pending
+//! their receive-conformance rows.
 
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;
@@ -68,6 +73,39 @@ pub(crate) fn admit_status(frame: &'static str, subject: &str, held: Option<(&st
         return false;
     }
     true
+}
+
+/// The disposition of a NodeDeleted fact against the retained terminal record.
+pub(crate) enum NodeDeletedReceipt {
+    /// No terminal record is held for the NodeId: apply the fact.
+    Apply,
+    /// The operation and exact birth were already applied: change nothing.
+    Duplicate,
+    /// Another terminal record already deletes this NodeId: retain it and refuse the offered fact.
+    AlreadyDeleted,
+}
+
+/// Classify a terminal operation fact using only its operation identity and exact subject birth.
+/// The caller holds the retained-deletion lock through classification and installation. There is
+/// no separate receipt history, ordering counter or timestamp floor for an operation fact.
+pub(crate) fn node_deleted_receipt(held: Option<&rdm_core::LifecycleOp>, offered: &rdm_core::LifecycleOp) -> NodeDeletedReceipt {
+    let Some(held) = held else { return NodeDeletedReceipt::Apply };
+    if held.key() == offered.key() && held.node_id == offered.node_id && held.incarnation == offered.incarnation {
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-duplicate",
+            frame = "node-deleted",
+            identity = %format!("node-deleted {} {} {} {}/{}", offered.build_id, offered.attempt, offered.operation, offered.node_id, offered.incarnation),
+            build_id = %offered.build_id,
+            attempt = offered.attempt,
+            operation = %offered.operation,
+            node_id = %offered.node_id,
+            incarnation_id = %offered.incarnation,
+            outcome = "ignored",
+        ).in_scope(|| tracing::info!("the terminal operation fact is already held: ignored"));
+        NodeDeletedReceipt::Duplicate
+    } else {
+        NodeDeletedReceipt::AlreadyDeleted
+    }
 }
 
 /// The source a frame's order key orders within.

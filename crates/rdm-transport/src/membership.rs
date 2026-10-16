@@ -4303,17 +4303,17 @@ impl DigestBook {
         let id = op.node_id.to_string();
         {
             let mut departed = self.departed.lock().unwrap();
-            if let Some((held, _)) = departed.get(&id) {
-                // The same departure again is a copy (every aggregate carries it for the retention); a
-                // different one names a birth that already left: refused by the departed fence, by
-                // name once. Its publisher carries it in every aggregate for the retention too, so a
-                // later copy of a departure already refused is refused with nothing more said.
-                let first_refusal = held.key() != op.key() && self.refused_departures.lock().unwrap().entry(id.clone()).or_default().insert(op.key());
-                drop(departed);
-                if first_refusal {
-                    reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-deleted");
+            match crate::receive_order::node_deleted_receipt(departed.get(&id).map(|(held, _)| held), &op) {
+                crate::receive_order::NodeDeletedReceipt::Apply => {}
+                crate::receive_order::NodeDeletedReceipt::Duplicate => return false,
+                crate::receive_order::NodeDeletedReceipt::AlreadyDeleted => {
+                    let first_refusal = self.refused_departures.lock().unwrap().entry(id.clone()).or_default().insert(op.key());
+                    drop(departed);
+                    if first_refusal {
+                        reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-deleted");
+                    }
+                    return false;
                 }
-                return false;
             }
             departed.insert(id.clone(), (op.clone(), now));
         }
