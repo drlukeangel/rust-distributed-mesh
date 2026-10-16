@@ -1,10 +1,15 @@
-//! Canonical length-first framing (node-rpc.md §10; ownership amendment §7).
+//! Canonical length-first framing (node-rpc.md §10; ownership amendment §7; node-rpc-envelope.md
+//! "Transport frames").
 //!
 //! ```text
-//! request direction:   target_len: varint | target | context_len: varint | context | request_len: varint | payload | FIN
-//! unary reply:         reply_len: varint | payload | FIN
-//! server streaming:    (frame_len: varint | frame)* | FIN
+//! request frame:   header_len: varint | Request  | target_len: varint | target | context_len: varint | context | request_len: varint | payload
+//! response frame:  header_len: varint | Response | reply_len: varint | reply
+//! ack frame:       header_len: varint | Ack
 //! ```
+//!
+//! Every frame, in either direction, begins with its [`TransportHeader`]: the delivery identity the
+//! runtime consumes before any protocol byte is read (node-rpc.md §43). A stream's FIN ends that
+//! stream, never an invocation.
 //!
 //! The receiver reads the [`Target`] first and alone: the op (which names the
 //! protocol and therefore the request ceiling) is checked against what this
@@ -14,7 +19,160 @@
 //! oversize request is refused before its body is allocated or read.
 
 use crate::context::CallContext;
+use crate::ids::{IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
+
+/// A sending node's exact birth, `(node.id, incarnation)`: the first half of every delivery identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Birth {
+    /// The node's minted id.
+    pub node_id: NodeId,
+    /// The incarnation of the birth.
+    pub incarnation: IncarnationId,
+}
+
+impl std::fmt::Display for Birth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.node_id.as_str(), self.incarnation.as_str())
+    }
+}
+
+/// One frame's delivery identity, `(sender, delivery_seq)`: minted by its sender, the same on every
+/// resend, never reused by the sending birth. A request's identity is also its `invocation_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DeliveryId {
+    /// The birth that minted it.
+    pub sender: Birth,
+    /// The sender's sequence; the first is 1.
+    pub delivery_seq: u64,
+}
+
+impl std::fmt::Display for DeliveryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{}", self.sender, self.delivery_seq)
+    }
+}
+
+/// The transport header every frame begins with (node-rpc-envelope.md "Transport frames"). Its
+/// postcard discriminant is a position: `Request` 0, `Response` 1, `Ack` 2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransportHeader {
+    /// A request frame: sections 0-2 follow.
+    Request {
+        /// The sending birth.
+        sender: Birth,
+        /// The frame's sequence; the request's `invocation_id` is `(sender, delivery_seq)`.
+        delivery_seq: u64,
+        /// The lowest `delivery_seq` the sender still holds unacked toward this receiver: it never
+        /// resends anything below it.
+        retire_below: u64,
+    },
+    /// A response frame: `reply_len | reply` follows.
+    Response {
+        /// The responding birth.
+        sender: Birth,
+        /// The frame's own sequence.
+        delivery_seq: u64,
+        /// As in `Request`.
+        retire_below: u64,
+        /// The request this frame answers.
+        invocation_id: DeliveryId,
+        /// The frame's position in the invocation's response: `0` for a unary reply; `Started` is
+        /// `0`, each `Data` the next, `Terminal` the last.
+        seq: u32,
+    },
+    /// The acknowledgement of one frame, naming that frame's identity; nothing follows.
+    Ack {
+        /// The acknowledged frame's sender.
+        sender: Birth,
+        /// The acknowledged frame's sequence.
+        delivery_seq: u64,
+    },
+}
+
+impl TransportHeader {
+    /// The identity of the frame this header begins, or for an `Ack` the identity it acknowledges.
+    pub fn delivery_id(&self) -> DeliveryId {
+        match self {
+            Self::Request { sender, delivery_seq, .. } | Self::Response { sender, delivery_seq, .. } | Self::Ack { sender, delivery_seq } => {
+                DeliveryId { sender: sender.clone(), delivery_seq: *delivery_seq }
+            }
+        }
+    }
+
+    /// The header's kind, as spans name it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Request { .. } => "request",
+            Self::Response { .. } => "response",
+            Self::Ack { .. } => "ack",
+        }
+    }
+
+    /// The `Ack` of the frame this header begins.
+    pub fn ack(&self) -> TransportHeader {
+        let DeliveryId { sender, delivery_seq } = self.delivery_id();
+        Self::Ack { sender, delivery_seq }
+    }
+}
+
+/// The largest encoded [`TransportHeader`] a reader reads; its declared length is checked against
+/// this before a byte of it is read. The largest a conforming sender writes is 88 (`Response`).
+pub const MAX_HEADER_BYTES: usize = 128;
+
+/// `varint(header_len) | header`: the header section every frame begins with.
+pub fn encode_header(h: &TransportHeader, out: &mut Vec<u8>) {
+    let bytes = postcard::to_allocvec(h).expect("a TransportHeader always encodes");
+    encode_varint(bytes.len() as u64, out);
+    out.extend_from_slice(&bytes);
+}
+
+/// A request frame: its header, then sections 0-2.
+pub fn encode_request_frame(h: &TransportHeader, header: &RequestHeader, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_header(h, &mut out);
+    out.extend(encode_request(header, payload));
+    out
+}
+
+/// A response frame: its header, then `reply_len | reply`.
+pub fn encode_response_frame(h: &TransportHeader, reply: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_header(h, &mut out);
+    out.extend(encode_frame(reply));
+    out
+}
+
+/// An ack frame: the header alone.
+pub fn encode_ack_frame(h: &TransportHeader) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_header(h, &mut out);
+    out
+}
+
+/// What reading a header section at the front of a buffer found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderRead {
+    /// The buffer ends inside the section.
+    NeedMore,
+    /// `424 PROTOCOL_VIOLATION`: over its bound, not a varint, or not a header of a known kind.
+    Bad(&'static str),
+    /// The header and the bytes its section took.
+    Read(TransportHeader, usize),
+}
+
+/// Read the header section at the front of `buf`.
+pub fn decode_header(buf: &[u8]) -> HeaderRead {
+    match decode_section(buf, 0, MAX_HEADER_BYTES) {
+        Section::NeedMore => HeaderRead::NeedMore,
+        Section::Bad => HeaderRead::Bad("transport header over its 128-byte bound or not a varint length"),
+        Section::Read(bytes, at) => match postcard::take_from_bytes::<TransportHeader>(bytes) {
+            Ok((h, rest)) if rest.is_empty() => HeaderRead::Read(h, at),
+            Ok(_) => HeaderRead::Bad("bytes past the transport header inside its section"),
+            Err(_) => HeaderRead::Bad("transport header does not decode, or names an unknown kind"),
+        },
+    }
+}
 
 /// The target: what the receiver reads first, alone. It is core, the same for every protocol: the
 /// op is checked against what this process serves (`op`, the protocol's ledger code; unserved is
@@ -417,6 +575,96 @@ mod tests {
         assert_eq!(parse_request_head(&bad, |_| Some(1)), RequestHead::BadLength { op: 0x01 });
         let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame[..frame.len() - 1], |_| Some(64)), Err(RequestHead::NeedMore));
+    }
+
+    fn birth() -> Birth {
+        Birth { node_id: NodeId::parse("abcdefghjkmn").unwrap(), incarnation: IncarnationId::parse("pqrstvwxyz01").unwrap() }
+    }
+
+    /// A birth's 26 bytes: each id is its postcard string, `0c` and its twelve characters.
+    const BIRTH: &str = "0c61626364656667686a6b6d6e0c7071727374767778797a3031";
+
+    fn section(h: &TransportHeader) -> String {
+        let mut out = Vec::new();
+        encode_header(h, &mut out);
+        hex::encode(out)
+    }
+
+    #[test]
+    fn the_three_transport_headers_are_frozen_byte_for_byte() {
+        let request = TransportHeader::Request { sender: birth(), delivery_seq: 1, retire_below: 1 };
+        assert_eq!(section(&request), format!("1d00{BIRTH}0101"), "Request: kind 0, the birth, delivery_seq, retire_below");
+        let response = TransportHeader::Response {
+            sender: birth(),
+            delivery_seq: 2,
+            retire_below: 1,
+            invocation_id: DeliveryId { sender: birth(), delivery_seq: 1 },
+            seq: 0,
+        };
+        assert_eq!(section(&response), format!("3901{BIRTH}0201{BIRTH}0100"), "Response: kind 1, its identity, retire_below, invocation_id, seq");
+        let ack = TransportHeader::Ack { sender: birth(), delivery_seq: 1 };
+        assert_eq!(section(&ack), format!("1c02{BIRTH}01"), "Ack: kind 2, the acknowledged frame's identity");
+        assert_eq!(request.ack(), ack, "a frame's ack names its identity");
+        for h in [request, response, ack] {
+            let mut b = Vec::new();
+            encode_header(&h, &mut b);
+            assert_eq!(decode_header(&b), HeaderRead::Read(h, b.len()));
+        }
+    }
+
+    #[test]
+    fn a_frame_is_its_header_section_then_its_protocol_sections() {
+        let request = TransportHeader::Request { sender: birth(), delivery_seq: 1, retire_below: 1 };
+        let frame = encode_request_frame(&request, &t(), b"hi");
+        assert_eq!(hex::encode(&frame), format!("1d00{BIRTH}0101" ) + "04026e3101" + "0400000000" + "026869");
+        let HeaderRead::Read(h, at) = decode_header(&frame) else { panic!("the header reads") };
+        assert_eq!(h, request);
+        assert_eq!(decode_request(&frame[at..], |_| Some(64)), Ok((0x01, t(), &b"hi"[..])), "sections 0-2 follow the header unchanged");
+        let response = TransportHeader::Response {
+            sender: birth(),
+            delivery_seq: 2,
+            retire_below: 1,
+            invocation_id: DeliveryId { sender: birth(), delivery_seq: 1 },
+            seq: 0,
+        };
+        let frame = encode_response_frame(&response, b"ok");
+        let HeaderRead::Read(_, at) = decode_header(&frame) else { panic!("the header reads") };
+        assert_eq!(decode_single_frame(&frame[at..], 64), Ok(&b"ok"[..]));
+        let ack = encode_ack_frame(&TransportHeader::Ack { sender: birth(), delivery_seq: 1 });
+        assert_eq!(hex::encode(&ack), format!("1c02{BIRTH}01"), "nothing follows an ack's header");
+    }
+
+    #[test]
+    fn transport_headers_encode_within_their_bound() {
+        let request = TransportHeader::Request { sender: birth(), delivery_seq: u64::MAX, retire_below: u64::MAX };
+        let response = TransportHeader::Response {
+            sender: birth(),
+            delivery_seq: u64::MAX,
+            retire_below: u64::MAX,
+            invocation_id: DeliveryId { sender: birth(), delivery_seq: u64::MAX },
+            seq: u32::MAX,
+        };
+        let ack = TransportHeader::Ack { sender: birth(), delivery_seq: u64::MAX };
+        let len = |h: &TransportHeader| postcard::to_allocvec(h).unwrap().len();
+        assert_eq!((len(&request), len(&response), len(&ack)), (47, 88, 37), "the largest of each kind");
+        assert!(len(&response) <= MAX_HEADER_BYTES);
+    }
+
+    #[test]
+    fn a_header_over_its_bound_or_of_an_unknown_kind_is_a_violation() {
+        let mut over = Vec::new();
+        encode_varint(MAX_HEADER_BYTES as u64 + 1, &mut over);
+        assert!(matches!(decode_header(&over), HeaderRead::Bad(_)), "refused from the declared length, before a byte of it is read");
+        let unknown = hex::decode(format!("1c03{BIRTH}01")).unwrap();
+        assert!(matches!(decode_header(&unknown), HeaderRead::Bad(_)), "kind 3 does not exist");
+        let trailing = hex::decode(format!("1d02{BIRTH}0100")).unwrap();
+        assert!(matches!(decode_header(&trailing), HeaderRead::Bad(_)), "bytes past the header inside its section");
+        let a_request_without_a_header = encode_request(&t(), b"hi");
+        assert!(matches!(decode_header(&a_request_without_a_header), HeaderRead::Bad(_)), "a protocol section where the header belongs");
+        let whole = encode_ack_frame(&TransportHeader::Ack { sender: birth(), delivery_seq: 1 });
+        for cut in 0..whole.len() {
+            assert_eq!(decode_header(&whole[..cut]), HeaderRead::NeedMore, "a prefix of {cut} bytes needs more");
+        }
     }
 
     #[test]

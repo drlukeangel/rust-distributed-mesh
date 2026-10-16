@@ -15,6 +15,7 @@ pub mod connections;
 pub mod context;
 pub mod digest;
 pub mod dispatch;
+pub mod delivery;
 pub mod dto;
 pub mod forward;
 pub mod framing;
