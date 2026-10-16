@@ -9,14 +9,18 @@ the sole op registry and schema authority; other documents link to the ledger or
 and describe usage and policy.
 Transport connections are keyed by `endpoint_id`; `fabric_id` identifies the logical Fabric.
 
-One QUIC bi-stream is one invocation. The caller writes exactly one request and finishes its
-direction; the receiver answers one reply, or a stream of reply frames, then FIN. Every section
-is length-prefixed with an unsigned LEB128 varint (at most 10 bytes) and encoded with postcard.
+An invocation begins on the QUIC bi-stream that carries its request frame. Every frame, in either
+direction, begins with its transport header
+([Transport frames](#transport-frames-delivery-below-the-protocol)), then the protocol's sections.
+Every section, the header included, is length-prefixed with an unsigned LEB128 varint (at most 10
+bytes) and encoded with postcard. A stream's FIN ends that stream, never an invocation: an
+invocation ends with its terminal response frame, delivered by `invocation_id` on any stream from
+the responding birth.
 
 ```text
-request:          target_len | target | context_len | context | request_len | body | FIN
-unary reply:      reply_len | body | FIN
-server streaming: (frame_len | frame)* | FIN
+request frame:  header_len | Request  | target_len | target | context_len | context | request_len | body
+response frame: header_len | Response | reply_len | reply      (a unary reply is one, at seq 0)
+ack frame:      header_len | Ack
 ```
 
 ## Transport frames: delivery below the protocol
@@ -113,7 +117,9 @@ bound resets `424 PROTOCOL_VIOLATION`. The context is observability only. A part
 bound or malformed is dropped by name
 (`caller_system`, `traceparent`, `tracestate`, `baggage`; an invalid `traceparent` takes
 `tracestate` with it) and the call continues. Nothing in it affects dispatch, authorization,
-routing or execution. A context that does not decode at all resets `424 PROTOCOL_VIOLATION`.
+routing or execution, and no delivery identity is in it: that is the transport header's
+([Transport frames](#transport-frames-delivery-below-the-protocol)). A context that does not decode
+at all resets `424 PROTOCOL_VIOLATION`.
 
 Valid baggage propagates whole; only `test_case`, `scenario` and `operation` are projected
 to generic span attributes. The allowlist does not remove other keys from the carried value.

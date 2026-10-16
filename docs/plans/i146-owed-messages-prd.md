@@ -154,9 +154,13 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   past 64 positions or past its byte bound is refused 424; (21) a new birth of the sender starts its
   `delivery_seq` at 1 and the receiver keeps the old birth's window until its proven exit or removal.
   RED first.
-- **Page text.** Landed 2026-10-16 (§43, §33, §41, the certainty paragraph, "Transport frames"). To
-  Luke as exact old → new before e1 lands: the envelope's opening paragraph and stream diagram
-  (:12-19), the §1 context sentence, node-rpc.md §52's two forbidden designs.
+- **Page text.** Landed 2026-10-16 (§43, §33, §41, the certainty paragraph, "Transport frames").
+  Q18 (Luke 2026-10-16, arm A): yes to all three, landing with e1, applied on its branch: the
+  envelope's opening paragraph and frame diagram (:12-19; an invocation begins on the stream carrying
+  its request frame, every frame begins with its transport header, FIN ends a stream never an
+  invocation); the §1 context sentence (no delivery identity in the context, it is the transport
+  header's); node-rpc.md §52's two forbidden designs replaced, not deleted (a delivery-retry loop in a
+  primitive or a workflow; a cache of handler results).
 - **Sizing.** Two seats; `rdm-transport/src/{client,server,framer,wire,stream}.rs`,
   `rdm-core/src/{framing,outcome,codes}.rs`, `tools/mesh-audit`.
 - **State.** started 2026-10-16 on `i146-e1-delivery-layer` (lane e4s8, from main `556f3cd4`); bytes frozen above; RED cells next.
