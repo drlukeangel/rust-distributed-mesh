@@ -179,3 +179,4 @@ Critical path: e1 → e3 owner 1; e2 beside it.
 - `docs/architecture/node-rpc.md` §11, §31, §33, §41, §43; `node-rpc-envelope.md` "Caller execution and certainty"
 - `docs/plans/i144-provider-v2-prd.md` (Q13's origin: the e2b release run's red)
 - `docs/architecture/lifecycles/node-connections-delete.md` (0x22, the first stream this covers)
+- `docs/plans/i147-gossip-conformance-prd.md` (gossip's receive rules: separate, best-effort, no delivery layer)
