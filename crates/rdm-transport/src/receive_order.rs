@@ -1,7 +1,7 @@
 //! Receive classification for gossip and topology-read installs. Decisions use the frame's
 //! declared subject, identity and ordering fields, never the transport sender.
 //!
-//! MeshStatus uses [`admit_mesh_status`] against the actual held projection under the status
+//! MeshStatus and FabricStatus use [`admit_status`] against the actual held projection under the status
 //! book's installation lock. An older timestamp emits `via-stale` with both keys. Equal declared
 //! publisher/timestamp and identical status emits `via-duplicate` with outcome `ignored`;
 //! different status content emits `via-inconsistent`. Forwarding metadata is not status content.
@@ -24,46 +24,46 @@
 //! complete snapshot installs or the delta applies; [`ReceiveOrder::installed`] also records
 //! the source version installed by a topology read, whose chunks carry no publication timestamp.
 //!
-//! FabricStatus, the operation facts without keys, Concern and reserved variants retain their
+//! Operation facts without keys, Concern and reserved variants retain their
 //! existing handler data rules pending their receive-conformance rows.
 
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;
 use std::collections::HashMap;
 
-/// Admit a mesh status against the projection held under the status book's lock. The declared
-/// mesh, publisher and change instant identify the revision; forwarding metadata is not content.
+/// Admit a replacement status against the projection held under the status book's lock. The
+/// declared subject, publisher and change instant identify it; forwarding metadata is not content.
 /// This also serves statuses installed by a read, so classification and installation share the
 /// same held fact instead of maintaining a separate receive history.
-pub(crate) fn admit_mesh_status(mesh: &str, held: Option<&crate::membership::MeshStatus>, status: &str, publisher: &str, revision: u64) -> bool {
-    let Some(held) = held else { return true };
-    if revision < held.changed_at_rafka_ms {
+pub(crate) fn admit_status(frame: &'static str, subject: &str, held: Option<(&str, u64, &str)>, status: &str, publisher: &str, revision: u64) -> bool {
+    let Some((held_publisher, held_revision, held_status)) = held else { return true };
+    if revision < held_revision {
         tracing::info_span!(
             "rdm.mesh.membership.reject.via-stale",
-            frame = "mesh-status",
-            subject = %format!("{mesh} {publisher}"),
-            held_key = %format!("changed_at_rafka_ms={}", held.changed_at_rafka_ms),
+            frame,
+            subject = %format!("{subject} {publisher}"),
+            held_key = %format!("changed_at_rafka_ms={}", held_revision),
             frame_key = %format!("changed_at_rafka_ms={revision}"),
-        ).in_scope(|| tracing::info!("a mesh status older than the held revision is refused"));
+        ).in_scope(|| tracing::info!("a status older than the held revision is refused"));
         return false;
     }
-    if publisher == held.publisher && revision == held.changed_at_rafka_ms {
-        if status != held.status {
+    if publisher == held_publisher && revision == held_revision {
+        if status != held_status {
             tracing::info_span!(
                 "rdm.mesh.membership.reject.via-inconsistent",
-                frame = "mesh-status",
-                subject = %format!("{mesh} {publisher}"),
+                frame,
+                subject = %format!("{subject} {publisher}"),
                 revision,
-                held_status = %held.status,
+                held_status = %held_status,
                 frame_status = status,
-            ).in_scope(|| tracing::info!("a mesh status at the held revision has different content: refused"));
+            ).in_scope(|| tracing::info!("a status at the held revision has different content: refused"));
         } else {
             tracing::info_span!(
                 "rdm.mesh.membership.update.via-duplicate",
-                frame = "mesh-status",
-                identity = %format!("{mesh} {publisher} changed_at_rafka_ms={revision}"),
+                frame,
+                identity = %format!("{subject} {publisher} changed_at_rafka_ms={revision}"),
                 outcome = "ignored",
-            ).in_scope(|| tracing::info!("an identical mesh status fact is ignored"));
+            ).in_scope(|| tracing::info!("an identical status fact is ignored"));
         }
         return false;
     }

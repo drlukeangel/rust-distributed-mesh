@@ -895,7 +895,7 @@ impl StatusBook {
         match f {
             Frame::MeshStatus { mesh, status, publisher, changed_at_rafka_ms, .. } => {
                 let mut held = self.meshes.lock().unwrap();
-                if !crate::receive_order::admit_mesh_status(mesh, held.get(mesh), status, publisher, *changed_at_rafka_ms) {
+                if !crate::receive_order::admit_status("mesh-status", mesh, held.get(mesh).map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms) {
                     return false;
                 }
                 held.insert(mesh.clone(), MeshStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
@@ -905,26 +905,13 @@ impl StatusBook {
             }
             Frame::FabricStatus { fabric: f, status, publisher, changed_at_rafka_ms, .. } if f == fabric => {
                 let mut held = self.fabric.lock().unwrap();
-                if Self::refuse(held.as_ref().map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms)), (publisher.as_str(), *changed_at_rafka_ms), "the fabric") {
+                if !crate::receive_order::admit_status("fabric-status", f.as_str(), held.as_ref().map(|h| (h.publisher.as_str(), h.changed_at_rafka_ms, h.status.as_str())), status, publisher, *changed_at_rafka_ms) {
                     return false;
                 }
                 *held = Some(FabricStatus { status: status.clone(), publisher: publisher.clone(), changed_at_rafka_ms: *changed_at_rafka_ms });
                 true
             }
             _ => false,
-        }
-    }
-
-    /// A repeat of the change already held (same publisher, same `changed_at_rafka_ms`) changes
-    /// nothing; a change older than the held one is refused by name.
-    fn refuse(held: Option<(&str, u64)>, offered: (&str, u64), what: &str) -> bool {
-        match held {
-            Some((_, h)) if offered.1 < h => {
-                tracing::info!(reason = "older-than-held", what, held_at_rafka_ms = h, offered_at_rafka_ms = offered.1, "a status older than the one held is refused");
-                true
-            }
-            Some(h) => h == offered,
-            None => false,
         }
     }
 
