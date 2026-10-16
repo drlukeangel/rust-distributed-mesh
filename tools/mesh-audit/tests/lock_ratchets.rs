@@ -250,7 +250,7 @@ fn transport_header_reseal_is_atomic_fails_a_moved_golden_or_a_moved_bound() {
     t.edit("crates/rdm-core/src/framing.rs", "(47, 88, 37)", "(47, 88, 38)");
     only(check(t.root()), Ratchet::TransportHeaderResealIsAtomic);
     let g = Planted::of_tree();
-    g.edit("crates/rdm-core/src/framing.rs", r#"format!("1c02{BIRTH}01")"#, r#"format!("1c03{BIRTH}01")"#);
+    g.edit("crates/rdm-core/src/framing.rs", r#"format!("3901{BIRTH}0201{BIRTH}0100")"#, r#"format!("3901{BIRTH}0201{BIRTH}0101")"#);
     only(check(g.root()), Ratchet::TransportHeaderResealIsAtomic);
 }
 

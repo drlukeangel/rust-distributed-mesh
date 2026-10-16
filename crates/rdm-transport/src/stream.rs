@@ -377,6 +377,9 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                         if self.order.state() == OrderState::Done {
                             self.done = true;
                             self.owed.guard.complete();
+                            // The attempt task ends once the invocation is complete: nothing of the
+                            // call outlives its terminal.
+                            self.owed.close(false).await;
                         }
                         return Some(StreamItem::Frame(kind, frame));
                     }
@@ -386,6 +389,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                 ev = self.owed.attempted.recv() => match ev {
                     Some(Attempted::Reset(c)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::Reset(c)))),
                     Some(Attempted::ReceiverGone(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReceiverGone(why)))),
+                    Some(Attempted::TransportLost(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(why)))),
                     Some(Attempted::EndedPreCommit(_)) | None => {
                         return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into()))));
                     }
@@ -398,6 +402,11 @@ impl<P: StreamingProtocol> ReplyStream<P> {
 
     fn fail(&mut self, f: StreamFailure) -> StreamItem<P::Reply> {
         self.done = true;
+        // The owner has its end: the invocation is owed no longer.
+        self.owed.guard.complete();
+        if let Some(h) = &self.owed._task.0 {
+            h.abort();
+        }
         StreamItem::Failed(f)
     }
 }
@@ -483,6 +492,7 @@ impl NodeRpcClient {
                     Some(Attempted::EndedPreCommit(o)) => break o.retyped().expect("no reply before the commit cut"),
                     Some(Attempted::Reset(c)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Connection(format!("reset {c} before the commit cut"))),
                     Some(Attempted::ReceiverGone(_)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
+                    Some(Attempted::TransportLost(why)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Connection(why)),
                     None => break pre.take().expect("pre-commit").not_sent(last.clone()),
                 },
             }
@@ -490,6 +500,7 @@ impl NodeRpcClient {
         finish(ended.name());
         span.in_scope(|| tracing::info!("node rpc stream call finished"));
         let evidence = owed.evidence.lock().unwrap().clone();
+        owed.close(true).await;
         Err((ended, Some(evidence)))
     }
 }

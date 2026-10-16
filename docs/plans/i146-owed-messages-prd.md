@@ -172,7 +172,13 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   - A call's budget is its owner's bound: when it lapses the call ends `NotSent` or `Indeterminate`
     and its request is owed no longer (the owner's cancellation, span `delivery=cancelled`). An owner
     that needs delivery past a budget passes a longer one; no call accumulates owed requests behind
-    its caller.
+    its caller. Before the commit the attempt task alone enforces the send bound, so the outcome of a
+    dial the bound cuts is recorded (a carrier answers `CarrierEdgeLost` from it).
+  - `Budget::Stream` keeps its meaning, no reply bound but the transport's liveness: a committed call
+    whose connection is lost re-dials within its send bound to hold a connection the responder can
+    resend on; when none connects, the call ends `Indeterminate` (`ReplyLost`, named). `Overall` and
+    `Split` calls wait out their reply budget for a resent response. A lost stream ends no invocation
+    on its own (the envelope's transport frames).
   - A target the view does not name at the call is `NotSent(Resolve)` at once: nothing is minted or
     owed. Once owed, absence from the view ends nothing; `Gone` or another incarnation (the view's
     proof) ends it, `ReceiverGone`.

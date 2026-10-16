@@ -451,9 +451,12 @@ impl ReplyWithhold {
         self.armed.swap(false, Ordering::SeqCst)
     }
 
-    async fn hold(&self, send: &mut SendStream, bytes: &[u8]) {
+    async fn wait_release(&self) {
         self.reached.notify_one();
         self.release.notified().await;
+    }
+
+    async fn land(&self, send: &mut SendStream, bytes: &[u8]) {
         // The caller's abandonment of the reply stream is waited for, not slept for: it is the
         // fact the release is ordered after.
         let stopped = send.stopped().await.map(|c| c.map(|v| v.into_inner())).map_err(|e| e.to_string());
@@ -883,19 +886,24 @@ impl NodeRpcServer {
                 drop(serve);
                 match joined {
                     Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
-                        gate.implicit();
-                        let frame = d.owe_frame(&id, 0, reply, true);
                         if let Some(w) = self.inner.withhold.as_ref().filter(|w| w.take_armed()) {
+                            // The handler ran; its reply is not yet a frame: until the release the
+                            // request stays unaccepted and a repeat of it pending.
+                            w.wait_release().await;
+                            gate.implicit();
+                            let frame = d.owe_frame(&id, 0, reply, true);
                             if let Some(mut send) = out.take().await {
-                                w.hold(&mut send, &frame).await;
+                                w.land(&mut send, &frame).await;
                                 let _ = send.finish();
                             }
                         } else {
+                            gate.implicit();
+                            let frame = d.owe_frame(&id, 0, reply, true);
                             let _ = out.write(&frame).await;
                             out.finish().await;
                         }
-                        // Settled when the caller acks the reply; when its direction ends first, or the
-                        // reply waits unacked across a resend delay, it is resent on a new stream.
+                        // Settled when the caller acks the reply; when its direction ends first, the
+                        // reply is resent on a new stream.
                         let _ = acks.await;
                         if !d.response_settled(&id) {
                             d.push(&id, None);

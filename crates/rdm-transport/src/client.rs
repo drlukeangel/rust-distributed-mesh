@@ -221,6 +221,9 @@ pub(crate) enum Attempted {
     /// alone bounds every pre-commit step by the send budget, so the outcome of a dial cut by it is
     /// recorded before the call ends.
     SendDeadline(NotSentReason),
+    /// A `Budget::Stream` call, committed, lost its connection to the responder and no fresh dial
+    /// connected within its send bound: the transport's liveness, its only reply bound, ended.
+    TransportLost(String),
 }
 
 impl NodeRpcClient {
@@ -705,8 +708,14 @@ impl NodeRpcClient {
             state: state.clone(),
             attempts: attempts.clone(),
         };
-        let handle = tokio::spawn(tracing::Instrument::instrument(task.run(), span.clone()));
-        Ok(OwedCall { guard, frames, attempted, evidence, attempts, _task: AbortOnDrop(handle) })
+        // The attempts run on the dispatcher of the call's span, as the pool's dial does: a worker that
+        // holds no dispatcher still delivers their events to the call's subscriber.
+        let run = tracing::Instrument::instrument(task.run(), span.clone());
+        let handle = match tracing::Span::with_subscriber(span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone()) {
+            Some(d) => tokio::spawn(UnderDispatch { fut: Some(Box::pin(run)), dispatch: d }),
+            None => tokio::spawn(run),
+        };
+        Ok(OwedCall { guard, frames, attempted, evidence, attempts, _task: AbortOnDrop(Some(handle)) })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -784,6 +793,13 @@ impl NodeRpcClient {
                         }
                     }
                     Some(Attempted::NotSent(r)) => last = r,
+                    Some(Attempted::TransportLost(why)) => {
+                        break match (committed.take(), pre.take()) {
+                            (Some(c), _) => c.indeterminate(IndeterminateReason::ReplyLost(why)),
+                            (None, Some(p)) => p.not_sent(NotSentReason::Connection(why)),
+                            (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Connection(why)),
+                        };
+                    }
                     Some(Attempted::SendDeadline(r)) => {
                         span.record("delivery", "cancelled");
                         break match (committed.take(), stopped.take(), pre.take()) {
@@ -844,6 +860,7 @@ impl NodeRpcClient {
         };
         span.record("attempts", owed.attempts.load(std::sync::atomic::Ordering::SeqCst));
         let evidence = owed.evidence.lock().unwrap().clone();
+        owed.close(out.reply().is_none()).await;
         (out, Some(evidence))
     }
 }
@@ -861,11 +878,62 @@ pub(crate) struct OwedCall {
 }
 
 /// A task that ends when its handle is dropped.
-pub(crate) struct AbortOnDrop(pub(crate) tokio::task::JoinHandle<()>);
+/// A task's future polled, and dropped, under one dispatcher. A span the future holds is closed through
+/// its own dispatcher, but the registry releases that span's parent through the dispatcher of the thread
+/// the close happens on: a runtime that drops a finished or aborted future on a worker holding none would
+/// leave the parent (the caller's own span, and every span above it) open for good.
+struct UnderDispatch {
+    fut: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    dispatch: tracing::Dispatch,
+}
+
+impl std::future::Future for UnderDispatch {
+    type Output = ();
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        let dispatch = self.dispatch.clone();
+        let _current = tracing::dispatcher::set_default(&dispatch);
+        let Some(fut) = self.fut.as_mut() else { return std::task::Poll::Ready(()) };
+        let polled = fut.as_mut().poll(cx);
+        if polled.is_ready() {
+            self.fut = None;
+        }
+        polled
+    }
+}
+
+impl Drop for UnderDispatch {
+    fn drop(&mut self) {
+        if self.fut.is_some() {
+            let _current = tracing::dispatcher::set_default(&self.dispatch);
+            self.fut = None;
+        }
+    }
+}
+
+pub(crate) struct AbortOnDrop(pub(crate) Option<tokio::task::JoinHandle<()>>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(h) = &self.0 {
+            h.abort();
+        }
+    }
+}
+
+impl OwedCall {
+    /// End the owner's hold and wait for the attempt task to end, so nothing of the call (its span
+    /// above all) outlives it: aborted when the owner ends it early, else it ends on its own once
+    /// the invocation is complete (its last ack written, its request direction finished).
+    pub(crate) async fn close(&mut self, abort: bool) {
+        if abort {
+            self.guard.complete();
+        }
+        if let Some(h) = self._task.0.take() {
+            if abort {
+                h.abort();
+            }
+            let _ = h.await;
+        }
     }
 }
 
@@ -961,7 +1029,10 @@ impl Attempts {
             }
             if self.state.borrow().acked {
                 // Acked, its response not complete: hold a connection the responder can resend on.
-                self.hold_connection(attempt).await;
+                if let Err(why) = self.hold_connection(attempt).await {
+                    let _ = self.tx.send(Attempted::TransportLost(why));
+                    return;
+                }
                 attempt += 1;
                 continue;
             }
@@ -976,7 +1047,17 @@ impl Attempts {
                 tracing::info_span!("rdm.node_rpc.delivery.update.via-resend", delivery_id = %self.id, attempt, backoff_ms = pacing.after(attempt - 1).as_millis() as u64)
                     .in_scope(|| tracing::info!("no ack: the request is resent with the same identity"));
             }
-            let deadline = if committed { self.deadlines.1.unwrap_or(started + pacing.floor) } else { self.deadlines.0 };
+            // A committed `Budget::Stream` call lives as long as a connection to the responder can be
+            // had: each resend's dial is bounded by its send bound.
+            let stream_send = match self.opts.budget {
+                Budget::Stream { send } => Some(send),
+                _ => None,
+            };
+            let deadline = match (committed, stream_send) {
+                (false, _) => self.deadlines.0,
+                (true, Some(send)) => started + send,
+                (true, None) => self.deadlines.1.unwrap_or(started + pacing.floor),
+            };
             let node = match self.client.reach(&self.target) {
                 Ok(n) => n,
                 Err(r) => {
@@ -994,6 +1075,10 @@ impl Attempts {
                     if resend {
                         if let RpcOutcome::NotSent(n) = out {
                             last = n.reason().clone();
+                            if committed && stream_send.is_some() && matches!(last, NotSentReason::Connection(_) | NotSentReason::Deadline) {
+                                let _ = self.tx.send(Attempted::TransportLost(format!("the request's connection was lost and its resend found none within its send bound ({last:?})")));
+                                return;
+                            }
                             let _ = self.tx.send(Attempted::NotSent(last.clone()));
                         }
                         self.pause(resume_at).await;
@@ -1033,8 +1118,14 @@ impl Attempts {
 
     /// Acked, response not complete, its stream gone: keep a pooled connection to the responder,
     /// on the schedule, until the response completes there.
-    async fn hold_connection(&mut self, attempt: u32) {
+    /// `Err` for a `Budget::Stream` call when no connection to the responder can be had within its
+    /// send bound: the transport's liveness is that budget's reply bound.
+    async fn hold_connection(&mut self, attempt: u32) -> Result<(), String> {
         let pacing = self.client.delivery.pacing();
+        let stream_budget = match self.opts.budget {
+            Budget::Stream { send } => Some(send),
+            _ => None,
+        };
         if let Ok(node) = self.client.reach(&self.target) {
             let key = PoolKey { scope: self.opts.scope.clone(), peer: node.peer, incarnation: node.observed.as_ref().map(|n| n.incarnation.clone()) };
             let spec = DialSpec {
@@ -1047,10 +1138,20 @@ impl Attempts {
                 admission: self.client.admission.clone(),
                 delivery: Some(self.client.delivery.clone()),
             };
-            let _ = self.client.pool.get_or_dial(&key, spec, Instant::now() + pacing.floor).await;
+            let bound = Instant::now() + stream_budget.unwrap_or(pacing.floor);
+            let dial = self.client.pool.get_or_dial(&key, spec, bound);
+            let held = tokio::select! {
+                r = dial => r.map(|_| ()).map_err(|e| format!("{e:?}")),
+                // The invocation completed on a resent frame: nothing to hold.
+                _ = self.state.changed() => Ok(()),
+            };
+            if let (Err(e), Some(send)) = (held, stream_budget) {
+                return Err(format!("the connection to the responder was lost and no dial connected within the {} ms send bound ({e})", send.as_millis()));
+            }
         }
         let until = Instant::now() + pacing.after(attempt.max(1));
         self.pause(until).await;
+        Ok(())
     }
 
     /// The refusal of a request the receiver stopped before it was complete: its response frame is
