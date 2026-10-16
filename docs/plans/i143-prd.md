@@ -2502,7 +2502,7 @@ open (added 2026-10-15 from the `7257ff09` release run). Landed: `f877a260` (For
 
 ### State
 
-not started (opened 2026-10-15; brief: /home/admin/lane-queue/i143-lead/briefs/rulings-2026-10-15-brief.md §6)
+superseded 2026-10-15 by `docs/plans/i144-provider-v2-prd.md` (e1 the four states, e2 the fact and the recovery tick, e3 resumption and the delete of a suspended runtime, e4 the canaries): this block builds nothing; its rows are i144's R1-R20
 
 ### Remaining
 
