@@ -1250,6 +1250,43 @@ mod tests {
         eprintln!("span via-held-running cancelled-os-stopped trace_id={}", cancelled[0].trace_id);
     }
 
+    /// CONTRACT (node-delete.md "OS-suspended target": the `os-stopped` row is removed once, `deleted`, or
+    /// `exited` when the mesh-primary's tick reads the exit first): an os-stopped member whose delete has
+    /// begun (its `NodeDeleting` overlay taken) is read `Running` by the tick, as a terminate's kill wakes
+    /// a suspended runtime before it dies. The fact stands for the delete, and no hold opens. Must NOT
+    /// happen: the fact cleared `running` under the delete that owns the birth (the release gate's
+    /// `provider_state` explicit-delete cell saw it), or a fresh hold on a birth being deleted.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_running_read_under_an_announced_delete_leaves_the_os_stopped_fact_to_the_delete() {
+        let (recovery, status, node, provider, book, view) = os_stopped_member(crate::deployment::provider::DeploymentStatus::OsStopped, "dep-os-stopped-deleting");
+        let inc = node.incarnation_id.clone().unwrap();
+        let verdicts = Mutex::new(HashMap::new());
+        assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::OsStopped);
+        assert!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some(), "the os-stopped fact is recorded");
+        let op = rdm_core::LifecycleOp {
+            build_id: "dbs8z9896j0f".into(),
+            attempt: 1,
+            operation: "node.delete:mesh2.rpc.1".into(),
+            node_id: node.node_id.clone(),
+            incarnation: inc.clone(),
+            name: node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        assert!(book.deleting(op), "the delete's overlay is taken");
+        // The terminate's kill wakes the suspended runtime: the tick reads it Running.
+        let running = Arc::new(Answers { domain: provider.domain.clone(), status: crate::deployment::provider::DeploymentStatus::Running, inspected: Default::default() });
+        let (ticking, _, _) = recovery_of(&view, book, running, recovery.nodes_storage.clone(), status.clone());
+        let capture = crate::span_capture::Capture::new("i144-e2-os-stopped-deleting");
+        {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            assert_eq!(ticking.recover_if_proven(&node, &verdicts).await, Inspected::Running);
+        }
+        assert!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some(), "the fact stands for the delete that owns the birth");
+        assert!(capture.named("rdm.node_admin.node.update.via-os-stopped").is_empty(), "no clear under the delete");
+        assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "no hold on a birth being deleted");
+    }
+
     /// CONTRACT (deployment-provider.md §2.5: "A new authority revalidates the stored fact with its own
     /// inspection"; i144 R10): an `os-stopped` row another admin wrote stands when a successor
     /// mesh-primary first inspects the birth. Its own `OsStopped` verdict confirms it once

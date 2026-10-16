@@ -742,6 +742,15 @@ impl Delivery {
 
     /// The request stream of `id` is gone (or a repeat proved its caller reachable on another
     /// connection, `reply_to`): resend whatever of its response is still owed, on a new stream.
+    /// The caller of `id` is reachable at `reply_to` now (a repeat arrived from there): a response
+    /// owed later, or resent later, goes there. Nothing is resent for it: the stream the response
+    /// was written on carries it while it lives, and its end resends what it left unacked.
+    pub(crate) fn answer_to(&self, id: &DeliveryId, reply_to: iroh::PublicKey) {
+        if let Some(o) = self.inner.st.lock().unwrap().owed.get_mut(id) {
+            o.reply_to = reply_to;
+        }
+    }
+
     pub(crate) fn push(&self, id: &DeliveryId, reply_to: Option<iroh::PublicKey>, why: &str) {
         let mut st = self.inner.st.lock().unwrap();
         let Some(o) = st.owed.get_mut(id) else { return };
