@@ -234,6 +234,10 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         let held: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         assert_eq!(held.len(), 1, "the node holds the one connection it opened: {held:?}");
 
+        let book = &admin.observer.membership.book;
+        let seq_at_call = book.get(launch.node_id.as_str()).expect("the admin side hears the node").0.digest_seq;
+        let mut digests = book.digest_changes();
+        digests.borrow_and_update();
         let status = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let reply = call_on(&admin, &target, &status, None).await;
         assert!(!matches!(reply, StatusReply::ConnectionsDeleted { .. }), "no handler on the node's Status door performs a closure: {reply:?}");
@@ -243,6 +247,15 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         for name in ["rdm.node_admin.node.connections.delete.via-delete-connections", "rdm.node_admin.node.connections.delete.via-connections-deleting", "rdm.node_rpc.connection.reject.via-admission-block"] {
             assert_eq!(named(&spans, name), 0, "nothing of a closure ran: {name}");
         }
+        // No recorded state: the node's next digest, published after the request, still says ReadyForTraffic.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_call) {
+                digests.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("the node publishes a digest after the request");
+        assert_eq!(book.get(launch.node_id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "the node's status is unchanged");
 
         // The request at the handler that implements it, the node command op 0x22, closes it.
         let command = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
