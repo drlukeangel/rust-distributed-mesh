@@ -14,6 +14,7 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 | `0x1F` | `build-facts` | `BuildFacts` | [`BuildFactsRequest`](#t-rdm_core-build_facts-BuildFactsRequest) | [`BuildFactsReply`](#t-rdm_core-build_facts-BuildFactsReply) |
 | `0x20` | `build` | `Build` | [`BuildRequest`](#t-rdm_core-build-BuildRequest) | [`BuildReply`](#t-rdm_core-build-BuildReply) |
 | `0x21` | `node-primary-update` | `NodePrimaryUpdate` | [`NodePrimaryUpdateRequest`](#t-rdm_core-handover-NodePrimaryUpdateRequest) | [`NodePrimaryUpdateReply`](#t-rdm_core-handover-NodePrimaryUpdateReply) |
+| `0x22` | `node-command` | `NodeCommand` | [`NodeCommandRequest`](#t-rdm_core-node_command-NodeCommandRequest) | [`NodeCommandReply`](#t-rdm_core-node_command-NodeCommandReply) |
 | `0x40` | `broker-data` | `BrokerData` | [`BrokerDataRequest`](#t-rdm_test-families-BrokerDataRequest) | [`BrokerDataReply`](#t-rdm_test-families-BrokerDataReply) |
 | `0x70` | `proof-store` | `ProofStore` | [`ProofRequest`](#t-rdm_test-proof_store-ProofRequest) | [`ProofReply`](#t-rdm_test-proof_store-ProofReply) |
 | `0x71` | `resolve-probe` | `ResolveProbe` | [`ResolveRequest`](#t-rdm_test-resolve_probe-ResolveRequest) | [`ResolveReply`](#t-rdm_test-resolve_probe-ResolveReply) |
@@ -979,6 +980,74 @@ The answer to a node.primary.update call.
 | 16 | **`Failed`** |  |  | `name() = "failed"` | The commanded `node.primary.update` ended failed after the committed row (Q10, R-PU2, R-BI4): |
 | 16.0 | `step` | `String` |  |  | The step that failed (`primary-update`). Within `MAX_FAILED_STEP_BYTES`. |
 | 16.1 | `reason` | `String` |  |  | Why the step failed. Within `MAX_FAILED_REASON_BYTES`. |
+
+## 0x22 `node-command`
+
+`impl NodeProtocol for NodeCommand` · `crates/rdm-core/src/node_command.rs` · rdm-core
+
+| const | value |
+|---|---|
+| `OP` | `0x22` |
+| `NAME` | `"node-command"` |
+| `FORWARDABLE` | `false` |
+| `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
+| `REQUEST_VARIANTS` | `1` |
+| `REPLY_VARIANTS` | `11` |
+| `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
+| `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
+
+<a id="t-rdm_core-node_command-NodeCommandRequest"></a>
+
+### `NodeCommandRequest`
+
+`crates/rdm-core/src/node_command.rs` · enum · 1 variants · rdm-core
+
+A command to the exact birth it names.
+
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`DeleteConnections`** |  |  | `op() = "delete-connections"` | `node.connections.delete` (R-CR3): the exact birth hard-cuts the connections the scope |
+| 0.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose connections are cut. |
+| 0.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 0.2 | `scope` | `ConnectionScope` → [`ConnectionScope`](#t-rdm_core-status-ConnectionScope) |  |  | Which connections. |
+
+<a id="t-rdm_core-node_command-NodeCommandReply"></a>
+
+### `NodeCommandReply`
+
+`crates/rdm-core/src/node_command.rs` · enum · 11 variants · rdm-core
+
+One reply frame of a node command's stream. Positional order is part of the wire schema.
+
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`CommandAccepted`** |  |  | `name() = "command-accepted"` | The node validated the command and runs it: the stream's first frame. It carries no |
+| 0.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that accepted it. |
+| 0.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its incarnation. |
+| 1 | **`ConnectionsDeleting`** |  |  | `name() = "connections-deleting"` | `All` only: the node's block on new application work is in force; it is connections-deleting |
+| 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth that entered connections-deleting. |
+| 1.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its incarnation. |
+| 2 | **`ConnectionsDeleted`** |  |  | `name() = "connections-deleted"` | `node.connections.deleted`: the cut is complete. Every connection named is accounted for by |
+| 2.0 | `closed` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries cut. |
+| 2.1 | `not_open` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The ids named that are no open entry of the birth: unknown, or already closed. |
+| 2.2 | `held` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rdm_core-ids-ConnectionId) |  |  | The open entries the birth still holds. |
+| 2.3 | `receipt` | `Option<ConnectionsReceipt>` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | For `All`, what the closure established; `None` for `Connections`. |
+| 3 | **`RejectedConnectionScope`** |  |  | `name() = "rejected-connection-scope"` | The scope names nothing the birth can cut (an empty list, or more ids than one request |
+| 3.0 | `reason` | `String` |  |  | Why, by name. |
+| 4 | **`RejectedStaleIncarnation`** |  |  | `name() = "rejected-stale-incarnation"` | The command names another birth than the one it reached: the incarnation this one holds. |
+| 4.0 | `held` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation the receiver holds. |
+| 5 | **`NotReady`** |  |  | `name() = "not-ready"` | The receiver cannot take the command yet (no connections writer, its server not ready). |
+| 5.0 | `reason` | `String` |  |  | Why, by name. |
+| 6 | **`PeerUnresolved`** |  |  | `name() = "peer-unresolved"` | The receiver could not resolve the peer the call came over. |
+| 6.0 | `reason` | `String` |  |  | Why, by name. |
+| 7 | **`Busy`** |  |  | `name() = "busy"` | The receiver is at its admission bound for the op. |
+| 7.0 | `reason` | `String` |  |  | Why, by name. |
+| 8 | **`RejectedConnectionsDeleting`** |  |  | `name() = "rejected-connections-deleting"` | The receiver refuses new non-status calls while connections-deleting. Never sent for this op, |
+| 8.0 | `reason` | `String` |  |  | Why, by name. |
+| 9 | **`Malformed`** |  |  | `name() = "malformed"` | The request did not decode or broke the protocol's bounds. |
+| 9.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | What was malformed. |
+| 10 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not authorized for the op. |
+| 10.0 | `reason` | `String` |  |  | Why, by name. |
 
 ## 0x40 `broker-data`
 

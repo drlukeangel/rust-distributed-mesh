@@ -755,9 +755,6 @@ pub trait LifecycleEvents: Send + Sync {
     /// (`op` is the start's operation on that exact birth). Its stop ends here and nowhere else
     /// (node-start.md step 2), the birth is held `Pending`, and this mesh's projection says so.
     async fn joined(&self, op: &LifecycleOp);
-    /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
-    /// channel and the backbone.
-    async fn connections_deleting(&self, op: &LifecycleOp);
     /// The birth admitted the `stop-node` command (its call came back admitted): the mesh-primary
     /// sets it stopping (states.md "Who sets each state"), and its projection carries that. No frame
     /// is published: `NodeLeaving` is a reserved position (gossip.md frame catalog).
@@ -778,7 +775,6 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
-    async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
     /// stands in for one.
@@ -1833,8 +1829,9 @@ impl DeploymentPipeline<'_> {
             let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
             let _: CommandAdmission = self
                 .step(&mut run, RetireStep::DeleteConnections.name(), async {
-                    let op = self.command_op(&ctx, &node)?;
-                    self.lifecycle.connections_deleting(&op).await;
+                    // Nothing is recorded before the command leaves (i144 R22): the node reports
+                    // connections-deleting on its command's stream and its mesh-primary records it then.
+                    self.command_op(&ctx, &node)?;
                     match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
                         a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
                         other => Err(format!("{}: node.connections.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name)),

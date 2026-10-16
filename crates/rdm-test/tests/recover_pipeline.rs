@@ -73,7 +73,6 @@ impl LifecycleEvents for Recorder {
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
-    async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64

@@ -11,6 +11,7 @@ mod crockford60_parity;
 mod forward_wire;
 mod handover_wire;
 mod join_wire;
+mod node_command_wire;
 mod reconnect;
 mod status_wire;
 mod topology_wire;

@@ -145,6 +145,30 @@ impl Birth {
         }
     }
 
+    /// A node command (op 0x22, i144 R22) to the birth, read through its ordered stream: every frame,
+    /// or the failure that ended it.
+    async fn command(&self, req: &rdm_core::node_command::NodeCommandRequest) -> Result<Vec<rdm_core::node_command::NodeCommandReply>, String> {
+        use rdm_transport::stream::StreamItem;
+        let (mut stream, _) = match self.admin.observer.client.call_stream::<rdm_core::node_command::NodeCommand>(&self.target, req, &Self::opts()).await {
+            Ok(s) => s,
+            Err((RpcOutcome::Reply(r), _)) => return Ok(vec![r.into_value()]),
+            Err((other, _)) => return Err(format!("{} ended {}: {other:?}", req.op(), other.name())),
+        };
+        let mut frames = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                StreamItem::Frame(kind, frame) => {
+                    frames.push(frame);
+                    if matches!(kind, rdm_core::streaming::FrameKind::Terminal | rdm_core::streaming::FrameKind::Refusal(_)) {
+                        return Ok(frames);
+                    }
+                }
+                StreamItem::Failed(f) => return Err(format!("{} broke after {frames:?}: {f:?}", req.op())),
+            }
+        }
+        Err(format!("{} ended without its terminal after {frames:?}", req.op()))
+    }
+
     /// One call into the held op, in flight until [`PullServer::release`]; resolves once it entered.
     async fn hold_one_call(self: &std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
         self.pull.hold();
@@ -524,5 +548,46 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parke
         assert!(birth.running.own.is_parked(), "the stop that answered Stopped left the birth parked");
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
+/// CONTRACT (i144 R22; Luke Q7: "Replies (NodeCommand replies, classified into the existing stream
+/// order)"): the node answers `node.connections.delete` on op 0x22 with its ordered stream. `All` with
+/// no work in flight: `CommandAccepted`, `ConnectionsDeleting`, `ConnectionsDeleted` `Established`.
+/// `All` with a call held in flight past the birth's 500 ms bound: `CommandAccepted`,
+/// `ConnectionsDeleting`, `ConnectionsDeleted` `Deadline` naming the one call. `Connections([id])`:
+/// `CommandAccepted`, `ConnectionsDeleted` naming the id not open, no progress frame. A stale
+/// incarnation: one refusal frame. Must NOT happen: a progress frame for `Connections`, a completion
+/// before the progress frame, or a refusal after the acceptance.
+#[test]
+fn the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both_scopes() {
+    use rdm_core::node_command::{NodeCommandReply as N, NodeCommandRequest};
+    use rdm_core::status::ConnectionScope;
+    let cell = "the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both_scopes";
+    let cap = crate::common::capture(cell);
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let delete = |b: &Birth, incarnation: IncarnationId, scope: ConnectionScope| NodeCommandRequest::DeleteConnections { node_id: b.launch.node_id.clone(), incarnation, scope };
+        let names = |frames: &[N]| frames.iter().map(|f| f.name()).collect::<Vec<_>>();
+
+        let fresh = Birth::up("node-command-order").await;
+        let never = rdm_core::ConnectionId::mint();
+        let some = fresh.command(&delete(&fresh, fresh.launch.incarnation.clone(), ConnectionScope::Connections(vec![never.clone()]))).await.expect("Connections ends");
+        assert_eq!(names(&some), ["command-accepted", "connections-deleted"], "Connections: the acceptance, then the completion, no progress frame: {some:?}");
+        assert!(matches!(&some[1], N::ConnectionsDeleted { not_open, receipt: None, .. } if *not_open == vec![never.clone()]), "{some:?}");
+        let stale = fresh.command(&delete(&fresh, IncarnationId::mint(), ConnectionScope::All)).await.expect("a refusal is one frame");
+        assert!(matches!(stale.as_slice(), [N::RejectedStaleIncarnation { .. }]), "{stale:?}");
+        let all = fresh.command(&delete(&fresh, fresh.launch.incarnation.clone(), ConnectionScope::All)).await.expect("All ends");
+        assert_eq!(names(&all), ["command-accepted", "connections-deleting", "connections-deleted"], "All: acceptance, the node's report, completion: {all:?}");
+        assert!(matches!(&all[2], N::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Established { .. }), .. }), "{all:?}");
+        let _ = std::fs::remove_dir_all(&fresh.dir);
+
+        let bounded = std::sync::Arc::new(Birth::up_bounded("node-command-deadline", Duration::from_millis(500)).await);
+        let held = bounded.hold_one_call().await;
+        let deadline = bounded.command(&delete(&bounded, bounded.launch.incarnation.clone(), ConnectionScope::All)).await.expect("All ends at its bound");
+        assert_eq!(names(&deadline), ["command-accepted", "connections-deleting", "connections-deleted"], "{deadline:?}");
+        assert!(matches!(&deadline[2], N::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Deadline { last_in_flight: 1, .. }), .. }), "Deadline names the call it last saw in flight: {deadline:?}");
+        bounded.pull.release();
+        held.await.unwrap();
+        let _ = std::fs::remove_dir_all(&bounded.dir);
     })
 }

@@ -458,7 +458,7 @@ async fn start_booted(
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
     // Every connection this node accepts from a live peer is a recovery trigger for its own dial
     // toward that birth, never a Direct entry (R-CN1).
-    let server = serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone())
+    let server = serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone())
         .carry::<rdm_core::status::Status>()
         .with_ready_gate(ready.clone())
         .seal(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
@@ -1157,6 +1157,31 @@ fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
         MemberStatus::Leaving => N::Leaving,
     }
 }
+
+/// The node command door (op 0x22, i144 R22; Luke Q6, Q7): a command from this birth's mesh-primary,
+/// answered on the command's ordered reply stream by [`crate::node_self::NodeSelf::serve_node_command`].
+/// Nothing checks who is calling (node-rpc.md §14): the caller, the birth holding the call's endpoint
+/// key in the member projection this node installed, is named in spans and is the command's commander.
+fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
+    b.serve_stream::<NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |peer: rdm_transport::PeerContext, req: NodeCommandRequest, sink| {
+        let slot = slot.clone();
+        async move {
+            let Some(me) = slot.get().cloned() else {
+                return Ok(NodeCommandReply::NotReady { reason: "this node has not joined its mesh yet".into() });
+            };
+            let sender = me.membership.projected_member_at(&peer.endpoint_id.to_string());
+            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
+            me.addressed.note(&peer.endpoint_id);
+            let commander = sender.as_ref().map(|d| d.node.node_id.clone());
+            let reply = me.own.serve_node_command(commander.as_ref(), &req, sink).await;
+            tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("a node command naming this node was decided"));
+            Ok(reply)
+        }
+    })
+}
+
 
 /// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
 /// has joined (until then `NotReady`). An rpc node is never an authority: every upward

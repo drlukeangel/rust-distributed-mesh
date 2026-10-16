@@ -136,13 +136,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn joined(&self, op: &rdm_core::LifecycleOp) {
         self.membership.book.joined(op);
     }
-    async fn connections_deleting(&self, op: &rdm_core::LifecycleOp) {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
-        span.in_scope(|| {
-            self.membership.book.admitted(op, MemberStatus::Draining);
-            tracing::info!("node.connections.delete {{ All }} was admitted: the birth is connections-deleting in this mesh-primary's projection");
-        });
-    }
     async fn leaving(&self, op: &rdm_core::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         span.in_scope(|| {

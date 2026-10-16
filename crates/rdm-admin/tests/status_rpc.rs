@@ -1157,3 +1157,131 @@ fn new_fabric_primary_applies_a_mesh_declaration_for_a_mesh_it_only_heard_of() {
         assert_eq!(spans_where(&spans, DECLARATION, &[("op", "declare-mesh-state"), ("outcome", "rejected-not-authority")]).len(), 1);
     });
 }
+
+/// How a scripted member answers the node command op 0x22 (i144 R22).
+#[derive(Clone)]
+enum Script {
+    /// One refusal frame before any acceptance.
+    Refuse(rdm_core::node_command::NodeCommandReply),
+    /// `CommandAccepted`, then `ConnectionsDeleting` for `All`, then `end`: the completion, or, when
+    /// `None`, nothing more: the stream stays open until the member goes away.
+    Accept { end: Option<rdm_core::node_command::NodeCommandReply> },
+}
+
+/// A member birth serving only the node command op 0x22, answering as `script` says.
+async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
+    let server = ServerBuilder::new()
+        .serve_stream::<NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: NodeCommandRequest, sink| {
+            let script = script.clone();
+            async move {
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req;
+                match script {
+                    Script::Refuse(refusal) => Ok(refusal),
+                    Script::Accept { end } => {
+                        let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        if matches!(scope, rdm_core::status::ConnectionScope::All) {
+                            sink.data(N::ConnectionsDeleting { node_id, incarnation }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                        }
+                        match end {
+                            Some(end) => Ok(end),
+                            None => std::future::pending().await,
+                        }
+                    }
+                }
+            }
+        })
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
+        .unwrap();
+    let ep = b.endpoint().await;
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+    (ResolvedNode { node_id: b.node.node_id.clone(), name: b.node.name.clone(), endpoint_id: b.key.public(), transport_addr: addr, incarnation: b.node.incarnation_id.clone().unwrap() }, router)
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (i144 R22; Luke Q6, Q7: the node reports admission and completion on the command's
+/// ordered reply stream, op 0x22; the mesh-primary records only what the node reported; NotSent
+/// changes nothing; a stream broken after the acceptance is incomplete; Deadline keeps
+/// connections-deleting, Established completes it): the mesh-primary carries `node.connections.delete`
+/// to five members of its mesh, each answering one way. An `Established` and a `Deadline` completion
+/// end `Deleted` with that receipt, each after the record of the node's `ConnectionsDeleting`, and the
+/// receipt is held for the birth's rename; a break after the acceptance ends `Incomplete`, reported,
+/// with no receipt held; a refusal before acceptance ends `RefusedByNode` with nothing recorded; a
+/// member this mesh-primary cannot resolve ends `NotSent` with nothing recorded and its Status answer
+/// names it. Must NOT happen: a record before the node's report, a completion claimed for a broken
+/// stream, or a NotSent folded into a refusal.
+#[test]
+fn a_carried_connections_delete_ends_each_way_by_name_and_records_only_what_the_node_reported() {
+    let cell = "a_carried_connections_delete_ends_each_way_by_name_and_records_only_what_the_node_reported";
+    let capture = capture(cell);
+    capture.run(carried_connections_delete_ends(&capture));
+}
+
+async fn carried_connections_delete_ends(capture: &Capture) {
+    use rdm_admin::status_rpc::CarryEnd;
+    use rdm_core::node_command::NodeCommandReply as N;
+    use rdm_core::status::{ConnectionScope, ConnectionsReceipt};
+    let mp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
+    let members: Vec<Birth> = (1..=5).map(|i| birth(&format!("mesh1.rpc.{i}"), NodeKind::RpcNode, "mesh1", false, false)).collect();
+    let established = ConnectionsReceipt::Established { in_flight: 0, closed: vec![] };
+    let deadline = ConnectionsReceipt::Deadline { last_in_flight: 1, closed: vec![], held: vec![] };
+    let deleted = |r: &ConnectionsReceipt| N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: Some(r.clone()) };
+    let scripts = [
+        Script::Accept { end: Some(deleted(&established)) },
+        Script::Accept { end: Some(deleted(&deadline)) },
+        Script::Accept { end: None },
+        Script::Refuse(N::RejectedStaleIncarnation { held: IncarnationId::mint() }),
+    ];
+    let mut routers = Vec::new();
+    let resolver = Arc::new(StaticResolver::new());
+    for (b, script) in members.iter().zip(scripts) {
+        let (resolved, router) = scripted_member(b, script).await;
+        resolver.insert(resolved);
+        routers.push(router);
+    }
+    // The fifth member is never served and never resolved: its command cannot leave.
+    let others: Vec<&Birth> = members.iter().collect();
+    let rig = rig(mp, &others, BTreeMap::new()).await;
+    let client = NodeRpcClient::new(rig.me.endpoint().await, resolver.clone()).with_caller_system("rdm");
+    let _ = rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(client), Default::default(), Arc::new(rdm_admin::node_rows::WrittenRows::default()))));
+    let carry = |i: usize| {
+        let (authority, node_id, incarnation) = (rig.authority.clone(), members[i].node.node_id.clone(), members[i].node.incarnation_id.clone().unwrap());
+        async move { authority.carry_connections_delete(&node_id, &incarnation, &ConnectionScope::All).await }
+    };
+    let mut ends = vec![carry(0).await, carry(1).await];
+    // The third member accepts, reports connections-deleting and holds its stream: once the mesh-primary
+    // has recorded the report, the member goes away, and the stream breaks after the acceptance.
+    let broken = tokio::spawn(carry(2));
+    let third = members[2].node.node_id.to_string();
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !capture.spans().iter().any(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && sp["attributes"]["node_id"].as_str() == Some(third.as_str())) {
+        assert!(std::time::Instant::now() < until, "the mesh-primary never recorded the third member's report");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let _ = routers.remove(2).shutdown().await;
+    ends.push(broken.await.unwrap());
+    ends.push(carry(3).await);
+    ends.push(carry(4).await);
+    assert!(matches!(&ends[0], CarryEnd::Deleted { receipt: Some(r), .. } if *r == established), "{:?}", ends[0]);
+    assert!(matches!(&ends[1], CarryEnd::Deleted { receipt: Some(r), .. } if *r == deadline), "{:?}", ends[1]);
+    assert!(matches!(&ends[2], CarryEnd::Incomplete { reported: true, .. }), "a break after the acceptance is incomplete, the node's report standing: {:?}", ends[2]);
+    assert!(matches!(&ends[3], CarryEnd::RefusedByNode(N::RejectedStaleIncarnation { .. })), "{:?}", ends[3]);
+    assert!(matches!(&ends[4], CarryEnd::NotSent(_)), "a member that cannot be resolved is never sent the command: {:?}", ends[4]);
+    assert!(matches!(ends[4].status_reply(), StatusReply::NotReady { reason } if reason.contains("not-sent")), "the Status answer names it: {:?}", ends[4].status_reply());
+    let held = rig.authority.declared.lock().unwrap().connections_deleted.keys().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+    assert!(held.contains(&members[0].node.node_id) && held.contains(&members[1].node.node_id), "both completions are held for the births' rename: {held:?}");
+    for b in &members[2..] {
+        assert!(!held.contains(&b.node.node_id), "{}: no completion is held: {held:?}", b.node.name);
+    }
+
+    let spans = capture.spans();
+    let attr = |sp: &Value, k: &str| sp["attributes"][k].as_str().unwrap_or_default().to_string();
+    let recorded = |b: &Birth| spans.iter().filter(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting" && attr(sp, "node_id") == b.node.node_id.to_string()).count();
+    let completed = |b: &Birth| spans.iter().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && attr(sp, "node_id") == b.node.node_id.to_string()).map(|sp| attr(sp, "receipt"));
+    assert_eq!((recorded(&members[0]), completed(&members[0]).as_deref()), (1, Some("established")), "the node's report, then Established");
+    assert_eq!((recorded(&members[1]), completed(&members[1]).as_deref()), (1, Some("deadline")), "the node's report, then Deadline: the birth stays connections-deleting");
+    assert_eq!((recorded(&members[2]), completed(&members[2])), (1, None), "the report stands, no completion");
+    assert_eq!((recorded(&members[3]), recorded(&members[4])), (0, 0), "a refused or unsent command records nothing");
+    drop(routers);
+}

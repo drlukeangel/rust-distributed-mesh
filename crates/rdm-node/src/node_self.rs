@@ -30,6 +30,7 @@ use rdm_core::views::{ConnectionView, ConnectionsView};
 use rdm_core::{LifecycleOp, MemberStatus, MeshDigest};
 use rdm_transport::membership::Membership;
 use rdm_transport::{NodeRpcClient, NodeRpcServer, NodeTarget};
+use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -351,6 +352,18 @@ impl NodeSelf {
     /// `not_open`. Gossip neighbours and the Node RPC pool are not connections: neither scope touches
     /// them, so a birth whose connections are deleted is still heard on gossip and still answers calls.
     pub async fn delete_connections(&self, scope: &ConnectionScope) -> Deleted {
+        self.delete_connections_reporting(scope, || async {}).await
+    }
+
+    /// [`Self::delete_connections`], calling `admitted` once an `All`'s block on new application work
+    /// is in force and before it waits for the work in flight: where the node command reports
+    /// connections-deleting on its stream (i144 R22). `Connections` never calls it: it sets no
+    /// node-wide state.
+    pub async fn delete_connections_reporting<F, Fut>(&self, scope: &ConnectionScope, admitted: F) -> Deleted
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         let writer = self.connections.lock().unwrap().clone();
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
@@ -362,6 +375,10 @@ impl NodeSelf {
                 if let Some(retire) = &self.retire {
                     retire.cancel();
                 }
+                // The block on new application work: from here the node refuses new non-status calls
+                // (Node RPC §35); the node is connections-deleting, and says so.
+                self.server.drain();
+                admitted().await;
                 let waited = self.await_in_flight().await;
                 // Every connection open once admitted work has finished is closed, the ones that
                 // work opened while `All` waited included (step 3.2: "they belong to the same
@@ -520,6 +537,68 @@ impl NodeSelf {
         span.record("outcome", reply.name());
         span.in_scope(|| tracing::info!("node.connections.delete decided at this birth"));
         reply
+    }
+
+    /// Serve a node command from `commander` on its ordered reply stream (op 0x22, i144 R22; Luke Q6,
+    /// Q7): every refusal is decided before `CommandAccepted`; after it the stream ends only with the
+    /// command's completion. `node.connections.delete { All }` reports `ConnectionsDeleting` once its
+    /// block on new application work is in force, then closes and answers `ConnectionsDeleted`;
+    /// `Connections([…])` answers its completion right after the acceptance. A caller gone after the
+    /// acceptance stops nothing: the node completes what it accepted.
+    pub async fn serve_node_command(&self, commander: Option<&NodeId>, req: &NodeCommandRequest, sink: rdm_transport::stream::ReplySink<NodeCommand, rdm_transport::stream::NotStarted>) -> NodeCommandReply {
+        use tracing::Instrument;
+        let NodeCommandRequest::DeleteConnections { incarnation, scope, .. } = req;
+        if *incarnation != self.incarnation {
+            return NodeCommandReply::RejectedStaleIncarnation { held: self.incarnation.clone() };
+        }
+        if self.connections.lock().unwrap().is_none() {
+            return NodeCommandReply::NotReady { reason: format!("{}: this birth holds no connections writer yet; nothing is cut", self.held_name()) };
+        }
+        if let Some(reason) = scope.refusal() {
+            return NodeCommandReply::RejectedConnectionScope { reason: format!("{}: {reason}", self.held_name()) };
+        }
+        let accepted = NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() };
+        let sink = match sink.started(accepted).await {
+            Ok(sink) => sink,
+            // Nothing was accepted: the caller is gone before the acceptance left, so nothing runs.
+            Err(e) => return NodeCommandReply::NotReady { reason: format!("{}: the command's caller is gone before its acceptance ({e:?}); nothing is cut", self.held_name()) },
+        };
+        let sink = std::sync::Arc::new(tokio::sync::Mutex::new(sink));
+        let (node, node_id, incarnation) = (self.held_name(), self.node_id.clone(), self.incarnation.clone());
+        let commander_name = named(commander);
+        let report = {
+            let sink = sink.clone();
+            move || async move {
+                let sent = sink.lock().await.data(NodeCommandReply::ConnectionsDeleting { node_id, incarnation }).await;
+                let outcome = match &sent {
+                    Ok(()) => "sent".to_string(),
+                    Err(e) => format!("caller gone: {e:?}"),
+                };
+                tracing::info_span!("rdm.node_admin.node.connections.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = %outcome, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("node.connections.delete All is admitted: the block on new application work is in force; the node reports connections-deleting on the command's stream"));
+            }
+        };
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.connections.delete.via-delete-connections",
+            node = %self.held_name(), commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
+            deadline_ms = tracing::field::Empty, closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, receipt = tracing::field::Empty,
+            outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
+        );
+        let d = async {
+            if matches!(scope, ConnectionScope::All) {
+                tracing::Span::current().record("deadline_ms", self.connections_delete_deadline.as_millis() as u64);
+            }
+            self.delete_connections_reporting(scope, report).await
+        }
+        .instrument(span.clone())
+        .await;
+        span.record("closed", d.closed.len()).record("not_open", d.not_open.len()).record("held", d.held.len());
+        if let Some(r) = &d.receipt {
+            span.record("receipt", r.name());
+        }
+        span.record("outcome", "connections-deleted");
+        span.in_scope(|| tracing::info!("node.connections.delete decided at this birth"));
+        NodeCommandReply::ConnectionsDeleted { closed: d.closed, not_open: d.not_open, held: d.held, receipt: d.receipt }
     }
 
     /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.

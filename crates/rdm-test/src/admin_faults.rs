@@ -568,9 +568,6 @@ impl LifecycleEvents for FaultedEvents {
     async fn joined(&self, op: &LifecycleOp) {
         self.inner.joined(op).await
     }
-    async fn connections_deleting(&self, op: &LifecycleOp) {
-        self.inner.connections_deleting(op).await
-    }
     async fn leaving(&self, op: &LifecycleOp) {
         self.inner.leaving(op).await
     }

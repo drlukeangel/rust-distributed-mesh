@@ -1,7 +1,6 @@
-//! The mesh-primary authors its members' connections-deleting and stopping from its own steps
-//! (states.md "Who sets each state": node connections-deleting is set by "the node's mesh-primary"
-//! at "the admission of `node.connections.delete { scope: All }`; inside node.stop the visible status
-//! is stopping"; node stopping by "the node's mesh-primary" at "the stop call's admission (node.stop)").
+//! The mesh-primary records its members' states (states.md "Who sets each state"): stopping at "the
+//! stop call's admission (node.stop)"; connections-deleting from the node's own report on its
+//! `node.connections.delete` command's stream (i144 R22, Luke Q6), never at the command's admission.
 
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
@@ -43,13 +42,14 @@ fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
 
 // @feature: node-lifecycle
 /// CONTRACT (states.md "Who sets each state"): at the mesh-primary of mesh1, the accepted
-/// `drain-node` command's hook sets the member it names connections-deleting (`Draining`) and the
-/// accepted `stop-node` command's hook sets it stopping (`Leaving`), with no heartbeat of the member
-/// saying either: the status is held for the birth and its member projection, what the publication
-/// round puts into the mesh's aggregate, carries it. A member of another mesh is not this primary's to
-/// set. Must NOT happen: a member's connections-deleting or stopping left to its own heartbeat.
+/// `stop-node` command's hook sets the member it names stopping (`Leaving`), with no heartbeat of the
+/// member saying it: the status is held for the birth and its member projection, what the publication
+/// round puts into the mesh's aggregate, carries it. The member's connections-deleting is its own
+/// report (the node command's `ConnectionsDeleting` frame), recorded as `book.reported`; no command
+/// hook sets it. A member of another mesh is not this primary's to set. Must NOT happen: a member's
+/// stopping left to its own heartbeat, or a connections-deleting set before the node reported it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_admission() {
+async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_records_connections_deleting_from_its_report() {
     let fabric = FabricId::mint();
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
@@ -68,8 +68,8 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     let projected = |d: &MeshDigest| backbone.own_members(&membership).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
     assert_eq!(status(&rpc), Some(MemberStatus::ReadyForTraffic));
 
-    lifecycle.connections_deleting(&op(&rpc, "node.connections.delete:mesh1.rpc.1")).await;
-    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the admission of node.connections.delete {{ All }} sets the member connections-deleting");
+    assert!(membership.book.reported(&rpc.node.node_id, &rpc.node.incarnation, MemberStatus::Draining), "the member's report of connections-deleting is recorded");
+    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the node's report of connections-deleting sets the member connections-deleting");
     assert_eq!(projected(&rpc), Some(MemberStatus::Draining), "the member projection carries it");
 
     lifecycle.leaving(&op(&rpc, "node.stop:mesh1.rpc.1")).await;
@@ -77,7 +77,8 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 
     let peer = member(&fabric, "mesh2.rpc.1", 10);
-    lifecycle.connections_deleting(&op(&peer, "node.connections.delete:mesh2.rpc.1")).await;
+    assert!(!membership.book.reported(&peer.node.node_id, &peer.node.incarnation, MemberStatus::Draining), "a member of another mesh is not this primary's to record");
+    lifecycle.leaving(&op(&peer, "node.stop:mesh2.rpc.1")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
 }
 

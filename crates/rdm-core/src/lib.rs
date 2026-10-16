@@ -26,6 +26,7 @@ pub mod lifecycle;
 pub mod meta;
 pub mod model;
 pub mod names;
+pub mod node_command;
 pub mod outcome;
 pub mod path;
 pub mod ping;

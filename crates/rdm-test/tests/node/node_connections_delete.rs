@@ -137,8 +137,10 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
     let command = calls.iter().find(|sp| s(&sp["attributes"]["op"]) == "34").unwrap_or_else(|| panic!("the command rides NodeCommand op 0x22 (34): {calls:#?}"));
     let admitted = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-connections-deleting").expect("the node reports its admission on the stream");
     let recorded = records.iter().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleting").expect("the mesh-primary records connections-deleting");
-    let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.connections.delete.via-delete-connections").expect("the node's completion span");
-    assert!(start(command) <= start(admitted) && start(admitted) <= start(recorded) && start(recorded) <= completed["end_unix_nano"].as_u64().unwrap_or(0), "the send, the node's admission, the mesh-primary's record, then the completion: {command} {admitted} {recorded} {completed}");
+    // The completion as the mesh-primary takes it off the same ordered stream, after the record.
+    let completed = run.iter().copied().find(|sp| sp["name"] == "rdm.node_admin.node.update.via-connections-deleted" && s(&sp["attributes"]["node"]) == NODE).expect("the mesh-primary holds the node's completion");
+    assert_eq!(s(&completed["attributes"]["receipt"]), "established", "{completed}");
+    assert!(start(command) <= start(admitted) && start(admitted) <= start(recorded) && start(recorded) <= start(completed), "the send, the node's admission, the mesh-primary's record, then the completion: {command} {admitted} {recorded} {completed}");
     println!("connections.delete on its command stream: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }

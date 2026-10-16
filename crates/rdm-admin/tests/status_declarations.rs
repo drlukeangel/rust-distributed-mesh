@@ -450,7 +450,33 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
     let heard: Arc<tokio::sync::Notify> = Arc::default();
     let (s, h) = (seen.clone(), heard.clone());
     let answer = Arc::new(answer);
+    let (cs, ch, canswer) = (seen.clone(), heard.clone(), answer.clone());
     let server = ServerBuilder::new()
+        // The node command op 0x22 (i144 R22): `node.connections.delete` reaches the birth here, answered
+        // through the same `answer` and logged as the request it carries, on the command's ordered stream.
+        .serve_stream::<rdm_core::node_command::NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: rdm_core::node_command::NodeCommandRequest, sink| {
+            let (s, h, answer) = (cs.clone(), ch.clone(), canswer.clone());
+            async move {
+                use rdm_core::node_command::{NodeCommandReply as N, NodeCommandRequest};
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req;
+                let carried = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: scope.clone() };
+                let reply = answer(&carried);
+                s.lock().unwrap().push(carried);
+                h.notify_one();
+                let StatusReply::ConnectionsDeleted { closed, not_open, held, receipt } = reply else {
+                    return Ok(match reply {
+                        StatusReply::RejectedConnectionScope { reason } => N::RejectedConnectionScope { reason },
+                        StatusReply::RejectedStaleIncarnation { held } => N::RejectedStaleIncarnation { held },
+                        other => N::NotReady { reason: format!("{}: {other:?}", other.name()) },
+                    });
+                };
+                let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                if matches!(scope, rdm_core::status::ConnectionScope::All) {
+                    sink.data(N::ConnectionsDeleting { node_id, incarnation }).await.map_err(|e| rdm_transport::HandlerFault::invariant_broken(format!("{e:?}")))?;
+                }
+                Ok(N::ConnectionsDeleted { closed, not_open, held, receipt })
+            }
+        })
         .serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: StatusRequest| {
             let (s, h, answer) = (s.clone(), h.clone(), answer.clone());
             async move {
