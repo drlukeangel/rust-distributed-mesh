@@ -306,6 +306,16 @@ async fn eventually(what: &str, within: Duration, f: impl Fn() -> bool) {
     panic!("never observed within {within:?}: {what}");
 }
 
+/// The trace a span opened under this cell's capture belongs to.
+fn trace_of(span: &tracing::Span) -> String {
+    rdm_transport::traceparent_of(span).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context: its capture is installed")
+}
+
+/// The trace's Jaeger link.
+fn flame(trace: &str) -> String {
+    format!("{}/trace/{trace}", std::env::var("JAEGER_QUERY_URL").unwrap_or_else(|_| "http://192.168.68.99:16687".into()))
+}
+
 fn ran(out: &RpcOutcome<CommandReply>) -> Option<(u32, u64)> {
     match out.reply().map(|r| r.value()) {
         Some(CommandReply::Ran { tag, runs }) => Some((*tag, *runs)),
@@ -434,23 +444,51 @@ async fn a_lost_ack_is_repaired_by_the_resend_and_the_handler_runs_once() {
 }
 
 /// Cell 3. CONTRACT: a repeat that arrives while the original executes, before its acceptance, is
-/// held pending and unacked; once the handler declares acceptance it is acked, never dispatched.
-#[tokio::test]
-async fn a_repeat_during_execution_stays_pending_and_unacked_then_is_acked_without_dispatch() {
-    let s = served().await;
-    let (client, _) = client_of(&[&s.node]).await;
-    let cd = client.delivery().clone();
-    let call = tokio::spawn({
-        let target = s.target();
-        async move { client.call::<Command>(&target, &run(3, Mode::HoldThenAccept), &budget(Duration::from_secs(5))).await.0 }
+/// held pending and unacked; once the original is accepted (the handler's declaration or its reply,
+/// whichever comes first) it is acked, never dispatched. Its trace: the call with more than one
+/// attempt and its `via-resend`, one serve, and the repeat's `via-ack` (`duplicate`), every one in
+/// the caller's trace.
+#[test]
+fn a_repeat_during_execution_stays_pending_and_unacked_then_is_acked_without_dispatch() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-repeat").expect("the cell's evidence file can be created");
+    let trace = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.delivery.serve.via-repeat-during-execution");
+        let trace = trace_of(&root);
+        tracing::Instrument::instrument(
+            async {
+                let s = served().await;
+                let (client, _) = client_of(&[&s.node]).await;
+                let cd = client.delivery().clone();
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    {
+                        let target = s.target();
+                        async move { client.call::<Command>(&target, &run(3, Mode::HoldThenAccept), &budget(Duration::from_secs(5))).await.0 }
+                    },
+                    tracing::Span::current(),
+                ));
+                eventually("a repeat is held pending", Duration::from_secs(3), || get(&s.delivery.stats().duplicates_pending) >= 1).await;
+                assert_eq!(get(&cd.stats().acks_received), 0, "nothing acked the request before its acceptance");
+                s.release();
+                let out = call.await.unwrap();
+                assert_eq!(ran(&out), Some((3, 1)), "{out:?}");
+                assert_eq!(get(&s.stats.dispatched), 1, "dispatched once");
+                assert_eq!(s.runs.load(Ordering::SeqCst), 1);
+            },
+            root,
+        )
+        .await;
+        trace
     });
-    eventually("a repeat is held pending", Duration::from_secs(3), || get(&s.delivery.stats().duplicates_pending) >= 1).await;
-    assert_eq!(get(&cd.stats().acks_received), 0, "nothing acked the request before its acceptance");
-    s.release();
-    let out = call.await.unwrap();
-    assert_eq!(ran(&out), Some((3, 1)), "{out:?}");
-    assert_eq!(get(&s.stats.dispatched), 1, "dispatched once");
-    assert_eq!(s.runs.load(Ordering::SeqCst), 1);
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let named = |name: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace.as_str()).collect() };
+    let calls = named("rdm.node_rpc.request.update.via-call");
+    let attempts = |c: &serde_json::Value| c["attributes"]["attempts"].as_u64().or_else(|| c["attributes"]["attempts"].as_str().and_then(|a| a.parse().ok())).unwrap_or(0);
+    assert!(calls.iter().any(|c| c["attributes"]["delivery"] == "acked" && attempts(c) >= 2), "the call took more than one attempt: {calls:#?}");
+    assert!(!named("rdm.node_rpc.delivery.update.via-resend").is_empty(), "the resend is spanned in the caller's trace");
+    assert_eq!(named("rdm.node_rpc.request.serve.via-direct").len(), 1, "one serve: the repeat never reached dispatch");
+    let acks: Vec<String> = named("rdm.node_rpc.delivery.serve.via-ack").iter().map(|s| s["attributes"]["acceptance"].as_str().unwrap_or("").to_string()).collect();
+    assert!(acks.iter().any(|a| a == "duplicate"), "the repeat's ack, in the caller's trace: {acks:?}");
+    println!("delivery flame (a repeat held pending, then acked without dispatch): {}", flame(&trace));
 }
 
 /// Cell 4. CONTRACT: a read-only request is acked as it is dispatched: no resend while its handler
@@ -592,23 +630,47 @@ async fn a_lost_ack_of_a_response_frame_is_repaired_by_its_resend() {
 }
 
 /// Cell 11. CONTRACT: a response written after the request's connection is gone is delivered on a
-/// new stream once the caller reconnects; the handler ran once.
-#[tokio::test]
-async fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
-    let s = served().await;
-    let (client, _) = client_of(&[&s.node]).await;
-    let call = tokio::spawn({
-        let target = s.target();
-        async move { client.call::<Command>(&target, &run(11, Mode::AcceptThenHold), &budget(Duration::from_secs(8))).await.0 }
+/// new stream once the caller reconnects; the handler ran once. Its trace: the responder's
+/// `via-response-resend`, its cause named, ending `acked`, in the caller's trace.
+#[test]
+fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-response-resend").expect("the cell's evidence file can be created");
+    let trace = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.delivery.serve.via-response-after-reconnect");
+        let trace = trace_of(&root);
+        tracing::Instrument::instrument(
+            async {
+                let s = served().await;
+                let (client, _) = client_of(&[&s.node]).await;
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    {
+                        let target = s.target();
+                        async move { client.call::<Command>(&target, &run(11, Mode::AcceptThenHold), &budget(Duration::from_secs(8))).await.0 }
+                    },
+                    tracing::Span::current(),
+                ));
+                eventually("the request is accepted", Duration::from_secs(2), || get(&s.stats.dispatched) == 1).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
+                s.release();
+                let out = call.await.unwrap();
+                assert_eq!(ran(&out), Some((11, 1)), "{out:?}");
+                assert!(get(&s.delivery.stats().responses_resent) >= 1, "the response went out on a new stream");
+                assert_eq!(s.runs.load(Ordering::SeqCst), 1);
+                eventually("the resent response is acked", Duration::from_secs(2), || s.delivery.owed_frames() == 0).await;
+            },
+            root,
+        )
+        .await;
+        trace
     });
-    eventually("the request is accepted", Duration::from_secs(2), || get(&s.stats.dispatched) == 1).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
-    s.release();
-    let out = call.await.unwrap();
-    assert_eq!(ran(&out), Some((11, 1)), "{out:?}");
-    assert!(get(&s.delivery.stats().responses_resent) >= 1, "the response went out on a new stream");
-    assert_eq!(s.runs.load(Ordering::SeqCst), 1);
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let resends: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.delivery.update.via-response-resend" && s["trace_id"] == trace.as_str()).collect();
+    assert!(
+        resends.iter().any(|s| s["attributes"]["outcome"] == "acked" && s["attributes"]["reason"].as_str().is_some_and(|r| r.starts_with("the reply's write"))),
+        "the response resend, its cause named and acked, in the caller's trace: {resends:#?}"
+    );
+    println!("delivery flame (a response resent on a new stream after a reconnect): {}", flame(&trace));
 }
 
 /// Cell 12. CONTRACT: a repeat after acceptance is answered `Ack` then EOF: delivery only. The

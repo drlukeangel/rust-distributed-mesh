@@ -634,13 +634,14 @@ impl NodeRpcServer {
     /// A repeat of a request this server holds: acked once the original is accepted, without
     /// dispatch, then its stream ends; reset as the original ended; or stopped when the original was
     /// never dispatched.
-    async fn answer_repeat(&self, peer: iroh::PublicKey, header: &TransportHeader, settled: Settled, out: FrameOut, mut reader: FrameReader) {
+    async fn answer_repeat(&self, peer: iroh::PublicKey, header: &TransportHeader, settled: Settled, out: FrameOut, mut reader: FrameReader, parent: Option<(String, Option<String>)>) {
         let d = &self.inner.delivery;
         let id = header.delivery_id();
         match settled {
             Settled::Accepted => {
-                tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %id, acceptance = "duplicate", peer = %peer)
-                    .in_scope(|| tracing::info!("a repeated request is acked without dispatch"));
+                let span = tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %id, acceptance = "duplicate", peer = %peer);
+                crate::delivery::parent_on(&span, parent.as_ref());
+                span.in_scope(|| tracing::info!("a repeated request is acked without dispatch"));
                 d.write_ack(&out, header, AckOf::Request).await;
                 out.finish().await;
                 // The caller is reachable from here: whatever of the original's response is still
@@ -656,6 +657,26 @@ impl NodeRpcServer {
                 reader.stop(ResetCode::RequestStop);
             }
         }
+    }
+
+    /// The remote context a repeated request carried, read from its sections (bounded as any request's);
+    /// the reader comes back holding the bytes after them.
+    async fn repeat_context(&self, reader: FrameReader) -> (FrameReader, Option<(String, Option<String>)>) {
+        let (mut recv, rest) = reader.into_parts();
+        let mut asm = RequestAssembly::new(&self.inner.catalog);
+        let mut action = asm.push(&rest);
+        let mut buf = vec![0u8; 16 * 1024];
+        while action == ServerAction::Continue {
+            action = match recv.read(&mut buf).await {
+                Ok(Some(n)) => asm.push(&buf[..n]),
+                _ => break,
+            };
+        }
+        let parent = match &action {
+            ServerAction::Dispatch { header, .. } => crate::delivery::parent_of(&header.context.clone().sanitized().0),
+            _ => None,
+        };
+        (FrameReader::new(recv, asm.take_rest()), parent)
     }
 
     /// Read the caller's acks of `id`'s response on the request direction until the response is
@@ -704,8 +725,9 @@ impl NodeRpcServer {
         };
         d.owe_response(id, peer);
         d.settle_request(id, Settled::Accepted);
-        let frame = d.owe_frame(id, 0, h.refusal(r), true);
-        let _ = out.write(&frame).await;
+        if let Some(frame) = d.owe_frame(id, 0, h.refusal(r), true) {
+            let _ = out.write(&frame).await;
+        }
         out.finish().await;
         match acks {
             Some(reader) => drop(Self::read_acks(d.clone(), id.clone(), reader).await),
@@ -722,15 +744,19 @@ impl NodeRpcServer {
         let TransportHeader::Request { retire_below, .. } = &header else { unreachable!("an invocation begins with a request header") };
         let retire_below = *retire_below;
         let out = FrameOut::new(send);
-        match d.arrive_request(&header) {
-            RequestArrival::New => {}
-            RequestArrival::Pending(settled) => {
+        let arrival = d.arrive_request(&header);
+        if !matches!(arrival, RequestArrival::New) {
+            // A repeat: its own sections are read for the context it carries (its span joins the
+            // caller's trace), never dispatched.
+            let (reader, parent) = self.repeat_context(reader).await;
+            let settled = match arrival {
                 // A repeat while the original executes: pending and unacked until it settles.
-                let settled = settled.await.unwrap_or(Settled::Dropped);
-                return self.answer_repeat(peer, &header, settled, out, reader).await;
-            }
-            RequestArrival::Accepted => return self.answer_repeat(peer, &header, Settled::Accepted, out, reader).await,
-            RequestArrival::Ended(c) => return self.answer_repeat(peer, &header, Settled::Ended(c), out, reader).await,
+                RequestArrival::Pending(settled) => settled.await.unwrap_or(Settled::Dropped),
+                RequestArrival::Accepted => Settled::Accepted,
+                RequestArrival::Ended(c) => Settled::Ended(c),
+                RequestArrival::New => unreachable!("matched above"),
+            };
+            return self.answer_repeat(peer, &header, settled, out, reader, parent).await;
         }
         let (mut recv, rest) = reader.into_parts();
         let mut asm = RequestAssembly::new(&self.inner.catalog);
@@ -835,7 +861,8 @@ impl NodeRpcServer {
                     tracing::info_span!("rdm.node_rpc.request.update.via-context-dropped", decided_by = "target", op, peer = %peer, context_dropped = %dropped_as_str(&dropped))
                         .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
                 }
-                d.owe_response(&id, peer);
+                let parent = crate::delivery::parent_of(&context);
+                d.owe_response_in(&id, peer, parent.clone());
                 let (acceptance, accepted) = Acceptance::new();
                 let gate = Accepting::new(d.clone(), id.clone());
                 // An acceptance the handler declares (or a read-only request's, at dispatch) acks the
@@ -843,11 +870,13 @@ impl NodeRpcServer {
                 {
                     let (gate, out, header, mut accepted) = (gate.clone(), out.clone(), header.clone(), accepted);
                     let read_only = h.read_only(&payload);
+                    let parent = parent.clone();
                     tokio::spawn(async move {
                         if accepted.wait_for(|a| *a).await.is_ok() && gate.explicit() {
                             if !read_only {
-                                tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded")
-                                    .in_scope(|| tracing::info!("the handler recorded the accepted work: the request is acked"));
+                                let span = tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded");
+                                crate::delivery::parent_on(&span, parent.as_ref());
+                                span.in_scope(|| tracing::info!("the handler recorded the accepted work: the request is acked"));
                             }
                             gate.d.write_ack(&out, &header, AckOf::Request).await;
                         }
@@ -902,8 +931,7 @@ impl NodeRpcServer {
                             // request stays unaccepted and a repeat of it pending.
                             w.wait_release().await;
                             gate.implicit();
-                            let frame = d.owe_frame(&id, 0, reply, true);
-                            if let Some(mut send) = out.take().await {
+                            if let (Some(frame), Some(mut send)) = (d.owe_frame(&id, 0, reply, true), out.take().await) {
                                 w.land(&mut send, &frame).await;
                                 let _ = send.finish();
                             }
@@ -914,8 +942,11 @@ impl NodeRpcServer {
                             return;
                         }
                         gate.implicit();
-                        let frame = d.owe_frame(&id, 0, reply, true);
-                        let written = out.send(&frame).await;
+                        // A caller that already finished the invocation is owed no reply.
+                        let written = match d.owe_frame(&id, 0, reply, true) {
+                            Some(frame) => out.send(&frame).await,
+                            None => crate::delivery::Written::Ok,
+                        };
                         out.finish().await;
                         // Settled when the caller acks the reply; when its direction ends first, the
                         // reply is resent on a new stream. A caller that dropped the invocation (it

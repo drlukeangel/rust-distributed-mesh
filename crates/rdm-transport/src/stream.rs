@@ -76,7 +76,11 @@ impl StreamOut {
         let (d, id) = g.gate.owed();
         let (d, id) = (d.clone(), id.clone());
         let seq = u32::try_from(g.frames).map_err(|_| SinkError::Order("a stream past its last position".into()))?;
-        let frame = d.owe_frame(&id, seq, payload, terminal);
+        let Some(frame) = d.owe_frame(&id, seq, payload, terminal) else {
+            let reason = "the caller ended the invocation".to_string();
+            g.caller_gone = Some(reason.clone());
+            return Err(SinkError::CallerGone(reason));
+        };
         match g.out.send(&frame).await {
             Written::Ok => {}
             Written::Stopped(0) => {
