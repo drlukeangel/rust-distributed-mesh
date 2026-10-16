@@ -2474,9 +2474,12 @@ async fn a_terminate_failed_at_its_own_inspection_voids_the_hold_and_a_running_b
 
     // The next terminate waits a full fresh hold, ends the hung birth, and the member is recovered.
     let after = until_new_birth(&estate, &node, &before, SETTLE).await;
+    let second = wait_for(&format!("{mp}'s submit of {node}'s terminate after the failed one is exported"), Duration::from_secs(60), || async {
+        let spans = estate.spans();
+        named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).map(|sp| start(sp) / 1_000_000).filter(|ms| *ms >= failed_ms).min()
+    })
+    .await;
     let spans = estate.spans();
-    let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    let second = submits.iter().map(|sp| start(sp) / 1_000_000).filter(|ms| *ms >= failed_ms).min().expect("a submit after the failed terminate");
     assert!(second >= fresh_since + hold().as_millis() as u64, "the next terminate waits a full fresh hold ({:?}) from {fresh_since}: submitted at {second}", hold());
     let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
         .into_iter()

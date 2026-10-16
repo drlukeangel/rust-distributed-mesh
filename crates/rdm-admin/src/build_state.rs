@@ -174,7 +174,83 @@ pub enum StepOutcome {
     Failed {
         /// Why it failed.
         reason: String,
+        /// Where a failed `TerminateRuntime` stopped (node-recovery.md step 4): none for every other
+        /// step, and for a terminate whose runtime exited while the operating system still held its
+        /// addresses. Positional on the Build topic's wire (no skip): a line written before it carries
+        /// none.
+        #[serde(default)]
+        stage: Option<TerminateStage>,
     },
+}
+
+impl StepOutcome {
+    /// A Failed outcome with no stage.
+    pub fn failed(reason: impl Into<String>) -> Self {
+        Self::Failed { reason: reason.into(), stage: None }
+    }
+}
+
+/// Where a failed `TerminateRuntime` stopped (node-recovery.md step 4's end, i144 R21).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminateStage {
+    /// The step's own inspection read the exact runtime `OsStopped` or `Unknown`: termination was
+    /// not requested. It voids the hold.
+    Inspection {
+        /// What the inspection read.
+        verdict: InspectionVerdict,
+    },
+    /// Termination was requested and the provider returned an error.
+    Provider {
+        /// The provider's error.
+        error: String,
+    },
+    /// Termination was requested and exit was not proven; a later inspection may still find
+    /// `Exited`.
+    Unproven,
+}
+
+impl TerminateStage {
+    /// Whether no hold submits the birth's terminate again (node-recovery.md step 4's end: "a
+    /// person decides").
+    pub fn stops_resubmission(&self) -> bool {
+        matches!(self, Self::Provider { .. } | Self::Unproven)
+    }
+
+    /// The stage as a span names it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Inspection { .. } => "inspection",
+            Self::Provider { .. } => "provider",
+            Self::Unproven => "unproven",
+        }
+    }
+}
+
+/// What a failed `TerminateRuntime`'s own inspection read: termination was not requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectionVerdict {
+    /// The operating system holds the exact runtime suspended.
+    OsStopped,
+    /// The provider could not tell the exact runtime's state.
+    Unknown,
+}
+
+/// A recovery attempt of a birth whose `TerminateRuntime` failed with a stage
+/// ([`BuildStateAdapter::terminate_failures_of`], i144 R21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedTerminate {
+    /// The Build.
+    pub build_id: BuildId,
+    /// The attempt's lane (`None` the fabric lane, `Some(mesh)` that mesh's drift lane).
+    pub mesh: Option<String>,
+    /// The attempt.
+    pub attempt: u32,
+    /// When the attempt was opened, once its `Opened` fact is held.
+    pub opened_at_ms: Option<u64>,
+    /// Where its `TerminateRuntime` stopped.
+    pub stage: TerminateStage,
 }
 
 /// The receipt of an attempt's end.
@@ -1039,6 +1115,12 @@ pub trait BuildStateAdapter: Send + Sync {
     /// exit proof. The first such attempt. A point read by the birth: every adapter answers it from
     /// its index (or delegates to the adapter it decorates), never by reading the fact log.
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
+    /// Every recovery attempt of the birth `(node_id, incarnation)`, in any Build and lane, whose
+    /// `TerminateRuntime` receipt is Failed with a stage, oldest first (node-recovery.md step 4's
+    /// end, i144 R21: the hold reads it before it submits the birth's terminate). A point read by the
+    /// birth: every adapter answers it from its index (or delegates to the adapter it decorates),
+    /// never by reading the fact log.
+    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<FailedTerminate>, BuildStateError>;
     /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and
     /// is not done (node-recovery.md "Failure and receipts": the mesh-primary submits each again):
     /// for each birth an attempt of `build_id` was opened for with `AttemptAction::Recover`, the run
@@ -1178,6 +1260,13 @@ struct FactLog {
     /// ...and every attempt claimed or decided, with its verdict once one is held: the first
     /// appended, as [`fold`] reads it.
     verdicts: std::collections::HashMap<LaneOf, BTreeMap<u32, Option<AttemptOutcome>>>,
+    /// The index of [`BuildStateAdapter::terminate_failures_of`] (i144 R21), filled by
+    /// [`FactLog::index`] in whatever order the facts arrive: the stage of each attempt's Failed
+    /// `TerminateRuntime` receipt, by its lane and attempt (the first appended)...
+    terminate_failures: std::collections::HashMap<(LaneOf, u32), TerminateStage>,
+    /// ...and when each recovery attempt was opened, by its lane and attempt. Forgetting a Build
+    /// leaves both, as it leaves the receipts: a person's forget never lifts a refused terminate.
+    recovery_opened_at: std::collections::HashMap<(LaneOf, u32), u64>,
     /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
     /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
     /// whatever order the facts arrive. Read newest first by [`current_build`].
@@ -1218,6 +1307,8 @@ impl FactLog {
                 }
             } else if recovery_completed(s) {
                 self.recovery_completes.entry((lane, s.operation.clone())).or_default().insert(s.attempt);
+            } else if let (true, StepOutcome::Failed { stage: Some(stage), .. }) = (s.step == crate::deployment::pipeline::RetireStep::TerminateRuntime.name(), &s.outcome) {
+                self.terminate_failures.entry((lane, s.attempt)).or_insert_with(|| stage.clone());
             } else if let Some(birth) = mesh_deleted_final(s) {
                 let held = self.mesh_deleted.entry(birth).or_default();
                 if !held.iter().any(|(b, a, o)| *b == s.build_id && *a == s.attempt && *o == s.operation) {
@@ -1225,8 +1316,9 @@ impl FactLog {
                 }
             }
         }
-        if let BuildFact::Opened(AttemptOpened { build_id, attempt, mesh, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = fact {
+        if let BuildFact::Opened(AttemptOpened { build_id, attempt, mesh, opened_at_ms, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = fact {
             let lane: LaneOf = (build_id.clone(), mesh.clone());
+            self.recovery_opened_at.entry((lane.clone(), *attempt)).or_insert(*opened_at_ms);
             let opened = self.recoveries_opened.entry((node_id.clone(), from_incarnation.clone())).or_default();
             if !opened.contains(&(lane.clone(), *attempt)) {
                 opened.push((lane.clone(), *attempt));
@@ -1275,6 +1367,22 @@ impl FactLog {
                 Some((lane.0.clone(), lane.1.clone(), *completed, operation.clone()))
             })
             .min_by_key(|(_, _, a, _)| *a)
+    }
+
+    /// The point read of [`BuildStateAdapter::terminate_failures_of`]: every recovery of the birth
+    /// opened in any Build and lane whose `TerminateRuntime` failed with a stage, oldest first (by
+    /// its opening time, then attempt).
+    fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Vec<FailedTerminate> {
+        let Some(opened) = self.recoveries_opened.get(&(node_id.clone(), incarnation.clone())) else { return Vec::new() };
+        let mut failed: Vec<FailedTerminate> = opened
+            .iter()
+            .filter_map(|(lane, attempt)| {
+                let stage = self.terminate_failures.get(&(lane.clone(), *attempt))?;
+                Some(FailedTerminate { build_id: lane.0.clone(), mesh: lane.1.clone(), attempt: *attempt, opened_at_ms: self.recovery_opened_at.get(&(lane.clone(), *attempt)).copied(), stage: stage.clone() })
+            })
+            .collect();
+        failed.sort_by_key(|f| (f.opened_at_ms.unwrap_or(0), f.attempt));
+        failed
     }
 
     /// The point read of [`BuildStateAdapter::mesh_deleted_of`]: the first attempt's.
@@ -1641,6 +1749,10 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
+    }
+
+    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<FailedTerminate>, BuildStateError> {
+        Ok(self.log.lock().unwrap().terminate_failures_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
@@ -2156,6 +2268,11 @@ impl BuildStateAdapter for FileJournal {
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.sync_for_read().await?;
         Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
+    }
+
+    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<FailedTerminate>, BuildStateError> {
+        self.sync_for_read().await?;
+        Ok(self.log.lock().unwrap().terminate_failures_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
@@ -2740,6 +2857,74 @@ mod tests {
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "node.delete", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (i144 R21; node-recovery.md step 4's end: "no hold submits that birth's terminate
+    /// again: a person decides", read from the birth's durable Failed receipt): `terminate_failures_of`
+    /// answers every recovery attempt of the birth, in any Build and lane, whose `TerminateRuntime`
+    /// receipt is Failed with a stage, oldest first, with the attempt's opening time. It is folded
+    /// wherever a fact enters the log (own appends, a restarted admin's journal replay, facts absorbed
+    /// from the Build topic in any order), it holds after a later Build is accepted, and forgetting the
+    /// Build leaves it. Must NOT happen: a refused terminate lost to a successor, to a later Build or
+    /// to a forget, so a hold submits the birth's terminate again; another birth's or a stageless
+    /// failure answered.
+    #[tokio::test]
+    async fn a_birth_s_failed_terminates_are_folded_on_append_replay_and_absorb_across_builds_and_forgets() {
+        let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh2.rpc.2".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let bid = |b: &str| BuildId::parse(&rdm_core::fixture_crockford60(b)).unwrap();
+        let opened = |build: &str, attempt: u32, at: u64| AttemptOpened {
+            mesh: Some("mesh2".into()),
+            build_id: bid(build),
+            attempt,
+            reason: AttemptReason::Recovery,
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }),
+            opened_by: "mesh2.admin.1".into(),
+            opened_at_ms: at,
+        };
+        let terminate = |build: &str, attempt: u32, stage: Option<TerminateStage>| BuildStepReceipt {
+            mesh: Some("mesh2".into()),
+            build_id: bid(build),
+            attempt,
+            operation: format!("node.delete:{path}"),
+            step: "TerminateRuntime".into(),
+            outcome: StepOutcome::Failed { reason: "the cell's terminate".into(), stage },
+            output: None,
+            executor: Some("mesh2.admin.1".into()),
+        };
+        let refused = TerminateStage::Provider { error: "the daemon refused".into() };
+        let voided = TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped };
+        let want = vec![
+            FailedTerminate { build_id: bid("b1"), mesh: Some("mesh2".into()), attempt: 1, opened_at_ms: Some(10), stage: voided.clone() },
+            FailedTerminate { build_id: bid("b1"), mesh: Some("mesh2".into()), attempt: 2, opened_at_ms: Some(20), stage: refused.clone() },
+        ];
+        let dir = tmp();
+        {
+            let j = FileJournal::open(&dir).await.unwrap();
+            j.publish_accepted(&intent("b1")).await.unwrap();
+            j.open_attempt(&opened("b1", 1, 10)).await.unwrap();
+            j.append_step_receipt(&terminate("b1", 1, Some(voided.clone()))).await.unwrap();
+            j.open_attempt(&opened("b1", 2, 20)).await.unwrap();
+            j.append_step_receipt(&terminate("b1", 2, Some(refused.clone()))).await.unwrap();
+            // A stageless failure (the runtime exited, its addresses still held) is no failed terminate.
+            j.open_attempt(&opened("b1", 3, 30)).await.unwrap();
+            j.append_step_receipt(&terminate("b1", 3, None)).await.unwrap();
+            assert_eq!(j.terminate_failures_of(&node_id, &incarnation).await.unwrap(), want, "own append");
+            // A later Build is accepted and becomes current: the earlier Build's receipts still answer.
+            j.publish_accepted(&BuildAccepted { submitted_at_ms: 2, ..intent("b2") }).await.unwrap();
+            assert_eq!(j.terminate_failures_of(&node_id, &incarnation).await.unwrap(), want, "after a later Build");
+            j.forget(&bid("b1")).await.unwrap();
+            assert_eq!(j.terminate_failures_of(&node_id, &incarnation).await.unwrap(), want, "a forget leaves it");
+            assert_eq!(j.terminate_failures_of(&crate::model::NodeId::mint(), &incarnation).await.unwrap(), vec![], "another birth");
+        }
+        let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
+        assert_eq!(j.terminate_failures_of(&node_id, &incarnation).await.unwrap(), want, "journal replay");
+        let m = MemoryBuildStateAdapter::new();
+        // The Build topic delivers in any order: the refused receipt heard before its attempt's opening.
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(terminate("b1", 2, Some(refused.clone())))]).await;
+        assert_eq!(m.terminate_failures_of(&node_id, &incarnation).await.unwrap(), vec![], "a receipt alone names no birth");
+        m.absorb(&[BuildFact::Opened(opened("b1", 2, 20)), BuildFact::Step(terminate("b1", 1, Some(voided.clone()))), BuildFact::Opened(opened("b1", 1, 10))]).await;
+        assert_eq!(m.terminate_failures_of(&node_id, &incarnation).await.unwrap(), want, "absorbed, in any order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

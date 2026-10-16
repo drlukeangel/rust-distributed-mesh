@@ -298,7 +298,7 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
                 Ok("complete")
             }
             Err(CreateMeshError::Refused(reason)) => {
-                commit_receipt(builds, me, receipt(CreateMeshStep::ClaimMeshName, StepOutcome::Failed { reason: reason.clone() })).await?;
+                commit_receipt(builds, me, receipt(CreateMeshStep::ClaimMeshName, StepOutcome::failed(reason.clone()))).await?;
                 Err(("refused", reason))
             }
             Err(CreateMeshError::Unanswered(reason)) => Err(("store-unanswered", reason)),

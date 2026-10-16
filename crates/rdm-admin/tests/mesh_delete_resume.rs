@@ -155,6 +155,9 @@ impl BuildStateAdapter for WireBuilds {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.0.mesh_deleted_of(node_id, incarnation).await
     }
+    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
+        self.0.terminate_failures_of(node_id, incarnation).await
+    }
     async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.0.exits_owed(build_id, mesh).await
     }
@@ -1721,6 +1724,9 @@ impl BuildStateAdapter for CutBuilds<'_> {
     }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await

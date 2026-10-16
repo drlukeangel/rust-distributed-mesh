@@ -411,7 +411,7 @@ impl BuildDoor {
                 step: s.step.clone(),
                 result: match &s.outcome {
                     crate::build_state::StepOutcome::Complete => StepResult::Complete,
-                    crate::build_state::StepOutcome::Failed { reason } => StepResult::Failed { reason: bounded_reason(reason.clone()) },
+                    crate::build_state::StepOutcome::Failed { reason, .. } => StepResult::Failed { reason: bounded_reason(reason.clone()) },
                 },
             })
             .collect();

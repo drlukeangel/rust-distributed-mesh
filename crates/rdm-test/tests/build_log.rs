@@ -67,7 +67,7 @@ pub async fn build_fact(carrier: &BuildCarrier, id: &str, fact: &str, within: Du
     };
     let report = |p: &BuildProjection| {
         let last = p.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
-        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason } = &r.outcome { Some(format!("{} {} of attempt {}: {reason}", r.operation, r.step, r.attempt)) } else { None }).collect();
+        let failed: Vec<String> = p.steps.iter().filter_map(|r| if let StepOutcome::Failed { reason, .. } = &r.outcome { Some(format!("{} {} of attempt {}: {reason}", r.operation, r.step, r.attempt)) } else { None }).collect();
         format!("attempt {} state {:?}, {} step receipts, the last {last}; failed {failed:?}", p.attempt, p.state, p.steps.len())
     };
     await_fact("build log", &at, &format!("{fact} of Build {id}"), within, read, |p: &BuildProjection| holds(p), report).await

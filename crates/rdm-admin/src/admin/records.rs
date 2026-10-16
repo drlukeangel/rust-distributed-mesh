@@ -699,7 +699,7 @@ impl Records {
 
     /// Record a `held-running` verdict for `node` (`R-FM1`): on first verdict sets `since = now_ms`
     /// and `verdicts = 1`; on subsequent verdicts preserves `since` and increments `verdicts`.
-    pub async fn record_held_running(&self, node: &Node, now_ms: u64) -> Option<crate::status_storage::NodeHeldRunningRow> {
+    pub async fn record_held_running(&self, node: &Node, now_ms: u64, recorder: &str) -> Option<crate::status_storage::NodeHeldRunningRow> {
         let storage = self.status.get()?.storage().clone();
         let inc = node.incarnation_id.clone()?;
         let prev = storage.node_held_running_of(&node.mesh, &node.node_id, &inc).await.ok().flatten();
@@ -714,6 +714,7 @@ impl Records {
             node = %node.name,
             node_id = %node.node_id,
             incarnation_id = %row.incarnation_id.as_str(),
+            recorder,
             since = row.since as i64,
             verdicts = row.verdicts as i64,
             outcome = "recorded",

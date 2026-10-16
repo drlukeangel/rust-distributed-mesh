@@ -610,7 +610,7 @@ mod tests {
         assert_eq!(receipts.len(), 1, "{receipts:?}");
         let (attempt, step, outcome, executor) = &receipts[0];
         assert_eq!((*attempt, step.as_str(), executor.as_deref()), (1, "ClaimMeshName", Some("key1@127.0.0.1:1")));
-        assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason } if reason.contains(&holder.to_string())), "the Failed receipt names the holder: {outcome:?}");
+        assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason, .. } if reason.contains(&holder.to_string())), "the Failed receipt names the holder: {outcome:?}");
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), None, "no id is held for a mesh whose claim was refused");
     }
 
@@ -660,6 +660,9 @@ mod tests {
         }
         async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
             self.0.mesh_deleted_of(n, i).await
+        }
+        async fn terminate_failures_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, crate::build_state::BuildStateError> {
+            self.0.terminate_failures_of(n, i).await
         }
         async fn exits_owed(&self, id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
             self.0.exits_owed(id, mesh).await
@@ -1093,6 +1096,7 @@ mod tests {
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
             os_stopped_confirmed: Arc::default(),
+            terminate_refusals_named: Arc::default(),
         };
         (recovery, status, member)
     }
@@ -1409,6 +1413,7 @@ mod tests {
             data_root: PathBuf::new(),
             gone_dirs: Arc::default(),
             os_stopped_confirmed: Arc::default(),
+            terminate_refusals_named: Arc::default(),
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");
