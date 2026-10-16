@@ -538,7 +538,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             let start = handle.start;
             match crate::record_store::blocking_io(move || exact_group(PROC, pid, start)).await {
                 Group::Running => DeploymentStatus::Running,
-                Group::OsStopped => DeploymentStatus::Running,
+                Group::OsStopped => DeploymentStatus::OsStopped,
                 Group::Unreadable => DeploymentStatus::Unknown,
                 // No live task, or a recycled pid that runs another process: this birth has exited.
                 // A child's code is its wait's, recorded once the group is gone.

@@ -694,7 +694,8 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 /// anything else cannot be told.
 fn status_of(state: &str) -> DeploymentStatus {
     match state.trim().split_once(' ') {
-        Some(("running" | "restarting" | "created" | "paused", _)) => DeploymentStatus::Running,
+        Some(("running" | "restarting" | "created", _)) => DeploymentStatus::Running,
+        Some(("paused", _)) => DeploymentStatus::OsStopped,
         Some(("exited" | "dead", code)) => DeploymentStatus::Exited { code: code.parse().ok() },
         _ => DeploymentStatus::Unknown,
     }

@@ -401,10 +401,13 @@ pub async fn exit_proof_of(
     let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.as_str()).await.map_err(|e| format!("its exit record cannot be read: {e}"))?;
     match status {
         crate::deployment::provider::DeploymentStatus::Exited { code } => {
+            // The code is the provider's own when its inspection carried one, else the exit record's
+            // (exit_proof turns only an `Exited` with no code into a recorded one).
+            use crate::deployment::provider::DeploymentStatus as S;
             let source = match (&inspected, code) {
                 (_, None) => "none",
-                (crate::deployment::provider::DeploymentStatus::Exited { code: Some(_) }, _) => "provider",
-                _ => "exit-record",
+                (S::Exited { code: Some(_) }, Some(_)) => "provider",
+                (S::Exited { code: None } | S::Running | S::OsStopped | S::Unknown, Some(_)) => "exit-record",
             };
             Ok((code, source))
         }

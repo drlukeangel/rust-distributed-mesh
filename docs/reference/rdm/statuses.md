@@ -76,16 +76,17 @@ An entry's state.
 
 ### `DeploymentStatus`
 
-`crates/rdm-admin/src/deployment/provider.rs` · enum · 3 variants · rdm-admin
+`crates/rdm-admin/src/deployment/provider.rs` · enum · 4 variants · rdm-admin
 
-What a provider knows of a runtime.
+What a provider knows of the exact runtime (deployment-provider.md §2.5): one meaning per state
 
 | # | variant · field | serde name | type | serde | doc |
 |---|---|---|---|---|---|
-| 0 | **`Running`** | (not serialized) |  |  | The runtime is running. |
-| 1 | **`Exited`** | (not serialized) |  |  | The runtime exited. |
-| 1.0 | `code` |  | `Option<i32>` |  | The exit code, when its record proves one. |
-| 2 | **`Unknown`** | (not serialized) |  |  | The runtime's state cannot be told. |
+| 0 | **`Running`** | (not serialized) |  |  | The exact runtime exists, is nonterminal and is not observed OS-suspended. It proves neither |
+| 1 | **`OsStopped`** | (not serialized) |  |  | The exact runtime exists and the operating system holds every task of it suspended (a |
+| 2 | **`Exited`** | (not serialized) |  |  | The exact runtime exited. |
+| 2.0 | `code` |  | `Option<i32>` |  | The exit code, when its record proves one. |
+| 3 | **`Unknown`** | (not serialized) |  |  | The exact runtime's state cannot be told: an unreadable, partial or inconclusive inspection. |
 
 <a id="t-rdm_admin-fabric_state-FabricState"></a>
 
