@@ -236,3 +236,6 @@ mod role_process;
 mod receive_rules;
 #[path = "gossip/operation_facts.rs"]
 mod operation_facts;
+
+#[path = "gossip/lifecycle_facts.rs"]
+mod lifecycle_facts;

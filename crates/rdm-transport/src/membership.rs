@@ -1520,6 +1520,15 @@ impl Channel {
                                     // the topology-read install: a frame received after a newer one of
                                     // its source is ignored, by name, before any handler reads it. The
                                     // check and what the handler installs are one hold of it.
+                                    let receipt = match &f {
+                                        Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeRestarting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
+                                            "rdm.mesh.membership.update.via-lifecycle-receipt",
+                                            node = %node, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation,
+                                            node_id = %op.node_id, incarnation_id = %op.incarnation, topology_version,
+                                        )),
+                                        _ => None,
+                                    };
+                                    let _receipt = receipt.as_ref().map(tracing::Span::enter);
                                     let mut held = order.lock().unwrap();
                                     if admitted(&mut held, &f, &node, &channel, &m.delivered_from.fmt_short()) {
                                         on_frame(f, &mut held);
