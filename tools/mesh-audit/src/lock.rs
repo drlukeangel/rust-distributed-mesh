@@ -32,6 +32,7 @@ pub enum Ratchet {
     TypedProtocolEvidence,
     StatusResealIsAtomic,
     ForwardResealIsAtomic,
+    NodeCommandResealIsAtomic,
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
@@ -40,7 +41,7 @@ pub enum Ratchet {
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 22] = [
+    pub const ALL: [Ratchet; 23] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitPathConfig,
@@ -58,6 +59,7 @@ impl Ratchet {
         Self::TypedProtocolEvidence,
         Self::StatusResealIsAtomic,
         Self::ForwardResealIsAtomic,
+        Self::NodeCommandResealIsAtomic,
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
@@ -85,6 +87,7 @@ impl Ratchet {
             Self::TypedProtocolEvidence => "typed_protocol_evidence",
             Self::StatusResealIsAtomic => "status_reseal_is_atomic",
             Self::ForwardResealIsAtomic => "forward_reseal_is_atomic",
+            Self::NodeCommandResealIsAtomic => "node_command_reseal_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
@@ -257,6 +260,11 @@ pub const FORWARD_WIRE: &str = "crates/rdm-core/tests/forward_wire.rs";
 /// The frozen 0x1A counts.
 pub const FORWARD_REQUESTS: u32 = 1;
 pub const FORWARD_REPLIES: u32 = 14;
+pub const NODE_COMMAND: &str = "crates/rdm-core/src/node_command.rs";
+pub const NODE_COMMAND_WIRE: &str = "crates/rdm-core/tests/node_command_wire.rs";
+/// The frozen 0x22 counts.
+pub const NODE_COMMAND_REQUESTS: u32 = 1;
+pub const NODE_COMMAND_REPLIES: u32 = 11;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
@@ -647,6 +655,27 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                     "fn replies_match_the_frozen_fourteen_variant_wire_schema",
                     "Forward::REQUEST_VARIANTS",
                     "Forward::REPLY_VARIANTS",
+                ],
+                ratchet,
+                &mut out,
+            );
+        }
+        Ratchet::NodeCommandResealIsAtomic => {
+            require(
+                root,
+                NODE_COMMAND,
+                &[&format!("const REQUEST_VARIANTS: u32 = {NODE_COMMAND_REQUESTS};"), &format!("const REPLY_VARIANTS: u32 = {NODE_COMMAND_REPLIES};")],
+                ratchet,
+                &mut out,
+            );
+            require(
+                root,
+                NODE_COMMAND_WIRE,
+                &[
+                    "fn the_request_matches_the_frozen_one_variant_wire_schema",
+                    "fn replies_match_the_frozen_eleven_variant_wire_schema",
+                    "NodeCommand::REQUEST_VARIANTS",
+                    "NodeCommand::REPLY_VARIANTS",
                 ],
                 ratchet,
                 &mut out,

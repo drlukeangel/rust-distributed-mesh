@@ -149,6 +149,7 @@ sees only the catalog.
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete; build.create refuses `fabric-not-ready` until the initial fabric has first reached ready-for-traffic ([Build refusals](#fabric-not-ready-refusal)) |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
 | `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
@@ -245,7 +246,7 @@ These are adapter mappings, not new enum definitions.
 | node.get | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) for one exact subject; node.get answers one node by id, the nodes of a mesh, or the nodes that carry given tag labels, all of the given labels or any of them; a node's tags are its own property (node.tags.get/create/delete), and the tag filter names a label, matches every node that carries it, and is read through the node store's tags index | Current; stopped answers CurrentParked; no event |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`; `fabric-not-ready` |
-| node.connections.get/[delete](lifecycles/node-connections-delete.md) | Held-connection read; `node.connections.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connections.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the carrier is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut | read result / node.connections.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` |
+| node.connections.get/[delete](lifecycles/node-connections-delete.md) | Held-connection read; `node.connections.delete { scope: All }` or `{ scope: Connections([connection id, …]) }`. `All` is graceful closure of every open connection of the node, each open Direct or Proxy entry of its connections log (gossip neighbours and the Node RPC pool are not connections), with status connections-deleting then connections-deleted and the [order and deadline](lifecycles/node-connections-delete.md#numbered-end-to-end-sequence) of that page; `Connections` closes exactly the named connections, by the minted id of their open entry as node.connections.get returns them; an empty list is refused by name. The endpoint and an active stop stream stay open; each drop is written under the node's current name; the caller's carrier to the node's mesh-primary is [Status 0x1B](#status-op-0x1b-rdm): StatusRequest position 21 `DeleteConnections`, answered by StatusReply position 31 `ConnectionsDeleted`, or by position 32 `RejectedConnectionScope` for a scope that names nothing the node can cut; the mesh-primary carries it to the exact node on NodeCommand 0x22 | read result / node.connections.deleted, naming every id it closed and every id it did not know or found already closed; for `All`, carrying a `ConnectionsReceipt`: `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }` |
 | node.tags.get/create/delete | A node's tags are its own property, not config. `node.tags.get` answers the node's labels; `node.tags.create { label \| [labels] }` adds one label or a list; `node.tags.delete { All \| [labels] }` removes every label or the named ones, the same scope shape as `node.connections.delete`. One item or a list, uniform: a single item is the same as a list of one. Each label is its own keyed row (label, node id) in the node store's tags index. Create is a blind put of that key, so creating a label the node already carries is ignored and writes no duplicate; delete tombstones the named keys. A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.', and a node carries at most 32; a label outside that grammar, or one past the 32, is refused by name and nothing is written; frames `CreateTags { node_id, incarnation, labels }` and `DeleteTags { node_id, incarnation, scope: All | Labels }` on 0x1B, replies `TagsCreated { node_id, incarnation, already_carried }` and `TagsDeleted { node_id, incarnation, not_carried }` | read result / create: the reply names each label the node already carried, AlreadyApplied for those |
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated |
 | mesh.get, mesh.update, mesh.nodes.get, mesh.config.get/update | mesh.get answers one mesh, or every mesh of a fabric; mesh.update puts the full mesh meta as a blind put and never changes status; mesh.nodes.get answers the mesh's members; mesh.config.get/update hold the application's attributes on the mesh row, as node.config does on a node; a mesh's tags are its own property, mesh.tags.get / mesh.tags.create { label | [labels] } / mesh.tags.delete { All | [labels] }, the same shape and label grammar as node.tags; dedicated request mapping is open | read result / mesh.updated / mesh.config.updated |
@@ -1423,6 +1424,28 @@ are learned from the exact birth's digest.
 Spans: the caller emits `rdm.node_rpc.request.update.via-call` with op=0x21; the successor's install and
 every refusal carry the operation, build_id, attempt, both exact births and each seat's revision. A change
 to these frames is `durable format moved`, with byte fixtures.
+
+## NodeCommand, op `0x22`, rdm
+
+RDM owns this family. It carries the mesh-primary-to-node hop of
+[node.connections.delete](lifecycles/node-connections-delete.md), which owns sequencing and the
+failure contract. Direction: a node's mesh-primary calls the exact birth. Every call is
+server-streaming and not forwardable; the server keeps serving it while the node is
+connections-deleting. Field order and enum positions are on the generated
+[wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md). Births are exact
+identities, never names.
+
+```text
+mesh-primary → node   DeleteConnections { node_id, incarnation, scope: All | Connections([id, …]) }
+node → mesh-primary   CommandAccepted { node_id, incarnation }            (Started)
+node → mesh-primary   ConnectionsDeleting { node_id, incarnation }        (Data; All only)
+node → mesh-primary   ConnectionsDeleted { closed, not_open, held, receipt }   (Terminal)
+```
+
+A refusal before acceptance is one frame, one of the reply's refusal variants on the wire page.
+`CommandAccepted` carries no lifecycle state and is not node.start's
+`Started`. Only `ConnectionsDeleting` makes the mesh-primary record connections-deleting. A stream
+that breaks after `CommandAccepted` is incomplete.
 
 ## Transitional codec conventions
 

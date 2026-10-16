@@ -235,6 +235,16 @@ fn forward_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 }
 
 #[test]
+fn node_command_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
+    let t = Planted::of_tree();
+    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 11;", "const REPLY_VARIANTS: u32 = 12;");
+    only(check(t.root()), Ratchet::NodeCommandResealIsAtomic);
+    let f = Planted::of_tree();
+    f.delete("crates/rdm-core/tests/node_command_wire.rs");
+    only(check(f.root()), Ratchet::NodeCommandResealIsAtomic);
+}
+
+#[test]
 fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
     let t = Planted::of_tree();
     t.write("crates/rdm-test/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");

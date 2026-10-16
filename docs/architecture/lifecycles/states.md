@@ -25,7 +25,7 @@ Neither a Build nor the rectifier ever declares the fabric ready-for-traffic.
 | node starting | the node's mesh-primary | the accepted node.start execution (inside node.create, or on a stopped node) |
 | node pending | the node's mesh-primary | the node's node.joined report on the start call |
 | node ReadyForTraffic | the node's mesh-primary | the node's node.started report, after every start gate |
-| node connections-deleting | the node's mesh-primary | the admission of `node.connections.delete { scope: All }`; inside node.stop the visible status is stopping |
+| node connections-deleting | the node's mesh-primary | the node's `ConnectionsDeleting` report on the command stream of `node.connections.delete { scope: All }`, its block on new application work in force; inside node.stop the visible status is stopping |
 | node connections-deleted | the node's mesh-primary | the node's node.connections.deleted completion carrying `Established`; a `Deadline` completion leaves the node connections-deleting |
 | node stopping | the node's mesh-primary | the stop call's admission (node.stop) |
 | node stopped | the node's mesh-primary | the matching stopped frame on the stop call's stream |
