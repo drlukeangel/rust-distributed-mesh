@@ -288,9 +288,15 @@ impl RecoverySubmitter {
             }
             Inspected::Running => {
                 // Running again: the os-stopped fact clears and the hold rule applies (a runtime that
-                // resumed but stays unreachable opens a fresh hold, deployment-provider.md §2.5).
-                self.clear_os_stopped(n, "running").await;
-                if self.removal_announced(n).await.is_none() {
+                // resumed but stays unreachable opens a fresh hold, deployment-provider.md §2.5). A
+                // birth whose removal a workflow owns is that workflow's: its os-stopped row is removed
+                // once, by the delete or the exit it proves (node-delete.md "OS-suspended target"), and
+                // `Running` read while its terminate kills a suspended runtime is the kill waking it.
+                let removal = self.removal_announced(n).await;
+                if removal.is_none() {
+                    self.clear_os_stopped(n, "running").await;
+                }
+                if removal.is_none() {
                     if let Some(inc) = n.incarnation_id.clone() {
                         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
                         let prev = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await.ok().flatten();

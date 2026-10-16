@@ -644,9 +644,9 @@ impl NodeRpcServer {
                 span.in_scope(|| tracing::info!("a repeated request is acked without dispatch"));
                 d.write_ack(&out, header, AckOf::Request).await;
                 out.finish().await;
-                // The caller is reachable from here: whatever of the original's response is still
-                // owed goes to it.
-                d.push(&id, Some(peer), "a repeat arrived after acceptance: the caller is reachable on its connection");
+                // The caller is reachable from here: what of the original's response is resent goes
+                // to it.
+                d.answer_to(&id, peer);
             }
             Settled::Ended(c) => {
                 out.reset(ResetCode::from_code(c).unwrap_or(ResetCode::InternalRpcFailure)).await;
