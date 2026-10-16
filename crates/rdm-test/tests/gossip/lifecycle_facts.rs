@@ -65,6 +65,16 @@ fn story(kind: StatusEvent, scenario: Story) {
                 while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == op.node_id.to_string()).count() < n { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the lifecycle receipt finished classification and application");
         }
+        if matches!(scenario, Story::Stale) {
+            // Operation identity was already seen at the refused v10. Its repeat at v21 runs no
+            // effect, while that independent projection key still advances the publisher floor.
+            let mut third = op.clone(); third.node_id = NodeId::mint(); third.name = "mesh1.rpc.4".parse().unwrap(); third.operation = format!("node.{command}:mesh1.rpc.4");
+            sender.forward(&frame(third.clone(), 20)).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == third.node_id.to_string()) { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap();
+            assert!(!receiver.book.in_flight().iter().any(|o| o.node_id == third.node_id), "a repeat's newer carried revision still orders later projection frames");
+        }
         if matches!(scenario, Story::Completed | Story::Stale) {
             assert!(!receiver.book.in_flight().iter().any(|o| o.node_id == op.node_id), "no old operation reopens");
             assert_eq!(receiver.book.get(op.node_id.as_str()).map(|(d, _)| d), held_before);
@@ -81,11 +91,14 @@ fn story(kind: StatusEvent, scenario: Story) {
     });
     let spans = capture.spans().unwrap();
     for s in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership."))) { println!("{}", serde_json::to_string(s).unwrap()); }
+    let apply_name = match kind { StatusEvent::Deleting => "rdm.mesh.membership.update.via-node-deleting", StatusEvent::Restarting => "rdm.mesh.membership.update.via-node-restarting", StatusEvent::Stopped => "rdm.mesh.membership.remove.via-node-stopped" };
+    assert_eq!(spans.iter().filter(|s| s["name"] == apply_name && s["attributes"]["node_id"] == op.node_id.to_string()).count(), usize::from(!matches!(scenario, Story::Stale)), "exactly one ordinary apply, including the locally applied operation before completion; no apply of a version-refused fact");
     if !matches!(scenario, Story::Control) {
         let identity = format!("{} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation);
         assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-duplicate" && s["attributes"]["frame"] == kind.name() && s["attributes"]["identity"] == identity && s["attributes"]["outcome"] == "ignored"));
     }
     if matches!(scenario, Story::Stale) {
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["held_key"] == "topology_version=21" && s["attributes"]["frame_key"] == "topology_version=20"));
         assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["frame"] == kind.name() && s["attributes"]["subject"] == format!("{publisher} mesh1") && s["attributes"]["held_key"] == "topology_version=20" && s["attributes"]["frame_key"] == "topology_version=10"));
     }
 }

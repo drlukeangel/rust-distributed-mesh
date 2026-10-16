@@ -1421,12 +1421,21 @@ struct Channel {
 
 /// The one ordering check of the receive path (R-RX3): whether `f`, heard on `channel` from `sender`,
 /// is handed to its handler. A frame received after a newer one of its source, by the node's one held
-/// version per source, is ignored with one `rdm.mesh.membership.reject.via-earlier-version` span naming
-/// the source, the key held and the key offered.
+/// version per source, is ignored by name with both keys. Lifecycle operation identities are
+/// recorded before that comparison: a carried revision refusal is `via-stale`, and the identity
+/// stays seen even though no handler runs. Other keyed families use `via-earlier-version`.
 fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str, sender: &dyn std::fmt::Display) -> bool {
+    let first_fact = order.admit_lifecycle_identity(f);
     match order.admit(f) {
-        Ok(()) => true,
+        Ok(()) => first_fact,
         Err(e) => {
+            if matches!(f, Frame::NodeDeleting { .. } | Frame::NodeRestarting { .. } | Frame::NodeStopped { .. }) {
+                tracing::info_span!(
+                    "rdm.mesh.membership.reject.via-stale",
+                    node, channel, frame = e.frame, subject = %e.source, held_key = %e.held, frame_key = %e.offered,
+                ).in_scope(|| tracing::info!("the carried projection revision is older; the operation identity remains seen"));
+                return false;
+            }
             tracing::info_span!(
                 "rdm.mesh.membership.reject.via-earlier-version",
                 node = %node,
@@ -2225,6 +2234,7 @@ impl View {
                 continue;
             }
             drop(rx);
+            crate::receive_order::reject_lifecycle_version(kind.name(), &format!("{publisher} {mesh}"), held_version, topology_version);
             tracing::info_span!(
                 "rdm.mesh.membership.reject.via-stop-older-than-projection",
                 node = %self.current_name(),
@@ -4130,10 +4140,10 @@ pub struct DigestBook {
     /// entry of the same birth moves nothing of it, and a version that no longer lists it is no
     /// departure. The member's own digest supersedes it; its departure or stop removes it.
     projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
-    /// The stop and restart overlays that ended here (their birth rejoined), by operation key: a
+    /// The lifecycle overlays that ended here, by complete operation identity and exact birth: a
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
-    ended_overlays: Arc<Mutex<BTreeSet<(String, u32, String)>>>,
+    ended_overlays: Arc<Mutex<std::collections::HashSet<crate::receive_order::LifecycleIdentity>>>,
     /// The path name of the node holding this book, named by the refusals it writes.
     holder: Arc<Mutex<String>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
@@ -4398,10 +4408,12 @@ impl DigestBook {
         if self.is_departed(op.node_id.as_str()) {
             return false;
         }
-        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
-            return false;
-        }
-        let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
+        let new = {
+            let mut held = self.in_flight.lock().unwrap();
+            let ended = self.ended_overlays.lock().unwrap().contains(&crate::receive_order::LifecycleIdentity::of(&op));
+            if !crate::receive_order::admit_overlay("node-restarting", &op, held.get(&op.key()), ended) { return false; }
+            held.insert(op.key(), op.clone()).is_none()
+        };
         if new {
             self.overlays_moved();
             tracing::info_span!(
@@ -4437,7 +4449,7 @@ impl DigestBook {
         {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
-            in_flight.retain(|k, o| {
+            in_flight.retain(|_, o| {
                 if !o.is_restart() {
                     return true;
                 }
@@ -4450,7 +4462,7 @@ impl DigestBook {
                 } else {
                     return true;
                 };
-                ended.insert(k.clone());
+                ended.insert(crate::receive_order::LifecycleIdentity::of(o));
                 cleared.push((o.clone(), by));
                 false
             });
@@ -4528,9 +4540,9 @@ impl DigestBook {
                 .filter(|(k, o)| o.is_restart() && o.name.mesh == mesh && !fence.post_restarts.contains(*k))
                 .filter_map(|(k, o)| carried.get(k).filter(|(p, v)| *p != fence.publisher || fence.version > *v).map(|(_, v)| (k.clone(), o.clone(), *v)))
                 .collect();
-            for (k, _, _) in &moved {
+            for (k, o, _) in &moved {
                 in_flight.remove(k);
-                ended.insert(k.clone());
+                ended.insert(crate::receive_order::LifecycleIdentity::of(o));
                 carried.remove(k);
             }
             moved.into_iter().map(|(_, o, v)| (o, v)).collect()
@@ -4572,7 +4584,7 @@ impl DigestBook {
         {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
-            in_flight.retain(|k, o| {
+            in_flight.retain(|_, o| {
                 if o.is_restart() || o.is_stop() {
                     return true;
                 }
@@ -4583,7 +4595,7 @@ impl DigestBook {
                 } else {
                     return true;
                 };
-                ended.insert(k.clone());
+                ended.insert(crate::receive_order::LifecycleIdentity::of(o));
                 cleared.push((o.clone(), by));
                 false
             });
@@ -4632,7 +4644,7 @@ impl DigestBook {
             let closed: Vec<LifecycleOp> = in_flight.values().filter(|o| o.is_restart() && o.node_id == *node_id && o.incarnation == *incarnation).cloned().collect();
             for o in &closed {
                 in_flight.remove(&o.key());
-                ended.insert(o.key());
+                ended.insert(crate::receive_order::LifecycleIdentity::of(o));
             }
             closed
         };
@@ -4682,10 +4694,18 @@ impl DigestBook {
         if held.as_ref().is_some_and(|(inc, _, _)| *inc != op.incarnation) {
             return false;
         }
-        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
-            return false;
-        }
-        let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
+        let new = {
+            let mut held = self.in_flight.lock().unwrap();
+            let ended = self.ended_overlays.lock().unwrap().contains(&crate::receive_order::LifecycleIdentity::of(&op));
+            if crate::receive_order::admit_overlay("node-stopped", &op, held.get(&op.key()), ended) {
+                held.insert(op.key(), op.clone());
+                true
+            } else {
+                // A completed operation must not enrich a later stop's provenance either.
+                if ended { return false; }
+                false
+            }
+        };
         if !new {
             if carried.is_some() {
                 if let Some(m) = self.stopped_marks.lock().unwrap().get_mut(op.node_id.as_str()) {
@@ -5205,10 +5225,10 @@ impl DigestBook {
             let mut in_flight = self.in_flight.lock().unwrap();
             let mut ended = self.ended_overlays.lock().unwrap();
             let before = in_flight.len();
-            in_flight.retain(|k, o| {
+            in_flight.retain(|_, o| {
                 let gone = o.is_stop() && o.node_id.as_str() == node_id;
                 if gone {
-                    ended.insert(k.clone());
+                    ended.insert(crate::receive_order::LifecycleIdentity::of(o));
                 }
                 !gone
             });
@@ -5239,10 +5259,12 @@ impl DigestBook {
         }
         // Applied once however many copies arrive (gossip.md `NodeDeleting`): a copy of an overlay
         // the Build facts ended opens nothing again.
-        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
-            return false;
-        }
-        let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
+        let new = {
+            let mut held = self.in_flight.lock().unwrap();
+            let ended = self.ended_overlays.lock().unwrap().contains(&crate::receive_order::LifecycleIdentity::of(&op));
+            if !crate::receive_order::admit_overlay("node-deleting", &op, held.get(&op.key()), ended) { return false; }
+            held.insert(op.key(), op.clone()).is_none()
+        };
         if new {
             self.overlays_moved();
             // What this receiver holds of the node as the overlay opens: found, in what status, and
@@ -7878,7 +7900,11 @@ mod tests {
         let before = member.book.in_flight().len();
         assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop:mesh1.rpc.4", &other, 5), &fabric, Side::MeshChannel), "mesh1.admin.2's fact at v5 after its v7 is ignored");
         assert_eq!(member.book.in_flight().len(), before, "nothing moved");
-        assert!(hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop:mesh1.rpc.4", &primary, 5), &fabric, Side::MeshChannel), "mesh1.admin.1's v5 is ordered against its own v4 only");
+        assert!(!hear(&mut channel, &member, &event(StatusEvent::Stopped, &s4, "node.stop:mesh1.rpc.4", &primary, 5), &fabric, Side::MeshChannel), "the version-refused identity is already seen, whoever carries its repeat");
+        // A new operation tests the publisher's projection independently of that repeated fact.
+        let mut fresh = event(StatusEvent::Stopped, &s4, "node.stop:mesh1.rpc.4", &primary, 5);
+        if let Frame::NodeStopped { op, .. } = &mut fresh { op.attempt += 1; }
+        assert!(hear(&mut channel, &member, &fresh, &fabric, Side::MeshChannel), "a new fact at mesh1.admin.1's v5 is never ordered against mesh1.admin.2's v7");
         assert!(member.book.in_flight().iter().any(|op| op.node_id == s4.node.node_id));
 
         assert!(spans.named("rdm.mesh.membership.reject.via-unseated-publisher").is_empty(), "no status event is refused for who published it");

@@ -13,8 +13,11 @@
 //! - Digest: `digest_seq` per exact birth; another incarnation starts its sequence again.
 //! - Members and MembersDelta: publication timestamp then topology version per mesh, with the
 //!   installed publisher/version floor also enforced regardless of publication timestamp.
-//! - NodeDeleting, NodeRestarting and NodeStopped: the existing topology-version check per
-//!   publisher and subject mesh; operation-fact conformance is a remaining row.
+//! - NodeDeleting, NodeRestarting and NodeStopped: operation identity is recorded before the
+//!   existing topology-version check per publisher and subject mesh. A carried revision refused
+//!   with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs no
+//!   handler. The carried revision is still judged independently, even for a repeated operation:
+//!   an admissible higher revision advances its publisher floor without replaying the fact.
 //! - Seated: holder revision per complete seat key (mesh and node type, or the fabric seat).
 //! - PrimaryUpdating/PrimaryUpdated: committed revision per cohort, settled after updating at
 //!   one revision; every named cohort is checked before any held key moves.
@@ -23,6 +26,11 @@
 //! chunks of an unfinished publication. A Members or MembersDelta key advances only when the
 //! complete snapshot installs or the delta applies; [`ReceiveOrder::installed`] also records
 //! the source version installed by a topology read, whose chunks carry no publication timestamp.
+//!
+//! Lifecycle overlay installation uses [`admit_overlay`] under the actual overlay lock for
+//! local execution, received frames and snapshots. Retained completion is keyed by the complete
+//! operation identity and exact birth; it cannot reopen. A held repeat never rewrites the authored
+//! event evidence. NodeDeleting remains an overlay read only by application routing.
 //!
 //! NodeDeleted uses [`node_deleted_receipt`] against the retained deletion under its installation
 //! lock: an exact operation/birth repeat emits `via-duplicate`, another deletion of the retained
@@ -110,6 +118,59 @@ pub(crate) fn node_deleted_receipt(held: Option<&rdm_core::LifecycleOp>, offered
     } else {
         NodeDeletedReceipt::AlreadyDeleted
     }
+}
+
+/// The operation fact's identity, independent of its carried publisher revision and event time.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct LifecycleIdentity {
+    build_id: String,
+    attempt: u32,
+    operation: String,
+    node_id: rdm_core::NodeId,
+    incarnation: rdm_core::IncarnationId,
+}
+
+impl LifecycleIdentity {
+    pub(crate) fn of(op: &rdm_core::LifecycleOp) -> Self {
+        Self { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() }
+    }
+}
+
+fn duplicate_lifecycle(frame: &str, op: &rdm_core::LifecycleOp) {
+    tracing::info_span!(
+        "rdm.mesh.membership.update.via-duplicate",
+        frame,
+        identity = %format!("{} {} {} {}/{}", op.build_id, op.attempt, op.operation, op.node_id, op.incarnation),
+        outcome = "ignored",
+    ).in_scope(|| tracing::info!("the lifecycle operation identity is already held or seen: ignored"));
+}
+
+/// Classify an overlay against the actual held operation and retained exact-birth completion.
+/// The caller holds the overlay installation lock through this decision and its insertion. Local
+/// execution and snapshot application use this same classifier as the frame handler.
+pub(crate) fn admit_overlay(frame: &str, op: &rdm_core::LifecycleOp, held: Option<&rdm_core::LifecycleOp>, ended: bool) -> bool {
+    if ended {
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-lifecycle-reconciled",
+            frame, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation,
+            node_id = %op.node_id, incarnation_id = %op.incarnation,
+            outcome = "ignored", evidence = "operation-ended",
+        ).in_scope(|| tracing::info!("held completion or later lifecycle evidence already ended this exact operation: nothing reopens"));
+        return false;
+    }
+    if held.is_some_and(|h| LifecycleIdentity::of(h) == LifecycleIdentity::of(op)) {
+        duplicate_lifecycle(frame, op);
+        return false;
+    }
+    true
+}
+
+/// Name the carried projection refusal separately from recording the operation fact as seen.
+pub(crate) fn reject_lifecycle_version(frame: &str, subject: &str, held: u64, offered: u64) {
+    tracing::info_span!(
+        "rdm.mesh.membership.reject.via-stale",
+        frame, subject, held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"),
+    ).in_scope(|| tracing::info!("the lifecycle frame's carried projection revision is below the held one: refused"));
 }
 
 /// One hook's identity; authored evidence time, publisher path and forwarding metadata do not
@@ -295,6 +356,9 @@ pub(crate) struct Earlier {
 #[derive(Debug, Default)]
 pub(crate) struct ReceiveOrder {
     newest: HashMap<Source, Key>,
+    /// Operation receipt is independent of projection admission: even a version-refused frame is
+    /// seen, so another publisher or a higher carried version cannot replay its operation effect.
+    lifecycle_seen: HashSet<LifecycleIdentity>,
     /// The source version each mesh's last install moved to: its publisher and `topology_version`.
     installed: HashMap<String, (PublisherId, u64)>,
 }
@@ -309,6 +373,21 @@ fn publication_of(f: &Frame) -> Option<(&str, &PublisherId, u64)> {
 }
 
 impl ReceiveOrder {
+    /// Record a lifecycle identity before its projection revision is judged. No handler runs on
+    /// repeat, even when the first receipt's carried revision was refused. This identity is shared
+    /// by every channel, and contains the exact birth but neither publisher nor event timestamp.
+    pub(crate) fn admit_lifecycle_identity(&mut self, f: &Frame) -> bool {
+        let (frame, op) = match f {
+            Frame::NodeDeleting { op, .. } => ("node-deleting", op),
+            Frame::NodeRestarting { op, .. } => ("node-restarting", op),
+            Frame::NodeStopped { op, .. } => ("node-stopped", op),
+            _ => return true,
+        };
+        if self.lifecycle_seen.insert(LifecycleIdentity::of(op)) { return true; }
+        duplicate_lifecycle(frame, op);
+        false
+    }
+
     /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A taken frame's
     /// key is held when it is newer than the held one, except a `Members` or `MembersDelta` key, held
     /// when its snapshot installs or its delta applies ([`Self::installed`]).
