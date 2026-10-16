@@ -512,7 +512,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
-    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone());
+    // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
+    // and its client and its server share the windows and the open invocations.
+    let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: node_id.clone(), incarnation: incarnation.clone() });
+    let node_rpc = crate::node_rpc::ProcessNodeRpc::new(node_rpc_resolver.clone(), endpoint.clone()).with_delivery(delivery.clone());
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -524,6 +527,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     let rpc_server = rpc_builder
         .with_ready_gate(rpc_ready.clone())
+        .with_delivery(delivery)
         .seal(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.add.via-alpn-registered", node = %name, alpns = "node-rpc,gossip");

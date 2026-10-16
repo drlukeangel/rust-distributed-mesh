@@ -423,10 +423,13 @@ async fn start_booted(
     drop(step);
     // The control plane: Node RPC is no connection (connections.md "Two planes, two words"), so its
     // dials and accepts write nothing to the connections log.
-    let client = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
+    // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
+    // and its clients and its server share the windows and the open invocations.
+    let delivery = rdm_transport::Delivery::new(rdm_core::framing::Birth { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
+    let client = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_delivery(delivery.clone()));
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
-    let data_plane = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
+    let data_plane = Arc::new(rdm_transport::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()).with_delivery(delivery.clone()));
     // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy retirement
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
@@ -461,6 +464,7 @@ async fn start_booted(
     let server = serve_node_command(serve_kick(register(crate::member_handover::serve_member(crate::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone()), subject.clone())
         .carry::<rdm_core::status::Status>()
         .with_ready_gate(ready.clone())
+        .with_delivery(delivery.clone())
         .seal(rdm_transport::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     drop(step);

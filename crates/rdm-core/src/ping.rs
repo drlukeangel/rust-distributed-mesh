@@ -70,6 +70,10 @@ impl NodeProtocol for Ping {
     type Request = PingRequest;
     type Reply = PingReply;
 
+    fn read_only(_req: &PingRequest) -> bool {
+        true
+    }
+
     fn classify_reply(reply: &PingReply) -> ReplyKind {
         match reply {
             PingReply::Pong { .. } => ReplyKind::Success,

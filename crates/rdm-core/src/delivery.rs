@@ -67,6 +67,11 @@ impl<R: Eq + Hash + Clone> SendWindow<R> {
         self.unacked.get(receiver).and_then(|s| s.first().copied()).unwrap_or(self.next)
     }
 
+    /// The next `delivery_seq` to be minted: everything below it was minted.
+    pub fn next(&self) -> u64 {
+        self.next
+    }
+
     /// The frames held unacked toward `receiver`, lowest first.
     pub fn unacked(&self, receiver: &R) -> Vec<u64> {
         self.unacked.get(receiver).map(|s| s.iter().copied().collect()).unwrap_or_default()
@@ -126,6 +131,12 @@ impl<S> RecvWindow<S> {
         self.held.insert(seq, state);
     }
 
+    /// Forget `seq` (a request that was never dispatched): its sender's next resend is a first
+    /// arrival.
+    pub fn remove(&mut self, seq: u64) -> Option<S> {
+        self.held.remove(&seq)
+    }
+
     /// The state of `seq`, when held.
     pub fn get_mut(&mut self, seq: u64) -> Option<&mut S> {
         self.held.get_mut(&seq)
@@ -162,13 +173,6 @@ pub enum OrderViolation {
         /// The next expected position.
         next: u32,
     },
-    /// The held frames would pass the byte bound.
-    OverBytes {
-        /// What would be held.
-        held: usize,
-        /// The bound.
-        max: usize,
-    },
     /// A frame after the last position, `u32::MAX`, was delivered.
     PastLastPosition,
 }
@@ -178,7 +182,6 @@ impl std::fmt::Display for OrderViolation {
         match self {
             Self::Conflict { seq } => write!(f, "two different response frames at position {seq}"),
             Self::TooFarAhead { seq, next } => write!(f, "response frame at position {seq} is more than {MAX_REORDER_POSITIONS} past the next expected {next}"),
-            Self::OverBytes { held, max } => write!(f, "held response frames would reach {held} bytes, past their {max}-byte bound"),
             Self::PastLastPosition => write!(f, "a response frame after position {}", u32::MAX),
         }
     }
@@ -187,8 +190,8 @@ impl std::fmt::Display for OrderViolation {
 /// What an admitted response frame does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admitted {
-    /// The frames now deliverable in order, starting at the one admitted: `(seq, bytes)`.
-    Deliver(Vec<(u32, Vec<u8>)>),
+    /// The frames now deliverable in order, starting at the one admitted: `(seq, delivery_seq, bytes)`.
+    Deliver(Vec<(u32, u64, Vec<u8>)>),
     /// Held until the positions before it arrive.
     Held,
     /// The same frame again (same position, same identity): nothing new to deliver.
@@ -196,28 +199,21 @@ pub enum Admitted {
 }
 
 /// The order of one invocation's response frames at the caller: delivered in `seq` order, a frame
-/// past a missing position held within bounds, a repeat recognised by its identity.
-#[derive(Debug)]
+/// past a missing position held within [`MAX_REORDER_POSITIONS`], a repeat recognised by its
+/// identity. Its bytes are bounded by the positions and the op's reply ceiling, which the reader
+/// enforces on every frame before it is admitted here.
+#[derive(Debug, Default)]
 pub struct ResponseOrder {
     next: u32,
     exhausted: bool,
     delivered: Vec<u64>,
     held: BTreeMap<u32, (u64, Vec<u8>)>,
-    held_bytes: usize,
-    max_held_bytes: usize,
 }
 
 impl ResponseOrder {
-    /// The order of an invocation whose protocol's reply frames are at most `max_reply` bytes.
-    pub fn new(max_reply: usize) -> Self {
-        Self {
-            next: 0,
-            exhausted: false,
-            delivered: Vec::new(),
-            held: BTreeMap::new(),
-            held_bytes: 0,
-            max_held_bytes: max_reply.saturating_mul(MAX_REORDER_POSITIONS as usize),
-        }
+    /// An invocation's order before its first frame.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// The next position to deliver.
@@ -240,20 +236,14 @@ impl ResponseOrder {
             if seq - self.next > MAX_REORDER_POSITIONS {
                 return Err(OrderViolation::TooFarAhead { seq, next: self.next });
             }
-            let held = self.held_bytes + bytes.len();
-            if held > self.max_held_bytes {
-                return Err(OrderViolation::OverBytes { held, max: self.max_held_bytes });
-            }
-            self.held_bytes = held;
             self.held.insert(seq, (delivery_seq, bytes));
             return Ok(Admitted::Held);
         }
-        let mut out = vec![(seq, bytes)];
+        let mut out = vec![(seq, delivery_seq, bytes)];
         self.deliver(delivery_seq);
         while !self.exhausted {
             let Some((d, b)) = self.held.remove(&self.next) else { break };
-            self.held_bytes -= b.len();
-            out.push((self.next, b));
+            out.push((self.next, d, b));
             self.deliver(d);
         }
         Ok(Admitted::Deliver(out))
@@ -322,12 +312,12 @@ mod tests {
     /// Cell 14: a terminal is held while an earlier position is missing.
     #[test]
     fn a_frame_past_a_missing_position_is_held_and_delivered_in_order() {
-        let mut o = ResponseOrder::new(16);
+        let mut o = ResponseOrder::new();
         assert_eq!(o.admit(2, 12, b"terminal".to_vec()), Ok(Admitted::Held), "position 1 is missing");
-        assert_eq!(o.admit(0, 10, b"started".to_vec()), Ok(Admitted::Deliver(vec![(0, b"started".to_vec())])));
+        assert_eq!(o.admit(0, 10, b"started".to_vec()), Ok(Admitted::Deliver(vec![(0, 10, b"started".to_vec())])));
         assert_eq!(
             o.admit(1, 11, b"data".to_vec()),
-            Ok(Admitted::Deliver(vec![(1, b"data".to_vec()), (2, b"terminal".to_vec())])),
+            Ok(Admitted::Deliver(vec![(1, 11, b"data".to_vec()), (2, 12, b"terminal".to_vec())])),
             "the held terminal follows the position it waited for"
         );
         assert_eq!(o.admit(1, 11, b"data".to_vec()), Ok(Admitted::Duplicate), "a resend of a delivered frame");
@@ -337,7 +327,7 @@ mod tests {
     /// Cell 13: two different frames at one position are a violation, whatever their identities.
     #[test]
     fn two_different_frames_at_one_position_are_a_violation() {
-        let mut o = ResponseOrder::new(16);
+        let mut o = ResponseOrder::new();
         o.admit(0, 10, b"a".to_vec()).unwrap();
         assert_eq!(o.admit(0, 99, b"a".to_vec()), Err(OrderViolation::Conflict { seq: 0 }), "delivered position, another frame");
         assert_eq!(o.admit(3, 13, b"x".to_vec()), Ok(Admitted::Held));
@@ -345,21 +335,16 @@ mod tests {
         assert_eq!(o.admit(3, 13, b"x".to_vec()), Ok(Admitted::Duplicate));
     }
 
-    /// Cell 20: reordering past 64 positions, or past its byte bound, is refused.
+    /// Cell 20 (positions): reordering past 64 positions is refused.
     #[test]
-    fn reordering_past_its_positions_or_its_bytes_is_refused() {
-        let mut o = ResponseOrder::new(4);
+    fn reordering_past_64_positions_is_refused() {
+        let mut o = ResponseOrder::new();
         assert_eq!(o.admit(64, 1, vec![0; 4]), Ok(Admitted::Held), "64 past the next is the bound");
         assert_eq!(o.admit(65, 2, vec![0; 1]), Err(OrderViolation::TooFarAhead { seq: 65, next: 0 }));
-        let mut o = ResponseOrder::new(4);
+        let mut o = ResponseOrder::new();
         for seq in 1..=64 {
             assert_eq!(o.admit(seq, u64::from(seq), vec![0; 4]), Ok(Admitted::Held));
         }
-        let mut o2 = ResponseOrder::new(4);
-        for seq in 1..=63 {
-            o2.admit(seq, u64::from(seq), vec![0; 4]).unwrap();
-        }
-        assert_eq!(o2.admit(64, 64, vec![0; 5]), Err(OrderViolation::OverBytes { held: 257, max: 256 }), "64 frames of the reply ceiling");
         assert!(matches!(o.admit(0, 100, vec![]), Ok(Admitted::Deliver(d)) if d.len() == 65));
     }
 }

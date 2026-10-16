@@ -122,10 +122,14 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 - **Bounds and refusals.** Reset `424 PROTOCOL_VIOLATION`: a header over 128 bytes, undecodable, or
   of an unknown kind; a stream whose first frame is a protocol section with no header; two different
   frames at one `(invocation_id, seq)`; a response frame more than 64 positions past the next
-  expected `seq`, or buffered reorder bytes past 64 of the op's reply ceiling; a frame after
-  `seq = u32::MAX`. `delivery_seq` starts at 1 per (sender birth, receiver birth) and is never reused
-  by the sending birth; `retire_below` is the lowest `delivery_seq` the sender holds unacked toward that
-  receiver. The receiver retires duplicate state only below the watermark, or on the sender birth's
+  expected `seq`, or any frame over the op's reply ceiling (the envelope's byte bound, per frame: with
+  64 positions it bounds the held bytes, so no second byte check exists); a frame after
+  `seq = u32::MAX`. `delivery_seq` starts at 1 per sender birth, from one counter for every receiver,
+  and is never reused by the sending birth: each receiver sees its own frames in increasing order, and
+  a carried call's identity is unique at its carrier and at its final target alike (per-receiver
+  counters would mint the same `(origin, n)` twice at a receiver reached both directly and carried).
+  `retire_below` is the lowest `delivery_seq` the sender holds unacked toward that receiver; a carried
+  frame is held toward its carrier and its final target, so its watermark is valid at both. The receiver retires duplicate state only below the watermark, or on the sender birth's
   proven exit or accepted removal; never by time. A carried call keeps its origin's `(sender,
   delivery_seq)`: the window is per origin birth. Schedule: send at once; first resend at the publish
   cadence, then doubling with ±25 % jitter, capped at the staleness floor; one attempt in flight per
@@ -161,6 +165,25 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   invocation); the §1 context sentence (no delivery identity in the context, it is the transport
   header's); node-rpc.md §52's two forbidden designs replaced, not deleted (a delivery-retry loop in a
   primitive or a workflow; a cache of handler results).
+- **Build decisions (2026-10-16, the lead's, within the pages).**
+  - The acceptance boundary: a protocol declares a read-only request (`NodeProtocol::read_only`,
+    acked as it is dispatched); a handler that records the accepted work says so on
+    `PeerContext::acceptance` (acked at once); otherwise the first response frame acks the request.
+  - A call's budget is its owner's bound: when it lapses the call ends `NotSent` or `Indeterminate`
+    and its request is owed no longer (the owner's cancellation, span `delivery=cancelled`). An owner
+    that needs delivery past a budget passes a longer one; no call accumulates owed requests behind
+    its caller.
+  - A target the view does not name at the call is `NotSent(Resolve)` at once: nothing is minted or
+    owed. Once owed, absence from the view ends nothing; `Gone` or another incarnation (the view's
+    proof) ends it, `ReceiverGone`.
+  - A process that is no node (a probe, `rdm-client`) mints its birth once; a node's clients and its
+    server share one `Delivery` of its exact birth (`rdm-node` node.rs, `rdm-admin` boot.rs).
+  - A caller that drops its invocation stops the stream (code 0): the responder drops what it owes
+    for it, and a streaming handler's next `data()` answers `CallerGone`. A responder owes at most 64
+    unacked frames of one stream; past that `data()` answers `CallerGone`.
+  - The commit cut is the complete request frame written; the request direction stays open for the
+    caller's acks. node-rpc.md §23 still says "the request direction finishes cleanly" and "never
+    silently replays": exact old → new to Luke before e1 lands.
 - **Sizing.** Two seats; `rdm-transport/src/{client,server,framer,wire,stream}.rs`,
   `rdm-core/src/{framing,outcome,codes}.rs`, `tools/mesh-audit`.
 - **State.** started 2026-10-16 on `i146-e1-delivery-layer` (lane e4s8, from main `556f3cd4`); bytes frozen above; RED cells next.

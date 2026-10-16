@@ -1,20 +1,25 @@
-//! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
+//! The Node RPC server (node-rpc.md §12–§19, §26–§33, §43; ownership §6.3).
 //!
-//! Per bi-stream: read the target (an unserved op → `421`; the node id it names is
-//! never a reason to refuse, R-UC1a), the context, the declared length
-//! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
-//! `Busy`), read the body, and dispatch only after the request direction
-//! finished cleanly. A request the sender reset (`499`) or left unfinished is
-//! dropped and never reaches a handler. Handler work runs supervised: a panic
-//! or `HandlerFault` resets with `423 INTERNAL_RPC_FAILURE`.
+//! Per bi-stream: read the transport header first. A `Response` or `Ack` first frame goes to the
+//! delivery demultiplexer before any admission. A `Request` is checked against its sender's
+//! duplicate window: a repeat is held pending (unacked) while the original has not reached its
+//! acceptance boundary, and acked without dispatch after it. A first arrival reads the target (an
+//! unserved op → `421`; the node id it names is never a reason to refuse, R-UC1a), the context, the
+//! declared length (oversize → typed `Malformed(TooLarge)`), takes admission (full → typed `Busy`),
+//! reads the body, and dispatches once the request frame is complete. A request the sender reset
+//! (`499`) or left unfinished is dropped and never reaches a handler. Every response frame, a named
+//! refusal included, is owed until the caller acks it. Handler work runs supervised: a panic or
+//! `HandlerFault` resets with `423 INTERNAL_RPC_FAILURE`.
 
 use crate::admission::{Admission, Limits, Permit};
+use crate::client::CarriedIdentity;
+use crate::delivery::{Acceptance, AckOf, Delivery, FrameOut, FrameReader, ReadEnd, RequestArrival, Settled};
 use iroh::endpoint::{Connection, ReadError, RecvStream, SendStream, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use rdm_core::catalog::{CatalogBuilder, CatalogEntry, SealError, SealedCatalog, Shape, OpOwner};
 use rdm_core::codes::ResetCode;
 use rdm_core::dispatch::{RequestAssembly, ServerAction};
-use rdm_core::framing::encode_frame;
+use rdm_core::framing::TransportHeader;
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
 use std::collections::HashMap;
@@ -33,6 +38,12 @@ pub struct PeerContext {
     /// The observability context the request carried, already sanitized: what a carrier
     /// hands into its inner call unchanged.
     pub context: CallContext,
+    /// The request's delivery identity and its sender's `retire_below`: what a carrier's inner call
+    /// keeps, so the final target suppresses a resend through any carrier.
+    pub delivery: Option<CarriedIdentity>,
+    /// The request's acceptance boundary (node-rpc.md §43): a handler that records the accepted
+    /// work says so here, and the request is acknowledged at once.
+    pub acceptance: Acceptance,
 }
 
 /// An unexpected execution fault. Created only by named constructors, so
@@ -68,6 +79,8 @@ pub(crate) trait Erased: Send + Sync {
     fn call(&self, peer: PeerContext, payload: Vec<u8>) -> (tracing::Span, BoxFut<Result<Vec<u8>, HandlerFault>>);
     fn refusal(&self, r: Refusal) -> Vec<u8>;
     fn max_reply(&self) -> usize;
+    /// Whether the request `payload` only reads: accepted as it is dispatched.
+    fn read_only(&self, payload: &[u8]) -> bool;
     /// A server-streaming handler: frames go out through `out` as the handler produces them.
     fn is_stream(&self) -> bool {
         false
@@ -135,6 +148,10 @@ where
 
     fn max_reply(&self) -> usize {
         P::MAX_REPLY_FRAME_BYTES
+    }
+
+    fn read_only(&self, payload: &[u8]) -> bool {
+        P::decode_request(payload).is_ok_and(|r| P::read_only(&r))
     }
 }
 
@@ -256,6 +273,8 @@ pub struct ServerBuilder {
     inbound: Option<Inbound>,
     /// Test seam: withholds the next reply after the handler has applied it.
     withhold: Option<Arc<ReplyWithhold>>,
+    /// The process's delivery state, shared with its client; `None`: the served birth's own.
+    delivery: Option<Delivery>,
 }
 
 /// An accepted connection handed to the process's accept trigger once the resolver names the
@@ -278,7 +297,15 @@ impl ServerBuilder {
             carried_table: None,
             inbound: None,
             withhold: None,
+            delivery: None,
         }
+    }
+
+    /// Serve as the process `delivery` is: the duplicate windows, the owed responses and the
+    /// open invocations of its client are one.
+    pub fn with_delivery(mut self, delivery: Delivery) -> Self {
+        self.delivery = Some(delivery);
+        self
     }
 
     /// Test seam: let `withhold` hold back the reply of the next call it is armed for. An unarmed
@@ -349,6 +376,13 @@ impl ServerBuilder {
         if let Some(table) = &self.carried_table {
             let _ = table.set(self.carried.clone());
         }
+        let delivery = self.delivery.unwrap_or_else(|| {
+            let me = match (rdm_core::NodeId::parse(&birth.node_id), rdm_core::IncarnationId::parse(&birth.incarnation)) {
+                (Ok(node_id), Ok(incarnation)) => rdm_core::framing::Birth { node_id, incarnation },
+                _ => crate::delivery::minted_birth(),
+            };
+            Delivery::new(me)
+        });
         Ok(NodeRpcServer {
             inner: Arc::new(Inner {
                 catalog,
@@ -362,6 +396,7 @@ impl ServerBuilder {
                 withhold: self.withhold,
                 replies: Arc::new(UnsettledReplies::default()),
                 connections: std::sync::Mutex::default(),
+                delivery,
             }),
         })
     }
@@ -450,6 +485,7 @@ struct Inner {
     replies: Arc<UnsettledReplies>,
     /// The connections this server accepted and still holds open, by their stable id.
     connections: std::sync::Mutex<HashMap<usize, Connection>>,
+    delivery: Delivery,
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
@@ -544,55 +580,190 @@ impl NodeRpcServer {
         self.inner.draining.store(false, Ordering::SeqCst);
     }
 
-    async fn refuse(&self, op: u8, r: Refusal, mut send: SendStream, mut recv: RecvStream) {
-        if let Some(h) = self.inner.handlers.get(&op) {
-            let bytes = encode_frame(&h.refusal(r));
-            let _ = send.write_all(&bytes).await;
-            let _ = send.finish();
-        }
-        let _ = recv.stop(code(ResetCode::RequestStop));
+    /// The process's delivery state.
+    pub fn delivery(&self) -> &Delivery {
+        &self.inner.delivery
     }
 
-    async fn invocation(self, peer: iroh::PublicKey, mut send: SendStream, mut recv: RecvStream) {
+    /// One accepted bi-stream: its first frame's header decides what it carries.
+    async fn stream(self, conn: Connection, send: SendStream, recv: RecvStream) {
+        let peer = conn.remote_id();
+        let mut reader = FrameReader::new(recv, Vec::new());
+        let first = match reader.header().await {
+            Ok(Some(h)) => h,
+            Ok(None) => return,
+            Err(ReadEnd::Violation(why)) => {
+                self.inner.stats.violations.fetch_add(1, Ordering::SeqCst);
+                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?Option::<u8>::None, reason = why)
+                    .in_scope(|| tracing::info!(reason = why, "protocol violation: 424"));
+                let mut send = send;
+                let _ = send.reset(code(ResetCode::ProtocolViolation));
+                reader.stop(ResetCode::ProtocolViolation);
+                return;
+            }
+            Err(e) => {
+                let reason = match e {
+                    ReadEnd::Reset(c) if ResetCode::from_code(c) == Some(ResetCode::FrameNotSent) => "sender reset an unfinished request (499 FRAME_NOT_SENT)",
+                    ReadEnd::Reset(_) => "sender reset the request direction",
+                    ReadEnd::Lost(_) => "connection lost",
+                    _ => "the stream ended inside the transport header",
+                };
+                self.dropped(peer, reason);
+                let mut send = send;
+                let _ = send.reset(code(ResetCode::RequestStop));
+                return;
+            }
+        };
+        match first {
+            TransportHeader::Request { .. } => self.invocation(peer, conn, first, send, reader).await,
+            // Resent responses and acks reach the demultiplexer before dispatch and before
+            // lifecycle admission: an endpoint that admits no new command still receives them.
+            _ => self.inner.delivery.serve_reverse_stream(first, send, reader).await,
+        }
+    }
+
+    fn dropped(&self, peer: iroh::PublicKey, reason: &'static str) {
+        self.inner.stats.dropped_unfinished.fetch_add(1, Ordering::SeqCst);
+        tracing::info_span!("rdm.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
+            .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
+    }
+
+    /// A repeat of a request this server holds: acked once the original is accepted, without
+    /// dispatch, then its stream ends; reset as the original ended; or stopped when the original was
+    /// never dispatched.
+    async fn answer_repeat(&self, peer: iroh::PublicKey, header: &TransportHeader, settled: Settled, out: FrameOut, mut reader: FrameReader) {
+        let d = &self.inner.delivery;
+        let id = header.delivery_id();
+        match settled {
+            Settled::Accepted => {
+                tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %id, acceptance = "duplicate", peer = %peer)
+                    .in_scope(|| tracing::info!("a repeated request is acked without dispatch"));
+                d.write_ack(&out, header, AckOf::Request).await;
+                out.finish().await;
+                // The caller is reachable from here: whatever of the original's response is still
+                // owed goes to it.
+                d.push(&id, Some(peer));
+            }
+            Settled::Ended(c) => {
+                out.reset(ResetCode::from_code(c).unwrap_or(ResetCode::InternalRpcFailure)).await;
+                reader.stop(ResetCode::RequestStop);
+            }
+            Settled::Dropped => {
+                out.reset(ResetCode::RequestStop).await;
+                reader.stop(ResetCode::RequestStop);
+            }
+        }
+    }
+
+    /// Read the caller's acks of `id`'s response on the request direction until the response is
+    /// complete and acked, or the direction ends; what is still owed then goes out again on a new
+    /// stream. While the direction lives its frames are delivered (QUIC loses nothing on a live
+    /// stream): an ack that has not come is a caller whose owner has not read the frame yet, never a
+    /// loss.
+    async fn read_acks(d: Delivery, id: rdm_core::framing::DeliveryId, mut reader: FrameReader) {
+        let Some(mut acked) = d.acked_watch(&id) else { return };
+        loop {
+            tokio::select! {
+                h = reader.header() => match h {
+                    Ok(Some(h @ TransportHeader::Ack { .. })) => d.on_ack(&h),
+                    _ => break,
+                },
+                r = acked.changed() => if r.is_err() {
+                    // The response is complete and every frame acked.
+                    return;
+                },
+            }
+        }
+        if !d.response_settled(&id) {
+            d.push(&id, None);
+        }
+    }
+
+    /// A named refusal of request `id`: a response frame at `seq` 0, owed until the caller acks it.
+    /// It answers the request (a repeat is acked without dispatch).
+    async fn answer_refusal(&self, op: u8, r: Refusal, id: &rdm_core::framing::DeliveryId, peer: iroh::PublicKey, out: FrameOut, acks: Option<FrameReader>) {
+        let d = &self.inner.delivery;
+        let Some(h) = self.inner.handlers.get(&op) else {
+            out.reset(ResetCode::UnservedOp).await;
+            d.settle_request(id, Settled::Ended(u64::from(ResetCode::UnservedOp.code())));
+            return;
+        };
+        d.owe_response(id, peer);
+        d.settle_request(id, Settled::Accepted);
+        let frame = d.owe_frame(id, 0, h.refusal(r), true);
+        let _ = out.write(&frame).await;
+        out.finish().await;
+        match acks {
+            Some(reader) => Self::read_acks(d.clone(), id.clone(), reader).await,
+            // The request direction was stopped: the caller acks on an ack stream, and the frame is
+            // resent if no ack arrives within the first resend's delay.
+            None => d.push_after(id, d.pacing().after(1)),
+        }
+    }
+
+    async fn invocation(self, peer: iroh::PublicKey, conn: Connection, header: TransportHeader, send: SendStream, reader: FrameReader) {
         let stats = self.inner.stats.clone();
+        let d = self.inner.delivery.clone();
+        let id = header.delivery_id();
+        let TransportHeader::Request { retire_below, .. } = &header else { unreachable!("an invocation begins with a request header") };
+        let retire_below = *retire_below;
+        let out = FrameOut::new(send);
+        match d.arrive_request(&header) {
+            RequestArrival::New => {}
+            RequestArrival::Pending(settled) => {
+                // A repeat while the original executes: pending and unacked until it settles.
+                let settled = settled.await.unwrap_or(Settled::Dropped);
+                return self.answer_repeat(peer, &header, settled, out, reader).await;
+            }
+            RequestArrival::Accepted => return self.answer_repeat(peer, &header, Settled::Accepted, out, reader).await,
+            RequestArrival::Ended(c) => return self.answer_repeat(peer, &header, Settled::Ended(c), out, reader).await,
+        }
+        let (mut recv, rest) = reader.into_parts();
         let mut asm = RequestAssembly::new(&self.inner.catalog);
         let mut buf = vec![0u8; 16 * 1024];
         let mut permit: Option<Permit> = None;
+        let mut refusal: Option<Refusal> = None;
+        let mut first = Some(rest);
         let action = loop {
-            let action = match recv.read(&mut buf).await {
-                Ok(Some(n)) => asm.push(&buf[..n]),
-                Ok(None) => asm.finish(),
-                Err(ReadError::Reset(c)) => asm.reset(c.into_inner()),
-                Err(e) => break ServerAction::Drop { reason: if matches!(e, ReadError::ConnectionLost(_)) { "connection lost" } else { "stream closed" } },
+            let action = match first.take() {
+                Some(b) if !b.is_empty() => asm.push(&b),
+                Some(_) => ServerAction::Continue,
+                None => match recv.read(&mut buf).await {
+                    Ok(Some(n)) => asm.push(&buf[..n]),
+                    Ok(None) => asm.finish(),
+                    Err(ReadError::Reset(c)) => asm.reset(c.into_inner()),
+                    Err(e) => break ServerAction::Drop { reason: if matches!(e, ReadError::ConnectionLost(_)) { "connection lost" } else { "stream closed" } },
+                },
             };
-            if action != ServerAction::Continue {
-                break action;
-            }
-            // Constant-cost guards once the op is known, before the body.
-            if permit.is_none() {
+            // Constant-cost guards once the op is known, before the body; a frame that arrived whole is
+            // guarded the same before it is dispatched.
+            if permit.is_none() && refusal.is_none() && matches!(action, ServerAction::Continue | ServerAction::Dispatch { .. }) {
                 if let Some(op) = asm.head_op() {
                     // A closed gate refuses every op, ping included, before anything else.
                     if self.inner.ready.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst)) {
                         stats.not_ready.fetch_add(1, Ordering::SeqCst);
                         tracing::info_span!("rdm.node_rpc.request.reject.via-not-ready", op, peer = %peer)
                             .in_scope(|| tracing::info!(op, "the node's ready gate is closed: typed NotReady"));
-                        return self.refuse(op, Refusal::NotReady("this node is not ready: its authority is not filled yet".into()), send, recv).await;
-                    }
-                    // Connections-deleting refuses every new call except the lifecycle control the catalog
-                    // marks served while connections-deleting: the authority's probe and apply still land.
-                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
+                        refusal = Some(Refusal::NotReady("this node is not ready: its authority is not filled yet".into()));
+                    } else if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
+                        // Connections-deleting refuses every new call except the lifecycle control the catalog
+                        // marks served while connections-deleting: the authority's probe and apply still land.
                         stats.draining.fetch_add(1, Ordering::SeqCst);
-                        return self.refuse(op, Refusal::ConnectionsDeleting("node is connections-deleting".into()), send, recv).await;
-                    }
-                    match self.inner.admission.try_admit(op, &peer.to_string()) {
-                        Ok(p) => permit = Some(p),
-                        Err(reason) => {
-                            stats.busy.fetch_add(1, Ordering::SeqCst);
-                            tracing::debug_span!("rdm.node_rpc.request.reject.via-busy", op, %reason).in_scope(|| tracing::debug!("busy"));
-                            return self.refuse(op, Refusal::Busy(reason), send, recv).await;
+                        refusal = Some(Refusal::ConnectionsDeleting("node is connections-deleting".into()));
+                    } else {
+                        match self.inner.admission.try_admit(op, &peer.to_string()) {
+                            Ok(p) => permit = Some(p),
+                            Err(reason) => {
+                                stats.busy.fetch_add(1, Ordering::SeqCst);
+                                tracing::debug_span!("rdm.node_rpc.request.reject.via-busy", op, %reason).in_scope(|| tracing::debug!("busy"));
+                                refusal = Some(Refusal::Busy(reason));
+                            }
                         }
                     }
                 }
+            }
+            if action != ServerAction::Continue {
+                break action;
             }
         };
         match action {
@@ -601,45 +772,81 @@ impl NodeRpcServer {
                 stats.unserved.fetch_add(1, Ordering::SeqCst);
                 tracing::info_span!("rdm.node_rpc.request.reject.via-unserved-op", op, peer = %peer)
                     .in_scope(|| tracing::info!(op, "unserved op: 421"));
-                let _ = send.reset(code(ResetCode::UnservedOp));
+                out.reset(ResetCode::UnservedOp).await;
                 let _ = recv.stop(code(ResetCode::UnservedOp));
+                d.settle_request(&id, Settled::Ended(u64::from(ResetCode::UnservedOp.code())));
             }
             ServerAction::RefuseMalformed { op, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
                 tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", op, kind = ?kind)
                     .in_scope(|| tracing::info!(?kind, "malformed request refused before the body"));
-                self.refuse(op, Refusal::Malformed(kind), send, recv).await;
+                let _ = recv.stop(code(ResetCode::RequestStop));
+                self.answer_refusal(op, Refusal::Malformed(kind), &id, peer, out, None).await;
             }
             ServerAction::ResetViolation { op, reason } => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
                 tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?op, reason)
                     .in_scope(|| tracing::info!(reason, "protocol violation: 424"));
-                let _ = send.reset(code(ResetCode::ProtocolViolation));
+                out.reset(ResetCode::ProtocolViolation).await;
                 let _ = recv.stop(code(ResetCode::ProtocolViolation));
+                d.settle_request(&id, Settled::Ended(u64::from(ResetCode::ProtocolViolation.code())));
             }
             ServerAction::Drop { reason } => {
-                stats.dropped_unfinished.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rdm.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
-                    .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
-                let _ = send.reset(code(ResetCode::RequestStop));
+                self.dropped(peer, reason);
+                out.reset(ResetCode::RequestStop).await;
+                d.settle_request(&id, Settled::Dropped);
             }
-            ServerAction::Dispatch { op, header, payload } => {
+            ServerAction::Dispatch { op, header: request, payload } => {
+                let acks = FrameReader::new(recv, asm.take_rest());
+                if crate::delivery::DeliverySeams::take_cut(d.seams()) {
+                    tracing::info_span!("rdm.node_rpc.connection.delete.via-seam", delivery_id = %id, peer = %peer)
+                        .in_scope(|| tracing::info!("the test seam closes the connection after the request frame, before dispatch"));
+                    conn.close(0u32.into(), b"seam: cut after the request frame");
+                    d.settle_request(&id, Settled::Dropped);
+                    return;
+                }
+                if let Some(r) = refusal {
+                    return self.answer_refusal(op, r, &id, peer, out, Some(acks)).await;
+                }
                 let Some(h) = self.inner.handlers.get(&op).cloned() else {
-                    let _ = send.reset(code(ResetCode::UnservedOp));
+                    out.reset(ResetCode::UnservedOp).await;
+                    d.settle_request(&id, Settled::Ended(u64::from(ResetCode::UnservedOp.code())));
                     return;
                 };
                 stats.dispatched.fetch_add(1, Ordering::SeqCst);
                 let _unsettled = Unsettled::enter(&self.inner.replies);
                 // Bad or over-bound context is dropped here, named, and the call proceeds.
-                let (context, dropped) = header.context.sanitized();
+                let (context, dropped) = request.context.sanitized();
                 if !dropped.is_empty() {
                     tracing::info_span!("rdm.node_rpc.request.update.via-context-dropped", decided_by = "target", op, peer = %peer, context_dropped = %dropped_as_str(&dropped))
                         .in_scope(|| tracing::info!("observability context dropped; the request is dispatched unchanged"));
                 }
-                let ctx = PeerContext { endpoint_id: peer, context };
-                let out = crate::stream::StreamOut::new(send, h.max_reply());
+                d.owe_response(&id, peer);
+                let (acceptance, accepted) = Acceptance::new();
+                let gate = Accepting::new(d.clone(), id.clone());
+                // An acceptance the handler declares (or a read-only request's, at dispatch) acks the
+                // request at once; otherwise its first response frame does.
+                {
+                    let (gate, out, header, mut accepted) = (gate.clone(), out.clone(), header.clone(), accepted);
+                    let read_only = h.read_only(&payload);
+                    tokio::spawn(async move {
+                        if accepted.wait_for(|a| *a).await.is_ok() && gate.explicit() {
+                            if !read_only {
+                                tracing::info_span!("rdm.node_rpc.delivery.serve.via-ack", delivery_id = %header.delivery_id(), acceptance = "recorded")
+                                    .in_scope(|| tracing::info!("the handler recorded the accepted work: the request is acked"));
+                            }
+                            gate.d.write_ack(&out, &header, AckOf::Request).await;
+                        }
+                    });
+                    if read_only {
+                        acceptance.accepted();
+                    }
+                }
+                let ctx = PeerContext { endpoint_id: peer, context, delivery: Some(CarriedIdentity { id: id.clone(), retire_below }), acceptance };
+                let acks = tokio::spawn(Self::read_acks(d.clone(), id.clone(), acks));
                 if h.is_stream() {
-                    let Some((serve, streaming)) = h.stream(ctx, payload, out.clone()) else { return };
+                    let stream_out = crate::stream::StreamOut::new(out.clone(), h.max_reply(), gate.clone());
+                    let Some((serve, streaming)) = h.stream(ctx, payload, stream_out.clone()) else { return };
                     let counted = InFlight::enter(&stats);
                     let joined = tokio::spawn(async move {
                         let _counted = counted;
@@ -649,10 +856,13 @@ impl NodeRpcServer {
                     drop(permit);
                     // The stream's end is a step of its serve: its terminal (or refusal) is written and
                     // named under the serve span, which ends once it is written.
-                    out.finish(joined, &stats).instrument(serve).await;
+                    stream_out.finish(joined, &stats).instrument(serve).await;
+                    let _ = acks.await;
+                    if !d.response_settled(&id) {
+                        d.push(&id, None);
+                    }
                     return;
                 }
-                let Some(mut send) = out.take().await else { return };
                 // Supervised: a panic is caught at this boundary.
                 let (serve, handler) = h.call(ctx, payload);
                 let counted = InFlight::enter(&stats);
@@ -673,28 +883,76 @@ impl NodeRpcServer {
                 drop(serve);
                 match joined {
                     Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
-                        let bytes = encode_frame(&reply);
+                        gate.implicit();
+                        let frame = d.owe_frame(&id, 0, reply, true);
                         if let Some(w) = self.inner.withhold.as_ref().filter(|w| w.take_armed()) {
-                            w.hold(&mut send, &bytes).await;
+                            if let Some(mut send) = out.take().await {
+                                w.hold(&mut send, &frame).await;
+                                let _ = send.finish();
+                            }
                         } else {
-                            let _ = send.write_all(&bytes).await;
+                            let _ = out.write(&frame).await;
+                            out.finish().await;
                         }
-                        let _ = send.finish();
-                        // Settled when the caller has the reply (or has stopped wanting it, or the
-                        // connection is gone): bounded by the connection, never by a timer.
-                        let _ = send.stopped().await;
+                        // Settled when the caller acks the reply; when its direction ends first, or the
+                        // reply waits unacked across a resend delay, it is resent on a new stream.
+                        let _ = acks.await;
+                        if !d.response_settled(&id) {
+                            d.push(&id, None);
+                        }
                     }
                     Ok(Ok(_)) => {
                         stats.violations.fetch_add(1, Ordering::SeqCst);
-                        let _ = send.reset(code(ResetCode::ProtocolViolation));
+                        out.reset(ResetCode::ProtocolViolation).await;
+                        d.settle_request(&id, Settled::Ended(u64::from(ResetCode::ProtocolViolation.code())));
+                        d.drop_response(&id);
                     }
                     Ok(Err(_)) | Err(_) => {
                         stats.faults.fetch_add(1, Ordering::SeqCst);
-                        let _ = send.reset(code(ResetCode::InternalRpcFailure));
+                        out.reset(ResetCode::InternalRpcFailure).await;
+                        d.settle_request(&id, Settled::Ended(u64::from(ResetCode::InternalRpcFailure.code())));
+                        d.drop_response(&id);
                     }
                 }
             }
         }
+    }
+}
+
+/// The first acceptance of one dispatched request, whichever comes first: the handler's declared
+/// boundary (or a read-only request's, at dispatch), which writes an `Ack`; or the first response
+/// frame, which acks the request by itself.
+#[derive(Clone)]
+pub(crate) struct Accepting {
+    d: Delivery,
+    id: rdm_core::framing::DeliveryId,
+    done: Arc<AtomicBool>,
+}
+
+impl Accepting {
+    fn new(d: Delivery, id: rdm_core::framing::DeliveryId) -> Self {
+        Self { d, id, done: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// The handler declared acceptance: `true` when this is the first, and an `Ack` is to be written.
+    fn explicit(&self) -> bool {
+        if self.done.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.d.settle_request(&self.id, Settled::Accepted);
+        true
+    }
+
+    /// A response frame is about to be written: it accepts the request, if nothing did before.
+    pub(crate) fn implicit(&self) {
+        if !self.done.swap(true, Ordering::SeqCst) {
+            self.d.settle_request(&self.id, Settled::Accepted);
+        }
+    }
+
+    /// The delivery state and the invocation this acceptance is of.
+    pub(crate) fn owed(&self) -> (&Delivery, &rdm_core::framing::DeliveryId) {
+        (&self.d, &self.id)
     }
 }
 
@@ -731,9 +989,11 @@ impl ProtocolHandler for NodeRpcServer {
             }
             self.inner.connections.lock().unwrap().insert(id, connection.clone());
         });
+        self.inner.delivery.register(&connection);
         while let Ok((send, recv)) = connection.accept_bi().await {
-            tokio::spawn(self.clone().invocation(peer, send, recv));
+            tokio::spawn(self.clone().stream(connection.clone(), send, recv));
         }
+        self.inner.delivery.unregister(&connection);
         self.inner.connections.lock().unwrap().remove(&id);
         Ok(())
     }

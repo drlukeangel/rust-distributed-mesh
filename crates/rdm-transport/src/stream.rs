@@ -4,29 +4,32 @@
 //! [`ReplySink`] in the `NotStarted` state: `started(frame)` moves it to `Streaming`, and
 //! `data(frame)` writes one frame. There is no `terminal()`: the handler returns the terminal frame
 //! (or, before `Started`, a refusal) and Node RPC writes it after the handler is joined. Each frame
-//! is encoded once, checked against the protocol's reply limit, and written straight to the QUIC
-//! stream, waiting on its flow control: no Node RPC queue, so a slow consumer slows the producer.
-//! When the caller is gone, `data()` answers `CallerGone`.
+//! is encoded once, checked against the protocol's reply limit, and written as a response frame at
+//! its position (`Started` 0, each `Data` the next, `Terminal` the last), waiting on QUIC flow
+//! control: a slow consumer slows the producer. Every frame is owed until the caller acks it: one
+//! written while the stream is gone is resent on a new stream. When the caller dropped the
+//! invocation, `data()` answers `CallerGone`.
 //!
-//! Client: [`NodeRpcClient::call_stream`] returns a [`ReplyStream`] that enforces the frame order
-//! with the protocol's classifier. A stream that ends or resets after `Started` without a
-//! `Terminal` is `Indeterminate`. Dropping the stream stops the reply direction; the server's next
-//! write sees the caller gone.
+//! Client: [`NodeRpcClient::call_stream`] returns a [`ReplyStream`] fed by its invocation's frames,
+//! from whatever stream they arrive on, in position order; it enforces the frame order with the
+//! protocol's classifier. A stream that ends after `Started` without a `Terminal` is
+//! `Indeterminate`. Dropping the stream ends the invocation: the server's next write sees the caller
+//! gone.
 
-use crate::client::{CallEvidence, CallOptions, NodeRpcClient, Opened, Phase};
+use crate::client::{Attempted, Budget, CallEvidence, CallOptions, NodeRpcClient, OwedCall, Payload};
+use crate::delivery::{FrameOut, Settled, SlotEvent, Written};
 use crate::resolve::NodeTarget;
-use crate::server::{BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
-use iroh::endpoint::{ReadError, RecvStream, SendStream, VarInt};
+use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
 use rdm_core::catalog::{CatalogEntry, Shape, OpOwner};
 use rdm_core::codes::ResetCode;
-use rdm_core::framing::{decode_frame, encode_frame, FrameError};
-use rdm_core::outcome::{IndeterminateReason, NotSentReason, PreCommit, RpcOutcome};
+use rdm_core::delivery::MAX_REORDER_POSITIONS;
+use rdm_core::outcome::{IndeterminateReason, NotSentReason, PreCommit, ResolveFailure, RpcOutcome};
 use rdm_core::streaming::{FrameKind, FrameOrder, OrderState, StreamingProtocol};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tokio::time::{timeout_at, Instant};
+use tokio::time::Instant;
 
 /// Why a frame could not be written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,33 +49,47 @@ pub enum SinkError {
 }
 
 struct OutInner {
-    send: Option<SendStream>,
+    out: FrameOut,
     order: FrameOrder,
     max: usize,
     frames: u64,
     bytes: u64,
     caller_gone: Option<String>,
+    gate: Accepting,
 }
 
-/// The server side of one stream: the reply direction and its order. Shared by the sink and the
-/// runtime, which takes the stream back to write the terminal frame.
+/// The server side of one stream: the reply direction, its order and its owed frames. Shared by the
+/// sink and the runtime, which writes the terminal frame.
 #[derive(Clone)]
 pub(crate) struct StreamOut(Arc<tokio::sync::Mutex<OutInner>>);
 
 impl StreamOut {
-    pub(crate) fn new(send: SendStream, max: usize) -> Self {
-        Self(Arc::new(tokio::sync::Mutex::new(OutInner {
-            send: Some(send),
-            order: FrameOrder::new(),
-            max,
-            frames: 0,
-            bytes: 0,
-            caller_gone: None,
-        })))
+    pub(crate) fn new(out: FrameOut, max: usize, gate: Accepting) -> Self {
+        Self(Arc::new(tokio::sync::Mutex::new(OutInner { out, order: FrameOrder::new(), max, frames: 0, bytes: 0, caller_gone: None, gate })))
     }
 
-    pub(crate) async fn take(&self) -> Option<SendStream> {
-        self.0.lock().await.send.take()
+    /// Owe the frame at the next position and write it. A write that fails because the stream is
+    /// gone leaves the frame owed, resent on a new stream; one the caller stopped means it dropped
+    /// the invocation.
+    async fn put(g: &mut OutInner, payload: Vec<u8>, terminal: bool) -> Result<(), SinkError> {
+        g.gate.implicit();
+        let (d, id) = g.gate.owed();
+        let (d, id) = (d.clone(), id.clone());
+        let seq = u32::try_from(g.frames).map_err(|_| SinkError::Order("a stream past its last position".into()))?;
+        let frame = d.owe_frame(&id, seq, payload, terminal);
+        match g.out.send(&frame).await {
+            Written::Ok => {}
+            Written::Stopped(0) => {
+                d.drop_response(&id);
+                let reason = "the caller dropped the invocation".to_string();
+                g.caller_gone = Some(reason.clone());
+                return Err(SinkError::CallerGone(reason));
+            }
+            Written::Stopped(_) | Written::Gone(_) => d.push(&id, None),
+        }
+        g.frames += 1;
+        g.bytes += frame.len() as u64;
+        Ok(())
     }
 
     async fn write(&self, kind: FrameKind, payload: Vec<u8>) -> Result<(), SinkError> {
@@ -83,39 +100,51 @@ impl StreamOut {
         if payload.len() > g.max {
             return Err(SinkError::TooLarge { size: payload.len(), max: g.max });
         }
-        g.order.admit(kind).map_err(SinkError::Order)?;
-        let frame = encode_frame(&payload);
-        let Some(send) = g.send.as_mut() else {
-            return Err(SinkError::CallerGone("the reply direction is closed".into()));
-        };
-        // Waits on QUIC flow control: a slow consumer holds the producer here.
-        if let Err(e) = send.write_all(&frame).await {
-            let reason = e.to_string();
-            g.caller_gone = Some(reason.clone());
-            return Err(SinkError::CallerGone(reason));
+        // At most 64 frames unacked: the caller acks a frame as its owner reads it, so a slow consumer
+        // holds the producer here. A response owed no longer (its caller's birth ended, or it dropped
+        // the invocation) ends the wait.
+        loop {
+            let (d, id) = g.gate.owed();
+            if d.owed_frames_of(id) < MAX_REORDER_POSITIONS as usize {
+                break;
+            }
+            let Some(mut acked) = d.acked_watch(id) else {
+                let reason = "the response is owed no longer".to_string();
+                g.caller_gone = Some(reason.clone());
+                return Err(SinkError::CallerGone(reason));
+            };
+            if acked.changed().await.is_err() {
+                let reason = "the response is owed no longer".to_string();
+                g.caller_gone = Some(reason.clone());
+                return Err(SinkError::CallerGone(reason));
+            }
         }
-        g.frames += 1;
-        g.bytes += frame.len() as u64;
-        Ok(())
+        g.order.admit(kind).map_err(SinkError::Order)?;
+        Self::put(&mut g, payload, false).await
     }
 
     /// Write the handler's result: its terminal (or pre-`Started` refusal) frame, then finish.
     pub(crate) async fn finish(&self, joined: Result<StreamEnd, tokio::task::JoinError>, stats: &Arc<ServerStats>) {
         let mut g = self.0.lock().await;
         let (frames, bytes, gone) = (g.frames, g.bytes, g.caller_gone.clone());
-        let Some(mut send) = g.send.take() else { return };
-        let code = |c: ResetCode| VarInt::from_u32(c.code());
+        let (d, id) = g.gate.owed();
+        let (d, id) = (d.clone(), id.clone());
+        let ended = |c: ResetCode| {
+            d.settle_request(&id, Settled::Ended(u64::from(c.code())));
+            d.drop_response(&id);
+        };
         match joined {
             Ok(StreamEnd::Final { kind, payload }) if payload.len() > g.max => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
-                let _ = send.reset(code(ResetCode::ProtocolViolation));
+                g.out.reset(ResetCode::ProtocolViolation).await;
+                ended(ResetCode::ProtocolViolation);
                 tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = "final frame over the reply limit", ?kind)
                     .in_scope(|| tracing::info!("424"));
             }
             Ok(StreamEnd::Final { kind, payload }) => match final_frame(&mut g.order, kind) {
                 Ok(()) => {
-                    let _ = send.write_all(&encode_frame(&payload)).await;
-                    let _ = send.finish();
+                    let _ = Self::put(&mut g, payload, true).await;
+                    g.out.finish().await;
                     tracing::info_span!(
                         "rdm.node_rpc.stream.serve.via-terminal",
                         frames = frames + 1,
@@ -127,20 +156,23 @@ impl StreamOut {
                 }
                 Err(reason) => {
                     stats.violations.fetch_add(1, Ordering::SeqCst);
-                    let _ = send.reset(code(ResetCode::ProtocolViolation));
+                    g.out.reset(ResetCode::ProtocolViolation).await;
+                    ended(ResetCode::ProtocolViolation);
                     tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = %reason)
                         .in_scope(|| tracing::info!("424"));
                 }
             },
             Ok(StreamEnd::Fault(fault)) => {
                 stats.faults.fetch_add(1, Ordering::SeqCst);
-                let _ = send.reset(code(ResetCode::InternalRpcFailure));
+                g.out.reset(ResetCode::InternalRpcFailure).await;
+                ended(ResetCode::InternalRpcFailure);
                 tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
                     .in_scope(|| tracing::info!("423"));
             }
             Err(_panic) => {
                 stats.faults.fetch_add(1, Ordering::SeqCst);
-                let _ = send.reset(code(ResetCode::InternalRpcFailure));
+                g.out.reset(ResetCode::InternalRpcFailure).await;
+                ended(ResetCode::InternalRpcFailure);
                 tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
                     .in_scope(|| tracing::info!("423"));
             }
@@ -224,6 +256,10 @@ where
         P::MAX_REPLY_FRAME_BYTES
     }
 
+    fn read_only(&self, payload: &[u8]) -> bool {
+        P::decode_request(payload).is_ok_and(|r| P::read_only(&r))
+    }
+
     fn is_stream(&self) -> bool {
         true
     }
@@ -279,14 +315,6 @@ impl ServerBuilder {
     }
 }
 
-/// `f` under `deadline`, or unbounded when there is none (a `Budget::Stream` call).
-pub(crate) async fn bounded<F: Future>(deadline: Option<Instant>, f: F) -> Result<F::Output, tokio::time::error::Elapsed> {
-    match deadline {
-        Some(d) => timeout_at(d, f).await,
-        None => Ok(f.await),
-    }
-}
-
 /// Why a stream did not complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamFailure {
@@ -305,10 +333,10 @@ pub enum StreamItem<R> {
     Failed(StreamFailure),
 }
 
-/// The caller side of one committed stream.
+/// The caller side of one committed stream: its invocation's frames, in position order, from
+/// whatever stream they arrive on. Dropped, the invocation ends.
 pub struct ReplyStream<P: StreamingProtocol> {
-    recv: RecvStream,
-    buf: Vec<u8>,
+    owed: OwedCall,
     order: FrameOrder,
     deadline: Option<Instant>,
     done: bool,
@@ -322,36 +350,48 @@ impl<P: StreamingProtocol> ReplyStream<P> {
             return None;
         }
         loop {
-            match decode_frame(&self.buf, P::MAX_REPLY_FRAME_BYTES) {
-                Ok((payload, used)) => {
-                    let decoded = P::decode_reply(payload);
-                    self.buf.drain(..used);
-                    let frame = match decoded {
-                        Ok(f) => f,
-                        Err(e) => return Some(self.fail(StreamFailure::Violation(format!("a frame does not decode: {e:?}")))),
-                    };
-                    let kind = P::frame_kind(&frame);
-                    if let Err(reason) = self.order.admit(kind) {
-                        return Some(self.fail(StreamFailure::Violation(reason)));
-                    }
-                    if self.order.state() == OrderState::Done {
-                        self.done = true;
-                    }
-                    return Some(StreamItem::Frame(kind, frame));
+            let wait = async {
+                match self.deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending().await,
                 }
-                Err(FrameError::Truncated) => {}
-                Err(e) => return Some(self.fail(StreamFailure::Violation(format!("reply frame: {e:?}")))),
-            }
-            let mut chunk = vec![0u8; 16 * 1024];
-            match bounded(self.deadline, self.recv.read(&mut chunk)).await {
-                Err(_) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyDeadline))),
-                Ok(Ok(Some(n))) => self.buf.extend_from_slice(&chunk[..n]),
-                Ok(Ok(None)) => {
-                    let why = if self.buf.is_empty() { "the stream ended before its terminal" } else { "the stream ended inside a frame" };
-                    return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(why.into()))));
-                }
-                Ok(Err(ReadError::Reset(c))) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::Reset(c.into_inner())))),
-                Ok(Err(e)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(e.to_string())))),
+            };
+            tokio::select! {
+                // A frame already delivered is taken before anything the attempt task said after it.
+                biased;
+                f = self.owed.frames.recv() => match f {
+                    Some(SlotEvent::Frame(bytes, ack)) => {
+                        let frame = match P::decode_reply(&bytes) {
+                            Ok(f) => f,
+                            Err(e) => return Some(self.fail(StreamFailure::Violation(format!("a frame does not decode: {e:?}")))),
+                        };
+                        let kind = P::frame_kind(&frame);
+                        if let Err(reason) = self.order.admit(kind) {
+                            return Some(self.fail(StreamFailure::Violation(reason)));
+                        }
+                        // Read by its owner: the frame is acked now, the terminal's before the
+                        // invocation completes.
+                        if let Some(ack) = ack {
+                            ack.write().await;
+                        }
+                        if self.order.state() == OrderState::Done {
+                            self.done = true;
+                            self.owed.guard.complete();
+                        }
+                        return Some(StreamItem::Frame(kind, frame));
+                    }
+                    Some(SlotEvent::Violation(why)) => return Some(self.fail(StreamFailure::Violation(why))),
+                    None => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into())))),
+                },
+                ev = self.owed.attempted.recv() => match ev {
+                    Some(Attempted::Reset(c)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::Reset(c)))),
+                    Some(Attempted::ReceiverGone(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReceiverGone(why)))),
+                    Some(Attempted::EndedPreCommit(_)) | None => {
+                        return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into()))));
+                    }
+                    Some(_) => {}
+                },
+                () = wait => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyDeadline))),
             }
         }
     }
@@ -376,25 +416,80 @@ impl NodeRpcClient {
             Err(e) => return Err((PreCommit::begin(P::OP).not_sent(NotSentReason::Connection(format!("request does not encode: {}", e.0))), None)),
         };
         // The caller's side of the call that opens the stream: its outcome and how long the open took.
-        let span = tracing::info_span!("rdm.node_rpc.request.update.via-call", target = ?target, op = P::OP, outcome = tracing::field::Empty, elapsed_ms = tracing::field::Empty);
-        let started = tokio::time::Instant::now();
-        let opened = tracing::Instrument::instrument(
-            self.open::<P::Reply, _>(target, P::OP, crate::client::Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, |early, bytes| early.reply::<P>(bytes)),
-            span.clone(),
-        )
-        .await;
-        span.record("elapsed_ms", started.elapsed().as_millis() as u64);
-        match opened {
-            Phase::Done(out, evidence) => {
-                span.record("outcome", out.name());
+        let span = tracing::info_span!(
+            "rdm.node_rpc.request.update.via-call",
+            target = ?target,
+            op = P::OP,
+            outcome = tracing::field::Empty,
+            elapsed_ms = tracing::field::Empty,
+            delivery_id = tracing::field::Empty,
+            attempts = tracing::field::Empty,
+            delivery = tracing::field::Empty,
+        );
+        let started = Instant::now();
+        let start = started;
+        let (send_deadline, overall) = match opts.budget {
+            Budget::Overall(d) => (start + d, Some(start + d)),
+            Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
+        };
+        let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, false, (send_deadline, overall), &span);
+        let finish = |outcome: &str| {
+            span.record("outcome", outcome);
+            span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        };
+        let mut owed = match opened {
+            Ok(o) => o,
+            Err((out, ev)) => {
+                finish(out.name());
                 span.in_scope(|| tracing::info!("node rpc stream call finished"));
-                Err((out, evidence))
+                return Err((out.retyped().expect("no reply before anything is owed"), ev));
             }
-            Phase::Committed(Opened { recv, evidence, reply_deadline, .. }) => {
-                span.record("outcome", "stream-open");
-                span.in_scope(|| tracing::info!("node rpc stream call opened"));
-                Ok((ReplyStream { recv, buf: Vec::new(), order: FrameOrder::new(), deadline: reply_deadline, done: false, _p: PhantomData }, evidence))
+        };
+        let mut last = NotSentReason::Deadline;
+        let mut pre = Some(PreCommit::begin(P::OP));
+        let ended: RpcOutcome<P::Reply> = loop {
+            tokio::select! {
+                ev = owed.attempted.recv() => match ev {
+                    Some(Attempted::Committed { .. }) => {
+                        finish("stream-open");
+                        span.in_scope(|| tracing::info!("node rpc stream call opened"));
+                        let deadline = match (opts.budget, overall) {
+                            (_, Some(d)) => Some(d),
+                            (Budget::Split { reply, .. }, None) => Some(Instant::now() + reply),
+                            _ => None,
+                        };
+                        let evidence = owed.evidence.lock().unwrap().clone();
+                        return Ok((ReplyStream { owed, order: FrameOrder::new(), deadline, done: false, _p: PhantomData }, evidence));
+                    }
+                    Some(Attempted::NotSent(r)) => last = r,
+                    Some(Attempted::SendDeadline(r)) => {
+                        span.record("delivery", "cancelled");
+                        break pre.take().expect("pre-commit").not_sent(r);
+                    }
+                    Some(Attempted::StoppedBeforeComplete) => {
+                        // Refused before the request was complete: the refusal is the stream's one frame.
+                        let early = pre.take().expect("stopped once").stopped_before_finish();
+                        let bytes = match tokio::time::timeout_at(send_deadline, owed.frames.recv()).await {
+                            Ok(Some(SlotEvent::Frame(b, ack))) => {
+                                if let Some(ack) = ack {
+                                    ack.write().await;
+                                }
+                                Some(b)
+                            }
+                            _ => None,
+                        };
+                        break early.reply::<P>(bytes.as_deref());
+                    }
+                    Some(Attempted::EndedPreCommit(o)) => break o.retyped().expect("no reply before the commit cut"),
+                    Some(Attempted::Reset(c)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Connection(format!("reset {c} before the commit cut"))),
+                    Some(Attempted::ReceiverGone(_)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
+                    None => break pre.take().expect("pre-commit").not_sent(last.clone()),
+                },
             }
-        }
+        };
+        finish(ended.name());
+        span.in_scope(|| tracing::info!("node rpc stream call finished"));
+        let evidence = owed.evidence.lock().unwrap().clone();
+        Err((ended, Some(evidence)))
     }
 }

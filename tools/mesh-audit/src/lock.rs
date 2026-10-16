@@ -33,6 +33,7 @@ pub enum Ratchet {
     StatusResealIsAtomic,
     ForwardResealIsAtomic,
     NodeCommandResealIsAtomic,
+    TransportHeaderResealIsAtomic,
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
@@ -41,7 +42,7 @@ pub enum Ratchet {
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 23] = [
+    pub const ALL: [Ratchet; 24] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitPathConfig,
@@ -60,6 +61,7 @@ impl Ratchet {
         Self::StatusResealIsAtomic,
         Self::ForwardResealIsAtomic,
         Self::NodeCommandResealIsAtomic,
+        Self::TransportHeaderResealIsAtomic,
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
@@ -88,6 +90,7 @@ impl Ratchet {
             Self::StatusResealIsAtomic => "status_reseal_is_atomic",
             Self::ForwardResealIsAtomic => "forward_reseal_is_atomic",
             Self::NodeCommandResealIsAtomic => "node_command_reseal_is_atomic",
+            Self::TransportHeaderResealIsAtomic => "transport_header_reseal_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
@@ -267,6 +270,12 @@ pub const NODE_COMMAND_REQUESTS: u32 = 1;
 pub const NODE_COMMAND_REPLIES: u32 = 11;
 pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
+/// The frozen transport-header goldens (node-rpc-envelope.md "Transport frames"): Request kind 0,
+/// Response kind 1, Ack kind 2, and the largest encoding of each.
+pub const TRANSPORT_HEADER_REQUEST_GOLDEN: &str = r#"format!("1d00{BIRTH}0101")"#;
+pub const TRANSPORT_HEADER_RESPONSE_GOLDEN: &str = r#"format!("3901{BIRTH}0201{BIRTH}0100")"#;
+pub const TRANSPORT_HEADER_ACK_GOLDEN: &str = r#"format!("1c02{BIRTH}01")"#;
+pub const TRANSPORT_HEADER_LARGEST: &str = "(47, 88, 37)";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rdm-transport/tests/context.rs";
 pub const RETIRE_CELLS: &str = "crates/rdm-test/tests/node_delete_pipeline.rs";
@@ -568,7 +577,12 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(
                 root,
                 FRAMING,
-                &["TooLarge { op: u8, declared: u64, max: usize }", "fn oversize_is_refused_from_the_declared_length_before_the_body"],
+                &[
+                    "TooLarge { op: u8, declared: u64, max: usize }",
+                    "fn oversize_is_refused_from_the_declared_length_before_the_body",
+                    "pub const MAX_HEADER_BYTES: usize = 128;",
+                    "fn a_header_over_its_bound_or_of_an_unknown_kind_is_a_violation",
+                ],
                 ratchet,
                 &mut out,
             );
@@ -676,6 +690,24 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                     "fn replies_match_the_frozen_eleven_variant_wire_schema",
                     "NodeCommand::REQUEST_VARIANTS",
                     "NodeCommand::REPLY_VARIANTS",
+                ],
+                ratchet,
+                &mut out,
+            );
+        }
+        Ratchet::TransportHeaderResealIsAtomic => {
+            // The three kinds in their positions, their goldens byte for byte, and the largest of
+            // each: a header that moves moves them together (`wire format moved`).
+            require(
+                root,
+                FRAMING,
+                &[
+                    "pub enum TransportHeader {",
+                    "fn the_three_transport_headers_are_frozen_byte_for_byte",
+                    TRANSPORT_HEADER_REQUEST_GOLDEN,
+                    TRANSPORT_HEADER_RESPONSE_GOLDEN,
+                    TRANSPORT_HEADER_ACK_GOLDEN,
+                    TRANSPORT_HEADER_LARGEST,
                 ],
                 ratchet,
                 &mut out,

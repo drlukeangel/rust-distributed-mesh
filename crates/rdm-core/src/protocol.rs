@@ -77,6 +77,13 @@ pub trait NodeProtocol: 'static + Send + Sync {
     /// How a reply is classified.
     fn classify_reply(reply: &Self::Reply) -> ReplyKind;
 
+    /// Whether `req` only reads (node-rpc.md §43): its acceptance needs no new write, so the runtime
+    /// acknowledges it as it is dispatched. A request that changes anything is acknowledged once its
+    /// handler has made the accepted work recoverable, or by its first response frame.
+    fn read_only(_req: &Self::Request) -> bool {
+        false
+    }
+
     /// The reply for an unresolvable peer.
     fn peer_unresolved(reason: String) -> Self::Reply;
     /// The reply for a node that is not ready.

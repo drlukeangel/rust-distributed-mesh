@@ -45,7 +45,7 @@ impl ResetCode {
 
     /// The code a reset/stop carried, if it is one of ours. A retired code is
     /// recognised by number but is not a current `ResetCode`.
-    pub(crate) fn from_code(code: u64) -> Option<Self> {
+    pub fn from_code(code: u64) -> Option<Self> {
         Self::ALL.into_iter().find(|c| u64::from(c.code()) == code)
     }
 }

@@ -358,10 +358,12 @@ async fn three_reply_deadlines_report_nothing_broken_to_the_connections_writer()
     assert_eq!(r.client.pooled().len(), 1, "the connection is still pooled");
 }
 
-/// CONTRACT (node-rpc.md §21: Iroh reports the connection closed/unusable): a pooled connection the
-/// peer closes under a committed call is structural evidence. The call ends
-/// `Indeterminate(ReplyLost)`, the connection leaves the pool, the connections writer hears `broken`
-/// once, and the next call dials afresh and is answered.
+/// CONTRACT (node-rpc.md §21: Iroh reports the connection closed/unusable; §43 and
+/// node-rpc-envelope.md "Transport frames": a stream's end never ends an invocation): a pooled
+/// connection the peer closes under a committed, acked call is structural evidence. The connection
+/// leaves the pool and the connections writer hears `broken` once; the invocation stays open (its
+/// response is owed to it) and ends at its own reply budget; the next call is answered on a
+/// connection other than the closed one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_broken_once() {
     let n = node().await;
@@ -370,7 +372,7 @@ async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_brok
     assert!(out.reply().is_some(), "{out:?}");
     let stats = n._server.stats();
     let before = ServerStats::get(&stats.dispatched);
-    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(10) }, ..Default::default() };
+    let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(1) }, ..Default::default() };
     let hang = echo(b"hang");
     let held = r.client.call::<Ping>(&r.target, &hang, &opts);
     let cut = async {
@@ -382,11 +384,10 @@ async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_brok
     };
     let ((out, _), closed) = tokio::join!(held, cut);
     assert_eq!(closed, 1, "the peer closed the one connection");
-    assert!(matches!(&out, RpcOutcome::Indeterminate(x) if matches!(x.reason(), IndeterminateReason::ReplyLost(_))), "{out:?}");
-    assert!(r.client.pooled().is_empty(), "the closed connection left the pool: {:?}", r.client.pooled());
+    assert!(matches!(&out, RpcOutcome::Indeterminate(x) if *x.reason() == IndeterminateReason::ReplyDeadline), "the invocation outlived its stream, to its own budget: {out:?}");
     let broken: Vec<String> = told.0.lock().unwrap().iter().filter(|e| e.starts_with("broken")).cloned().collect();
     assert_eq!(broken.len(), 1, "the closed connection is reported broken, once: {:?}", told.0.lock().unwrap());
     let (out, next) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
-    assert!(!next.reused && next.connection != first.connection, "the next call dialled afresh: {next:?}");
+    assert_ne!(next.connection, first.connection, "the closed connection left the pool: {next:?}");
 }
