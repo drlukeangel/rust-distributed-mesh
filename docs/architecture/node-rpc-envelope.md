@@ -571,7 +571,7 @@ Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contra
 
 Direction: upward for declarations; downward for applies and probes. An ordinary node declares to its mesh-primary node-admin. Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own ([node.status](lifecycles/node-status.md)); a mesh-primary declares its mesh state to the fabric-primary. Authority applies/probes the exact node birth; fabric-primary applies mesh state at its bootstrap admin and fabric events at its mesh-primary.
 
-The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, authority and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
+The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, not-the-writer (`RejectedNotAuthority`), not-handled (`RequestNotHandled`) and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
 The [node stop pair](#node-stop-command-pair), the
@@ -884,7 +884,7 @@ pub enum BuildClaimReply {
 
 Direction: upward. An ordinary node calls its mesh-primary node-admin; a node-admin birth
 calls its maker, the node-admin that deploys it. JoinNode is the managed birth's FIRST call after it
-binds port 0 and the OS assigns its port. The deploying authority serves it. Not forwardable: the report is authenticated directly from the
+binds port 0 and the OS assigns its port. The deploying authority serves it. Not forwardable: the report is attributed directly to the
 joining birth.
 
 ```rust

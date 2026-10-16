@@ -232,6 +232,8 @@ we're all homies canon" (R-SV1; R-RX1; feedback 2026-10-09 "we're all homies her
 
 # R-RX5 — a receiver that is not the writer of what a call asks answers "not me, ask X"; that stays (A) (Luke 2026-10-12)
 
+**Cross-reference (Luke 2026-10-16, R24 / i144 Q11):** R-RX5 licenses `ReceiverNotPrimary` only where the receiver is not the writer of what the call asks. It never licenses it for a request the receiver has no handler for: that is `RequestNotHandled { request }`, decided by dispatch alone, never by node kind, seat or sender (R24).
+
 **Luke 2026-10-12:** "yes, that status report could come from the fabric-primary if the MP is not responding, so 100%" / "a".
 - Kept: `ReceiverNotPrimary { needed: mesh-primary of X | fabric-primary | ... }` where a status declaration or row write reaches a node that
   is not its writer under the writer ladder (R14, R-OW1) and the mesh-primary's sole authorship of status. The receiver checks its own
