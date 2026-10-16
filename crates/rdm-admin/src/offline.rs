@@ -68,12 +68,12 @@ pub struct UnreachableMark {
     pub reason: &'static str,
 }
 
-/// Whether a reachability `NotSent` marks a birth whose mesh-primary authored `authored`
-/// (node-tickle.md step 1): an observer mark beside a live status (`Pending`, `ReadyForTraffic`, or
-/// none held), never over a lifecycle one (connections-deleting, stopping), which the birth's own
-/// workflow owns.
-pub(crate) fn marks_over(authored: Option<rdm_core::MemberStatus>) -> bool {
-    match authored {
+/// Whether a reachability `NotSent` marks a birth whose mesh-primary holds `recorded` for it
+/// (node-recovery.md step 1): an observer mark beside a live status (`Pending`, `ReadyForTraffic`, or
+/// none held), never over a lifecycle state the node reported and the mesh-primary recorded
+/// (connections-deleting, stopping, stopped).
+pub(crate) fn marks_over(recorded: Option<rdm_core::MemberStatus>) -> bool {
+    match recorded {
         Some(rdm_core::MemberStatus::Draining | rdm_core::MemberStatus::Leaving) => false,
         Some(rdm_core::MemberStatus::Pending | rdm_core::MemberStatus::ReadyForTraffic) | None => true,
     }
@@ -611,7 +611,7 @@ pub(crate) mod tests {
 
     /// CONTRACT (node-tickle.md step 1; i144 R9): a command its birth never received for a
     /// reachability reason marks the birth `PendingReconnect` beside a live status, and never over a
-    /// lifecycle status its mesh-primary authored on an admitted command (stopping, connections-deleting).
+    /// lifecycle state the node reported and its mesh-primary recorded (stopping, connections-deleting).
     // @feature: node-lifecycle
     #[test]
     fn a_pending_reconnect_mark_never_overwrites_an_admitted_stopping() {
