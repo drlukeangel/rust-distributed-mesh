@@ -531,6 +531,7 @@ async fn resends_arrive_at_the_cadence_then_doubling_capped_at_the_floor() {
     let mut r = raw().await;
     let (client, _) = client_of(&[&r.node]).await;
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let called_at = Instant::now();
     let call = tokio::spawn(async move { client.call::<Command>(&target, &run(8, Mode::Apply), &budget(Duration::from_secs(4))).await });
     let conn = r.conns.recv().await.unwrap();
     let mut arrivals = Vec::new();
@@ -548,8 +549,13 @@ async fn resends_arrive_at_the_cadence_then_doubling_capped_at_the_floor() {
     .unwrap_or_else(|_| panic!("six attempts of the one request within the schedule; {} arrived", arrivals.len()));
     call.abort();
     assert!(ids.windows(2).all(|w| w[0] == w[1]), "every attempt carries the one identity: {ids:?}");
-    let gaps: Vec<u128> = arrivals.windows(2).map(|w| (w[1] - w[0]).as_millis()).collect();
-    let expected = [100u128, 200, 400, 800, 800];
+    // The first resend follows the first send by the cadence: measured from the call, since the first
+    // arrival also carries this cell's own accept of a new connection. Every later attempt rides the
+    // warm connection, so arrival to arrival is the schedule.
+    let first_resend = (arrivals[1] - called_at).as_millis();
+    assert!((100..=100 + 150).contains(&first_resend), "the first resend {first_resend} ms after the call, the cadence 100 ms after the first send");
+    let gaps: Vec<u128> = arrivals[1..].windows(2).map(|w| (w[1] - w[0]).as_millis()).collect();
+    let expected = [200u128, 400, 800, 800];
     for (gap, want) in gaps.iter().zip(expected) {
         assert!(*gap + 30 >= want && *gap <= want + 150, "gaps {gaps:?}, expected about {expected:?}");
     }
@@ -790,8 +796,15 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
     let (first, _) = origin.call_via::<Command>(&via(0), &target.node.node_id, &run(17, Mode::Apply), &opts(Duration::from_secs(2))).await;
     assert_eq!(ran(&first), Some((17, 1)), "{first:?}");
     // The same request again, through the other carrier: its result was delivered to the first
-    // carrier, so this delivery ends at the budget; what matters is that the target ran nothing.
-    let (_second, _) = origin.call_via::<Command>(&via(1), &target.node.node_id, &run(17, Mode::Apply), &opts(Duration::from_millis(600))).await;
+    // carrier, so this delivery has no result to end on; what matters is that it reached the target
+    // as the origin's repeat and the target ran nothing.
+    let second = {
+        let (origin, via1, node) = (origin.clone(), via(1), target.node.node_id.clone());
+        let opts = opts(Duration::from_secs(5));
+        tokio::spawn(async move { origin.call_via::<Command>(&via1, &node, &run(17, Mode::Apply), &opts).await })
+    };
+    eventually("the second carrier's inner call reaches the target", Duration::from_secs(5), || get(&target.delivery.stats().duplicates_acked) >= 1).await;
+    second.abort();
     assert_eq!(target.runs.load(Ordering::SeqCst), 1, "the final target ran it once");
     assert_eq!(get(&target.delivery.stats().duplicates_acked), 1, "the second carrier's inner call was the origin's repeat");
     let seen = target.seen.lock().unwrap().clone();
