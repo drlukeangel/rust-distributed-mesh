@@ -1,8 +1,10 @@
 # Deployment provider, RuntimeFact and exact runtime proof
 
-This page owns the deployment provider and its environment policy, the DeploymentPipeline, the RuntimeFact contract, current runtime metadata and the exact runtime proof. The Build engine that drives the provider, `BuildStateAdapter`, the node-admin storage interfaces and crash safety, lifecycle transitions and the RDM/Rafka boundary with its import rule are [build.md](build.md). The sequences that use the provider are the workflow pages in the [lifecycle index](fabric-mesh-node-lifecycles.md).
+This page owns the deployment provider: the contract every provider satisfies, the two providers RDM ships (a process provider over pids and a container provider over a Docker daemon), the RuntimeFact each birth publishes, the exact runtime proof, the runtime state the provider reports, and the storage rule for a birth's data dir. The Build engine that drives the provider, the storage interfaces and crash safety are [build.md](build.md). The sequences that use the provider are the workflow pages in the [lifecycle index](fabric-mesh-node-lifecycles.md); the one primitive that reads the provider is [node.runtime.inspect](lifecycles/node-runtime-inspect.md).
 
 It is part of the generic control-plane contract proven in `rust-distributed-mesh` (RDM) and imported by Rafka ([build.md](build.md)).
+
+**The one sentence.** The provider launched the runtime and is the only thing that can see it. It reports what it sees of the exact runtime it launched or adopted: running, suspended by the operating system, exited with its code, or unknown. It never infers; the mesh never infers what the provider can read. Commands to a node travel on Node RPC; the provider is observational except for its one explicit act, terminating the exact runtime it is asked to.
 
 ## 1. Deployment provider is environment policy
 
@@ -11,7 +13,7 @@ The first node-admin bootstrap chooses the deployment mechanism with `MESH_SPAWN
 It is parsed once into:
 
 ```rust
-pub enum DeploymentProviderKind {
+pub enum ProviderKind {
     Process,
     Container,
 }
@@ -21,115 +23,129 @@ Unknown values are a bootstrap refusal. They never silently fall back to process
 
 The established provider becomes fabric policy and is inherited by later node-admins and nodes. A Build request does not choose its provider. A joining admin whose local bootstrap value conflicts with established fabric policy refuses deployment authority by name.
 
-A runtime locator is meaningful only inside the **provider control domain** that owns it. The provider policy must therefore make both the exact runtime locator and its control domain available as current control facts.
+A runtime locator is meaningful only inside the **provider control domain** that owns it. The provider policy makes both the exact runtime locator and its control domain available as current control facts.
 
-The process and container providers are local:
+The two providers are local:
 
 ```text
 process provider
-    control domain = one host/process namespace
+    control domain = one host / pid namespace
 
 container provider
-    control domain = one reachable Docker daemon / host runtime
+    control domain = one reachable Docker daemon
 ```
 
-A provider whose runtime handle only works inside the original launcher's private memory is incompatible with preemptible leadership. A PID or container ID is never assumed globally meaningful across hosts.
+A provider whose runtime handle only works inside the original launcher's private memory is incompatible with preemptible leadership. A pid or a container id is never assumed meaningful across hosts.
 
-A multi-host provider has two valid shapes:
+A multi-host provider must take one of two shapes; both are constraints on any provider, not a promise that one is built:
 
 ```text
 A. remotely controllable provider domain
-   any eligible authority can adopt/control the published locator
+   any eligible authority can adopt and control the published locator
 
 B. domain-local execution
-   current authority remains control-plane authority
-   exact runtime operation is routed/delegated to an executor/agent
-   that owns the published provider control domain
+   the current authority stays the control-plane authority
+   the exact runtime operation is routed to an executor that owns the published control domain
 ```
 
-Authority and deployment locality are separate. Host/provider locality may constrain readiness or execution routing, never leadership ordering.
+What is built of this today is the refusal: a locator from another control domain is refused by name (`foreign-control-domain`), never acted on as if it were local. Authority and deployment locality are separate. Host or provider locality may constrain readiness or execution routing, never leadership ordering.
 
 ---
 
-## 2. DeploymentPipeline, RuntimeFact, current runtime metadata, and exact runtime proof
+## 2. The provider contract
 
 Node-admin remains the brain. A provider is only the runtime hand.
 
 ```rust
 #[async_trait]
 pub trait DeploymentProvider: Send + Sync {
-    async fn spawn(&self, spec: ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
-    async fn adopt_current_runtime(&self, spec: CurrentRuntimeSpec) -> Result<DeploymentHandle, DeployError>;
-    async fn adopt_published_runtime(&self, fact: RuntimeFact) -> Result<DeploymentHandle, DeployError>;
+    fn kind(&self) -> ProviderKind;
+    fn control_domain(&self) -> String;
+    /// Launch `spec`; the launch record is durable in the data dir before the executable runs.
+    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError>;
+    /// What became of this exact launch in this domain: Running(handle) | Exited | NeverLaunched.
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError>;
+    /// The state of the exact runtime `handle`: Running | OsStopped | Exited { code } | Unknown.
+    async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus;
+    /// Stage one of the stop ladder: ask the runtime to stop (SIGTERM / the daemon's stop).
+    async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError>;
+    /// The one explicit act: end the exact runtime `handle` as `mode` says.
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError>;
-    async fn wait(&self, handle: &DeploymentHandle) -> Result<ExitStatus, DeployError>;
-    async fn inspect(&self, handle: &DeploymentHandle) -> Result<DeploymentStatus, DeployError>;
+    /// Every runtime this provider started that it has not seen exit.
+    fn launched(&self) -> Vec<DeploymentHandle>;
+    /// The host address a runtime binds on, port 0; the node reports its port at its join.
+    async fn bind_ip(&self, node: &PathName) -> Result<IpAddr, DeployError>;
+    /// The runtime's last words, for a failure named after an early stop.
+    async fn failure_detail(&self, handle: &DeploymentHandle, data_dir: &Path) -> String;
 }
+
+/// `fact` as a handle `provider` may act on, or the named reason it may not
+/// (invalid-fact, other-provider, foreign-control-domain).
+pub fn adopt(provider: &dyn DeploymentProvider, fact: &RuntimeFact) -> Result<DeploymentHandle, AdoptRefusal>;
 ```
 
-Exact Rust naming may differ. The semantic cuts may not.
+Exact Rust naming may differ. The semantic cuts may not:
 
-`adopt_current_runtime` exists so the Day-0 admin started by a person or the test harness enters the same runtime tracking as Build-launched nodes. `adopt_published_runtime` means a successor can reconstruct a control handle from a current membership RuntimeFact without needing the launcher or completed Build receipts. If the locator belongs to another control domain, the library routes the exact-runtime action to a valid domain-local executor instead of pretending the locator is local.
+- **Spawn records before it runs.** The launch record (`deployment.json` in the data dir) is durable before the executable runs, so a runtime that runs always has its record and an executor lost at any point of the spawn leaves `find` a record to read. A record that cannot be written stops the launch before the executable runs.
+- **Find is for the launcher's successor.** It tells a running launch, one that ran and exited, and one never launched apart, from the record and the domain, so a re-run after a crash mid-`DeployRuntime` adopts the runtime instead of starting a second one.
+- **Adopt is for any authority.** A successor reconstructs a control handle from a birth's published RuntimeFact alone, with no launcher and no completed Build receipts. The Day-0 admin a person or the test harness started enters the same tracking by adopting its own current runtime before Ready.
+- **Inspect reads, terminate acts, nothing else commands.** The provider sends no signal to a runtime but the stop ladder's and the terminate's. It never sends `SIGCONT`, never unpauses a container, never authors a node's status, never speaks Node RPC.
 
 ### 2.1 RuntimeFact is compact exact current-runtime identity
 
-Every current managed birth publishes one compact typed RuntimeFact as part of its membership birth/projection.
+Every current managed birth publishes one compact typed RuntimeFact as part of its membership digest and projection.
 
 ```text
 RuntimeFact {
-    node_id
-    incarnation_id
     deployment_id
-    provider
-    provider_control_domain
-    locator
+    provider            process | container
+    control_domain      opaque, equality only
+    locator             Process { pid, start } | Container { id }
 }
 ```
 
 The fact is:
 
-- bound to exact logical NodeId + current IncarnationId;
+- bound to the exact logical NodeId and current IncarnationId it rides with;
 - immutable for that incarnation;
-- sufficient to determine where and how that exact runtime can be adopted/inspected/terminated;
-- a locator/identity fact, not a credential or secret control capability;
+- sufficient to determine where and how that exact runtime can be adopted, inspected and terminated;
+- a locator and identity fact, not a credential or a control capability;
 - current observed topology state, not Build history.
 
-`provider_control_domain` is opaque equality-only deployment metadata. It is not a product identity and is not an leadership key.
+`control_domain` is opaque equality-only deployment metadata. It is not a product identity and not a leadership key.
 
-Changing the locator or provider control domain for the same incarnation is a named inconsistency/refusal. Restart keeps the NodeId, the IncarnationId and the RuntimeFact: the process never exits. A new node (create, recover, Rafka's replace) has a new NodeId, IncarnationId and RuntimeFact.
+Changing the locator or control domain for the same incarnation is a named inconsistency and refusal. A restart keeps the NodeId, the IncarnationId and the RuntimeFact: the process never exits. A new node (create, recovery, Rafka's replace) has a new NodeId, IncarnationId and RuntimeFact.
 
-The local `handles` map may cache adopted/spawned handles. It is never source of truth merely because that admin launched the runtime.
+A provider's local handle cache is never the source of truth merely because that admin launched the runtime.
 
-### 2.2 Provider produces/discovers the locator; the node publishes the fact
+### 2.2 Provider produces or discovers the locator; the node publishes the fact
 
 Do not equate provider-specific locator acquisition with membership publication.
 
 ```text
 provider / runtime bootstrap seam
-    -> produces or discovers exact provider locator + provider control domain
+    -> produces or discovers the exact provider locator and its control domain
 
 node / runtime birth
     -> publishes ONE normalized RuntimeFact
-       through its own current membership digest/projection
+       through its own current membership digest and projection
 ```
 
-There is no competing launcher-owned authoritative RuntimeFact stream.
-
-Valid provider-specific acquisition includes:
+There is no competing launcher-owned RuntimeFact stream.
 
 ```text
 process
-    runtime self-discovers pid + process-start token
+    the runtime self-discovers its pid and the kernel's start time of that pid
 
 container
-    provider learns immutable container id after docker run
-    provider-written bootstrap record/channel makes it available to the runtime before Ready
+    the provider learns the immutable container id after `docker run`
+    and makes it available to the runtime before Ready through the launch record
 
 externally started Day-0 admin
-    adopt_current_runtime / self-discovery obtains the same normalized identity before Ready
+    adopts its own current runtime and obtains the same normalized identity before Ready
 ```
 
-The final runtime locator generally cannot be supplied in the original launch env. For example, a process PID does not exist until after spawn.
+The final locator cannot be supplied in the launch environment: a pid does not exist until after the spawn.
 
 ### 2.3 Runtime identity and operational metadata are separate
 
@@ -139,118 +155,144 @@ A successor may need current operational metadata that is not identity.
 RuntimeFact
     exact runtime identity
 
-current Node runtime metadata
-    operational context needed to manage the birth
-    e.g. data_dir, resolved storage/executable context where required
+current runtime metadata of the birth
+    the operational context needed to manage it: data_dir, the resolved executable, the launch's environment
 ```
 
-Required runtime-management metadata must converge to every authority-capable admin as current Node/birth projection state. It must not remain launcher-private.
+Required runtime-management metadata converges to every authority-capable admin as current birth projection state. It never stays launcher-private.
 
-`data_dir` is not automatically part of RuntimeFact equality/fencing. Do not inflate RuntimeFact with arbitrary operational blobs merely because membership carries it. RuntimeFact stays compact; larger provider-independent management metadata is projected beside it.
+`data_dir` is not part of RuntimeFact equality. RuntimeFact stays compact; management metadata rides the node's record and config ([node.config.update](lifecycles/node-config-update.md)).
 
 ### 2.4 Exact provider locator and control domain
 
-The provider/runtime identity must be non-reusable for the exact concrete runtime:
+The provider identity is non-reusable for the exact concrete runtime:
 
 ```text
 process provider:
-    provider_control_domain + pid + process-start identity/token
-    PID alone is insufficient
+    control_domain + pid + the kernel's start time of the pid
+    a pid alone is insufficient: a recycled pid never matches
 
 container provider:
-    provider_control_domain + immutable container id
-    deterministic container name alone is insufficient
+    control_domain + immutable container id
+    a deterministic container name alone is insufficient: a reused name never impersonates
 
 other provider:
-    provider_control_domain + equivalent non-reusable runtime identity
+    control_domain + an equivalent non-reusable runtime identity
 ```
 
-A cross-domain locator cannot be acted on as though it were local. The provider must either expose a remotely usable control path for that domain or the control library must route the action to a valid domain-local executor. A domain mismatch is a named adoption/execution refusal, not death evidence.
+A cross-domain locator cannot be acted on as though it were local: it is refused by name, or routed to an executor that owns the domain. A domain mismatch is never a silent fallback.
 
-Once adopted/spawned, provider `Exited`/terminal status for that exact handle is valid evidence that the concrete runtime can no longer accept work. RuntimeFact presence by itself does not prove Running or Dead. RPC failure, failed dial, gossip silence, topology absence, or inability of one admin to access a provider domain is not equivalent death proof.
+`ResolvedNodeLaunch` carries the already-resolved logical identity, FabricId and MeshId, executable, arguments, environment, data directory, assigned endpoints, resource limits and deployment id. The provider does not decide topology, elections, restart versus replacement, advertised ports, desired counts, readiness or logical identity.
 
-`ResolvedNodeLaunch` contains the already-resolved logical identity, FabricId/MeshId, executable, args, env, data directory, assigned endpoints, resource limits, and deployment id. `CurrentRuntimeSpec` supplies the corresponding already-known logical identity/provider context for external adoption.
+### 2.5 Runtime state: what the provider reports
 
-The provider does not decide topology, elections, restart vs replacement, advertised ports, desired counts, readiness, or logical identity.
+```rust
+pub enum DeploymentStatus {
+    /// The exact runtime exists and at least one of its tasks is executing or runnable.
+    Running,
+    /// The exact runtime exists and the operating system holds every task of it suspended
+    /// (a process in state `T`/`t`; a paused container). Observed suspension: it is NOT the
+    /// lifecycle status `stopped` and proves no completed `node.stop`.
+    OsStopped,
+    /// The exact runtime exited; `code` when its record proves one.
+    Exited { code: Option<i32> },
+    /// The exact runtime's state cannot be told: an unreadable, partial or inconclusive inspection.
+    Unknown,
+}
+```
 
-Canonical managed creation pipeline:
+The four states are provider-independent: every caller (the lifecycle pages, node recovery, node.runtime.inspect) interprets the common result and never `/proc` or Docker details.
+
+What each state is, and what the mesh does with it:
+
+| state | meaning | proof value | the caller's act |
+|---|---|---|---|
+| `Running` | the exact runtime is alive and executing | the runtime can still accept work, however silent the node | nothing is recovered or deleted; a silent `Running` birth follows [node recovery](lifecycles/node-recovery.md) steps 2-4 (tickle, TRUE OFFLINE, `held-running`, the R-FM1 hold and terminate) |
+| `OsStopped` | the operating system holds every task suspended | the runtime is neither hung nor gone; it answers nothing but a continue from whoever suspended it | the mesh-primary records the durable status-row fact `os-stopped { since }` (surfaced on `node.get`, never a gossip `MemberStatus`), opens no R-FM1 hold, runs no `TerminateRuntime` for this observation, sends no signal, and re-inspects every recovery tick |
+| `Exited { code }` | the exact runtime ended | the only proof that the concrete runtime can no longer accept work | the caller writes the birth's exit-proof row durably before anything else, then its page continues (recovery, `node.deleted`) |
+| `Unknown` | the inspection could not tell | neither life nor exit | recorded as uncertainty; no hold, no terminate, no exit proof is inferred; the next tick asks again |
+
+`OsStopped` changes state only through the operating system. While the fact is held, the recovery tick keeps inspecting the exact runtime: `Running` again clears the fact and RPC recovery proceeds through the ordinary ladder (a reached tickle; the pending lifecycle step resumes from its receipts, never a `node.start` selected because the provider reports `Running`); `Exited` is the ordinary exit proof; `Unknown` records the uncertainty. A new authority revalidates the stored fact with its own inspection: the fact is an observation, not permanent runtime truth. An explicit `node.delete` or an explicitly commanded terminate stays available through its defined exact-runtime path.
+
+What stays inference: a runtime the operating system shows `Running` that answers nothing (a deadlock). No provider can see it; RPC silence and the R-FM1 hold are the only signal.
+
+### 2.6 The process provider
+
+The control domain is one host and pid namespace. The handle is `{ pid, start }`, where `start` is the kernel's start time of the pid, read at launch; a recycled pid never matches (`is(pid, start)`).
+
+- **Spawn.** The launch record is written to `<data_dir>/deployment.json` before the executable runs. The launcher's own `RDM_*`, `TRACEPARENT` and `TRACESTATE` never reach the child; the child sees exactly the launch contract its spec names.
+- **Inspect reads the live thread group, not the leader.** A process is gone only once every task of its thread group has exited: during `exit_group` the leader can read as a zombie while sibling threads still hold the group's sockets. The provider reads `/proc/<pid>/task/*/stat` for every task, and the same for tracked children: all live tasks in `T` or `t` is `OsStopped`; any live task in another state is `Running`; no live task, or `/proc/<pid>` gone with the start identity matched, is `Exited`; task files present but unreadable or partial is `Unknown`, never exit proof. The same reads serve the launcher's children and adopted runtimes alike.
+- **Exit code.** For a child the provider has the code from its wait. For an adopted process it does not: the process runtime records a deliberate exit in `<data_dir>/exit.json`, keyed to its deployment and incarnation, and only that exact record turns an unknown code into a proven one.
+- **Signal stop and terminate.** `signal_stop` is `SIGTERM`. `terminate(Graceful { grace })` is `SIGTERM` then `SIGKILL` after `grace`; `terminate(Immediate)` is `SIGKILL`. Nothing else is ever sent.
+
+### 2.7 The container provider
+
+The control domain is one Docker daemon. The handle is `{ container id, init pid }`; the immutable id is the identity, the container's init pid a convenience for the netns reads.
+
+- **Network.** Each fabric gets a bridge network `rafka-<fabric>` carved from `RDM_CONTAINER_SUBNET_POOL` (a `/24` another network uses is skipped); node-admin assigns every container's address (`--ip`) so a node's bind address is known before it runs.
+- **Spawn and find.** The launch is recorded in the data dir, the container named deterministically for `find`, and the immutable id learned after `docker run`. `find` reads the daemon's state and the record: running, exited, or never created.
+- **Inspect** maps the daemon's state: `running`, `restarting` and `created` are `Running`; `paused` is `OsStopped` (the daemon freezes the container's cgroup: this reports container suspension, not a stopped process inside a running container); `exited` and `dead` are `Exited { code }` with Docker's own code; a daemon that cannot answer is `Unknown`. An unreachable daemon refuses the provider by name at bootstrap.
+- **Signal stop and terminate** are the daemon's stop and kill of the exact id.
+
+### 2.8 Exit proof
+
+Once a handle is adopted or spawned, the provider's `Exited` for that exact handle is the proof that the concrete runtime can no longer accept work, and the only one. A RuntimeFact's presence proves neither running nor gone. An RPC failure, a failed dial, a closed endpoint, a timeout, an `unreached` tickle and the observer-inferred `Dead` prove nothing ([node.tickle](lifecycles/node-tickle.md)). The exit-proof row is written durably before any step rests on it; a later attempt reads the row and asks the provider again only for a birth with no row.
+
+## 3. The pipeline's steps
+
+The provider is driven by the DeploymentPipeline, whose steps are the Build's receipts (build.md §4.1). The canonical managed creation:
 
 ```text
 AllocateIdentity
 ClaimName                 the mesh-primary's insert-and-fail on path.name; NameHeld launches nothing
 AllocateEndpoints
-PrepareStorage
+PrepareStorage            a fresh data_dir, or an inherited one inspected (gone / broken, §4)
 PrepareNetwork
-DeployRuntime
+DeployRuntime             spawn, or find and adopt a launch a lost executor left running
 RegisterExactRuntimeHandle
 ResolveProviderControlDomain
 MakeRuntimeFactAvailableToBirth
 WaitForBind
 PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata
-ConfigureDNS              optional
-ConfigureLoadBalancer     optional
-ConfigureFirewall         optional
 WaitForMeshJoin
 WaitForNodeReady
 Complete
 ```
 
-Canonical externally-started Day-0 adoption cut:
+The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain`, `PublishRuntimeFactAndCurrentRuntimeMetadata`, then the normal bootstrap.
 
-```text
-process/container already running
-    -> AdoptCurrentRuntime
-    -> RegisterExactRuntimeHandle
-    -> ResolveProviderControlDomain
-    -> PublishRuntimeFact + current runtime metadata
-    -> continue normal bootstrap/lifecycle
-```
+The successor's management cut: from a current membership birth's RuntimeFact and runtime metadata, resolve the control domain, adopt the published runtime (or route to an executor of its domain), and inspect or terminate as the Build requires.
 
-Canonical successor management cut:
+A `node.delete` runs the whole [node.stop](lifecycles/node-stop.md) (its first step [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`), then `TerminateRuntime` on the exact handle, the provider's exit proof, then identity release with storage retained. The R-FM1 recovery of a hung runtime begins with the same `TerminateRuntime { node_id, incarnation, handle }` step after its hold, and only then. Externally visible steps reconcile forward; published topology is never blindly reversed.
 
-```text
-current membership birth
-    -> RuntimeFact + current runtime metadata
-    -> resolve provider_control_domain
-    -> provider adopts published runtime
-       OR route to a valid domain-local executor
-    -> local DeploymentHandle/control object
-    -> inspect / terminate / restart as Build requires
-```
+## 4. Storage policy and the data dir
 
-Retirement is [node.delete](lifecycles/node-delete.md): the whole node.stop, the provider's exact exit proof, then identity release with storage retained. Optional external steps (load balancer, DNS, firewall) run before the stop and reconcile forward.
+A path's config is typed: `PathConfig { storage: StorageMeta, placement: PlacementMeta }` ([node.config.update](lifecycles/node-config-update.md)). `Tag` is an extrinsic annotation with no execution semantics. The pipeline interprets the config and resolves concrete storage actions against exact locators; the provider interprets neither.
 
-Externally visible steps reconcile forward. Do not blindly reverse published topology/DNS/LB state.
+Persistence belongs to the logical `path.name`, not its incarnation: Ephemeral storage is fresh for a new node; Persistent storage survives stop, start and restart, and a new node created over an inherited data dir keeps it. Delete releases no storage; `Preserve` issues no release action.
 
-### Resource vocabulary and storage policy
+`PrepareStorage` for a recovery (R-FM2) tells **gone** from **broken** by the error, never by a guess:
 
-`Tag` is an extrinsic descriptive annotation with zero execution semantics. `NodeMeta` holds
-intrinsic desired properties, including typed `StorageMeta` and `PlacementMeta`; `RuntimeMeta`
-holds operational information for an exact current birth. `RuntimeFact` identifies that birth's
-concrete provider runtime and locator. An `Overlay` is an ephemeral lifecycle/routing projection.
+- **Gone.** The inherited directory itself is absent (`NotFound` on the directory). When it stays absent for `RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2, to ride out a remount), the mesh-primary records `data-dir-lost { path, since }` on the exited birth and the same recovery creates the node at the same `path.name` over a fresh `data_dir` beside the old path with a newly minted endpoint key (the old key is never re-minted: the key belongs to the data dir), and `hydrate_before_ready` runs with `inherited = false` (`RDM_INHERITED_DATA_DIR=0`; the application resyncs).
+- **Broken.** The directory exists but `node-key` is missing, unreadable or corrupt. `PrepareStorage` fails by name without minting a key, records `data-dir-unreadable { path, cause }` on the exited birth, and the mesh-primary holds the recovery (not due while the fact stands) until the key reads again, then proceeds with `inherited = true`.
 
-Persistence belongs to logical `path.name`, not its incarnation: Ephemeral storage is fresh
-for a new node; Persistent storage survives stop, start and restart, and a new node created
-over an inherited data dir keeps it. Delete releases no storage. When `PrepareStorage` runs
-for a recovery (`R-FM2`), it distinguishes an absent inherited `data_dir` (`NotFound` on the
-directory itself: **gone**) from an existing directory whose `node-key` is missing,
-unreadable, or corrupt (**broken**). When the directory is absent past
-`RDM_DATA_DIR_GONE_FLOORS` staleness floors (default 2), the mesh-primary records
-`data-dir-lost { path, since }` on the exited birth and `PrepareStorage` allocates a fresh
-`data_dir` beside the old path and mints a new endpoint key (never re-minting the old key),
-running `hydrate_before_ready` with `inherited = false`. When the directory exists on disk
-with a missing or unreadable `node-key`, `PrepareStorage` fails by name without minting a
-key, records `data-dir-unreadable { path, cause }` on the exited birth, and the mesh-primary
-holds recovery without retrying until `<data_dir>/node-key` is repaired (`inherited = true`).
-The selected Rafka versioned ingress defaults are broker and node-admin Persistent/Preserve,
-and gateway and compute Ephemeral. These choices and `default_for(RafkaRole)` belong to
-Rafka's ingress adapter, not generic RDM role policy. The three-state `StorageMeta` contract
-remains generic RDM law. Explicit per-path NodeMeta precedes the customer default.
-Normalization occurs only before Build acceptance. Accepted Builds carry resolved, explicit
-per-path NodeMeta; neither pipeline nor provider applies hidden defaults.
+RDM deletes nothing on disk, ever. Rafka's per-kind defaults (broker and node-admin Persistent, gateway and compute Ephemeral) belong to Rafka's ingress adapter; the three-state `StorageMeta` contract is RDM law. Normalization happens before Build acceptance; an accepted Build carries explicit per-path config, and neither pipeline nor provider applies hidden defaults.
 
-DeploymentPipeline interprets desired properties and resolves concrete storage actions against
-exact locators. DeploymentProvider interprets neither desired NodeMeta nor descriptive Tags;
-Preserve issues no release action.
+## 5. What the provider never does
 
-A `node.delete` of a target believed live runs the whole [node.stop](lifecycles/node-stop.md), whose first step is [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`. The stop's receipt is written before provider termination and exact inspection. A dead or wedged node cannot block an authorized delete forever, and silence on a desired running node never authorizes replacement. When a TRUE OFFLINE member or mesh-primary is inspected as `Running` throughout the `RDM_HUNG_HOLD_FLOORS` hold (`held-running { since, verdicts }`, `R-FM1`), the recovery Build's `node.delete` runs `TerminateRuntime { node_id, incarnation, handle }` on the exact runtime handle recorded at launch (`terminate(handle, Graceful)` then `Forced` after the stop grace), records `exit_proof` durably and clears `held-running` before completing `NodeDeleted` and `node.create`. A refused or unproven terminate ends the attempt `Failed { step: TerminateRuntime, reason }` by name.
+- Never authors a node's status, publishes gossip, or speaks Node RPC.
+- Never infers: `Unknown` is an answer, silence is not.
+- Never sends a signal but the stop ladder's and the terminate's; never continues a suspended runtime.
+- Never acts on a locator from another control domain.
+- Never decides topology, identity, readiness, restart versus replacement, or storage.
+
+## 6. Evidence
+
+| span | emitted by | fields |
+|---|---|---|
+| `rdm.node_admin.deployment.update.via-step` | the pipeline, per step | build_id, attempt, node, step (`DeployRuntime`, `PrepareStorage`, `TerminateRuntime`, …), outcome |
+| `rdm.node_admin.node.resolve.via-provider-inspection` | the caller of node.runtime.inspect | node, node_id, incarnation_id, inspector, handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), exit_code, exit_proof (`put` / `held` / none), reason |
+| `rdm.node_admin.runtime.reject.via-<reason>` | adopt | `invalid-fact`, `other-provider`, `foreign-control-domain` |
+| `rdm.node_admin.node.update.via-data-dir-lost`, `via-data-dir-unreadable` | PrepareStorage | node, node_id, incarnation_id, path, cause |
+
+Environment: `MESH_SPAWN_TYPE`, `RDM_CONTAINER_SUBNET_POOL`, `RDM_REQUIRE_CONTAINER`, `RDM_HUNG_HOLD_FLOORS`, `RDM_DATA_DIR_GONE_FLOORS`, `RDM_INHERITED_DATA_DIR` (the table in `CLAUDE.md`).
