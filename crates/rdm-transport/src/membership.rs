@@ -1241,7 +1241,6 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::PrimaryUpdated { op, seats } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdated { op, seats }),
         Frame::PrimaryUpdating { op, seats } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdating { op, seats }),
         Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::StateCommitting { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitting { hook, forwarded_by: Some(me.to_string()) }),
         Frame::StateCommitted { hook, .. } if hook.publisher_mesh() != own_mesh => Some(Frame::StateCommitted { hook, forwarded_by: Some(me.to_string()) }),
@@ -2034,10 +2033,23 @@ impl View {
                 .in_scope(|| tracing::info!("node-left is not an overlay or completion frame: a node's departure is published by the mesh-primary as NodeDeleted"));
                 Vec::new()
             }
-            Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
+            Frame::NodeLeaving { op, forwarded_by } => {
+                tracing::info_span!(
+                    "rdm.mesh.membership.reject.via-node-leaving",
+                    node = %self.current_name(),
+                    subject = %op.name,
+                    subject_id = %op.node_id,
+                    incarnation_id = %op.incarnation.as_str(),
+                    operation = %op.operation,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    via,
+                )
+                .in_scope(|| tracing::info!("node-leaving is a reserved frame position: stopping reaches peers as the member's status in its mesh-primary's projection; nothing is applied"));
+                Vec::new()
+            }
+            Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
                 let kind = match f {
                     Frame::NodeConnectionsDeleting { .. } => "node-connections-deleting",
-                    Frame::NodeLeaving { .. } => "node-leaving",
                     _ => "node-connections-deleted",
                 };
                 tracing::info_span!(
@@ -3716,7 +3728,7 @@ impl Backbone {
         (publisher, version)
     }
 
-    /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
+    /// Publish a fabric round hook this admin authored: the backbone,
     /// its own mesh channel and its own view, once. The accepted command's hook, never a separately
     /// coordinated publication. An error names each channel the frame was not handed to, and why.
     pub async fn publish_command_hook(&self, f: &Frame) -> Result<()> {

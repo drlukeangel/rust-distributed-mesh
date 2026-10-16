@@ -211,12 +211,14 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
             .unwrap_or_else(|| panic!("{step} completed on the executor"));
         assert!(start(done) < terminal, "{step} precedes termination");
     }
-    // The command hook: node-leaving, which the owning mesh-admin authors at the StopNode step, is heard
-    // by the other nodes of the fabric; the node authors no node-left frame (it gossips nothing for its
-    // stop), and nothing publishes node-draining or node-drained (reserved frame positions).
-    assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == VICTIM).count(), 0, "no node-left frame of the victim is heard by anyone");
-    let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-leaving" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
-    assert!(heard >= 1, "node-leaving for the victim was heard by another node: {heard}");
+    // Stopping reaches peers as the victim's status in its mesh-primary's projection, set on the stop
+    // call's admission (states.md "Who sets each state"); node-leaving and node-left are reserved frame
+    // positions (gossip.md frame catalog): nobody publishes or hears either, and nothing publishes
+    // node-draining or node-drained.
+    for kind in ["node-left", "node-leaving"] {
+        assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count(), 0, "no {kind} frame of the victim is heard by anyone");
+    }
+    assert!(named(&spans, "rdm.mesh.membership.reject.via-node-leaving").is_empty(), "no node-leaving frame reached any receiver");
     for kind in ["node-draining", "node-drained"] {
         let reserved = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count();
         assert_eq!(reserved, 0, "no {kind} frame of the victim is published or heard");

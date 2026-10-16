@@ -45,7 +45,7 @@ impl LifecycleEvents for Recorder {
         self.1.lock().unwrap().push(format!("NodeDraining:{}", op.operation));
     }
     async fn leaving(&self, op: &LifecycleOp) {
-        self.1.lock().unwrap().push(format!("NodeLeaving:{}", op.operation));
+        self.1.lock().unwrap().push(format!("stopping:{}", op.operation));
     }
     // A member's node.delete publishes no mesh-level event: those are the owner's and the deleting
     // primary's (mesh-delete.md), recorded here so a stray one shows in the order.
@@ -55,7 +55,7 @@ impl LifecycleEvents for Recorder {
 }
 
 /// CONTRACT: a member's node.delete in a mesh delete publishes `NodeDeleting` first, then
-/// `NodeStopped` once, from its matching `stopped` reply after its `node-leaving` hook, naming the
+/// `NodeStopped` once, from its matching `stopped` reply after that reply's admission set it stopping, naming the
 /// member's exact birth under its own `node.stop:<path>` operation of the mesh delete's Build and
 /// attempt, and `NodeDeleted` last, from the provider's exact exit proof, under node.delete's own
 /// `node.delete:<path>`. Without NodeStopped no peer mesh hears the member parked; without
@@ -100,7 +100,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             events,
             vec![
                 "NodeDeleting:node.delete:mesh1.rpc.1".to_string(),
-                "NodeLeaving:node.stop:mesh1.rpc.1".into(),
+                "stopping:node.stop:mesh1.rpc.1".into(),
                 "NodeStopped:node.stop:mesh1.rpc.1".into(),
                 "NodeDeleted:node.delete:mesh1.rpc.1".into()
             ],

@@ -76,8 +76,7 @@ pub struct AdminRunner {
 pub struct GossipLifecycle {
     /// This admin's mesh channel.
     pub membership: Membership,
-    /// This admin's place on the backbone: the `node-draining` and `node-leaving` command hooks
-    /// publish there as well.
+    /// This admin's place on the backbone: the fabric round hooks publish there as well.
     pub backbone: Backbone,
     /// This admin's own path: the publisher of the mesh frames it authors.
     pub me: PathName,
@@ -145,17 +144,11 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         });
     }
     async fn leaving(&self, op: &rdm_core::LifecycleOp) {
-        let f = rdm_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-leaving", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
-        async {
+        let span = tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+        span.in_scope(|| {
             self.membership.book.admitted(op, MemberStatus::Leaving);
-            if let Err(e) = self.backbone.publish_command_hook(&f).await {
-                tracing::info!(error = %e, "node-leaving not sent on every channel");
-            }
-            tracing::info!("the stop command was accepted: node-leaving published on the mesh channel and the backbone");
-        }
-        .instrument(span)
-        .await
+            tracing::info!("the birth admitted stop-node: this mesh-primary sets it stopping and its projection carries that; no frame is published");
+        });
     }
     async fn deleted(&self, op: &rdm_core::LifecycleOp) {
         let f = rdm_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };

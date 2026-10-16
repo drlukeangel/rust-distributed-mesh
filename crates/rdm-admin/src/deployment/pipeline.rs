@@ -758,8 +758,9 @@ pub trait LifecycleEvents: Send + Sync {
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
     async fn connections_deleting(&self, op: &LifecycleOp);
-    /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
-    /// and the backbone.
+    /// The birth admitted the `stop-node` command (its call came back admitted): the mesh-primary
+    /// sets it stopping (states.md "Who sets each state"), and its projection carries that. No frame
+    /// is published: `NodeLeaving` is a reserved position (gossip.md frame catalog).
     async fn leaving(&self, op: &LifecycleOp);
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
     /// composed for its membership, never a clock of the pipeline's own.
@@ -2246,18 +2247,25 @@ impl DeploymentPipeline<'_> {
     async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
-        node.status = NodeStatus::Leaving;
         let publish_stopped = matches!(end, StopEnd::Park { publish_stopped: true } | StopEnd::Terminate { publish_stopped: true });
         // `stop-node` is held until the birth is parked, and its reply is `stopped`: the birth drained,
         // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
+        // The mesh-primary sets the birth stopping on the stop call's admission and never before it
+        // (states.md "Who sets each state"): a command the birth never held sets nothing.
         let admission: CommandAdmission = self
             .step(run, steps[0], async {
-                self.sink.publish(node.clone());
                 let op = self.command_op(&ctx, node)?;
-                self.lifecycle.leaving(&op).await;
-                Ok(self.observer.send_command(node, NodeCommand::Stop, &ctx).await)
+                let admission = self.observer.send_command(node, NodeCommand::Stop, &ctx).await;
+                if admission.admitted() {
+                    self.sink.publish(Node { status: NodeStatus::Leaving, ..node.clone() });
+                    self.lifecycle.leaving(&op).await;
+                }
+                Ok(admission)
             })
             .await?;
+        if admission.admitted() {
+            node.status = NodeStatus::Leaving;
+        }
         let _: Completion = self
             .step(run, steps[1], async {
                 if !admission.admitted() {

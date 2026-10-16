@@ -462,7 +462,7 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let mut held = Held { pid, held: false };
     held.signal("-STOP", true);
     let refused = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
-    let Some(Frame::Started { build_id, attempt: unadmitted }) = refused.first().cloned() else { panic!("{refused:?}") };
+    let Some(Frame::Started { build_id, .. }) = refused.first().cloned() else { panic!("{refused:?}") };
     assert!(matches!(refused.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the stop fails naming the unadmitted command: {refused:?}");
 
     // Released: once its mesh-primary hears the birth again (its silence mark gone), node.get shows the
@@ -482,7 +482,7 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
 
     // The same stop, submitted again, is accepted and parks the same birth.
     let stopped = frames(nodes.stop(&path).await.expect("the resubmitted stop was accepted")).await;
-    let Some(Frame::Started { attempt: admitted, .. }) = stopped.first().cloned() else { panic!("{stopped:?}") };
+    assert!(matches!(stopped.first(), Some(Frame::Started { build_id: b, .. }) if *b == build_id), "the resubmitted stop is an attempt of the same Build: {stopped:?}");
     assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     let parked = view_of(&nodes, &path).await;
@@ -491,14 +491,15 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
 
     estate.stop().await;
     let spans = estate.spans();
-    let (build, first, second) = (build_id.to_string(), unadmitted.to_string(), admitted.to_string());
+    let build = build_id.to_string();
     let of = |name: &str, attempt: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "attempt") == attempt && attr(sp, "operation") == format!("node.stop:{NODE}")).collect() };
-    let sent = of("rdm.node_admin.node.update.via-command-sent", &first);
-    assert_eq!(sent.iter().map(|sp| attr(sp, "admission")).collect::<Vec<_>>(), vec!["not-sent".to_string()], "the first stop-node never reached the held birth: {sent:#?}");
+    // The two stop-node calls of the Build, in order: the one the held birth never received, then the admitted one.
+    let sent: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "operation") == format!("node.stop:{NODE}")).collect();
+    assert_eq!(sent.iter().map(|sp| attr(sp, "admission")).collect::<Vec<_>>(), vec!["not-sent".to_string(), "stopped".to_string()], "the first stop-node never reached the held birth and the second was admitted: {sent:#?}");
+    let (first, second) = (attr(sent[0], "attempt"), attr(sent[1], "attempt"));
     let stopping = |attempt: &str| -> Vec<&Value> { of("rdm.mesh.membership.update.from-command-admitted", attempt).into_iter().filter(|sp| attr(sp, "member") == NODE && attr(sp, "status") == "Leaving").collect() };
     assert!(stopping(&first).is_empty(), "nothing set the unadmitted birth stopping: {:#?}", stopping(&first));
-    let admitted_sent = of("rdm.node_admin.node.update.via-command-sent", &second);
-    assert_eq!(admitted_sent.iter().map(|sp| attr(sp, "admission")).collect::<Vec<_>>(), vec!["stopped".to_string()], "{admitted_sent:#?}");
+    let admitted_sent = vec![sent[1]];
     let set = stopping(&second);
     assert_eq!(set.len(), 1, "the admitted stop sets the birth stopping once: {set:#?}");
     let node_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "attempt") == second).expect("NodeStopped is published for the admitted stop");
