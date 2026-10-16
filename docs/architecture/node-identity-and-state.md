@@ -477,7 +477,7 @@ put.
 ```
 Joining → Alive ⇄ Overloaded          self-published (auto, every tick)
 Alive ⇄ Degraded                      self-published (auto, every tick)
-Alive → PendingReconnect              observer-inferred on staleness (soft, reversible)
+Alive → PendingReconnect              observer-inferred on staleness, or on a command never sent for a reachability reason (soft, reversible)
 Alive → Restarting                    the mesh-primary's NodeRestarting overlay for an open node.restart
 *     → Leaving                       set by the mesh-primary on node.stopped; published as NodeStopped
 *     → Dead                          observer-inferred ONLY (never sent)
@@ -492,7 +492,8 @@ absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `Node
   departure: a stopping node gossips nothing, and its mesh-primary publishes `NodeStopped` from the
   stop stream's `node.stopped` frame.
 - **`PendingReconnect` vs `Restarting` are different KINDS of claim.** PendingReconnect is
-  inferred silence ("this node went quiet and we do not know why"). `Restarting` is announced by
+  an observer's inference ("this node went quiet, or a command could not reach it, and we do not
+  know why"). `Restarting` is announced by
   the mesh-primary (`NodeRestarting`) for the length of a node.restart: the process is stopped and
   rejoins, never exits, and the overlay clears on that same incarnation's `node.started`. A node
   holding `Restarting` is EXEMPT from the staleness sweep's flip to `PendingReconnect`: overwriting a
@@ -511,7 +512,7 @@ absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `Node
 | `Degraded` | self-published while routing reaches a broker only through a peer or node-admin (§8, `crates/rafka-node-base/src/lib.rs::routing_degraded_reason`) | routing's peer choice, which prefers a source that is not `Degraded`; the span reason naming each such broker |
 | `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |
 | `Dead` | never sent; receiver-side vocabulary | the traffic/membership filters |
-| `PendingReconnect` | the staleness sweep | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
+| `PendingReconnect` | the staleness sweep; the mesh-primary, at once, for a member a command was never sent to for a reachability reason ([node recovery](lifecycles/node-recovery.md) step 1) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
 | `Restarting` | the mesh-primary's `NodeRestarting` overlay for an open node.restart | the routing rule; peers keep the birth, expecting it back |
 
 Every state in that table has a reader. That is the bar a state has to clear to exist.

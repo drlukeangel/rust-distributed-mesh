@@ -34,7 +34,9 @@ the primitive does not.
 ## Numbered end-to-end sequence
 
 1. The caller holds the node's id and incarnation and a reason to ask: silence past the staleness floor, a
-   silent seat holder, an investigation's clock, a successor that has not answered.
+   command to the node that was never sent for a reachability reason (the connect refused, timed out
+   or failed; the endpoint unresolved: [node recovery](node-recovery.md) step 1), a silent seat
+   holder, an investigation's clock, a successor that has not answered.
 2. Direct: `ProbeNodeState { node_id, incarnation }` to the node's held address, with the probe's deadline.
 3. On no answer, the same probe through up to two eligible live peers of the node's mesh, both
    sent at once, each a `Forward` whose inner op is the probe; a peer that cannot carry it is
