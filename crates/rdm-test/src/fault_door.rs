@@ -30,7 +30,7 @@ pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "CutSpec")]
 enum CutWire {
-    Receipt { step: String, operation: Option<String>, node: Option<String> },
+    Receipt { step: String, operation: Option<String>, node: Option<String>, failed: bool },
     Event { event: String, node: Option<String> },
     Hook { phase: String, node: Option<String> },
     AcceptedBuild,
@@ -41,6 +41,7 @@ enum CutWire {
     StateSync,
     TopologyRead,
     Announcement { announcement: String, channel: String },
+    ProviderTerminate { pid: Option<u32> },
 }
 
 /// A fault door call.
@@ -171,6 +172,13 @@ pub enum Hit {
         /// The channel it is sent on.
         channel: String,
     },
+    /// A provider `terminate` refused while the cut is armed.
+    ProviderTerminate {
+        /// The runtime's pid, when the handle names one.
+        pid: Option<u32>,
+        /// The deployment the runtime belongs to.
+        deployment_id: String,
+    },
 }
 
 impl Hit {
@@ -189,6 +197,7 @@ impl Hit {
             Hit::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
+            Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
         }
     }
 }
@@ -370,7 +379,8 @@ mod tests {
     /// One cut of every kind the door arms.
     fn every_cut() -> Vec<CutSpec> {
         vec![
-            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete:mesh2.rpc.2".into()), node: None },
+            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete:mesh2.rpc.2".into()), node: None, failed: false },
+            CutSpec::Receipt { step: "TerminateRuntime".into(), operation: Some("node.delete".into()), node: Some("mesh2.rpc.2".into()), failed: true },
             CutSpec::Event { event: "deleting".into(), node: Some("mesh1.rpc.1".into()) },
             CutSpec::Hook { phase: "before_eligibility".into(), node: None },
             CutSpec::AcceptedBuild,
@@ -381,6 +391,7 @@ mod tests {
             CutSpec::StateSync,
             CutSpec::TopologyRead,
             CutSpec::Announcement { announcement: "primary-updated".into(), channel: "any".into() },
+            CutSpec::ProviderTerminate { pid: Some(4242) },
         ]
     }
 
@@ -410,7 +421,7 @@ mod tests {
         ]
         .into();
         let all = [
-            FaultReply::Armed { node: "mesh1.admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some("mesh1.rpc.1".into()) } },
+            FaultReply::Armed { node: "mesh1.admin.1".into(), id: "c".into(), spec: CutSpec::Receipt { step: "StartNode".into(), operation: None, node: Some("mesh1.rpc.1".into()), failed: false } },
             FaultReply::Released { node: "mesh1.admin.1".into(), id: "c".into(), was_held: true, held_ms: Some(3) },
             FaultReply::State(FaultState { node: "mesh1.admin.1".into(), cuts, receipts_seen: 4 }),
             FaultReply::Refused { reason: "r".into() },

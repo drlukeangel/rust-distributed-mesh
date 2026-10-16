@@ -2291,3 +2291,323 @@ async fn a_member_held_on_an_unreadable_data_dir_completes_recovery_with_its_ret
     estate.shutdown().await;
 }
 
+
+// ---- i144 R21: a hold's terminate the provider refused, or that failed at its own inspection ----
+
+/// The R21 fabric: mesh1 (the fabric-primary's) with one node-admin and one rpc node, mesh2 with two
+/// node-admins and two rpc nodes (one holds the rpc cohort's seat, the other is the member under test), every admin the testkit's faulted node-admin under
+/// `RDM_HUNG_HOLD_FLOORS=2`; the birth Build's id.
+async fn faulted_hold_fabric(test: &str) -> (Estate, String) {
+    let sha = candidate_sha();
+    let estate = Estate::bootstrap_external_with_env(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"], &[("RDM_HUNG_HOLD_FLOORS", "2")])
+        .await
+        .expect("the faulted-admin binding set is accepted");
+    born_at(estate, &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await
+}
+
+/// The hold the R21 cells run under: `RDM_HUNG_HOLD_FLOORS=2` staleness floors.
+fn hold() -> Duration {
+    rdm_core::cadence::staleness_floor() * 2
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Every `TerminateRuntime` receipt of `node`'s node.delete in `mesh`'s drift lane of the Build view `b`.
+fn terminate_receipts(b: &Value, mesh: &str, node: &str) -> Vec<Value> {
+    lane_steps(b, mesh).into_iter().filter(|r| r["operation"] == format!("node.delete:{node}") && r["step"] == "TerminateRuntime").collect()
+}
+
+/// The first Failed `TerminateRuntime` receipt of `node` in `mesh`'s lane of `build`, as the node-admin
+/// `admin`'s own Build log holds it: for the fabric-primary, which never runs `mesh`'s lane, heard on the
+/// Build topic.
+async fn failed_terminate(estate: &Estate, admin: &PathName, build: &str, mesh: &str, node: &str) -> Value {
+    let pick = |b: &Value| terminate_receipts(b, mesh, node).into_iter().find(|r| r["outcome"]["failed"].is_object());
+    let held = build_log::build_fact(&estate.carrier_at(admin).await, build, &format!("{node}'s Failed TerminateRuntime in {mesh}'s lane"), SETTLE, |p| {
+        pick(&serde_json::to_value(p).expect("a Build view serializes")).is_some()
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"));
+    pick(&serde_json::to_value(held).expect("a Build view serializes")).expect("the receipt was just held")
+}
+
+/// The `held-running` verdicts `recorder` put for the birth `node_id` from `from_ms` on: one per tick
+/// that inspected the exact runtime and read it `Running`.
+fn held_running_ticks(spans: &[Value], node_id: &Value, recorder: &str, from_ms: u64) -> usize {
+    named(spans, "rdm.node_admin.node.update.via-held-running")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node_id"] == *node_id && s(&sp["attributes"]["recorder"]) == recorder && s(&sp["attributes"]["outcome"]) == "recorded" && start(sp) / 1_000_000 >= from_ms)
+        .count()
+}
+
+/// The admins' named refusals to submit the birth `node_id`'s terminate again (node-recovery.md step 4's end:
+/// "no hold submits that birth's terminate again: a person decides").
+fn terminate_refusals<'a>(spans: &'a [Value], node_id: &Value, submitter: &str) -> Vec<&'a Value> {
+    named(spans, "rdm.node_admin.build.reject.via-terminate-refused").into_iter().filter(|sp| sp["attributes"]["node_id"] == *node_id && s(&sp["attributes"]["submitter"]) == submitter).collect()
+}
+
+/// CONTRACT (i144 R21; node-recovery.md step 4: "A terminate the provider refuses or cannot prove ends
+/// the attempt `Failed { step: TerminateRuntime, reason }` by name, and no hold submits that birth's
+/// terminate again: a person decides. The mesh-primary keeps inspecting the exact runtime every tick
+/// (step 3)"): a member of mesh2 is hung (every task but the leader held by a tracer) under
+/// `RDM_HUNG_HOLD_FLOORS=2`, and its mesh-primary's provider refuses the terminate of its exact pid
+/// (the fault door's `provider_terminate` cut). The hold expires and its `TerminateRuntime` ends
+/// Failed; the receipt the fabric-primary heard on the Build topic carries the typed stage
+/// `provider`. Through three hold windows, and three more after mesh2's seat moves to its other admin
+/// (the primary's node.stop runs node.primary.update first), that one receipt stands: no hold submits
+/// the birth's terminate again, the member is the same birth, each mesh-primary records `held-running`
+/// on its ticks and names its refusal once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_provider_refused_terminate_is_never_submitted_again_by_a_tick_or_a_successor_and_the_inspections_go_on() {
+    let test = "a_provider_refused_terminate_is_never_submitted_again_by_a_tick_or_a_successor_and_the_inspections_go_on";
+    let (mut estate, build) = faulted_hold_fabric(test).await;
+    let nodes = estate.node_values().await;
+    let (node, mp, primary) = placement(&nodes);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
+    let mesh = s(&before["mesh"]);
+    let successor = s(&nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("the member's mesh holds a second node-admin")["name"]);
+    let rt = exact_runtime(&estate, &node).await;
+    let door = Door::at(&estate, &mp).await;
+    door.arm("refuse-terminate", json!({"kind": "provider-terminate", "pid": rt.pid})).await;
+    let held = rt.hang().expect("the exact runtime is hung");
+    assert!(!held.held.is_empty(), "every task but the leader is held: the provider sees it running");
+
+    // The hold expires and its TerminateRuntime asks the provider, which refuses.
+    let refused = failed_terminate(&estate, &fp, &build, &mesh, &node).await;
+    let refused_ms = now_ms();
+    tokio::time::sleep(hold() * 3).await;
+    let b = build_log::build_value(&estate.carrier_at(&fp).await, &build).await;
+    let receipts = terminate_receipts(&b, &mesh, &node);
+    assert_eq!(receipts.len(), 1, "one TerminateRuntime of {node} through three hold windows after the provider refused it: {receipts:#?}");
+    assert!(!s(&refused["outcome"]["failed"]["stage"]["provider"]["error"]).is_empty(), "the Failed receipt the fabric-primary heard on the Build topic carries the typed stage provider: {refused}");
+    let during = estate.node_value(&node).await;
+    assert_eq!(during["node_id"], before["node_id"], "the member is the same birth: {during}");
+
+    // mesh2's seat moves: the primary's node.stop runs node.primary.update first, and the successor's
+    // ticks read the same receipt.
+    let stopped = frames(estate.nodes_obj().await.stop(&Estate::path(&mp)).await.expect("the stop of the mesh-primary is accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    until_node_where(&estate, &successor, &format!("{successor} holds {mesh}'s seat"), Duration::from_secs(60), |n| n["is_primary"] == json!(true)).await;
+    let moved_ms = now_ms();
+    tokio::time::sleep(hold() * 3).await;
+    let b = build_log::build_value(&estate.carrier_at(&fp).await, &build).await;
+    let receipts = terminate_receipts(&b, &mesh, &node);
+    assert_eq!(receipts.len(), 1, "no hold of the successor {successor} submits {node}'s terminate again: {receipts:#?}");
+    let after = estate.node_value(&node).await;
+    assert_eq!(after["node_id"], before["node_id"], "the member is still the same birth: {after}");
+
+    let spans = estate.spans();
+    let (by_mp, by_successor) = (held_running_ticks(&spans, &before["node_id"], &mp, refused_ms), held_running_ticks(&spans, &before["node_id"], &successor, moved_ms));
+    assert!(by_mp >= 2 && by_successor >= 2, "each mesh-primary inspects the exact runtime on its ticks and records held-running: {mp} {by_mp}, {successor} {by_successor}");
+    let (named_by_mp, named_by_successor) = (terminate_refusals(&spans, &before["node_id"], &mp), terminate_refusals(&spans, &before["node_id"], &successor));
+    assert_eq!((named_by_mp.len(), named_by_successor.len()), (1, 1), "each mesh-primary names its refusal once: {named_by_mp:#?} {named_by_successor:#?}");
+    for sp in named_by_mp.iter().chain(&named_by_successor) {
+        assert_eq!((s(&sp["attributes"]["stage"]), s(&sp["attributes"]["attempt"])), ("provider".to_string(), refused["attempt"].to_string()), "the refusal names the receipt it reads: {sp}");
+    }
+    let submit = recovery_span(&estate, &node, &before["node_id"]).await;
+    eprintln!(
+        "R21 provider-refused cell: {node} (birth {}) TerminateRuntime refused at attempt {} of {mesh}'s lane of {build} (stage {}): trace {} | {mp} ticks {by_mp}, {successor} ticks {by_successor}, one receipt",
+        s(&before["node_id"]),
+        refused["attempt"],
+        refused["outcome"]["failed"]["stage"],
+        s(&submit["trace_id"]),
+    );
+    estate.record_trace_url(submit["trace_id"].as_str().unwrap_or(""));
+    drop(held);
+    estate.stop().await;
+}
+
+/// CONTRACT (i144 R21; node-recovery.md step 4: "A `TerminateRuntime` that failed at its own inspection
+/// (`OsStopped` or `Unknown`) asked the provider nothing: it voids the hold, and a birth that reads
+/// `Running` and stays unreachable opens a fresh hold under the ordinary rule"): a member of mesh2 is
+/// hung under `RDM_HUNG_HOLD_FLOORS=2`. Its hold expires and the attempt is held once claimed; the
+/// operating system suspends the runtime there, so the `TerminateRuntime` step's own inspection reads it
+/// `os-stopped` and the step fails asking the provider nothing (its receipt carries the typed stage
+/// `inspection`, verdict `os_stopped`); the runtime runs again (still hung) before that receipt is
+/// durable, so no tick saw it suspended. The hold is void: `held-running` is recorded afresh, beginning
+/// after the failure, before any second terminate, and the next terminate is submitted no sooner than a
+/// full hold after it; that one ends the hung birth and the member is recovered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_terminate_failed_at_its_own_inspection_voids_the_hold_and_a_running_birth_waits_a_full_fresh_hold() {
+    let test = "a_terminate_failed_at_its_own_inspection_voids_the_hold_and_a_running_birth_waits_a_full_fresh_hold";
+    let (mut estate, build) = faulted_hold_fabric(test).await;
+    let nodes = estate.node_values().await;
+    let (node, mp, primary) = placement(&nodes);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
+    let mesh = s(&before["mesh"]);
+    let rt = exact_runtime(&estate, &node).await;
+    let door = Door::at(&estate, &mp).await;
+    door.arm("claimed", json!({"kind": "claimed-attempt"})).await;
+    let held = rt.hang().expect("the exact runtime is hung");
+    assert!(!held.held.is_empty(), "every task but the leader is held: the provider sees it running");
+
+    // The hold's attempt is held once claimed, before its TerminateRuntime runs; the operating system
+    // suspends the runtime there.
+    let claimed = door.wait_held("claimed").await;
+    let stop = rt.apply(Fault::Stop);
+    door.arm("failed-receipt", json!({"kind": "receipt", "step": "TerminateRuntime", "operation": "node.delete", "node": node, "failed": true})).await;
+    door.release("claimed").await;
+    door.wait_held("failed-receipt").await;
+    // The runtime runs again, still hung, before the Failed receipt is durable.
+    let cont = rt.apply(Fault::Continue);
+    let failed_ms = now_ms();
+    door.release("failed-receipt").await;
+    let failed = failed_terminate(&estate, &fp, &build, &mesh, &node).await;
+
+    // Whichever comes first: the hold recorded afresh, or a second terminate of the birth.
+    let first = wait_for("the hold recorded afresh, or a second TerminateRuntime of the birth", SETTLE, || async {
+        let b = build_log::build_value(&estate.carrier_at(&fp).await, &build).await;
+        let n = terminate_receipts(&b, &mesh, &node).len();
+        if n > 1 {
+            return Some(format!("a second TerminateRuntime of {node} before the hold was recorded afresh: {n} receipts"));
+        }
+        let v = estate.node_value(&node).await;
+        (v["node_id"] == before["node_id"] && v["held_running"]["since"].as_u64().unwrap_or(0) >= failed_ms).then(|| format!("fresh since {}", v["held_running"]["since"]))
+    })
+    .await;
+    assert!(first.starts_with("fresh"), "the hold the failed inspection voided restarts its clock before any terminate: {first}");
+    let fresh_since: u64 = first.trim_start_matches("fresh since ").parse().expect("the fresh hold's since");
+    assert_eq!(s(&failed["outcome"]["failed"]["stage"]["inspection"]["verdict"]), "os_stopped", "the Failed receipt carries the typed stage inspection, verdict os_stopped: {failed}");
+
+    // The next terminate waits a full fresh hold, ends the hung birth, and the member is recovered.
+    let after = until_new_birth(&estate, &node, &before, SETTLE).await;
+    let spans = estate.spans();
+    let submits: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    let second = submits.iter().map(|sp| start(sp) / 1_000_000).filter(|ms| *ms >= failed_ms).min().expect("a submit after the failed terminate");
+    assert!(second >= fresh_since + hold().as_millis() as u64, "the next terminate waits a full fresh hold ({:?}) from {fresh_since}: submitted at {second}", hold());
+    let inspection = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && s(&sp["attributes"]["caller"]) == "terminate" && s(&sp["attributes"]["verdict"]) == "os-stopped")
+        .cloned()
+        .expect("the TerminateRuntime step's own inspection read the runtime os-stopped");
+    eprintln!(
+        "R21 inspection-void cell: {node} (birth {}) claim {} held, {stop:?} then {cont:?}; TerminateRuntime failed at its inspection (trace {}), stage {}; fresh hold since {fresh_since}, next submit at {second} (hold {:?}); new birth {}",
+        s(&before["node_id"]),
+        claimed["hit"],
+        s(&inspection["trace_id"]),
+        failed["outcome"]["failed"]["stage"],
+        hold(),
+        s(&after["node_id"]),
+    );
+    estate.record_trace_url(inspection["trace_id"].as_str().unwrap_or(""));
+    drop(held);
+    estate.settles_to(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(30)).await;
+    estate.stop().await;
+}
+
+/// CONTRACT (i144 R21; node-recovery.md step 4: "`Exited` is the proof, and the recovery of an exited
+/// member follows (Failure and receipts); neither reopens the failed attempt"): a member of mesh2 is hung
+/// and its mesh-primary's provider refuses its terminate, so the hold's `TerminateRuntime` ends Failed
+/// with the typed stage `provider`. The refusal is lifted and the runtime is killed: the tick proves the
+/// exit and the ordinary recovery follows as a later attempt of the lane, its node.delete deleting the
+/// exited birth on the exit proof; the refused attempt's receipt stays Failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_birth_that_exits_after_a_refused_terminate_gets_its_exit_proof_and_ordinary_recovery() {
+    let test = "a_birth_that_exits_after_a_refused_terminate_gets_its_exit_proof_and_ordinary_recovery";
+    let (mut estate, build) = faulted_hold_fabric(test).await;
+    let nodes = estate.node_values().await;
+    let (node, mp, primary) = placement(&nodes);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
+    let mesh = s(&before["mesh"]);
+    let rt = exact_runtime(&estate, &node).await;
+    let door = Door::at(&estate, &mp).await;
+    door.arm("refuse-terminate", json!({"kind": "provider-terminate", "pid": rt.pid})).await;
+    let held = rt.hang().expect("the exact runtime is hung");
+    let refused = failed_terminate(&estate, &fp, &build, &mesh, &node).await;
+    let refused_attempt = refused["attempt"].as_u64().expect("the receipt names its attempt");
+    assert!(!s(&refused["outcome"]["failed"]["stage"]["provider"]["error"]).is_empty(), "the Failed receipt carries the typed stage provider: {refused}");
+
+    // The refusal is lifted and the runtime exits.
+    door.release("refuse-terminate").await;
+    drop(held);
+    let killed = rt.apply(Fault::Kill);
+    let after = until_new_birth(&estate, &node, &before, SETTLE).await;
+    let spans = estate.spans();
+    let proof = named(&spans, "rdm.node_admin.node.delete.via-exit-proof")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"])
+        .cloned()
+        .expect("the exited birth is deleted on its exit proof");
+    let b = build_log::build_value(&estate.carrier_at(&fp).await, &build).await;
+    let deleted = lane_steps(&b, &mesh)
+        .into_iter()
+        .find(|r| r["operation"] == format!("node.delete:{node}") && r["step"] == "NodeDeleted" && r["outcome"] == "complete")
+        .unwrap_or_else(|| panic!("the recovery's NodeDeleted in {mesh}'s lane: {:#?}", lane_steps(&b, &mesh)));
+    assert!(deleted["attempt"].as_u64().unwrap_or(0) > refused_attempt, "the recovery of the exited member is a later attempt than the refused one ({refused_attempt}): {deleted}");
+    let still = terminate_receipts(&b, &mesh, &node).into_iter().find(|r| r["attempt"].as_u64() == Some(refused_attempt)).expect("the refused attempt's receipt");
+    assert!(still["outcome"]["failed"].is_object(), "the refused attempt's receipt stays Failed: {still}");
+    eprintln!(
+        "R21 exit-after-refusal cell: {node} (birth {}) refused at attempt {refused_attempt}, {killed:?}, exit proof {} (trace {}), recovered at attempt {} as {}",
+        s(&before["node_id"]),
+        s(&proof["attributes"]["proof"]),
+        s(&proof["trace_id"]),
+        deleted["attempt"],
+        s(&after["node_id"]),
+    );
+    estate.record_trace_url(proof["trace_id"].as_str().unwrap_or(""));
+    estate.settles_to(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(30)).await;
+    estate.stop().await;
+}
+
+/// CONTRACT (i144 R21: the rule reads the birth's durable Failed receipt, so it holds after a later
+/// Build is accepted): a member of mesh2 is hung and its mesh-primary's provider refuses its terminate;
+/// the hold's `TerminateRuntime` ends Failed with the typed stage `provider` in the birth Build. A later
+/// Build is accepted for the fabric (mesh1 grows by one rpc node) and becomes current. Through three hold
+/// windows, and three more after mesh2's seat moves to its other admin, neither Build holds a second
+/// terminate of the birth: the tick and the successor find the refused receipt in the earlier Build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_terminate_is_found_by_the_tick_and_a_successor_after_a_later_build_is_accepted() {
+    let test = "a_refused_terminate_is_found_by_the_tick_and_a_successor_after_a_later_build_is_accepted";
+    let (mut estate, build) = faulted_hold_fabric(test).await;
+    let nodes = estate.node_values().await;
+    let (node, mp, primary) = placement(&nodes);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
+    let mesh = s(&before["mesh"]);
+    let successor = s(&nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("the member's mesh holds a second node-admin")["name"]);
+    let rt = exact_runtime(&estate, &node).await;
+    let door = Door::at(&estate, &mp).await;
+    door.arm("refuse-terminate", json!({"kind": "provider-terminate", "pid": rt.pid})).await;
+    let held = rt.hang().expect("the exact runtime is hung");
+    let refused = failed_terminate(&estate, &fp, &build, &mesh, &node).await;
+
+    // A later Build is accepted for the fabric and becomes current.
+    let grown = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2), ("mesh2", 2, 2)]).await;
+    let later = grown.build_id.to_string();
+    assert_ne!(later, build, "the grow is a later Build");
+    let receipts_in = |b: &Value| terminate_receipts(b, &mesh, &node).len();
+    tokio::time::sleep(hold() * 3).await;
+    let (in_birth, in_later) = (
+        receipts_in(&build_log::build_value(&estate.carrier_at(&fp).await, &build).await),
+        receipts_in(&build_log::build_value(&estate.carrier_at(&fp).await, &later).await),
+    );
+    assert_eq!((in_birth, in_later), (1, 0), "after the later Build {later}, no hold submits {node}'s terminate again in either Build");
+    assert!(!s(&refused["outcome"]["failed"]["stage"]["provider"]["error"]).is_empty(), "the Failed receipt carries the typed stage provider: {refused}");
+
+    let stopped = frames(estate.nodes_obj().await.stop(&Estate::path(&mp)).await.expect("the stop of the mesh-primary is accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    until_node_where(&estate, &successor, &format!("{successor} holds {mesh}'s seat"), Duration::from_secs(60), |n| n["is_primary"] == json!(true)).await;
+    tokio::time::sleep(hold() * 3).await;
+    let (in_birth, in_later) = (
+        receipts_in(&build_log::build_value(&estate.carrier_at(&fp).await, &build).await),
+        receipts_in(&build_log::build_value(&estate.carrier_at(&fp).await, &later).await),
+    );
+    assert_eq!((in_birth, in_later), (1, 0), "the successor {successor} finds the refused receipt in the earlier Build and submits nothing");
+    let spans = estate.spans();
+    let named_by_successor = terminate_refusals(&spans, &before["node_id"], &successor);
+    assert_eq!(named_by_successor.len(), 1, "the successor names its refusal once: {named_by_successor:#?}");
+    assert_eq!(s(&named_by_successor[0]["attributes"]["build_id"]), build, "it names the earlier Build's receipt: {}", named_by_successor[0]);
+    eprintln!(
+        "R21 later-Build cell: {node} (birth {}) refused at attempt {} of {build}; later Build {later}; {successor} names the refusal (trace {})",
+        s(&before["node_id"]),
+        refused["attempt"],
+        s(&named_by_successor[0]["trace_id"]),
+    );
+    estate.record_trace_url(named_by_successor[0]["trace_id"].as_str().unwrap_or(""));
+    drop(held);
+    estate.stop().await;
+}
