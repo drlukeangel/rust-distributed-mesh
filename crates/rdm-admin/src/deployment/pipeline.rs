@@ -2932,7 +2932,7 @@ mod tests {
     /// `stop-node` sent again to the parked birth, a StopNode or AwaitNodeLeft receipt in the resumed run.
     // @feature: node-lifecycle
     #[tokio::test]
-    async fn a_restart_of_a_birth_its_own_restart_parked_resumes_at_start() {
+    async fn a_restart_of_a_birth_its_own_restart_stopped_resumes_at_start() {
         let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default(), refuse: None };
         let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its parked birth no stop".into() }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();

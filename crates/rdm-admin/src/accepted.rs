@@ -1161,7 +1161,7 @@ mod tests {
     /// the view holds it live, parked, or recorded os-stopped (silent as it is); a birth that is only
     /// silent (`PendingReconnect`, or true offline `Dead`) is never retired for its silence.
     #[test]
-    fn an_os_stopped_birth_the_topology_no_longer_names_is_retired_and_a_merely_silent_one_is_not() {
+    fn an_os_stopped_birth_the_topology_no_longer_names_is_deleted_and_a_merely_silent_one_is_not() {
         let cur = t(&[("mesh1", 2, 3)]);
         for status in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
             let mut o = mn();
@@ -1176,7 +1176,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_of_a_birth_its_own_restart_parked_plans_the_restart_never_a_create() {
+    fn a_restart_of_a_birth_its_own_restart_stopped_plans_the_restart_never_a_create() {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let mut parked = mn();
