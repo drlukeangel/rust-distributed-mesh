@@ -24,7 +24,7 @@ fn enabled() -> bool {
 
 /// The container provider for `fabric`, or `None` (named) when the proof is not asked for or the
 /// host cannot run containers and the proof is not required.
-async fn provider(fabric: &str) -> Option<ContainerDeploymentProvider> {
+pub(crate) async fn provider(fabric: &str) -> Option<ContainerDeploymentProvider> {
     if !enabled() {
         eprintln!("SKIP container proof: opt-in with RDM_CONTAINER_PROOF=1 (the container-proof step)");
         return None;
@@ -40,7 +40,7 @@ async fn provider(fabric: &str) -> Option<ContainerDeploymentProvider> {
 }
 
 /// Removes every container and the network of one cell's fabric, however the cell ends.
-struct Fabric(String);
+pub(crate) struct Fabric(pub(crate) String);
 
 impl Drop for Fabric {
     fn drop(&mut self) {
@@ -58,12 +58,12 @@ impl Drop for Fabric {
     }
 }
 
-fn fabric_name(cell: &str) -> String {
+pub(crate) fn fabric_name(cell: &str) -> String {
     format!("cproof-{cell}-{}", std::process::id())
 }
 
 /// One node's launch of the host's `tail -f /dev/null` at the network's `n`-th node address.
-fn launch(p: &ContainerDeploymentProvider, fabric: &str, n: u32) -> ResolvedNodeLaunch {
+pub(crate) fn launch(p: &ContainerDeploymentProvider, fabric: &str, n: u32) -> ResolvedNodeLaunch {
     let (first, _) = p.network().node_range();
     let ip = Ipv4Addr::from(u32::from(first) + n);
     let data_dir = std::env::temp_dir().join(format!("{fabric}-node{n}"));

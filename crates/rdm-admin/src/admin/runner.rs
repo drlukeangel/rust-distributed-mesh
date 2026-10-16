@@ -518,8 +518,14 @@ impl AdminRunner {
     /// birth the provider sees running is not exited and is not deleted.
     pub(crate) async fn delete_crashed(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth, exit: crate::status_storage::NodeExitRow) -> Result<(), String> {
         let (exited, handle) = self.exited_birth("node.delete", node, from).await?;
-        if self.provider.inspect(&handle).await == crate::deployment::provider::DeploymentStatus::Running {
-            return Err(format!("node.delete:{node}: birth {} at {} still runs: it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.as_str()));
+        match self.provider.inspect(&handle).await {
+            crate::deployment::provider::DeploymentStatus::Running => {
+                return Err(format!("node.delete:{node}: birth {} at {} still runs: it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.as_str()));
+            }
+            crate::deployment::provider::DeploymentStatus::OsStopped => {
+                return Err(format!("node.delete:{node}: the operating system holds birth {} at {} suspended (os-stopped): it is not exited and is not deleted as a crashed target", from.node_id, from.incarnation.as_str()));
+            }
+            crate::deployment::provider::DeploymentStatus::Exited { .. } | crate::deployment::provider::DeploymentStatus::Unknown => {}
         }
         let template = self.template_for(node.kind, &node.mesh).await?;
         let req = RetireRequest { build_id: build_id.clone(), attempt, node: exited, handle, exit: Some(exit) };

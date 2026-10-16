@@ -304,7 +304,11 @@ pub fn fingerprint(s: &str) -> String {
 /// The kernel's start time of `pid` (field 22 of `/proc/<pid>/stat`, clock
 /// ticks since boot); `None` when it does not run or on another OS.
 pub fn process_start_token(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    start_token_of_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
+/// The start time a `/proc/<pid>/stat` line names (field 22); `None` when the line is not one.
+pub fn start_token_of_stat(stat: &str) -> Option<u64> {
     // The command name is parenthesised and may hold spaces: count after it.
     let rest = stat.rsplit_once(')')?.1;
     rest.split_whitespace().nth(19)?.parse().ok()

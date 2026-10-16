@@ -408,7 +408,7 @@ pub async fn exit_proof_of(
             };
             Ok((code, source))
         }
-        other => Err(format!("its runtime is not proven exited: {other:?}")),
+        status @ (crate::deployment::provider::DeploymentStatus::Running | crate::deployment::provider::DeploymentStatus::OsStopped | crate::deployment::provider::DeploymentStatus::Unknown) => Err(format!("its runtime is not proven exited: {status:?}")),
     }
 }
 

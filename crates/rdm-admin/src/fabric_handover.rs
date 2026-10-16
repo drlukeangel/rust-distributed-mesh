@@ -1131,7 +1131,9 @@ impl HandoverDoor {
                 let code = code.map(|c| format!(" with code {c}")).unwrap_or_default();
                 Err(("exit-proven", format!("the provider proved its exact birth exited{code}: the seat the row gave it vacates and the cohort's ordinary rule fills it; no row is rewritten and no second update is made under {}", row.operation)))
             }
-            _ => {
+            // Running (hung or slow), OsStopped (held suspended by the operating system), or nothing
+            // provable: none of them is an answer or an exit, so the update stands incomplete.
+            (crate::seat_watch::Finding::Running | crate::seat_watch::Finding::OsStopped | crate::seat_watch::Finding::Unproven { .. }, _) | (crate::seat_watch::Finding::Exited { .. }, None) => {
                 span.record("retry", "none");
                 Err(("unproven", format!("its exact birth neither answered the tickle ladder nor is proven exited ({}: {}); {stands}", finding.name(), finding.detail())))
             }

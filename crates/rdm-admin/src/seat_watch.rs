@@ -188,6 +188,9 @@ pub enum Finding {
     },
     /// The provider inspected its exact runtime and it still runs.
     Running,
+    /// The provider inspected its exact runtime and the operating system holds it suspended:
+    /// neither hung nor gone, so no hold opens and nothing is terminated (deployment-provider.md §2.5).
+    OsStopped,
     /// The provider inspected its exact runtime and it exited: a verified loss.
     Exited {
         /// The exit code, when one is provable.
@@ -207,6 +210,7 @@ impl Finding {
             Self::Answered => "answered",
             Self::AnsweredViaPeer { .. } => "answered-via-peer",
             Self::Running => "running",
+            Self::OsStopped => "os-stopped",
             Self::Exited { .. } => "exit-proven",
             Self::Unproven { .. } => "unproven",
         }
@@ -321,7 +325,8 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
     match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.as_str()).await {
         Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
         Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
-        Ok(other) => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
+        Ok(crate::deployment::provider::DeploymentStatus::OsStopped) => Finding::OsStopped,
+        Ok(crate::deployment::provider::DeploymentStatus::Unknown) => Finding::Unproven { reason: "its runtime is not proven exited: Unknown".into() },
         Err(e) => Finding::Unproven { reason: format!("its exit record cannot be read: {e}") },
     }
 }
@@ -494,7 +499,7 @@ pub async fn run(w: Watch) {
                 Finding::Exited { .. } => {
                     w.records.clear_held_running(&node).await;
                 }
-                Finding::Unproven { .. } => {}
+                Finding::OsStopped | Finding::Unproven { .. } => {}
             }
             let proven = if let Finding::Exited { code } = &finding {
                 // The verified loss is recorded durably: the holder's exit-proof row is what every

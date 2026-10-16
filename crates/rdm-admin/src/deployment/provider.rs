@@ -293,17 +293,24 @@ pub async fn exit_proof(status: DeploymentStatus, fact: &RuntimeFact, data_dir: 
     }
 }
 
-/// What a provider knows of a runtime.
+/// What a provider knows of the exact runtime (deployment-provider.md §2.5): one meaning per state
+/// for a process and a container alike; a caller reads this, never `/proc` or Docker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentStatus {
-    /// The runtime is running.
+    /// The exact runtime exists, is nonterminal and is not observed OS-suspended. It proves neither
+    /// responsiveness nor readiness: a sleeping task, a runtime still starting and a deadlocked one
+    /// all read `Running`.
     Running,
-    /// The runtime exited.
+    /// The exact runtime exists and the operating system holds every task of it suspended (a
+    /// process in state `T`/`t`; a paused container). Observed suspension: it is not the lifecycle
+    /// status `stopped`, proves no completed `node.stop`, and is never exit proof.
+    OsStopped,
+    /// The exact runtime exited.
     Exited {
         /// The exit code, when its record proves one.
         code: Option<i32>,
     },
-    /// The runtime's state cannot be told.
+    /// The exact runtime's state cannot be told: an unreadable, partial or inconclusive inspection.
     Unknown,
 }
 

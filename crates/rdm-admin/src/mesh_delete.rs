@@ -564,7 +564,7 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
     let inspected = provider.inspect(&handle).await;
     match crate::deployment::provider::exit_proof(inspected, &row.runtime, row.data_dir.as_deref().map(std::path::Path::new), &lost.incarnation_id).await {
         Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Ok(TerminalReceipt { node: lost.node.clone(), node_id: lost.node_id.clone(), incarnation_id: lost.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: code }),
-        Ok(other) => Err(format!("the runtime of {named} is not proven exited: {other:?}")),
+        Ok(status @ (crate::deployment::provider::DeploymentStatus::Running | crate::deployment::provider::DeploymentStatus::OsStopped | crate::deployment::provider::DeploymentStatus::Unknown)) => Err(format!("the runtime of {named} is not proven exited: {status:?}")),
         Err(e) => Err(format!("the exit record of {named} cannot be read: {e}")),
     }
 }

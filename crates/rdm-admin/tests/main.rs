@@ -70,6 +70,7 @@ mod node_rpc_objects;
 mod stop_gate_quiesce;
 mod stop_gate_view_lock;
 mod process_launch_environment;
+mod provider_state;
 mod provider_policy;
 mod readiness_gates;
 mod receipt_refusal;

@@ -108,12 +108,99 @@ impl ProcessDeploymentProvider {
 
 /// `pid` is the process `start` names: alive, and started then. A handle
 /// without a start token is trusted on the pid alone only for a child this
-/// provider holds.
+/// provider holds. A process whose identity cannot be read is not proven to be it.
 #[cfg(unix)]
 fn is(pid: u32, start: Option<u64>) -> bool {
-    match start {
-        Some(s) => process_start_token(pid) == Some(s) && alive(pid),
-        None => alive(pid),
+    matches!(exact_group(PROC, pid, start), Group::Running | Group::OsStopped)
+}
+
+/// The host's process filesystem, which every reader below reads.
+const PROC: &str = "/proc";
+
+/// What the operating system shows of a thread group (deployment-provider.md §2.6): the state
+/// letter of every task in `/proc/<pid>/task/*/stat`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Group {
+    /// A live task is in a state other than `T` or `t`.
+    Running,
+    /// Every live task is in `T` (stopped by a signal) or `t` (stopped by a tracer).
+    OsStopped,
+    /// No task is live (each a zombie or dead), or `/proc/<pid>` is gone.
+    Gone,
+    /// The task files are present and cannot be read whole: never exit proof.
+    Unreadable,
+}
+
+/// The thread group of the process `start` names: a pid that now runs another process (its start
+/// token is another) is `Gone`, as is a pid that no longer exists; a start token that cannot be read
+/// is `Unreadable`. A handle without a start token is read on the pid alone.
+fn exact_group(proc: &str, pid: u32, start: Option<u64>) -> Group {
+    if let Some(s) = start {
+        match std::fs::read_to_string(format!("{proc}/{pid}/stat")) {
+            Ok(stat) => match rdm_core::runtime::start_token_of_stat(&stat) {
+                Some(t) if t != s => return Group::Gone,
+                Some(_) => {}
+                None => return Group::Unreadable,
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Group::Gone,
+            Err(_) => return Group::Unreadable,
+        }
+    }
+    group(proc, pid)
+}
+
+/// The state of `pid`'s whole thread group. A task listed and gone before its `stat` was read has
+/// exited; any other task whose `stat` cannot be read makes the group `Unreadable`.
+fn group(proc: &str, pid: u32) -> Group {
+    match std::fs::read_dir(format!("{proc}/{pid}/task")) {
+        Ok(tasks) => {
+            let mut letters = Vec::new();
+            for task in tasks {
+                let Ok(task) = task else { return Group::Unreadable };
+                match std::fs::read_to_string(task.path().join("stat")) {
+                    Ok(stat) => letters.push(state_letter(&stat)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => return Group::Unreadable,
+                }
+            }
+            fold_group(letters)
+        }
+        // No task directory: the pid is gone when `/proc/<pid>` is; present without its tasks, or
+        // /proc not readable here, it cannot be told.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::metadata(format!("{proc}/{pid}")) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Group::Gone,
+            _ => Group::Unreadable,
+        },
+        Err(_) => Group::Unreadable,
+    }
+}
+
+/// The state letter of a `stat` line (`/proc/<pid>/stat` or `/proc/<pid>/task/<tid>/stat`): the
+/// first field after the command's closing parenthesis. `None` when the line is not one.
+fn state_letter(stat: &str) -> Option<char> {
+    stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next())
+}
+
+/// Fold the state letters of a thread group's tasks: a zombie (`Z`) or dead (`X`, `x`) task is not
+/// live; every live task in `T` or `t` is `OsStopped`; any other live task is `Running`; no live
+/// task is `Gone`. A letter that cannot be read makes the group `Unreadable`.
+fn fold_group(letters: impl IntoIterator<Item = Option<char>>) -> Group {
+    let (mut live, mut stopped) = (0usize, 0usize);
+    for letter in letters {
+        match letter {
+            None => return Group::Unreadable,
+            Some('Z' | 'X' | 'x') => {}
+            Some('T' | 't') => {
+                live += 1;
+                stopped += 1;
+            }
+            Some(_) => live += 1,
+        }
+    }
+    match (live, stopped) {
+        (0, _) => Group::Gone,
+        (live, stopped) if live == stopped => Group::OsStopped,
+        _ => Group::Running,
     }
 }
 
@@ -123,24 +210,15 @@ fn signal(pid: u32, sig: i32) -> bool {
     unsafe { libc::kill(pid as i32, sig) == 0 }
 }
 
+/// A live task of `pid`'s thread group exists, running or OS-suspended. A process is gone only once
+/// every task of its thread group has exited. The leader's own state is not proof: during
+/// `exit_group` the leader can already read as a zombie while its sibling threads are still
+/// exiting, and the group's files (its sockets) are released only by the last of them. Judging the
+/// leader alone let a restart spawn the next birth while the old one still held the transport port
+/// (`WaitForBind: Address already in use`).
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
-    // A process is gone only once every task of its thread group has exited. The leader's own
-    // state is not proof: during `exit_group` the leader can already read as a zombie while its
-    // sibling threads are still exiting, and the group's files (its sockets) are released only by
-    // the last of them. Judging the leader alone let a restart spawn the next birth while the
-    // old one still held the transport port (`WaitForBind: Address already in use`).
-    match std::fs::read_dir(format!("/proc/{pid}/task")) {
-        Ok(tasks) => tasks.flatten().any(|t| std::fs::read_to_string(t.path().join("stat")).is_ok_and(|stat| !is_zombie(&stat))),
-        // No task directory: the pid is gone, or /proc is not readable here; kill(2) with signal 0
-        // answers whether the pid exists at all.
-        Err(_) => std::fs::metadata(format!("/proc/{pid}")).is_ok() && signal(pid, 0),
-    }
-}
-
-/// `stat` (a `/proc/<pid>/stat` or `/proc/<pid>/task/<tid>/stat` line) names a zombie.
-fn is_zombie(stat: &str) -> bool {
-    stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z'))
+    matches!(group(PROC, pid), Group::Running | Group::OsStopped)
 }
 
 /// Gated spawns of this process, one at a time: a gate's write end is open in this process from its
@@ -413,11 +491,17 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         let Some(pid) = handle.pid else {
             return Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: "no pid".into() });
         };
-        #[cfg(unix)]
-        if self.running(pid, handle.start).await {
-            signal(pid, libc::SIGTERM);
+        match self.inspect(handle).await {
+            DeploymentStatus::Running => {
+                #[cfg(unix)]
+                signal(pid, libc::SIGTERM);
+                Ok(())
+            }
+            // The provider signals no runtime the operating system holds suspended outside a
+            // terminate, as the container provider cannot (deployment-provider.md §2.5, §5): by name.
+            DeploymentStatus::OsStopped => Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: format!("pid {pid} is held suspended by the operating system (os-stopped): the provider signals no suspended runtime outside a terminate; nothing was sent") }),
+            DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => Ok(()),
         }
-        Ok(())
     }
 
     /// The deployment record and /proc are read on the blocking pool (`record_store::blocking_io`).
@@ -440,26 +524,29 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             .collect()
     }
 
+    /// The state letters of the exact runtime's whole thread group (deployment-provider.md §2.6),
+    /// for a child of this provider and an adopted runtime alike; a child's exit code is its wait's.
+    /// /proc is read on the blocking pool.
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
         let Some(pid) = handle.pid else { return DeploymentStatus::Unknown };
-        if let Some(l) = self.children.lock().unwrap().get(&pid).filter(|l| handle.start.is_none() || l.start == handle.start) {
-            return match l.exit {
-                Some(code) => DeploymentStatus::Exited { code },
-                None => DeploymentStatus::Running,
-            };
+        let exit_of = || self.children.lock().unwrap().get(&pid).filter(|l| handle.start.is_none() || l.start == handle.start).map(|l| l.exit);
+        if let Some(Some(code)) = exit_of() {
+            return DeploymentStatus::Exited { code };
         }
-        // A recycled pid runs another process: this birth has exited. /proc is read on the
-        // blocking pool.
         #[cfg(unix)]
-        if crate::record_store::blocking_io({
-            let start = handle.start;
-            move || is(pid, start)
-        })
-        .await
         {
-            return DeploymentStatus::Running;
+            let start = handle.start;
+            match crate::record_store::blocking_io(move || exact_group(PROC, pid, start)).await {
+                Group::Running => DeploymentStatus::Running,
+                Group::OsStopped => DeploymentStatus::Running,
+                Group::Unreadable => DeploymentStatus::Unknown,
+                // No live task, or a recycled pid that runs another process: this birth has exited.
+                // A child's code is its wait's, recorded once the group is gone.
+                Group::Gone => DeploymentStatus::Exited { code: exit_of().flatten().flatten() },
+            }
         }
-        DeploymentStatus::Exited { code: None }
+        #[cfg(not(unix))]
+        DeploymentStatus::Unknown
     }
 }
 
@@ -499,6 +586,92 @@ mod tests {
     use super::*;
     use crate::deployment::provider::adopt;
     use crate::model::DeploymentId;
+
+    /// A `stat` line of task `pid` in state `letter`, started at clock tick `start` (field 22).
+    fn stat_line(pid: u32, command: &str, letter: char, start: u64) -> String {
+        // Fields 4-21 are placeholders; field 22 is the start time.
+        let middle = (4..=21).map(|_| "0").collect::<Vec<_>>().join(" ");
+        format!("{pid} ({command}) {letter} {middle} {start} 0 0\n")
+    }
+
+    /// A fixture process filesystem under `root`: `pid` whose leader's stat names `start`, with one
+    /// task per `letters` entry (`None` makes a task whose stat cannot be read: a directory there).
+    fn fixture_proc(root: &std::path::Path, pid: u32, start: u64, letters: &[Option<char>]) {
+        let dir = root.join(pid.to_string());
+        std::fs::create_dir_all(dir.join("task")).unwrap();
+        std::fs::write(dir.join("stat"), stat_line(pid, "node", letters.first().copied().flatten().unwrap_or('S'), start)).unwrap();
+        for (i, letter) in letters.iter().enumerate() {
+            let tid = pid + i as u32;
+            let t = dir.join("task").join(tid.to_string());
+            std::fs::create_dir_all(&t).unwrap();
+            match letter {
+                Some(l) => std::fs::write(t.join("stat"), stat_line(tid, "node worker (x)", *l, start)).unwrap(),
+                None => std::fs::create_dir_all(t.join("stat")).unwrap(),
+            }
+        }
+    }
+
+    /// CONTRACT (deployment-provider.md §2.6): the state letter is the first field after the
+    /// command's closing parenthesis, whatever the command holds (spaces, parentheses); a line with
+    /// no command is not one.
+    #[test]
+    fn the_state_letter_is_read_after_the_commands_last_parenthesis() {
+        assert_eq!(state_letter(&stat_line(7, "tail", 'R', 1)), Some('R'));
+        assert_eq!(state_letter(&stat_line(7, "a) b (c", 'T', 1)), Some('T'));
+        assert_eq!(state_letter(&stat_line(7, "rdm node", 't', 1)), Some('t'));
+        assert_eq!(state_letter("7 (tail"), None, "a partial line names no state");
+        assert_eq!(state_letter(""), None);
+    }
+
+    /// CONTRACT (deployment-provider.md §2.6): every live task of the thread group in `T` or `t` is
+    /// `OsStopped`; any live task in another state (running, sleeping, in disk wait) is `Running`, so a
+    /// group with one stopped task and one that runs is `Running`; zombie and dead tasks are not live,
+    /// and a group with none live is `Gone`; one letter that cannot be read makes the group
+    /// `Unreadable`, never `Gone`.
+    #[test]
+    fn a_thread_group_is_os_stopped_only_when_every_live_task_is_stopped() {
+        let fold = |l: &[Option<char>]| fold_group(l.iter().copied());
+        for running in ['R', 'S', 'D', 'I'] {
+            assert_eq!(fold(&[Some(running)]), Group::Running, "{running}");
+        }
+        assert_eq!(fold(&[Some('T')]), Group::OsStopped);
+        assert_eq!(fold(&[Some('t')]), Group::OsStopped);
+        assert_eq!(fold(&[Some('T'), Some('t'), Some('T')]), Group::OsStopped, "every task stopped, by signal or by tracer");
+        assert_eq!(fold(&[Some('Z'), Some('T')]), Group::OsStopped, "a zombie leader with a stopped sibling: the live task is stopped");
+        assert_eq!(fold(&[Some('T'), Some('S')]), Group::Running, "one live task that is not stopped: the group runs");
+        assert_eq!(fold(&[Some('t'), Some('R')]), Group::Running);
+        assert_eq!(fold(&[Some('Z'), Some('X'), Some('x')]), Group::Gone, "no live task");
+        assert_eq!(fold(&[]), Group::Gone);
+        assert_eq!(fold(&[Some('T'), None]), Group::Unreadable, "a letter that cannot be read is no state");
+        assert_eq!(fold(&[Some('Z'), None]), Group::Unreadable, "never Gone on a partial read");
+    }
+
+    /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
+    /// whose `/proc/<pid>` is gone, or whose start token names another process, is `Gone` (the exact
+    /// runtime exited); task files present but unreadable or partial are `Unreadable`, which inspect
+    /// answers `Unknown`, never exit proof; a pid listed without its task directory cannot be told.
+    #[test]
+    fn a_partial_or_unreadable_task_read_is_unreadable_and_a_gone_or_recycled_pid_is_gone() {
+        let root = crate::record_store::tempdir("proc-fixture");
+        let proc = root.to_str().unwrap();
+        fixture_proc(&root, 100, 555, &[Some('S'), Some('T')]);
+        assert_eq!(exact_group(proc, 100, Some(555)), Group::Running);
+        fixture_proc(&root, 200, 555, &[Some('T'), Some('t')]);
+        assert_eq!(exact_group(proc, 200, Some(555)), Group::OsStopped);
+        assert_eq!(exact_group(proc, 200, None), Group::OsStopped, "a handle with no start token reads the pid alone");
+        assert_eq!(exact_group(proc, 200, Some(556)), Group::Gone, "a start token that names another process: this runtime exited");
+        assert_eq!(exact_group(proc, 999, Some(555)), Group::Gone, "the pid is gone");
+        assert_eq!(group(proc, 999), Group::Gone);
+        fixture_proc(&root, 300, 555, &[Some('S'), None]);
+        assert_eq!(exact_group(proc, 300, Some(555)), Group::Unreadable, "a task whose stat cannot be read");
+        fixture_proc(&root, 400, 555, &[Some('S')]);
+        std::fs::write(root.join("400/task/400/stat"), "400 (node").unwrap();
+        assert_eq!(exact_group(proc, 400, Some(555)), Group::Unreadable, "a partial task line");
+        std::fs::write(root.join("400/stat"), "400 (node").unwrap();
+        assert_eq!(exact_group(proc, 400, Some(555)), Group::Unreadable, "a start token that cannot be read is no identity");
+        std::fs::create_dir_all(root.join("500")).unwrap();
+        assert_eq!(group(proc, 500), Group::Unreadable, "listed without its tasks: it cannot be told");
+    }
 
     fn launch(dir: &std::path::Path) -> ResolvedNodeLaunch {
         ResolvedNodeLaunch {

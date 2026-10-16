@@ -617,24 +617,24 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             return DeploymentStatus::Exited { code: *code };
         }
         match docker(&["inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", name]).await {
-            Ok(s) => match s.split_once(' ') {
-                Some(("running" | "restarting" | "paused", _)) => DeploymentStatus::Running,
-                Some(("exited" | "dead", code)) => DeploymentStatus::Exited { code: code.parse().ok() },
-                Some(("created", _)) => DeploymentStatus::Running,
-                _ => DeploymentStatus::Unknown,
-            },
+            Ok(s) => status_of(&s),
             Err(_) => DeploymentStatus::Unknown,
         }
     }
 
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
-        if self.inspect(handle).await == DeploymentStatus::Running {
-            docker(&["kill", "--signal", "TERM", name])
+        match self.inspect(handle).await {
+            DeploymentStatus::Running => docker(&["kill", "--signal", "TERM", name])
                 .await
-                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason })?;
+                .map(|_| ())
+                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason }),
+            // The daemon unpauses a paused container to deliver a signal (measured 2026-10-15, Docker
+            // 29.6.2: `paused` reads `running` right after `docker kill --signal TERM`), and the provider
+            // never continues a suspended runtime (deployment-provider.md §5): nothing is sent, by name.
+            DeploymentStatus::OsStopped => Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: format!("{name} is paused (os-stopped): a signal would unpause it, and the provider continues no suspended runtime; nothing was sent") }),
+            DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => Ok(()),
         }
-        Ok(())
     }
 
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
@@ -687,8 +687,39 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     }
 }
 
+/// The daemon's `{{.State.Status}} {{.State.ExitCode}}`, mapped conservatively
+/// (deployment-provider.md §2.7): `running`, and `restarting` and `created` (nonterminal and not
+/// suspended, nothing more claimed) are `Running`; `paused` is the daemon's frozen cgroup, the
+/// container suspended (`OsStopped`); `exited` and `dead` are `Exited` with Docker's own code;
+/// anything else cannot be told.
+fn status_of(state: &str) -> DeploymentStatus {
+    match state.trim().split_once(' ') {
+        Some(("running" | "restarting" | "created" | "paused", _)) => DeploymentStatus::Running,
+        Some(("exited" | "dead", code)) => DeploymentStatus::Exited { code: code.parse().ok() },
+        _ => DeploymentStatus::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// CONTRACT (deployment-provider.md §2.7): the daemon's states map conservatively onto the four
+    /// provider states: `running`, `restarting` and `created` are `Running` (nonterminal, not
+    /// suspended, nothing more claimed); `paused` is `OsStopped`, never `Running`; `exited` and `dead`
+    /// carry Docker's code; an unreadable answer is `Unknown`, never exit proof.
+    #[test]
+    fn the_daemons_states_map_to_the_four_provider_states_and_paused_is_os_stopped() {
+        for state in ["running 0", "restarting 0", "created 0"] {
+            assert_eq!(status_of(state), DeploymentStatus::Running, "{state}");
+        }
+        assert_eq!(status_of("paused 0"), DeploymentStatus::OsStopped);
+        assert_eq!(status_of("exited 137"), DeploymentStatus::Exited { code: Some(137) });
+        assert_eq!(status_of("dead 1"), DeploymentStatus::Exited { code: Some(1) });
+        assert_eq!(status_of("exited x"), DeploymentStatus::Exited { code: None }, "a code the daemon did not give is none");
+        for unreadable in ["", "removing 0", "running", "garbage"] {
+            assert_eq!(status_of(unreadable), DeploymentStatus::Unknown, "{unreadable:?}");
+        }
+    }
 
     use super::*;
 

@@ -58,9 +58,16 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
                 return FenceOutcome::RecordsUnreadable { reason };
             }
         };
-        if let Some((at, _)) = recorded.iter().find(|(_, s)| matches!(s, DeploymentStatus::Running)) {
-            tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "held-running-unheard", data_dir = %at)
-                .in_scope(|| tracing::info!("the view holds no birth at this path, but a runtime recorded there still runs: held, never replaced on silence"));
+        // A runtime recorded there that runs, or that the operating system holds suspended, exists:
+        // held, never replaced on silence (deployment-provider.md §2.5).
+        for (at, status) in &recorded {
+            let outcome = match status {
+                DeploymentStatus::Running => "held-running-unheard",
+                DeploymentStatus::OsStopped => "held-os-stopped-unheard",
+                DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => continue,
+            };
+            tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome, data_dir = %at)
+                .in_scope(|| tracing::info!("the view holds no birth at this path, but a runtime recorded there still exists: held, never replaced on silence"));
             return FenceOutcome::Held;
         }
         tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-predecessor-held", runtime_records = recorded.len())
@@ -94,9 +101,16 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
                 .in_scope(|| tracing::info!("the previous birth is unheard but its exact runtime still runs: held, never replaced on silence"));
             return FenceOutcome::Held;
         }
+        // Suspended by the operating system: neither hung nor gone (deployment-provider.md §2.5).
+        Ok(DeploymentStatus::OsStopped) => {
+            tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = "held-os-stopped")
+                .in_scope(|| tracing::info!("the previous birth is unheard and the operating system holds its exact runtime suspended: held, never replaced on silence"));
+            return FenceOutcome::Held;
+        }
         // Only an inspection that says the runtime exited is proof; `Unknown` fences the path
         // (nothing answers there) but publishes no departure.
-        Ok(other) => (format!("not-running: {other:?}"), matches!(other, DeploymentStatus::Exited { .. })),
+        Ok(DeploymentStatus::Exited { code }) => (format!("not-running: Exited {{ code: {code:?} }}"), true),
+        Ok(DeploymentStatus::Unknown) => ("not-running: Unknown".to_string(), false),
     };
     tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = %incarnation, outcome = %outcome, proven_gone = proven)
         .in_scope(|| tracing::info!("the previous birth at this path is fenced before a new one"));

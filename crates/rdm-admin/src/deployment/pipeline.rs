@@ -1420,7 +1420,12 @@ impl DeploymentPipeline<'_> {
         if let Some(Some(h)) = run.done.get(CreateStep::DeployRuntime.name()) {
             let earlier = serde_json::from_value::<DeploymentHandle>(h.clone()).ok();
             let alive = match &earlier {
-                Some(h) => self.provider.inspect(h).await == DeploymentStatus::Running,
+                // A runtime the operating system holds suspended is not gone (deployment-provider.md
+                // §2.5): its birth is kept, never launched over.
+                Some(h) => match self.provider.inspect(h).await {
+                    DeploymentStatus::Running | DeploymentStatus::OsStopped => true,
+                    DeploymentStatus::Exited { .. } | DeploymentStatus::Unknown => false,
+                },
                 None => false,
             };
             if !alive {
@@ -2323,6 +2328,7 @@ impl DeploymentPipeline<'_> {
             // Only an exact inspection that says the runtime exited is terminal proof.
             let exit_code = match self.provider.inspect(handle).await {
                 DeploymentStatus::Running => return Err(format!("{name} still runs after the stop ladder")),
+                DeploymentStatus::OsStopped => return Err(format!("{name}: the operating system holds its runtime suspended after the stop ladder (os-stopped); no terminal proof")),
                 DeploymentStatus::Unknown => return Err(format!("{name}: the provider cannot inspect its runtime after the stop ladder; no terminal proof")),
                 DeploymentStatus::Exited { code } => code,
             };

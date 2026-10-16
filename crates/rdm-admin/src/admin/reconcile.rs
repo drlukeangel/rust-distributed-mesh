@@ -266,7 +266,8 @@ pub(crate) async fn unborn_node_exit(node: &PathName, probe: Option<&dyn crate::
     match recorded.iter().find(|(_, status)| !matches!(status, DeploymentStatus::Exited { .. })) {
         None => Ok(()),
         Some((at, DeploymentStatus::Running)) => Err(format!("no birth is held for it, and a runtime recorded at {at} still runs")),
-        Some((at, other)) => Err(format!("no birth is held for it, and the runtime recorded at {at} is not proven exited: {other:?}")),
+        Some((at, DeploymentStatus::OsStopped)) => Err(format!("no birth is held for it, and the operating system holds a runtime recorded at {at} suspended (os-stopped)")),
+        Some((at, status @ (DeploymentStatus::Unknown | DeploymentStatus::Exited { .. }))) => Err(format!("no birth is held for it, and the runtime recorded at {at} is not proven exited: {status:?}")),
     }
 }
 
