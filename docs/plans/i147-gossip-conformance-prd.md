@@ -59,7 +59,7 @@ regression against it; e2's are the cells for every row.
 | R7 | recovery through a topology read followed by stale gossip: no rollback | BUILD | — | e2 |
 | R8 | duplicated or contradictory checks removed from the receive path; a field added only where a demonstrated gap cannot be closed with the information already carried, each as its own packet with reseal and marker | BUILD | five key shapes | e2 |
 | R9 | gossip stays best-effort: no global counter, no acks, no reliable layer; nothing from i146 enters it | HOLDS | §7 | every epic |
-| R10 | `MeshStatus` and `FabricStatus` carry no publisher revision, so a delayed predecessor's frame is not refused by revision; closed by its own packet (a field, or the status riding the publisher's projection), reseal and marker if a field | BUILD (gap, recorded on gossip.md) | `(publisher: String, changed_at_rafka_ms)` only | e2 |
+| R10 | `MeshStatus` and `FabricStatus` carry no publisher revision, so a delayed predecessor's frame is not refused by revision; closed by the envelope's `order` (the author's committed revision), e3 | BUILD (gap, recorded on gossip.md) | `(publisher: String, changed_at_rafka_ms)` only | e3 |
 | R11 | `Concern` is an idempotent investigation wake for the current episode: a repeat while the observer's silence mark stands does nothing; the episode ends when the receiver hears the birth again; it never establishes exit or vacancy | BUILD | the tuple is deduplicated without an episode | e2 |
 | R12 | a delta whose base is ahead of the installed version is a gap: repair requested (§3.3, §6), spanned `via-gap`, never logged stale; equal revision with different content is `via-inconsistent`, refused by name | BUILD | mismatched base handling unproven; no inconsistency refusal | e2 |
 
@@ -106,6 +106,40 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 |---|---|---|
 | `MeshStatus` | GREEN | Lane `e7s3`, branch `codex/i147-e2-mesh-status`. RED SHA `09d42858` (1 passed, 2 failed); GREEN code SHA `2697fa33` (3 live cells passed, 0 failed, 0.06 s). Stale before `ecc86037d4bf8ea46dff8faeb0c9a95c`, after `cea209eb2b76c8e7512a2161c0a12859`; duplicate before `7f4660d772157e251095c8c1cbfdcb79`, after `e7c2c444cc889b9d71011b5fb287a03e`. Stale names frame, subject, held key and frame key; duplicate names frame, declared identity and outcome `ignored`. Both assert the held projection and its change-notification count do not move. Forwarding metadata changes the wire bytes to exercise RDM dedup without changing authored identity/content. Classification stays in the receive framework under the status installation lock; the handler's generic debug substitute is removed, module documentation updated and span reference regenerated. Pre-landing fast gate at `2697fa33`: 1,633 passed, 0 failed, 0 ignored across 62 recorded libtest summaries, 84 s; discovery 1,776 against main's 1,774. Gate log `/home/admin/rust-distributed-mesh-deploy/gates-e7s3-2697fa33.log`. Delivery uses `rebase-gate-land.sh`, including its gate. Candidate `c393b290` gate RED (node_restart, provider_state), no landing: RED restart flame `8aa0dd8f1269ee29e7469d44ea485ae1`; RED recovery flame `4a08384b10a43575caf30bb032c4fa98` (central Jaeger `http://192.168.68.99:16687`). Recovery teardown aborts tasks at 21:47:48.664 after WaitForNodeReady starts at 21:47:48.631 and before the final receipt. The restart release timestamp moves before Continue; recovery teardown waits for the terminal receipt within the original deadline. Corrected stems: 6 passed, 0 failed (41.56 s), resumed-restart GREEN flame `099bb149d21bb334d598222bf24dd3fd`, settled-recovery GREEN flame `72517d6fa18433f79fa1f15b8e05cb7b` (local Jaeger `http://localhost:16686`). No architecture or wire change; R10 remains open; no ruling packet needed. |
 | `FabricStatus` | GREEN | Lane `e7s3`, branch `codex/i147-e2-fabric-status`. RED SHA `870fe399`: 0 passed/3 failed (0.06 s). GREEN code SHA `3f830db0`: all 6 live receive-rule cells passed (0.06 s), including all 3 MeshStatus cells. Stale before `6ca2949ec512e5facb98aef7d93a160d`, after `08472821f369e1186b01c69c8cab8f1c`; duplicate before `da985d5d2b5a4a5b1309303c0348cb1e`, after `8ed68b1a8c4977c9aebed8ec566d9446`; inconsistent before `a88a5dea06fee1c1aa02c6a3102d0c12`, after `89fd0fc7555d8af478f5e7d502c87422` (local Jaeger). Each cell proves receipt and no apply effect, preserving held status/publisher/timestamp. Named outcomes carry frame/subject/both keys, frame/identity/ignored, or frame/subject/revision respectively. Both status kinds now use the receive framework’s shared classifier under the held projection lock; the FabricStatus handler check is removed. Receipt instrumentation supplies the live before/after flame; module doc and generated span reference updated. Delivery uses `rebase-gate-land.sh`, which enforces its fast gate. No architecture or wire change; R10 stays open. No other initiative’s cells are modified. |
+
+#### e3 — the gossip envelope: one typed shape for what every frame declares (Luke Q20: A, 2026-10-16)
+
+- **Goal → gap.** The receive-rules table's columns (author, subject, ordering, identity) are an
+  envelope that today each of the 22 frames carries in its own shape (`publisher` as a string here, an
+  exact birth there, `topology_version` on some, `forwarded_by` on most). After e2 has shown, row by
+  row, which facts each frame needs, collapse them into one typed envelope and move the classifier
+  onto it; close R10 by construction (a status carries its author's committed revision in `order`).
+  Not before e2: a field chosen before its row proved the need is the universal-field design a1
+  refused, and a second reseal would follow.
+- **Shape (to be frozen against the e2 rows):**
+
+  ```text
+  GossipFrame {
+    author:       Birth,                  // the exact birth that authored it, never the forwarder
+    forwarded_by: Option<Birth>,
+    subject:      Subject,                // a birth | (mesh, source_publisher) | a cohort (mesh, node_type) | the fabric seat | a fabric
+    order:        Ordering,               // Revision(u64) | Publication { version, snapshot_id, chunk_index, chunk_count } | Operation(identity) | Advisory
+    body:         FrameBody,              // the 22 kinds, payload only
+  }
+  ```
+
+- **Requirements.** R10 closed (the author's revision on `MeshStatus` / `FabricStatus`, so a delayed
+  predecessor's frame is refused by revision); one classifier for all categories; every handler's
+  own identity check deleted; the gossip wire changed once (`wire format moved`, mesh-audit reseal,
+  every golden); no new frame kind, no counter beyond the orderings the table already names, no ack.
+- **Acceptance cells.** Every e2 cell green unchanged on the envelope (the proof it changes no
+  behaviour); `a_delayed_predecessors_status_is_refused_by_revision` (R10 closed);
+  `the_classifier_decides_every_category_from_the_envelope_alone` (no handler reads identity);
+  the recovery cell (topology read, then stale gossip of each category: no rollback) as the flame.
+- **Page text.** gossip.md §3.1's catalog rows and the receive-rules table restated on the envelope's
+  fields; exact old → new to Luke at e3's landing. A gossip change: Luke's permission is Q20.
+- **Sizing.** One seat, after the last e2 row.
+- **State.** not started.
 
 ## Verification
 
