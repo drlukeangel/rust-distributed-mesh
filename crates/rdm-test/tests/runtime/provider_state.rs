@@ -147,7 +147,8 @@ async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recove
 /// explicit `node.delete`: the fabric-primary accepts it, the executor inspects the exact runtime at
 /// the delete's instant (`via-provider-inspection`, caller `delete`, verdict `os-stopped`), names the
 /// skipped stop (`rdm.node_admin.node.delete.via-os-stopped`), runs `TerminateRuntime` on the exact
-/// handle, takes the exit proof and writes NodeDeleted; the `os-stopped` row is removed once
+/// handle `Immediate` (no graceful wait: a suspended runtime runs no handler; i144 R23), takes the
+/// exit proof and writes NodeDeleted; the `os-stopped` row is removed once
 /// (`cleared`: `deleted`, or `exited` when the mesh-primary's tick reads the exit first). `node.get`
 /// lists the path no more and the suspended process is gone. Must NOT happen: a
 /// `node-not-live` refusal of the delete, a `stop-node` sent to the suspended birth (a StopNode or
@@ -173,6 +174,10 @@ async fn an_explicit_delete_of_an_os_stopped_birth_skips_the_stop_by_name_and_te
     let steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| same_build(sp, &build_id) && attr(sp, "node") == member).map(|sp| format!("{}={}", attr(sp, "step"), attr(sp, "outcome"))).collect();
     assert!(steps.iter().all(|st| !st.starts_with("StopNode=") && !st.starts_with("AwaitNodeLeft=")), "no stop step of the delete: {steps:?}");
     assert!(steps.contains(&"TerminateRuntime=complete".to_string()) && steps.contains(&"NodeDeleted=complete".to_string()), "the delete terminates and deletes: {steps:?}");
+    // i144 R23 (Luke Q4 B): the suspended runtime cannot run a handler, so its terminate is Immediate:
+    // no graceful wait (the stop grace is 8 s).
+    let terminated: Vec<u64> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| same_build(sp, &build_id) && attr(sp, "node") == member && attr(sp, "step") == "TerminateRuntime").filter_map(|sp| attr(sp, "elapsed_ms").parse().ok()).collect();
+    assert!(matches!(terminated.as_slice(), [ms] if *ms < 2_000), "the os-stopped runtime's TerminateRuntime takes no graceful wait: {terminated:?} ms");
     let inspected = named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "caller") == "delete" && sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the delete inspects the exact runtime at its instant");
     assert_eq!(attr(&inspected, "verdict"), "os-stopped", "{inspected}");
     let skipped = named(&spans, "rdm.node_admin.node.delete.via-os-stopped").into_iter().find(|sp| same_build(sp, &build_id) && sp["attributes"]["node_id"] == before["node_id"]).cloned().expect("the skipped stop is named");

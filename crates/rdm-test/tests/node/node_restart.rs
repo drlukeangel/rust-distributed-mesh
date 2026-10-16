@@ -155,8 +155,10 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
 /// owns). A fresh `node.restart` of it is refused `node-not-live` naming the open restart; the caller's
 /// resubmit of the same Build opens the next attempt, which runs the whole stop then the whole start:
 /// the stop-node admitted (`stopped`), `node.joined`, `node.started`, `Complete`, the same birth
-/// `ready-for-traffic` on the same process. Must NOT happen: a step for the member between the release
-/// and the resubmit, a `node.start` sent without the resumed stop, or a new birth.
+/// `ready-for-traffic` on the same process. The node runs its stop once (Q2: a completed stop step never
+/// runs again; a parked node answers a later stop-node with the receipt of the stop it ran). Must NOT
+/// happen: a step for the member between the release and the resubmit, a `node.start` sent without the
+/// resumed stop, a second stop run by the node, or a new birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission() {
     let test = "a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission";
@@ -208,6 +210,11 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     assert_eq!(after, ["NodeRestarting=complete", "StopNode=complete", "AwaitNodeLeft=complete", "StartNode=complete", "WaitForNodeReady=complete", "Complete=complete"].map(String::from).to_vec(), "the resumed attempt runs the whole restart");
     let sent: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).map(|sp| format!("{}={}", attr(sp, "command"), attr(sp, "admission"))).collect();
     assert_eq!(sent.first().map(|c| c.ends_with("=stopped")), Some(false), "the first stop-node was never admitted: {sent:?}");
+    // Q2 (Luke 2026-10-16): no completed stop step runs again. The node ran its stop once, in the
+    // resubmitted attempt: the first attempt's stop never reached it.
+    let ran: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string()).collect();
+    assert_eq!(ran.len(), 1, "the node ran one stop for this Build: {ran:#?}");
+    assert!(start_ns(ran[0]) >= resubmit_at, "the one stop the node ran is the resubmitted attempt's: {}", ran[0]);
     let refused = not_live(&spans, &member);
     assert_eq!((refused.len(), refused.first().map(|sp| (attr(sp, "status"), attr(sp, "reason")))), (1, Some(("restarting".to_string(), OPEN_RESTART.to_string()))), "{refused:#?}");
     let trace = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| same_build(sp, &build) && attr(sp, "node") == member.to_string() && attr(sp, "step") == "StartNode").map(|sp| sp["trace_id"].as_str().unwrap_or_default().to_string()).unwrap_or_default();

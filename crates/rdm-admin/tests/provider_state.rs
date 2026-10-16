@@ -26,6 +26,19 @@ trait Hand: Send + Sync {
     /// The exit code the host gives a runtime killed by SIGKILL: none for a process (the wait status
     /// is a signal), Docker's 137 for a container.
     fn killed_code(&self) -> Option<i32>;
+    /// How many beats the runtime's own heartbeat file holds: what the child itself executed, read
+    /// from its data dir, never from the host's or the daemon's report.
+    fn heartbeat(&self) -> usize;
+}
+
+/// The heartbeat a child writes from its own code, every 50 ms, into `file` (a path in its data dir).
+fn heartbeat_script(file: &std::path::Path) -> String {
+    format!("while :; do echo beat >> {}; /usr/bin/sleep 0.05; done", file.display())
+}
+
+/// The beats in `file`.
+fn beats(file: &std::path::Path) -> usize {
+    std::fs::read_to_string(file).map(|t| t.lines().count()).unwrap_or(0)
 }
 
 /// Wait until the host shows the runtime as `want` (the fault took effect), at most 5 s.
@@ -91,6 +104,36 @@ async fn a_suspended_runtime_is_ended_by_its_terminate_and_reads_exited(hand: &d
     until_host(hand, &["exited"], "the terminated runtime gone").await;
     let status = hand.provider().inspect(hand.handle()).await;
     assert!(matches!(status, DeploymentStatus::Exited { .. }), "a terminated suspended runtime reads Exited: {status:?}");
+}
+
+/// CONTRACT (i144 R23, Luke Q4 B: an explicit delete of an os-stopped runtime calls
+/// `terminate(Immediate)`, then requires exit proof; no application code resumed by RDM, observed from
+/// the child's own execution): a runtime that writes its own heartbeat is suspended by the operating
+/// system; its heartbeat stops. `terminate(Immediate)` ends it well under the 8 s stop grace, it reads
+/// `Exited`, and its heartbeat never grows again: RDM resumed none of its code. Must NOT happen: a
+/// graceful wait on a runtime that cannot run a handler, or a thaw that lets it execute.
+async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again(hand: &dyn Hand) {
+    let until = Instant::now() + Duration::from_secs(5);
+    while hand.heartbeat() < 3 {
+        assert!(Instant::now() < until, "the child never wrote its heartbeat");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    hand.suspend().await;
+    until_host(hand, &["os-stopped"], "the runtime suspended").await;
+    let held = hand.heartbeat();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(hand.heartbeat(), held, "a suspended runtime writes nothing");
+    assert_eq!(hand.provider().inspect(hand.handle()).await, DeploymentStatus::OsStopped);
+    let t = Instant::now();
+    hand.provider().terminate(hand.handle(), TerminationMode::Immediate).await.expect("the immediate terminate of the exact handle");
+    until_host(hand, &["exited"], "the terminated runtime gone").await;
+    let took = t.elapsed();
+    assert!(took < Duration::from_secs(2), "the immediate terminate of a suspended runtime takes no grace: {took:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hand.heartbeat(), held, "RDM resumed none of the suspended runtime's code: its heartbeat never grew again (took {took:?})");
+    let status = hand.provider().inspect(hand.handle()).await;
+    assert!(matches!(status, DeploymentStatus::Exited { .. }), "the ended runtime reads Exited: {status:?}");
+    eprintln!("immediate terminate of a suspended runtime: {took:?}, heartbeat held at {held}");
 }
 
 /// CONTRACT (deployment-provider.md §2.5 R19: `Running` is nonterminal and not OS-suspended, nothing
@@ -186,10 +229,24 @@ mod process {
         fn killed_code(&self) -> Option<i32> {
             None
         }
+        fn heartbeat(&self) -> usize {
+            beats(&self.dir.join("hb"))
+        }
     }
 
     async fn sleeper(cell: &str) -> Child {
         Child::spawn(cell, "/usr/bin/tail", &["-f", "/dev/null"]).await
+    }
+
+    /// A child that writes its own heartbeat into its data dir.
+    async fn beating(cell: &str) -> Child {
+        let file = std::env::temp_dir().join(format!("provider-state-{cell}-{}", std::process::id())).join("hb");
+        Child::spawn(cell, "/usr/bin/sh", &["-c", &heartbeat_script(&file)]).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again() {
+        super::a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again(&beating("immediate").await).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -293,6 +350,7 @@ mod container {
     struct Container {
         provider: ContainerDeploymentProvider,
         handle: DeploymentHandle,
+        data_dir: std::path::PathBuf,
         _fabric: Fabric,
     }
 
@@ -333,6 +391,9 @@ mod container {
         fn killed_code(&self) -> Option<i32> {
             Some(137)
         }
+        fn heartbeat(&self) -> usize {
+            beats(&self.data_dir.join("hb"))
+        }
     }
 
     /// One running container of the host's `tail -f /dev/null` on its own fabric network, or `None`
@@ -341,8 +402,28 @@ mod container {
         let fabric = fabric_name(cell);
         let provider = provider(&fabric).await?;
         let cleanup = Fabric(fabric.clone());
-        let handle = provider.spawn(&launch(&provider, &fabric, 0)).await.expect("the launch");
-        Some(Container { provider, handle, _fabric: cleanup })
+        let spec = launch(&provider, &fabric, 0);
+        let handle = provider.spawn(&spec).await.expect("the launch");
+        Some(Container { provider, handle, data_dir: spec.data_dir, _fabric: cleanup })
+    }
+
+    /// One running container whose own shell writes its heartbeat into its data dir (mounted at its
+    /// host path), or `None` (named) as [`sleeper`].
+    async fn beating(cell: &str) -> Option<Container> {
+        let fabric = fabric_name(cell);
+        let provider = provider(&fabric).await?;
+        let cleanup = Fabric(fabric.clone());
+        let mut spec = launch(&provider, &fabric, 0);
+        spec.executable = std::path::PathBuf::from("/usr/bin/sh");
+        spec.args = vec!["-c".into(), heartbeat_script(&spec.data_dir.join("hb"))];
+        let handle = provider.spawn(&spec).await.expect("the launch");
+        Some(Container { provider, handle, data_dir: spec.data_dir, _fabric: cleanup })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again() {
+        let Some(c) = beating("state-immediate").await else { return };
+        super::a_suspended_runtime_ended_immediately_takes_no_grace_and_runs_no_code_again(&c).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -371,7 +452,7 @@ mod container {
         let cleanup = Fabric(fabric.clone());
         let id = docker(&["create", "--label", &format!("rafka.fabric={fabric}"), rdm_admin::deployment::container::RUNTIME_IMAGE, "/usr/bin/tail", "-f", "/dev/null"]);
         let handle = DeploymentHandle { deployment_id: rdm_admin::model::DeploymentId::mint(), provider: rdm_admin::model::ProviderKind::Container, pid: None, start: None, container: Some(id), domain: Some(provider.control_domain()) };
-        let c = Container { provider, handle, _fabric: cleanup };
+        let c = Container { provider, handle, data_dir: std::env::temp_dir(), _fabric: cleanup };
         super::an_idle_runtime_reads_running(&c).await;
     }
 }

@@ -9,7 +9,7 @@ the PID with its start identity, or the immutable container id. It answers `runn
 silence, a failed call, a closed endpoint, a timeout and an `unreached` tickle prove nothing
 ([node.tickle](node-tickle.md)). It touches no network and asks the node nothing. It is run by:
 
-- [node.delete](node-delete.md), after the stop, before `node.deleted`;
+- [node.delete](node-delete.md), at its start (an `os-stopped` runtime answers no stop: the delete skips the stop by name and begins at `TerminateRuntime`) and after the stop, before `node.deleted`;
 - [node recovery](node-recovery.md), after a tickle ends `unreached`;
 - node recovery's `TerminateRuntime` of an expired hold, at the step's own instant, before it asks
   the provider to terminate ([node recovery](node-recovery.md) step 4);
@@ -28,7 +28,7 @@ silence, a failed call, a closed endpoint, a timeout and an `unreached` tickle p
 | Domain | The handle is acted on only inside its control domain; a cross-domain handle is routed to a domain-local execution path or refused by name ([deployment-provider §2.4](../deployment-provider.md#24-exact-provider-locator-and-control-domain)) |
 | Result | `running`: the exact runtime is alive, however silent the node; nothing is recovered or deleted on it. `os-stopped`: the operating system holds the exact runtime suspended; this proves no exit and no completed `node.stop` ([deployment provider §2.5](../deployment-provider.md#25-runtime-state-what-the-provider-reports)). `exit-proven { code }`: the provider's terminal status for that exact handle, recorded durably as the birth's exit-proof row |
 | Not a result | A RuntimeFact's presence proves neither running nor gone; a provider that cannot answer for the domain answers `unavailable { reason }`, which is neither |
-| What follows | The caller's: delete writes the row deleted and publishes `NodeDeleted`; recovery opens its attempt; investigation's fully-crashed arm creates the node-admin; a boot on an inherited dir proceeds as recovery. `os-stopped` proves no exit, so none of these follows from it: recovery records the `os-stopped` fact ([node recovery](node-recovery.md) step 3) and a hold's `TerminateRuntime` fails by name (step 4) |
+| What follows | The caller's: delete writes the row deleted and publishes `NodeDeleted`; recovery opens its attempt; investigation's fully-crashed arm creates the node-admin; a boot on an inherited dir proceeds as recovery. `os-stopped` proves no exit, so none of these follows from it: recovery records the `os-stopped` fact ([node recovery](node-recovery.md) step 3) and a hold's `TerminateRuntime` fails by name (step 4). On an explicit delete, an `os-stopped` result skips the unexecutable Node RPC stop by name and proceeds to `TerminateRuntime` on the exact handle. Deletion completes only after provider exit proof. |
 | Not a Node RPC | The inspect is a provider call from the caller's process; it has no op number and no frame. Its span is the evidence |
 | Spans | `rdm.node_admin.node.resolve.via-provider-inspection` with node, node_id, incarnation, the handle, `verdict` (`running` / `os-stopped` / `exited` / `unavailable`), `exit_code` and the reason |
 
