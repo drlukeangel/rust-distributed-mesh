@@ -1857,6 +1857,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         data_root: cfg.data_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| cfg.data_dir.clone()),
                                         gone_dirs: Arc::default(),
                                         os_stopped_confirmed: Arc::default(),
+                                        terminate_refusals_named: Arc::default(),
                                     };
                                     {
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());

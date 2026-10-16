@@ -487,10 +487,26 @@ pub async fn run(w: Watch) {
                     // by the fabric-primary, which submits its recovery Build once the hold expires.
                     if node.is_fabric_primary || view.holds_fabric_seat(&me_birth.0) {
                         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-                        if let Some(held) = w.records.record_held_running(&node, now_ms).await {
-                            if !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0) && held.verdicts > 1 && now_ms.saturating_sub(held.since) >= crate::admin::hung_hold_ms() {
-                                if let Some(recovery) = &w.recovery {
-                                    let _ = recovery.submit(&node, None, "held-running-expired", Ok("held-running")).await;
+                        // The fabric-primary's hold of a hung mesh-primary submits its terminate, gated by the
+                        // birth's failed terminates (node-recovery.md step 4's end); a hung fabric-primary's
+                        // watchers only record.
+                        let submitter = w.recovery.as_ref().filter(|_| !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0));
+                        let gate = match submitter {
+                            Some(recovery) => {
+                                let since = w.records.held_running_row_of(&node).await.ok().flatten().map(|r| r.since);
+                                let gate = recovery.hold_gate_of(&node, since).await;
+                                if let crate::admin::HoldGate::Void(f) = &gate {
+                                    w.records.clear_held_running(&node).await;
+                                    recovery.span_hold_voided(&node, f);
+                                }
+                                Some((recovery, gate))
+                            }
+                            None => None,
+                        };
+                        if let Some(held) = w.records.record_held_running(&node, now_ms, &me.to_string()).await {
+                            if let Some((recovery, gate)) = gate {
+                                if held.verdicts > 1 && now_ms.saturating_sub(held.since) >= crate::admin::hung_hold_ms() {
+                                    recovery.submit_hold_terminate(&node, gate).await;
                                 }
                             }
                         }

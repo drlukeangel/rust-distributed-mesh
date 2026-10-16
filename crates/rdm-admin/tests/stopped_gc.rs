@@ -471,6 +471,9 @@ impl rdm_admin::build_state::BuildStateAdapter for UnreadableCurrent {
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rdm_admin::build_state::BuildStateError> {
         self.0.mesh_deleted_of(node_id, incarnation).await
     }
+    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, rdm_admin::build_state::BuildStateError> {
+        self.0.terminate_failures_of(node_id, incarnation).await
+    }
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, rdm_admin::build_state::BuildStateError> {
         self.0.exits_owed(build_id, mesh).await
     }

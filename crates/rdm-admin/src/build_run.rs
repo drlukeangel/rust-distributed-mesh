@@ -279,7 +279,7 @@ impl BuildStateAdapter for FramedBuilds {
         if let Some(run) = self.runs.get(&receipt.build_id, receipt.mesh.as_deref(), receipt.attempt) {
             match &receipt.outcome {
                 StepOutcome::Complete => run.step(&receipt.operation, &receipt.step),
-                StepOutcome::Failed { reason } => run.failed_step(&receipt.operation, &receipt.step, reason),
+                StepOutcome::Failed { reason, .. } => run.failed_step(&receipt.operation, &receipt.step, reason),
             }
         }
         Ok(())
@@ -295,6 +295,9 @@ impl BuildStateAdapter for FramedBuilds {
     }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
@@ -391,6 +394,9 @@ impl BuildStateAdapter for LaneBuilds {
     }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
     }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
         self.inner.exits_owed(build_id, mesh).await
@@ -671,7 +677,7 @@ impl RunDoor {
                             replay.push(frame);
                         }
                     }
-                    StepOutcome::Failed { reason } => failed = Some((s.operation.clone(), s.step.clone(), reason.clone())),
+                    StepOutcome::Failed { reason, .. } => failed = Some((s.operation.clone(), s.step.clone(), reason.clone())),
                 },
                 BuildFact::Attempt(a) if a.attempt == attempt && a.mesh.as_deref() == lane && verdict.is_none() => verdict = Some(a.outcome.clone()),
                 _ => {}
@@ -905,6 +911,9 @@ mod tests {
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
             self.0.mesh_deleted_of(node_id, incarnation).await
         }
+        async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
+            self.0.terminate_failures_of(node_id, incarnation).await
+        }
         async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
             self.0.exits_owed(build_id, mesh).await
         }
@@ -957,6 +966,9 @@ mod tests {
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
             self.0.mesh_deleted_of(node_id, incarnation).await
         }
+        async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
+            self.0.terminate_failures_of(node_id, incarnation).await
+        }
         async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
             self.0.exits_owed(build_id, mesh).await
         }
@@ -1006,7 +1018,7 @@ mod tests {
 
         let failing = FramedBuilds::new(Arc::new(FailingAppend(memory.clone())), runs.clone());
         assert!(failing.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Complete)).await.is_err());
-        ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::Failed { reason: "no port".into() })).await.unwrap();
+        ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::failed("no port"))).await.unwrap();
         log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 1 });
         assert_eq!(reader.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
         assert_eq!(log.last_failed_step(), Some(("node.create:mesh1.rpc.2".into(), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
@@ -1095,7 +1107,7 @@ mod tests {
         assert!(matches!(last, Some(BuildReply::Complete { attempt: 1, .. })), "{last:?}");
         // A recorded step of that attempt, then a call after the end.
         memory.append_step_receipt(&receipt(1, "AllocateIdentity", StepOutcome::Complete)).await.unwrap();
-        memory.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Failed { reason: "x".into() })).await.unwrap();
+        memory.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::failed("x"))).await.unwrap();
         match door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
             Attached::Ended { replay, terminal } => {
                 assert_eq!(names(&replay), vec!["step"], "a frame per Complete receipt, none for a failed one");

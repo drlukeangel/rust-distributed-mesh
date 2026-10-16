@@ -88,7 +88,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
         let view = builds.read_build(&build_id).await.unwrap();
         let last = view.steps.last().unwrap();
         assert_eq!(last.step, "WaitForBind");
-        assert!(matches!(&last.outcome, StepOutcome::Failed { reason } if reason.contains("runtime exited")));
+        assert!(matches!(&last.outcome, StepOutcome::Failed { reason, .. } if reason.contains("runtime exited")));
         let ran: Vec<&str> = view.steps.iter().map(|r| r.step.as_str()).collect();
         let upto = CreateStep::ORDER.iter().position(|s| *s == CreateStep::WaitForBind).unwrap();
         let want: Vec<&str> = CreateStep::ORDER[..=upto].iter().map(|s| s.name()).collect();

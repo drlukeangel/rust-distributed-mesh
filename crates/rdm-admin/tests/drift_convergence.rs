@@ -1216,6 +1216,9 @@ mod one_attempt_number {
         async fn mesh_deleted_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Option<(rdm_admin::build::BuildId, u32, String)>, BuildStateError> {
             self.inner.mesh_deleted_of(node_id, incarnation).await
         }
+        async fn terminate_failures_of(&self, node_id: &rdm_admin::model::NodeId, incarnation: &rdm_admin::model::IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, BuildStateError> {
+            self.inner.terminate_failures_of(node_id, incarnation).await
+        }
         async fn exits_owed(&self, build_id: &rdm_admin::build::BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, BuildStateError> {
             self.inner.exits_owed(build_id, mesh).await
         }

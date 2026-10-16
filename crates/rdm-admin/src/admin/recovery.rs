@@ -27,6 +27,40 @@ pub(crate) struct RecoverySubmitter {
     /// The births whose `os-stopped` row this admin's own inspection has confirmed (R-PV1): a row
     /// another admin wrote is folded only after this admin's inspection reads `OsStopped` too.
     pub os_stopped_confirmed: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
+    /// The refused terminates this admin has named (i144 R21), by birth and the receipt's Build,
+    /// lane and attempt: each is named once, on the first expired hold that reads it. The refusal
+    /// itself is the durable receipt; this only keeps its span from repeating every tick.
+    pub terminate_refusals_named: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId, crate::build::BuildId, Option<String>, u32)>>>,
+}
+
+/// What a hold of a birth may do this tick, read from the birth's durable Failed `TerminateRuntime`
+/// receipts (node-recovery.md step 4's end, i144 R21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HoldGate {
+    /// No receipt forbids it: an expired hold submits the birth's terminate.
+    Open,
+    /// The latest failed terminate failed at its own inspection, after this hold began: it asked
+    /// the provider nothing and the hold is void; a fresh one begins.
+    Void(crate::build_state::FailedTerminate),
+    /// A terminate the provider refused or could not prove: no hold submits the birth's terminate
+    /// again; a person decides.
+    Refused(crate::build_state::FailedTerminate),
+    /// The receipts could not be read: nothing is submitted this tick.
+    Unreadable(String),
+}
+
+/// The gate of a hold that began at `since` (none held yet), from the birth's failed terminates
+/// `failures`, oldest first: any terminate the provider refused or could not prove forbids every
+/// later one; else the latest, when it failed at its own inspection after the hold began (or its
+/// opening is not held yet), voids the hold.
+pub(crate) fn hold_gate(failures: &[crate::build_state::FailedTerminate], since: Option<u64>) -> HoldGate {
+    if let Some(f) = failures.iter().rev().find(|f| f.stage.stops_resubmission()) {
+        return HoldGate::Refused(f.clone());
+    }
+    match (failures.last(), since) {
+        (Some(f), Some(since)) if matches!(f.stage, crate::build_state::TerminateStage::Inspection { .. }) && f.opened_at_ms.is_none_or(|opened| since <= opened) => HoldGate::Void(f.clone()),
+        _ => HoldGate::Open,
+    }
 }
 
 /// What a loop that proves exits last recorded per birth `(node_id, incarnation)`: the mesh primary's
@@ -244,6 +278,16 @@ impl RecoverySubmitter {
                     if let Some(inc) = n.incarnation_id.clone() {
                         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
                         let prev = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await.ok().flatten();
+                        // node-recovery.md step 4's end: the birth's failed terminates gate the hold.
+                        let gate = self.hold_gate_of(n, prev.as_ref().map(|r| r.since)).await;
+                        let prev = match &gate {
+                            HoldGate::Void(f) => {
+                                let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, &inc).await;
+                                self.span_hold_voided(n, f);
+                                None
+                            }
+                            _ => prev,
+                        };
                         let (since, count) = match prev {
                             Some(r) => (r.since, r.verdicts.saturating_add(1)),
                             None => (now_ms, 1),
@@ -255,6 +299,7 @@ impl RecoverySubmitter {
                             node = %n.name,
                             node_id = %n.node_id,
                             incarnation_id = %inc.as_str(),
+                            recorder = %self.held_name(),
                             since = since as i64,
                             verdicts = count as i64,
                             outcome = "recorded",
@@ -263,9 +308,7 @@ impl RecoverySubmitter {
                         .in_scope(|| tracing::info!("recorded held-running verdict"));
                         let hold_ms = hung_hold_ms();
                         if count > 1 && now_ms.saturating_sub(since) >= hold_ms {
-                            if let Err(e) = self.submit(n, None, "held-running-expired", Ok("held-running")).await {
-                                tracing::info!(node = %n.name, error = %e, "the held-running recovery submit ended without the recovery; the next tick submits again");
-                            }
+                            self.submit_hold_terminate(n, gate).await;
                         }
                     }
                 }
@@ -275,6 +318,81 @@ impl RecoverySubmitter {
             Inspected::Unavailable(_) => {}
         }
         outcome
+    }
+
+    /// The gate of `n`'s hold that began at `since` (none held yet): the birth's failed terminates as
+    /// this admin's Build log holds them, in every Build ([`hold_gate`]).
+    pub(crate) async fn hold_gate_of(&self, n: &Node, since: Option<u64>) -> HoldGate {
+        let Some(inc) = n.incarnation_id.as_ref() else { return HoldGate::Open };
+        match self.builds.terminate_failures_of(&n.node_id, inc).await {
+            Ok(failures) => hold_gate(&failures, since),
+            Err(e) => HoldGate::Unreadable(format!("{}: the failed terminates of {} ({}) at {} could not be read from its Build log: {e}", self.held_name(), n.name, n.node_id, inc.as_str())),
+        }
+    }
+
+    /// `n`'s hold expired: its terminate is submitted unless `gate` forbids it (node-recovery.md step
+    /// 4's end). A refused terminate is named once per receipt; an unreadable Build log is named and
+    /// submits nothing this tick.
+    pub(crate) async fn submit_hold_terminate(&self, n: &Node, gate: HoldGate) {
+        let incarnation = n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default();
+        match gate {
+            HoldGate::Open | HoldGate::Void(_) => {
+                if let Err(e) = self.submit(n, None, "held-running-expired", Ok("held-running")).await {
+                    tracing::info!(node = %n.name, error = %e, "the held-running recovery submit ended without the recovery; the next tick submits again");
+                }
+            }
+            HoldGate::Refused(f) => {
+                let Some(inc) = n.incarnation_id.clone() else { return };
+                if !self.terminate_refusals_named.lock().unwrap().insert((n.node_id.clone(), inc, f.build_id.clone(), f.mesh.clone(), f.attempt)) {
+                    return;
+                }
+                let error = match &f.stage {
+                    crate::build_state::TerminateStage::Provider { error } => error.clone(),
+                    _ => String::new(),
+                };
+                tracing::info_span!(
+                    "rdm.node_admin.build.reject.via-terminate-refused",
+                    node = %n.name,
+                    node_id = %n.node_id,
+                    incarnation_id = %incarnation,
+                    submitter = %self.held_name(),
+                    build_id = %f.build_id,
+                    lane = f.mesh.as_deref().unwrap_or("fabric"),
+                    attempt = f.attempt,
+                    stage = f.stage.name(),
+                    error = %error,
+                    "otel.kind" = "internal",
+                )
+                .in_scope(|| tracing::info!("a terminate of this birth the provider refused or could not prove: no hold submits its terminate again; a person decides"));
+            }
+            HoldGate::Unreadable(why) => {
+                tracing::info_span!("rdm.node_admin.build.reject.via-terminate-receipts-unreadable", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation, submitter = %self.held_name(), error = %why, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the birth's failed terminates could not be read: no terminate is submitted this tick"));
+            }
+        }
+    }
+
+    /// `n`'s hold voided by the terminate `f` that failed at its own inspection: its `held-running` row
+    /// is removed and a fresh hold begins (node-recovery.md step 4's end).
+    pub(crate) fn span_hold_voided(&self, n: &Node, f: &crate::build_state::FailedTerminate) {
+        let verdict = match &f.stage {
+            crate::build_state::TerminateStage::Inspection { verdict: crate::build_state::InspectionVerdict::OsStopped } => "os-stopped",
+            crate::build_state::TerminateStage::Inspection { verdict: crate::build_state::InspectionVerdict::Unknown } => "unavailable",
+            _ => "",
+        };
+        tracing::info_span!(
+            "rdm.node_admin.node.update.via-held-running",
+            node = %n.name,
+            node_id = %n.node_id,
+            incarnation_id = %n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default(),
+            recorder = %self.held_name(),
+            outcome = "voided",
+            build_id = %f.build_id,
+            attempt = f.attempt,
+            verdict,
+            "otel.kind" = "internal",
+        )
+        .in_scope(|| tracing::info!("the hold's terminate failed at its own inspection and asked the provider nothing: the hold is void and a fresh one begins"));
     }
 
     /// The verdict `outcome` of `n`'s birth, recorded by the tick once per change: the inspection's
@@ -674,5 +792,43 @@ pub(crate) fn settle(end: Result<RecoveryEnd, String>) -> (String, Result<(), St
             (failed.clone(), Err(failed))
         }
         Err(e) => (e.clone(), Err(e)),
+    }
+}
+
+#[cfg(test)]
+mod hold_gate_tests {
+    use super::*;
+    use crate::build_state::{FailedTerminate, InspectionVerdict, TerminateStage};
+
+    /// CONTRACT (i144 R21; node-recovery.md step 4's end: "A terminate the provider refuses or cannot
+    /// prove ... no hold submits that birth's terminate again: a person decides ... A
+    /// `TerminateRuntime` that failed at its own inspection (`OsStopped` or `Unknown`) asked the
+    /// provider nothing: it voids the hold, and a birth that reads `Running` and stays unreachable
+    /// opens a fresh hold under the ordinary rule"): any failed terminate of the birth whose stage is
+    /// `provider` or `unproven` refuses every later hold, whatever came after it; else the latest, when
+    /// it failed at its own inspection after the hold began (or its opening is not held yet), voids
+    /// the hold; a hold that began after that failure, or no failure at all, is open. Must NOT happen:
+    /// a refused birth resubmitted after a later inspection failure, a hold carried across the
+    /// failure it submitted, or a fresh hold voided again.
+    // @feature: node-lifecycle
+    #[test]
+    fn a_hold_is_refused_by_any_provider_or_unproven_terminate_and_voided_by_a_later_inspection_failure() {
+        let failed = |attempt: u32, opened_at_ms: Option<u64>, stage: TerminateStage| FailedTerminate { build_id: crate::build::BuildId::mint(), mesh: Some("mesh2".into()), attempt, opened_at_ms, stage };
+        let inspection = || TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped };
+        let provider = || TerminateStage::Provider { error: "refused".into() };
+        assert_eq!(hold_gate(&[], Some(5)), HoldGate::Open, "no failed terminate");
+        let void = failed(1, Some(10), inspection());
+        assert_eq!(hold_gate(std::slice::from_ref(&void), Some(5)), HoldGate::Void(void.clone()), "the hold that submitted the failed terminate is void");
+        assert_eq!(hold_gate(std::slice::from_ref(&void), Some(10)), HoldGate::Void(void.clone()), "begun in the same millisecond: void");
+        assert_eq!(hold_gate(std::slice::from_ref(&void), Some(15)), HoldGate::Open, "a fresh hold, begun after the failure, runs");
+        assert_eq!(hold_gate(std::slice::from_ref(&void), None), HoldGate::Open, "no hold held: nothing to void");
+        let unopened = failed(1, None, TerminateStage::Inspection { verdict: InspectionVerdict::Unknown });
+        assert_eq!(hold_gate(std::slice::from_ref(&unopened), Some(15)), HoldGate::Void(unopened.clone()), "the failure's opening not held yet: the hold restarts rather than terminate early");
+        let refused = failed(1, Some(10), provider());
+        assert_eq!(hold_gate(std::slice::from_ref(&refused), Some(50)), HoldGate::Refused(refused.clone()), "a provider refusal forbids every later hold");
+        let after = failed(2, Some(20), inspection());
+        assert_eq!(hold_gate(&[refused.clone(), after], Some(5)), HoldGate::Refused(refused), "a later inspection failure never lifts a refusal");
+        let unproven = failed(1, Some(10), TerminateStage::Unproven);
+        assert_eq!(hold_gate(std::slice::from_ref(&unproven), Some(50)), HoldGate::Refused(unproven.clone()), "an unproven exit forbids every later hold");
     }
 }

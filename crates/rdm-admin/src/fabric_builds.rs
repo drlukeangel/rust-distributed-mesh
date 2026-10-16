@@ -617,6 +617,9 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
         self.local.mesh_deleted_of(node_id, incarnation).await
     }
+    async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<crate::build_state::FailedTerminate>, BuildStateError> {
+        self.local.terminate_failures_of(node_id, incarnation).await
+    }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
         self.local.exits_owed(build_id, mesh).await
     }
