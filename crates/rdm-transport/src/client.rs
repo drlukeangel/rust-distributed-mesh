@@ -69,6 +69,10 @@ pub struct CallOptions {
     /// A carried call's origin identity: the carrier's inner call keeps it, so the final target's
     /// duplicate window is the origin's, never the carrier's. `None`: this client mints the identity.
     pub carried: Option<CarriedIdentity>,
+    /// The owner asks once (a reachability probe: node-recovery.md step 2, "one QUIC connect"): the
+    /// request is never resent; the call ends when its one connect fails or its stream is lost, and
+    /// otherwise waits for its answer within its budget. Its owner retargets, never this runtime.
+    pub once: bool,
 }
 
 /// The origin's delivery identity a carrier's inner call keeps.
@@ -89,6 +93,7 @@ impl Default for CallOptions {
             after_connect: None,
             context: None,
             carried: None,
+            once: false,
         }
     }
 }
@@ -707,6 +712,7 @@ impl NodeRpcClient {
             tx,
             state: state.clone(),
             attempts: attempts.clone(),
+            committed_on: None,
         };
         // The attempts run on the dispatcher of the call's span, as the pool's dial does: a worker that
         // holds no dispatcher still delivers their events to the call's subscriber.
@@ -970,6 +976,8 @@ struct Attempts {
     tx: mpsc::UnboundedSender<Attempted>,
     state: watch::Receiver<SlotState>,
     attempts: Arc<std::sync::atomic::AtomicU32>,
+    /// The connection a `Budget::Stream` request committed on: the call lives as long as it does.
+    committed_on: Option<iroh::endpoint::Connection>,
 }
 
 impl Attempts {
@@ -1021,6 +1029,12 @@ impl Attempts {
                 let _ = self.tx.send(Attempted::SendDeadline(last));
                 return;
             }
+            // A stream budget's only reply bound is the transport: the call lives as long as the
+            // connection its request committed on.
+            if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
+                let _ = self.tx.send(Attempted::TransportLost(format!("the connection the request committed on closed ({why})")));
+                return;
+            }
             if let Some(why) = self.receiver_gone() {
                 tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", delivery_id = %self.id, attempts = attempt, reason = %why)
                     .in_scope(|| tracing::info!("the receiving birth ended: the request is owed no longer"));
@@ -1047,17 +1061,11 @@ impl Attempts {
                 tracing::info_span!("rdm.node_rpc.delivery.update.via-resend", delivery_id = %self.id, attempt, backoff_ms = pacing.after(attempt - 1).as_millis() as u64)
                     .in_scope(|| tracing::info!("no ack: the request is resent with the same identity"));
             }
-            // A committed `Budget::Stream` call lives as long as a connection to the responder can be
-            // had: each resend's dial is bounded by its send bound.
             let stream_send = match self.opts.budget {
                 Budget::Stream { send } => Some(send),
                 _ => None,
             };
-            let deadline = match (committed, stream_send) {
-                (false, _) => self.deadlines.0,
-                (true, Some(send)) => started + send,
-                (true, None) => self.deadlines.1.unwrap_or(started + pacing.floor),
-            };
+            let deadline = if committed { self.deadlines.1.unwrap_or(started + pacing.floor) } else { self.deadlines.0 };
             let node = match self.client.reach(&self.target) {
                 Ok(n) => n,
                 Err(r) => {
@@ -1071,14 +1079,13 @@ impl Attempts {
             let phase = self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await;
             match phase {
                 Phase::Done(out) => {
-                    let resend = matches!(&out, RpcOutcome::NotSent(n) if !matches!(n.reason(), NotSentReason::FrameNotSent));
+                    // The owner's cut, a source that admits no new connection (nothing was sent, and
+                    // nothing is owed for a request this source refuses to originate) and a request
+                    // asked once end the call; any other unsent attempt is resent.
+                    let resend = !self.opts.once && matches!(&out, RpcOutcome::NotSent(n) if !matches!(n.reason(), NotSentReason::FrameNotSent | NotSentReason::AdmissionBlocked(_)));
                     if resend {
                         if let RpcOutcome::NotSent(n) = out {
                             last = n.reason().clone();
-                            if committed && stream_send.is_some() && matches!(last, NotSentReason::Connection(_) | NotSentReason::Deadline) {
-                                let _ = self.tx.send(Attempted::TransportLost(format!("the request's connection was lost and its resend found none within its send bound ({last:?})")));
-                                return;
-                            }
                             let _ = self.tx.send(Attempted::NotSent(last.clone()));
                         }
                         self.pause(resume_at).await;
@@ -1097,7 +1104,13 @@ impl Attempts {
                         committed = true;
                         let _ = self.tx.send(Attempted::Committed { frame_len });
                     }
-                    let ack_by = (!self.state.borrow().acked).then_some(next_at);
+                    if stream_send.is_some() {
+                        self.committed_on = Some(opened.conn.clone());
+                    }
+                    // The wait for the ack runs from the write: a slow dial spends none of it. A
+                    // request asked once is never resent: it waits on its stream for its answer.
+                    let ack_by = (!self.state.borrow().acked && !self.opts.once).then(|| Instant::now() + pacing.after(attempt));
+                    let resend_at = ack_by.unwrap_or(next_at);
                     match self.read(opened, ack_by).await {
                         StreamEnd::Complete | StreamEnd::Violation => return,
                         StreamEnd::Definitive(code) => {
@@ -1105,9 +1118,13 @@ impl Attempts {
                             return;
                         }
                         StreamEnd::NoAck => continue,
+                        StreamEnd::Lost if self.opts.once => {
+                            let _ = self.tx.send(Attempted::TransportLost("asked once: its stream was lost before an answer".into()));
+                            return;
+                        }
                         StreamEnd::Lost => {
                             if !self.state.borrow().acked {
-                                self.pause(next_at).await;
+                                self.pause(resend_at).await;
                             }
                         }
                     }
@@ -1118,14 +1135,16 @@ impl Attempts {
 
     /// Acked, response not complete, its stream gone: keep a pooled connection to the responder,
     /// on the schedule, until the response completes there.
-    /// `Err` for a `Budget::Stream` call when no connection to the responder can be had within its
-    /// send bound: the transport's liveness is that budget's reply bound.
+    /// `Err` for a call asked once, or a `Budget::Stream` call, whose stream was lost: neither waits
+    /// for a resent response (the transport's liveness is a stream budget's reply bound).
     async fn hold_connection(&mut self, attempt: u32) -> Result<(), String> {
         let pacing = self.client.delivery.pacing();
-        let stream_budget = match self.opts.budget {
-            Budget::Stream { send } => Some(send),
-            _ => None,
-        };
+        if self.opts.once {
+            return Err("asked once: its stream was lost before an answer".into());
+        }
+        if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
+            return Err(format!("the connection the request committed on closed ({why})"));
+        }
         if let Ok(node) = self.client.reach(&self.target) {
             let key = PoolKey { scope: self.opts.scope.clone(), peer: node.peer, incarnation: node.observed.as_ref().map(|n| n.incarnation.clone()) };
             let spec = DialSpec {
@@ -1138,15 +1157,11 @@ impl Attempts {
                 admission: self.client.admission.clone(),
                 delivery: Some(self.client.delivery.clone()),
             };
-            let bound = Instant::now() + stream_budget.unwrap_or(pacing.floor);
-            let dial = self.client.pool.get_or_dial(&key, spec, bound);
-            let held = tokio::select! {
-                r = dial => r.map(|_| ()).map_err(|e| format!("{e:?}")),
+            let dial = self.client.pool.get_or_dial(&key, spec, Instant::now() + pacing.floor);
+            tokio::select! {
+                _ = dial => {}
                 // The invocation completed on a resent frame: nothing to hold.
-                _ = self.state.changed() => Ok(()),
-            };
-            if let (Err(e), Some(send)) = (held, stream_budget) {
-                return Err(format!("the connection to the responder was lost and no dial connected within the {} ms send bound ({e})", send.as_millis()));
+                _ = self.state.changed() => {}
             }
         }
         let until = Instant::now() + pacing.after(attempt.max(1));

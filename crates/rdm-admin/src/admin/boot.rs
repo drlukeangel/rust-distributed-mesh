@@ -1935,8 +1935,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
                                                                 let target = rdm_transport::NodeTarget::ExactNode(node.node_id.clone());
+                                                                // One QUIC connect, direct (node-recovery.md step 2): asked once, never
+                                                                // resent; the ladder, not this call, goes on to the peers.
+                                                                let once = rdm_transport::CallOptions { once: true, ..rdm_transport::CallOptions::default() };
                                                                 let ping = rdm_core::ping::PingRequest::Ping { payload: b"tickle".to_vec() };
-                                                                let (out, _) = client.call::<rdm_core::ping::Ping>(&target, &ping, &rdm_transport::CallOptions::default()).await;
+                                                                let (out, _) = client.call::<rdm_core::ping::Ping>(&target, &ping, &once).await;
                                                                 if out.reply().is_none() {
                                                                     return Err(format!("{} did not answer the ping: {}", node.name, out.name()));
                                                                 }
@@ -1944,7 +1947,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 // and answers its status.
                                                                 let Some(incarnation) = node.incarnation_id.clone() else { return Err(format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id)) };
                                                                 let birth = rdm_client::ExactBirth { target: target.clone(), node_id: node.node_id.clone(), incarnation };
-                                                                let kick = match rdm_client::NodeRpc::new(&client).get(&birth, &rdm_transport::CallOptions::default()).await {
+                                                                let kick = match rdm_client::NodeRpc::new(&client).get(&birth, &once).await {
                                                                     Ok(reply) => reply.name(),
                                                                     Err(end) => end.rpc_name(),
                                                                 };

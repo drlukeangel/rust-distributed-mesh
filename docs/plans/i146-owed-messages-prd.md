@@ -175,10 +175,19 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     its caller. Before the commit the attempt task alone enforces the send bound, so the outcome of a
     dial the bound cuts is recorded (a carrier answers `CarrierEdgeLost` from it).
   - `Budget::Stream` keeps its meaning, no reply bound but the transport's liveness: a committed call
-    whose connection is lost re-dials within its send bound to hold a connection the responder can
-    resend on; when none connects, the call ends `Indeterminate` (`ReplyLost`, named). `Overall` and
-    `Split` calls wait out their reply budget for a resent response. A lost stream ends no invocation
-    on its own (the envelope's transport frames).
+    lives as long as the connection its request committed on, and ends `Indeterminate` (`ReplyLost`,
+    named) when that connection closes. `Overall` and `Split` calls wait out their reply budget for a
+    resent response. A lost stream ends no invocation on its own (the envelope's transport frames).
+  - The wait for a request's ack runs from the write, so a slow dial spends none of it.
+  - A source that admits no new connection (connections-deleting) refuses the call at once,
+    `NotSent(AdmissionBlocked)`: nothing was sent, and nothing is owed for a request the source
+    refuses to originate.
+  - An owner that asks once (`CallOptions::once`) is never resent for: its call ends when its one
+    connect fails or its stream is lost, and otherwise waits for its answer within its budget. The
+    tickle's direct rung and the seat watch's ask once (node-recovery.md step 2: "it makes one QUIC
+    connect, direct; if that fails, the same kick through up to two eligible live peers"): the
+    ladder retargets, never the runtime. The gate's `role_wedge` showed the direct ping resending
+    for its whole budget (10 s against the page's one connect).
   - A target the view does not name at the call is `NotSent(Resolve)` at once: nothing is minted or
     owed. Once owed, absence from the view ends nothing; `Gone` or another incarnation (the view's
     proof) ends it, `ReceiverGone`.
