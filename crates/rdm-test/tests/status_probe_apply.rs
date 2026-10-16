@@ -91,9 +91,11 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // A stale incarnation: refused with the one held.
         let stale = StatusRequest::ProbeNodeState { node_id: node.node_id.clone(), incarnation: IncarnationId::mint() };
         assert_eq!(call(stale).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
-        // An upward declaration sent downward: refused by direction.
+        // An upward declaration sent to the node: its Status door has no handler for it (R24, Luke Q11):
+        // not handled, never an authority refusal.
         let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic };
-        assert!(matches!(call(downward_declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } }));
+        let not_handled = call(downward_declare).await;
+        assert_eq!(not_handled.name(), "request-not-handled", "a request the node has no handler for is answered not handled here: {not_handled:?}");
         // node-left is never sent: refused by name as no command, as a node-admin refuses it, never
         // sent on to "a node-admin" that would refuse it too.
         let left = StatusRequest::NodeLeft { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };

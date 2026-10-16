@@ -212,8 +212,9 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
 /// opened stays held in its connections log, no closure or connections-deleting span runs, no block on
 /// new application work is set (the node's next call to its admin is answered on the same entry), and
 /// the node's own `ConnectionsDeleted` is no answer to it. The same node closes that connection when the
-/// request reaches the handler that implements it, the node command op 0x22. The reply's wording is
-/// R24's ("request not handled here") and is not asserted here.
+/// request reaches the handler that implements it, the node command op 0x22. The node answers
+/// `RequestNotHandled` naming the request, on its reject span
+/// `rdm.node.status.reject.via-request-not-handled` (R24, Luke Q11).
 #[test]
 fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing() {
     let cell = "a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_and_records_nothing";
@@ -241,6 +242,9 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         let status = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let reply = call_on(&admin, &target, &status, None).await;
         assert!(!matches!(reply, StatusReply::ConnectionsDeleted { .. }), "no handler on the node's Status door performs a closure: {reply:?}");
+        assert_eq!(reply.name(), "request-not-handled", "the node answers a request it has no handler for not handled here (R24): {reply:?}");
+        let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("delete-connections".to_string()), Some(launch.name.to_string()))], "the node's reject span names the request and itself: {rejected:?}");
         assert_eq!(seams.connections.held_routes().await.into_iter().map(|r| r.id).collect::<Vec<_>>(), held, "the node's connection is still held");
         let again = ping_admin(&seams, &admin, &CallOptions::default()).await;
         assert!(matches!(again, RpcOutcome::Reply(_)), "no block on new application work is set: {again:?}");
@@ -261,6 +265,38 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         let command = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let deleted = crate::common::node_command_completion(&admin.observer.client, &target, &command).await;
         assert!(matches!(&deleted, NodeCommandReply::ConnectionsDeleted { closed, held: still, .. } if still.is_empty() && held.iter().all(|id| closed.contains(id))), "{deleted:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT (R24, Luke Q11: "the same variant at every Status door that can lack a handler for a
+/// request it receives: the rpc node's, the node-admin's and the test rig's"): the test rig's admin
+/// side serves round check-ins and declarations only. A `fabric.get` reaching its Status door is
+/// answered `RequestNotHandled` naming the request, decided by dispatch alone, on the admin side's
+/// reject span `rdm.node.status.reject.via-request-not-handled` naming the request and the admin side.
+/// Must NOT happen: an authority refusal or `NotReady` for a request the door has no handler for.
+#[test]
+fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handled_by_name() {
+    let cell = "a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handled_by_name";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, serve_ping).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-rig-door-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
+        let target = NodeTarget::ExactNode(admin.launcher.node_id.clone());
+        let reply = match seams.client.call::<Status>(&target, &StatusRequest::GetFabric, &CallOptions::default()).await.0 {
+            RpcOutcome::Reply(r) => r.into_value(),
+            other => panic!("the admin side's Status door did not answer: {other:?}"),
+        };
+        assert_eq!(reply.name(), "request-not-handled", "the rig's admin side answers a request it has no handler for not handled here: {reply:?}");
+        let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
+        assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabric.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
