@@ -1941,7 +1941,21 @@ impl View {
     /// application routing selects from now on.
     fn take_status(&self, f: &Frame, fabric: &FabricId, via: &'static str) {
         let Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } = f else {
-            self.book.statuses.take(f, fabric);
+            if let Frame::FabricStatus { fabric: subject, status, publisher, forwarded_by, changed_at_rafka_ms } = f {
+                let span = tracing::info_span!(
+                    "rdm.mesh.membership.update.via-fabric-status",
+                    node = %self.current_name(),
+                    fabric = %subject,
+                    status = %status,
+                    publisher = %publisher,
+                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+                    changed_at_rafka_ms = *changed_at_rafka_ms,
+                    via,
+                    taken = tracing::field::Empty,
+                );
+                let _in = span.enter();
+                span.record("taken", self.book.statuses.take(f, fabric));
+            }
             return;
         };
         let span = tracing::info_span!(
