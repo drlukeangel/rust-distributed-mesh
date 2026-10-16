@@ -504,7 +504,9 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                     match &req {
                         R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rdm_admin::node_commands::refuse_reserved(&receiver, "", &req)),
                         R::NodeLeft { .. } => Ok(rdm_admin::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
-                        _ => Ok(StatusReply::NotReady { reason: "the admin side serves round check-ins and declarations only".into() }),
+                        // The admin side serves round check-ins and declarations only: any other request
+                        // has no handler here, so not handled here (R24), decided by dispatch alone.
+                        _ => Ok(rdm_admin::node_self::request_not_handled(&receiver, &req)),
                     }
                 }
             })

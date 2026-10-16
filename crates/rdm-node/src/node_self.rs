@@ -1154,6 +1154,16 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
     StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: RETIRED_PAIR_IS_RESERVED.into(), reported }
 }
 
+/// The answer of a Status door that has no handler for `req` (R24, Luke Q11): `RequestNotHandled`
+/// naming the request, decided by dispatch alone, never by node kind, seat or sender, on the
+/// receiver's reject span `rdm.node.status.reject.via-request-not-handled`. `receiver` is the door's
+/// held name. Nothing is done.
+pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {
+    tracing::info_span!("rdm.node.status.reject.via-request-not-handled", node = %receiver, request = req.op(), "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("this Status door has no handler for the request: not handled here, nothing done"));
+    StatusReply::RequestNotHandled { request: req.op().to_string() }
+}
+
 /// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
 /// "Node stop command pair": "NodeLeft keeps its position and is never sent; a receiver refuses it by
 /// name"). A stop's completion is its `Stopped` reply, so no command is open that a node-left call

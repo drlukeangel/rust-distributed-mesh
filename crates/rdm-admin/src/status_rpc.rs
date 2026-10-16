@@ -412,9 +412,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeName { .. } => {
             (StatusReply::NotReady { reason: format!("{me_name} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", req.op()) }, None)
         }
-        // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`).
+        // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
+        // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
         StatusRequest::Reserved6 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } => {
-            (StatusReply::NotReady { reason: format!("{me_name} reached the declaration decision, which does not decide {}", req.op()) }, None)
+            (crate::node_self::request_not_handled(&me_name.to_string(), req), None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
             if me.mesh != *mesh_name {
@@ -1622,7 +1623,7 @@ mod tests {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             decide(&authority_of(&me, view.clone()), &view, &Declared::default(), &StatusRequest::GetFabric)
         };
-        assert_eq!(reply.name(), "request-not-handled", "{reply:?}");
+        assert_eq!(reply, R::RequestNotHandled { request: "fabric.get".into() });
         assert!(effect.is_none(), "{effect:?}");
         let rejected: Vec<(String, String)> = capture.named("rdm.node.status.reject.via-request-not-handled").into_iter().map(|s| (s.attributes["request"].clone(), s.attributes["node"].clone())).collect();
         assert_eq!(rejected, vec![("fabric.get".to_string(), "mesh1.admin.1".to_string())], "the reject span names the request and the admin");

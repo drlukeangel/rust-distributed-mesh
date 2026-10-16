@@ -13,7 +13,7 @@ use rdm_admin::deployment::pipeline::{CreateRequest, DeploymentPipeline, Timeout
 use rdm_admin::deployment::provider::{DeployError, FabricPolicy, TerminationMode};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{NodeState, NotAuthority, Status, StatusReply, StatusRequest};
+use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 
 /// CONTRACT: at a live rpc node, from its mesh's node-admin: `ProbeNodeState` answers `Current`
 /// with the node's state and changes nothing; `DeleteConnections { All }` answers `ConnectionsDeleted`
@@ -94,8 +94,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         // An upward declaration sent to the node: its Status door has no handler for it (R24, Luke Q11):
         // not handled, never an authority refusal.
         let downward_declare = StatusRequest::DeclareNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ReadyForTraffic };
-        let not_handled = call(downward_declare).await;
-        assert_eq!(not_handled.name(), "request-not-handled", "a request the node has no handler for is answered not handled here: {not_handled:?}");
+        assert_eq!(call(downward_declare).await, StatusReply::RequestNotHandled { request: "declare-node-state".into() }, "a request the node has no handler for is answered not handled here");
         // node-left is never sent: refused by name as no command, as a node-admin refuses it, never
         // sent on to "a node-admin" that would refuse it too.
         let left = StatusRequest::NodeLeft { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };

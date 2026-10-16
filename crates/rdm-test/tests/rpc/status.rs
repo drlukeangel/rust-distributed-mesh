@@ -169,3 +169,54 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     println!("request not handled at an rpc node: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }
+
+/// CONTRACT (R24, Luke Q11: "The admin ladder (node.rs:1094-1114) still reads a real
+/// receiver-not-primary answer from an admin that isn't the primary; show it unaffected"):
+/// `mesh1.admin.1` yields both seats to `mesh1.admin.2` (`node.stop` runs `node.primary.update`
+/// first) and starts again as itself, holding no seat. `mesh1.rpc.1`, restarted, declares its state
+/// up its ladder of the mesh's node-admins in path order: `mesh1.admin.1` answers `RejectedNotAuthority
+/// { ReceiverNotPrimary { needed: "mesh-primary of mesh1" } }`, its own seat decision
+/// (`status_rpc.rs:378-379`), which leaves the declaration owed (`definitive=false`), and
+/// `mesh1.admin.2` takes it (`definitive=true`). Must NOT happen: `RequestNotHandled` from a node-admin
+/// for a declaration, or a ladder that ends at the admin holding no seat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_nodes_declaration_ladder_reads_the_seat_answer_of_an_admin_holding_none_and_declares_to_the_primary() {
+    let test = "a_nodes_declaration_ladder_reads_the_seat_answer_of_an_admin_holding_none_and_declares_to_the_primary";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let (a1, a2, rpc1) = (Estate::path("mesh1.admin.1"), Estate::path("mesh1.admin.2"), Estate::path("mesh1.rpc.1"));
+    estate.enter(&a2).await;
+    let mut stop = estate.nodes_obj().await.stop(&a1).await.expect("node.stop of mesh1.admin.1");
+    let accepted = stop.accepted().clone();
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
+    estate.until_node("mesh1.admin.2", "mesh1.admin.2 holds the seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    Estate::workflow("node.start of mesh1.admin.1", estate.nodes_obj().await.start(&a1).await).await;
+    estate.until_node("mesh1.admin.1", "mesh1.admin.1 runs again holding no seat", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.parked && !n.is_primary).map(|_| ())).await;
+    let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    Estate::workflow("node.restart of mesh1.rpc.1", estate.nodes_obj().await.restart(&rpc1).await).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.parked).map(|_| ())).await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let mut ladder: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
+        .collect();
+    ladder.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+    let at = |to: &str| ladder.iter().position(|sp| sp["attributes"]["to"] == to);
+    let (Some(seatless), Some(primary)) = (at("mesh1.admin.1"), at("mesh1.admin.2")) else { panic!("the restarted node's ladder reached both admins: {ladder:#?}") };
+    let (seatless, primary) = (ladder[seatless], ladder[primary]);
+    let outcome = seatless["attributes"]["outcome"].as_str().unwrap_or_default();
+    assert!(outcome.contains("ReceiverNotPrimary") && outcome.contains("mesh-primary of mesh1"), "the admin holding no seat answers its own seat decision: {seatless}");
+    let flag = |v: &Value| v == true || v == "true";
+    assert!(!flag(&seatless["attributes"]["definitive"]), "the declaration stays owed past the admin holding no seat: {seatless}");
+    assert!(flag(&primary["attributes"]["definitive"]), "the primary takes the declaration: {primary}");
+    assert!(seatless["start_unix_nano"].as_u64() <= primary["start_unix_nano"].as_u64(), "path order: mesh1.admin.1, then mesh1.admin.2");
+    assert!(ladder.iter().all(|sp| !sp["attributes"]["outcome"].as_str().unwrap_or_default().contains("RequestNotHandled")), "no node-admin answers a declaration not handled: {ladder:#?}");
+    let trace = seatless["trace_id"].as_str().unwrap_or_default().to_string();
+    println!("the ladder past an admin holding no seat: http://192.168.68.99:16687/trace/{trace}");
+    estate.record_trace_url(&trace);
+}

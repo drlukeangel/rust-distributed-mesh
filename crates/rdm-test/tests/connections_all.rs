@@ -242,7 +242,7 @@ fn a_status_delete_connections_at_a_node_with_no_handler_for_it_closes_nothing_a
         let status = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let reply = call_on(&admin, &target, &status, None).await;
         assert!(!matches!(reply, StatusReply::ConnectionsDeleted { .. }), "no handler on the node's Status door performs a closure: {reply:?}");
-        assert_eq!(reply.name(), "request-not-handled", "the node answers a request it has no handler for not handled here (R24): {reply:?}");
+        assert_eq!(reply, StatusReply::RequestNotHandled { request: "delete-connections".into() }, "the node answers a request it has no handler for not handled here (R24)");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
         assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("delete-connections".to_string()), Some(launch.name.to_string()))], "the node's reject span names the request and itself: {rejected:?}");
         assert_eq!(seams.connections.held_routes().await.into_iter().map(|r| r.id).collect::<Vec<_>>(), held, "the node's connection is still held");
@@ -294,7 +294,7 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
             RpcOutcome::Reply(r) => r.into_value(),
             other => panic!("the admin side's Status door did not answer: {other:?}"),
         };
-        assert_eq!(reply.name(), "request-not-handled", "the rig's admin side answers a request it has no handler for not handled here: {reply:?}");
+        assert_eq!(reply, StatusReply::RequestNotHandled { request: "fabric.get".into() }, "the rig's admin side answers a request it has no handler for not handled here");
         let rejected = fields_of(&spans, "rdm.node.status.reject.via-request-not-handled");
         assert_eq!(rejected.iter().map(|f| (f.get("request").cloned(), f.get("node").cloned())).collect::<Vec<_>>(), vec![(Some("fabric.get".to_string()), Some(admin.launcher.name.to_string()))], "the admin side's reject span names the request and itself: {rejected:?}");
         let _ = std::fs::remove_dir_all(&dir);

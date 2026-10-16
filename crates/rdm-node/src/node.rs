@@ -1203,7 +1203,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 /// decided on the op and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
 /// projection this node installed, is named in spans and is the authority a blocked hook was addressed by.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
-    use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
+    use rdm_core::status::{Status, StatusReply, StatusRequest};
     b.serve::<Status, _, _>(OpOwner::Product("rdm".into()), move |peer: rdm_transport::PeerContext, req: StatusRequest| {
         let slot = slot.clone();
         async move {
@@ -1251,7 +1251,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             }
             let incarnation = match &req {
                 StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::GetConnections { incarnation, .. } => incarnation,
-                _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
+                // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
+                _ => return Ok(crate::node_self::request_not_handled(&me.membership.held_name(&me.digest.node.name).to_string(), &req)),
             };
             // The birth the call reached answers it, whatever node id it names (R-RX5); the exact
             // birth it names is checked, so a call that reached another birth is refused naming the
@@ -1364,7 +1365,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
                     Ok(crate::node_name::reply(&decision))
                 }
-                _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
+                _ => Ok(crate::node_self::request_not_handled(&me.membership.held_name(&me.digest.node.name).to_string(), &req)),
             }
         }
     })
