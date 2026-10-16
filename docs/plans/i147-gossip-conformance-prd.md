@@ -89,7 +89,7 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 - **Acceptance cells.** `an_unkeyed_<frame>_delivered_after_a_newer_frame_about_its_subject_is_refused_stale`
   (the regression); `every_frame_kind_has_a_row_in_the_receive_rules` (a unit cell over the catalog against the page's table).
   RED first.
-- **State.** in progress in lane `e7s3`, branch `codex/i147-e1-gossip-conformance`: catalog cell added; investigating equal-revision MeshStatus content disagreement with a live receive-path cell before selecting the e1 regression. No receive-path fix or landing yet; RED/GREEN trace ids pending.
+- **State.** awaiting Q19 ([packet](rulings/i147-q19-first-regression.md)) in lane `e7s3`, branch `codex/i147-e1-gossip-conformance`. RED test commit `35af8ca1`: MeshStatus equal revision/different content lacks the required named inconsistency refusal; 0 passed, 1 failed (0.08 s), owned by i147.e1 pending Q19 selection. Before trace `f6fc35d858049ff6c75782276d66a969` (conflict), control trace `9d29876ac4d6d6d455aecd531c775469` (initial hold). Catalog cell: 1 passed, 0 failed. GREEN SHA/after trace: none; no receive-path fix, architecture edit, wire change or landing. Q19 asks whether this inconsistency may replace e1’s stale-only acceptance selection; e2 remains not started.
 
 #### e2 — every row, one defect at a time
 
