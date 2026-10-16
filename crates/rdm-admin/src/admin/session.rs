@@ -112,13 +112,13 @@ pub struct MembershipObserver {
 
 impl MembershipObserver {
     /// A command to `node` was never sent for a reachability reason: mark the birth `PendingReconnect`
-    /// at once, an observer mark beside the status its mesh-primary authored, never over it. A birth
-    /// whose authored status is a lifecycle one (connections-deleting, stopping) keeps it and is not
-    /// marked: its own workflow owns it.
+    /// at once, an observer mark beside the status its mesh-primary recorded, never over it. A birth
+    /// whose recorded status is a lifecycle state the node reported (connections-deleting, stopping,
+    /// stopped) keeps it and is not marked (node-recovery.md step 1).
     fn mark_unreachable(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext, why: &crate::node_commands::Unreachable) {
         let Some(incarnation) = node.incarnation_id.clone() else { return };
-        let authored = self.book.member_status(&node.node_id, &incarnation);
-        let outcome = if crate::offline::marks_over(authored) {
+        let recorded = self.book.member_status(&node.node_id, &incarnation);
+        let outcome = if crate::offline::marks_over(recorded) {
             let mark = crate::offline::UnreachableMark { incarnation: incarnation.clone(), at: std::time::Instant::now(), at_ms: crate::admin::records::local_now_ms(), reason: why.reason };
             self.unreachable.lock().unwrap().insert(node.node_id.clone(), mark);
             "marked"
@@ -134,7 +134,7 @@ impl MembershipObserver {
             detail = %why.detail,
             command = cmd.operation_prefix(),
             operation = %ctx.operation,
-            authored = authored.map(|s| format!("{s:?}")).unwrap_or_default(),
+            recorded = recorded.map(|s| format!("{s:?}")).unwrap_or_default(),
             outcome,
             "otel.kind" = "internal",
         )
