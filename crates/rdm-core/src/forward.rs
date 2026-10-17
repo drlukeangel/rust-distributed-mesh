@@ -48,6 +48,60 @@ pub enum ForwardRequest {
     },
 }
 
+/// The typed reason an inner invocation has no reply; the explanation is a separate field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IndeterminateCause {
+    /// The receiving birth is proven exited or removed.
+    ReceiverGone,
+    /// The owner's reply bound lapsed after commit.
+    ReplyDeadline,
+    /// The reply was lost after commit.
+    ReplyLost,
+    /// A reset after commit; its numeric code is evidence.
+    Reset(u64),
+    /// The caller cannot decode this reply variant.
+    UnsupportedReplyVariant,
+    /// The reply bytes are corrupt.
+    CorruptReply,
+    /// The response violated its framing or ordering contract.
+    ProtocolViolation,
+}
+
+/// The typed reason an inner invocation did not reach its commit cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NotSentCause {
+    /// The resolver's typed result.
+    Resolve(crate::outcome::ResolveFailure),
+    /// Dial or stream open failed before commit.
+    Connection,
+    /// The permit was not available before the owner's deadline.
+    StreamBudget,
+    /// The owner's bound lapsed before commit.
+    Deadline,
+    /// The unfinished request was cut.
+    FrameNotSent,
+    /// A carrier's own refusal proved no dispatch.
+    Carried,
+    /// The carrier's own edge was lost.
+    CarrierEdgeLost,
+    /// The remaining budget did not exceed the reserve.
+    CarrierNoBudget {
+        /// The origin's remaining milliseconds.
+        remaining_ms: u64,
+        /// The reply reserve in milliseconds.
+        reserve_ms: u64,
+    },
+    /// The requested op cannot be forwarded.
+    NotForwardable {
+        /// The inner op.
+        op: u8,
+    },
+    /// No active route was selected.
+    NoActiveRoute,
+    /// The source admits no new connection.
+    AdmissionBlocked,
+}
+
 /// A carrier's answer to a Forward call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardReply {
@@ -60,6 +114,8 @@ pub enum ForwardReply {
     InnerNotSent {
         /// Why the inner call never committed.
         reason: String,
+        /// The original typed cause, independent of the explanation.
+        cause: NotSentCause,
     },
     /// The target does not serve the inner op.
     InnerUnserved {
@@ -76,6 +132,8 @@ pub enum ForwardReply {
     InnerIndeterminate {
         /// Why the outcome is unknown.
         reason: String,
+        /// The original typed cause, independent of the explanation.
+        cause: IndeterminateCause,
     },
     /// The inner protocol is not forwardable through this carrier.
     NotForwardable {
@@ -128,6 +186,97 @@ pub enum ForwardReply {
         /// The carrier's reply reserve.
         reserve_ms: u64,
     },
+}
+
+impl IndeterminateCause {
+    /// Capture the typed cause at the carrier before it formats the explanation.
+    pub fn from_reason(reason: &crate::outcome::IndeterminateReason) -> Self {
+        use crate::outcome::IndeterminateReason as R;
+        match reason {
+            R::ReceiverGone(_) => Self::ReceiverGone,
+            R::ReplyDeadline => Self::ReplyDeadline,
+            R::ReplyLost(_) => Self::ReplyLost,
+            R::Reset(n) => Self::Reset(*n),
+            R::UnsupportedReplyVariant => Self::UnsupportedReplyVariant,
+            R::CorruptReply => Self::CorruptReply,
+            R::ProtocolViolation(_) => Self::ProtocolViolation,
+        }
+    }
+    /// Rebuild the exact typed reason at the origin; the text has no deciding role.
+    pub fn into_reason(self, explanation: String) -> crate::outcome::IndeterminateReason {
+        use crate::outcome::IndeterminateReason as R;
+        match self {
+            Self::ReceiverGone => R::ReceiverGone(explanation),
+            Self::ReplyDeadline => R::ReplyDeadline,
+            Self::ReplyLost => R::ReplyLost(explanation),
+            Self::Reset(n) => R::Reset(n),
+            Self::UnsupportedReplyVariant => R::UnsupportedReplyVariant,
+            Self::CorruptReply => R::CorruptReply,
+            Self::ProtocolViolation => R::ProtocolViolation(explanation),
+        }
+    }
+    /// The standard code carried by this cause.
+    pub fn code(self) -> crate::outcome::Code { self.into_reason(String::new()).code() }
+}
+
+impl NotSentCause {
+    /// Capture the typed pre-commit reason, retaining its structured fields.
+    pub fn from_reason(reason: &crate::outcome::NotSentReason) -> Self {
+        use crate::outcome::NotSentReason as R;
+        match reason {
+            R::Resolve(why) => Self::Resolve(*why),
+            R::Connection(_) => Self::Connection,
+            R::StreamBudget => Self::StreamBudget,
+            R::Deadline => Self::Deadline,
+            R::FrameNotSent => Self::FrameNotSent,
+            R::Carried(_) => Self::Carried,
+            R::CarrierEdgeLost(_) => Self::CarrierEdgeLost,
+            R::CarrierNoBudget { remaining_ms, reserve_ms } => Self::CarrierNoBudget { remaining_ms: *remaining_ms, reserve_ms: *reserve_ms },
+            R::NotForwardable { op } => Self::NotForwardable { op: *op },
+            R::NoActiveRoute => Self::NoActiveRoute,
+            R::AdmissionBlocked(_) => Self::AdmissionBlocked,
+        }
+    }
+    /// Rebuild the exact pre-commit reason without interpreting the text.
+    pub fn into_reason(self, explanation: String) -> crate::outcome::NotSentReason {
+        use crate::outcome::NotSentReason as R;
+        match self {
+            Self::Resolve(why) => R::Resolve(why),
+            Self::Connection => R::Connection(explanation),
+            Self::StreamBudget => R::StreamBudget,
+            Self::Deadline => R::Deadline,
+            Self::FrameNotSent => R::FrameNotSent,
+            Self::Carried => R::Carried(explanation),
+            Self::CarrierEdgeLost => R::CarrierEdgeLost(explanation),
+            Self::CarrierNoBudget { remaining_ms, reserve_ms } => R::CarrierNoBudget { remaining_ms, reserve_ms },
+            Self::NotForwardable { op } => R::NotForwardable { op },
+            Self::NoActiveRoute => R::NoActiveRoute,
+            Self::AdmissionBlocked => R::AdmissionBlocked(explanation),
+        }
+    }
+    /// The standard code carried by this cause.
+    pub fn code(self) -> crate::outcome::Code { self.into_reason(String::new()).code() }
+}
+
+impl ForwardReply {
+    /// Code of the carrier's own typed answer; the final protocol classifies a Forwarded body.
+    pub fn code(&self) -> crate::outcome::Code {
+        use crate::outcome::{Code, MalformedKind};
+        match self {
+            Self::Forwarded { .. } => Code::Ok,
+            Self::InnerNotSent { cause, .. } => cause.code(),
+            Self::InnerIndeterminate { cause, .. } => cause.code(),
+            Self::InnerUnserved { .. } => Code::Unimplemented,
+            Self::InnerRejectedStale { .. } => Code::Aborted,
+            Self::NotForwardable { .. } => Code::FailedPrecondition,
+            Self::CarrierEdgeLost { .. } | Self::NoInnerBudget { .. } | Self::NotReady { .. } | Self::Busy { .. } | Self::ConnectionsDeleting { .. } => Code::Unavailable,
+            Self::PeerUnresolved { .. } => Code::NotFound,
+            Self::Malformed { kind: MalformedKind::TooLarge } => Code::ResourceExhausted,
+            Self::Malformed { kind: MalformedKind::UnknownVariant } => Code::InvalidArgument,
+            Self::Malformed { kind: MalformedKind::Corrupt } => Code::DataLoss,
+            Self::Unauthorized { .. } => Code::PermissionDenied,
+        }
+    }
 }
 
 impl NodeProtocol for Forward {
@@ -195,10 +344,10 @@ mod tests {
     fn every_reply_variant_round_trips() {
         let replies = [
             ForwardReply::Forwarded { inner: vec![1] },
-            ForwardReply::InnerNotSent { reason: "r".into() },
+            ForwardReply::InnerNotSent { reason: "r".into(), cause: NotSentCause::Connection },
             ForwardReply::InnerUnserved { op: 7 },
             ForwardReply::InnerRejectedStale { target_node_id: NodeId::mint() },
-            ForwardReply::InnerIndeterminate { reason: "r".into() },
+            ForwardReply::InnerIndeterminate { reason: "r".into(), cause: IndeterminateCause::ReplyLost },
             ForwardReply::NotForwardable { op: 0x01 },
             ForwardReply::PeerUnresolved { reason: "p".into() },
             ForwardReply::NotReady { reason: "n".into() },

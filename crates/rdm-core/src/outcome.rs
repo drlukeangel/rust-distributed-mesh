@@ -170,8 +170,19 @@ pub enum NotSentReason {
     AdmissionBlocked(String),
 }
 
+impl NotSentReason {
+    /// The local proving condition's code; an expired permit wait is an owner's bound too.
+    pub fn code(&self) -> Code {
+        match self {
+            Self::Deadline | Self::StreamBudget => Code::DeadlineExceeded,
+            Self::NotForwardable { .. } => Code::FailedPrecondition,
+            _ => Code::Unavailable,
+        }
+    }
+}
+
 /// Why a resolver gave no node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ResolveFailure {
     /// No node by that target was ever known.
     Unknown,
@@ -196,8 +207,6 @@ pub enum IndeterminateReason {
     CorruptReply,
     /// A framing/order violation on the reply direction.
     ProtocolViolation(String),
-    /// The inner call committed at the final target; the carrier could not learn its outcome.
-    Carried(String),
     /// The receiving birth's proven exit or accepted removal ended the owed request after its
     /// commit (node-rpc.md §43): named with what the resolver holds instead.
     ReceiverGone(String),
@@ -209,7 +218,7 @@ impl IndeterminateReason {
         match self {
             Self::ReceiverGone(_) => Code::Unavailable,
             Self::ReplyDeadline => Code::DeadlineExceeded,
-            Self::ReplyLost(_) | Self::Carried(_) => Code::Unknown,
+            Self::ReplyLost(_) => Code::Unknown,
             Self::Reset(n) if *n == u64::from(ResetCode::InternalRpcFailure.code()) => Code::Internal,
             Self::Reset(_) => Code::Unknown,
             Self::UnsupportedReplyVariant => Code::InvalidArgument,
@@ -248,6 +257,9 @@ pub struct NotSent {
 }
 
 impl NotSent {
+    /// The code derived from the typed pre-commit reason.
+    pub fn code(&self) -> Code { self.reason.code() }
+
     /// Why the call ended before the cut.
     pub fn reason(&self) -> &NotSentReason {
         &self.reason
@@ -532,10 +544,10 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
             Err(DecodeFailure::UnknownVariant) => indeterminate(IndeterminateReason::UnsupportedReplyVariant),
             Err(DecodeFailure::Corrupt) => indeterminate(IndeterminateReason::CorruptReply),
         },
-        ForwardReply::InnerNotSent { reason } => not_sent(NotSentReason::Carried(reason)),
+        ForwardReply::InnerNotSent { cause, reason } => not_sent(cause.into_reason(reason)),
         ForwardReply::InnerUnserved { op } => RpcOutcome::Unserved(Unserved { op }),
         ForwardReply::InnerRejectedStale { target_node_id } => RpcOutcome::RejectedStale(RejectedStale { target_node_id: target_node_id.into() }),
-        ForwardReply::InnerIndeterminate { reason } => indeterminate(IndeterminateReason::Carried(reason)),
+        ForwardReply::InnerIndeterminate { cause, reason } => indeterminate(cause.into_reason(reason)),
         ForwardReply::CarrierEdgeLost { reason } => not_sent(NotSentReason::CarrierEdgeLost(reason)),
         ForwardReply::NotForwardable { op } => not_sent(NotSentReason::NotForwardable { op }),
         ForwardReply::NoInnerBudget { remaining_ms, reserve_ms } => not_sent(NotSentReason::CarrierNoBudget { remaining_ms, reserve_ms }),

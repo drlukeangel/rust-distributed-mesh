@@ -51,3 +51,16 @@ A. The Forward call's code describes the carrier's own answered operation (`OK` 
 B. Carry a typed reason (or the derived standard code) beside the existing explanation. Wire changes and is resealed by an explicit exception; same publisher, timer and tier; the origin then derives the exact inner code without reading strings.
 
 No string-prefix classifier is proposed: it contradicts §25 and would assign semantics to human explanations.
+
+
+## Ruled B implementation evidence
+
+RED `3956dcb4`: the live target applied the request, was shut down, and the carrier proved receiver-gone; the origin's typed local code was UNKNOWN (0 passed, 1 failed). GREEN preserves the typed cause, not a reason-string prefix. The live cell asserts the origin's ReceiverGone and UNAVAILABLE and one handler execution.
+
+[GREEN flame](http://localhost:16686/trace/5ad35f0954368df9a9c9c515bd783fc1), retrieved from Jaeger (10 spans): the actual receiver exit, inner outcome, outer Forward answer and origin's `rdm.test.outcome.update.via-carried-cause { code=UNAVAILABLE, cause=receiver-gone, certainty=Indeterminate }`. JSON under `target/evidence/outcome-codes/q40-green.json`.
+
+Verification: 68 core functional cells (including all existing byte goldens), 110 core unit cells, all 15 Forward cells, all 105 audit cells; 0 failures. The new network cell sends all three inner causes with the same explanation and proves their distinct typed codes at the origin. Every typed cause has a manual byte oracle; two old cause-less frames are refused. Forward keeps its 14 reply positions; cause is appended after reason in the two affected variants. Frame/wire references regenerate. No dual decoder.
+
+The additive 17-code definition and local reason-to-code accessors are needed for these ruled cells. The shared ReplyKind view, all protocol code classifiers, runtime auth-code name check and the three outcome page replacements remain the separate e5.1 landing. Its prepared branch is `codex/i144-e5-outcome-codes` at `05659fe2`.
+
+Exact page old → new: [forward-outcome-causes.md](../proposal/forward-outcome-causes.md). Still awaiting Luke's yes; no architecture page has been edited and no landing gate run before that approval.

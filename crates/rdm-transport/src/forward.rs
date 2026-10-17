@@ -13,7 +13,7 @@ use crate::resolve::NodeTarget;
 use crate::server::{PeerContext, ServerBuilder};
 use rdm_core::NodeId;
 use rdm_core::catalog::OpOwner;
-use rdm_core::forward::{Forward, ForwardReply, ForwardRequest, FORWARD_REPLY_RESERVE};
+use rdm_core::forward::{IndeterminateCause, NotSentCause, Forward, ForwardReply, ForwardRequest, FORWARD_REPLY_RESERVE};
 use rdm_core::outcome::{carried, NotSentReason, PreCommit, RpcOutcome};
 use rdm_core::protocol::NodeProtocol;
 use std::sync::Arc;
@@ -180,15 +180,15 @@ async fn carry_once(
                     .in_scope(|| tracing::info!("the carrier's own Direct edge to the final target is not Active"));
                     ForwardReply::CarrierEdgeLost { reason }
                 }
-                None => ForwardReply::InnerNotSent { reason: format!("{:?}", n.reason()) },
+                None => ForwardReply::InnerNotSent { cause: NotSentCause::from_reason(n.reason()), reason: format!("{:?}", n.reason()) },
             }
         }
         RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { op: u.op() },
         RpcOutcome::RejectedStale(r) => match NodeId::parse(r.target_node_id()) {
             Ok(target_node_id) => ForwardReply::InnerRejectedStale { target_node_id },
-            Err(e) => ForwardReply::InnerIndeterminate { reason: format!("the stale target {:?} is not a NodeId: {e}", r.target_node_id()) },
+            Err(e) => ForwardReply::InnerIndeterminate { cause: IndeterminateCause::ProtocolViolation, reason: format!("the stale target {:?} is not a NodeId: {e}", r.target_node_id()) },
         },
-        RpcOutcome::Indeterminate(i) => ForwardReply::InnerIndeterminate { reason: format!("{:?}", i.reason()) },
+        RpcOutcome::Indeterminate(i) => ForwardReply::InnerIndeterminate { cause: IndeterminateCause::from_reason(i.reason()), reason: format!("{:?}", i.reason()) },
     }
 }
 

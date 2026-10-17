@@ -79,13 +79,13 @@ async fn a_target_the_carrier_cannot_resolve_is_not_sent() {
     let r = rig().await;
     let stranger = NodeId::mint();
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &stranger, &probe(b"ping"), &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(_))), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Unknown))), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
 /// CONTRACT: the inner call applied at the target, then the target exited. The carrier's inner call
 /// is owed to the target until the target's exit is proven in the carrier's view; the proof ends it
-/// `Indeterminate(ReceiverGone)`, and the carrier hands that reason to the origin as `Carried`.
+/// `Indeterminate(ReceiverGone)`, and the carrier preserves that typed reason at the origin.
 #[tokio::test]
 async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone() {
     if crate::own_process::delegated(module_path!(), "a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone") { return; }
@@ -103,12 +103,17 @@ async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carri
     };
     let ((out, _), ()) = tokio::join!(call, kill);
     assert!(
-        matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::Carried(why) if why.starts_with("ReceiverGone("))),
+        matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))),
         "the carrier learned the target's proven exit and carried it: {out:?}"
     );
     assert_eq!(r.handled.load(Ordering::SeqCst), 1);
-    assert_eq!(match &out { RpcOutcome::Indeterminate(i) => i.code(), other => panic!("expected indeterminate: {other:?}") }, rdm_core::outcome::Code::Unavailable, "Q40: proven receiver-gone is unavailable, including through a carrier");
-    }.instrument(tracing::info_span!("rdm.test.outcome.serve.via-carried-exit")).await;
+    let code = match &out { RpcOutcome::Indeterminate(i) => i.code(), other => panic!("expected indeterminate: {other:?}") };
+    tracing::Span::current().record("code", code.name());
+    tracing::Span::current().record("cause", "receiver-gone");
+    tracing::info_span!(target: "rdm_test", "rdm.test.outcome.update.via-carried-cause", code = code.name(), cause = "receiver-gone", certainty = "Indeterminate")
+        .in_scope(|| tracing::info!("the origin rebuilt the inner typed reason"));
+    assert_eq!(code, rdm_core::outcome::Code::Unavailable, "Q40: proven receiver-gone is unavailable, including through a carrier");
+    }.instrument(tracing::info_span!(target: "rdm_test", "rdm.test.outcome.serve.via-carried-exit", code = tracing::field::Empty, cause = tracing::field::Empty)).await;
     rdm_transport::flush_before_exit();
 
 }
@@ -148,7 +153,7 @@ async fn a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_ed
 async fn a_carrier_with_no_non_active_edge_fact_keeps_the_plain_inner_not_sent() {
     let r = rig_with(Some(Arc::new(EdgeFact(None))), true).await;
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(_))), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Connection(_))), "{out:?}");
     assert_eq!(r.carrier_client.delivery().stats().resends.load(Ordering::SeqCst), 0, "the failed dial is the carrier's answer, never resent");
 }
 
@@ -272,7 +277,7 @@ async fn spy_carrier() -> (NodeRpcClient, NodeTarget, Arc<std::sync::Mutex<Vec<u
             async move {
                 let ForwardRequest::Forward { remaining_ms, .. } = req;
                 s.lock().unwrap().push(remaining_ms);
-                Ok::<_, HandlerFault>(ForwardReply::InnerNotSent { reason: "spy".into() })
+                Ok::<_, HandlerFault>(ForwardReply::InnerNotSent { reason: "spy".into(), cause: rdm_core::forward::NotSentCause::Connection })
             }
         })
         .seal(served(&birth))
@@ -311,4 +316,32 @@ async fn a_nested_forward_and_a_draining_carrier_are_still_refused_by_name() {
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(why) if why.contains("connections-deleting"))), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
+}
+
+/// Controlled typed inner outcomes traverse a real Forward codec and stream. All explanation
+/// strings are identical. The genuine inner receiver exit is exercised by the live cell above.
+#[tokio::test]
+async fn every_inner_indeterminate_cause_crosses_a_carrier_with_its_code() {
+    use rdm_core::forward::IndeterminateCause;
+    use rdm_core::outcome::Code;
+    for (cause, code) in [(IndeterminateCause::ReceiverGone, Code::Unavailable), (IndeterminateCause::ReplyDeadline, Code::DeadlineExceeded), (IndeterminateCause::ReplyLost, Code::Unknown)] {
+        let birth = birth();
+        let server = ServerBuilder::new().ledger(test_ledger())
+            .serve::<Forward, _, _>(OpOwner::Core, move |_peer, _req: ForwardRequest| async move {
+                let typed_inner = cause.into_reason("same explanation".into());
+                Ok::<_, HandlerFault>(ForwardReply::InnerIndeterminate { cause: IndeterminateCause::from_reason(&typed_inner), reason: "same explanation".into() })
+            }).seal(served(&birth)).unwrap();
+        let carrier = start(server, SecretKey::generate(), "mesh1.rpc.2", birth).await;
+        let origin = client_with(&[&carrier.resolved]).await;
+        let target = NodeTarget::ExactNode(carrier.resolved.node_id.clone());
+        let (out, _) = origin.call_via::<Probe>(&target, &NodeId::mint(), &probe(b"x"), &CallOptions::default()).await;
+        match out {
+            RpcOutcome::Indeterminate(i) => {
+                assert_eq!(i.code(), code);
+                assert_eq!(IndeterminateCause::from_reason(i.reason()), cause);
+            }
+            other => panic!("typed cause {cause:?}: {other:?}"),
+        }
+        carrier.router.shutdown().await.unwrap();
+    }
 }

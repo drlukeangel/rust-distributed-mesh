@@ -3,7 +3,7 @@
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rdm_core::NodeId;
-use rdm_core::forward::{Forward, ForwardReply, ForwardRequest};
+use rdm_core::forward::{IndeterminateCause, NotSentCause, Forward, ForwardReply, ForwardRequest};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
 
@@ -31,10 +31,10 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
     use ForwardReply::*;
     let fixtures = [
         (Forwarded { inner: vec![1] }, "00 01 01".to_string()),
-        (InnerNotSent { reason: "r".into() }, "01 01 72".into()),
+        (InnerNotSent { reason: "r".into(), cause: NotSentCause::Connection }, "01 01 72 01".into()),
         (InnerUnserved { op: 7 }, "02 07".into()),
         (InnerRejectedStale { target_node_id: NodeId::parse(NODE).unwrap() }, format!("03 0c {NODE_HEX}")),
-        (InnerIndeterminate { reason: "r".into() }, "04 01 72".into()),
+        (InnerIndeterminate { reason: "r".into(), cause: IndeterminateCause::ReplyLost }, "04 01 72 02".into()),
         (NotForwardable { op: 1 }, "05 01".into()),
         (PeerUnresolved { reason: "p".into() }, "06 01 70".into()),
         (NotReady { reason: "n".into() }, "07 01 6e".into()),

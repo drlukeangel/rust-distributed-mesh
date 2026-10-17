@@ -121,12 +121,14 @@ A carrier's answer to a Forward call.
 | 0.0 | `inner` | `Vec<u8>` |  | The inner reply payload. |
 | 1 | **`InnerNotSent`** |  |  | The carrier proved the inner call never committed at the target. |
 | 1.0 | `reason` | `String` |  | Why the inner call never committed. |
+| 1.1 | `cause` | `NotSentCause` → [`NotSentCause`](#t-rdm_core-forward-NotSentCause) |  | The original typed cause, independent of the explanation. |
 | 2 | **`InnerUnserved`** |  |  | The target does not serve the inner op. |
 | 2.0 | `op` | `u8` |  | The op the target does not serve. |
 | 3 | **`InnerRejectedStale`** |  |  | The carrier's resolver stopped naming the birth the inner call was dialled to, before the |
 | 3.0 | `target_node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The node the inner call addressed. |
 | 4 | **`InnerIndeterminate`** |  |  | The inner call committed at the target and its outcome is unknown. |
 | 4.0 | `reason` | `String` |  | Why the outcome is unknown. |
+| 4.1 | `cause` | `IndeterminateCause` → [`IndeterminateCause`](#t-rdm_core-forward-IndeterminateCause) |  | The original typed cause, independent of the explanation. |
 | 5 | **`NotForwardable`** |  |  | The inner protocol is not forwardable through this carrier. |
 | 5.0 | `op` | `u8` |  | The inner op that is not forwardable. |
 | 6 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
@@ -2087,6 +2089,25 @@ The call a cut held first, as the decorator offered it.
 
 One process birth of a logical node (`RuntimeIncarnationId`). Equality only: never ordered.
 
+<a id="t-rdm_core-forward-IndeterminateCause"></a>
+
+### `IndeterminateCause`
+
+`crates/rdm-core/src/forward.rs` · enum · 7 variants · rdm-core
+
+The typed reason an inner invocation has no reply; the explanation is a separate field.
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`ReceiverGone`** |  |  | The receiving birth is proven exited or removed. |
+| 1 | **`ReplyDeadline`** |  |  | The owner's reply bound lapsed after commit. |
+| 2 | **`ReplyLost`** |  |  | The reply was lost after commit. |
+| 3 | **`Reset`** |  |  | A reset after commit; its numeric code is evidence. |
+| 3.0 | `0` | `u64` |  |  |
+| 4 | **`UnsupportedReplyVariant`** |  |  | The caller cannot decode this reply variant. |
+| 5 | **`CorruptReply`** |  |  | The reply bytes are corrupt. |
+| 6 | **`ProtocolViolation`** |  |  | The response violated its framing or ordering contract. |
+
 <a id="t-rdm_core-lifecycle-LifecycleOp"></a>
 
 ### `LifecycleOp`
@@ -2392,6 +2413,32 @@ Why a declaration was not applied, by name.
 | 1.0 | `sender` | `String` |  |  | The sender, as the receiver resolved it. |
 | 2 | **`SubjectUnknown`** |  |  | `as_str() = "subject-unknown"` | The receiver does not hold the subject at all. |
 
+<a id="t-rdm_core-forward-NotSentCause"></a>
+
+### `NotSentCause`
+
+`crates/rdm-core/src/forward.rs` · enum · 11 variants · rdm-core
+
+The typed reason an inner invocation did not reach its commit cut.
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`Resolve`** |  |  | The resolver's typed result. |
+| 0.0 | `0` | `crate::outcome::ResolveFailure` → [`ResolveFailure`](#t-rdm_core-outcome-ResolveFailure) |  |  |
+| 1 | **`Connection`** |  |  | Dial or stream open failed before commit. |
+| 2 | **`StreamBudget`** |  |  | The permit was not available before the owner's deadline. |
+| 3 | **`Deadline`** |  |  | The owner's bound lapsed before commit. |
+| 4 | **`FrameNotSent`** |  |  | The unfinished request was cut. |
+| 5 | **`Carried`** |  |  | A carrier's own refusal proved no dispatch. |
+| 6 | **`CarrierEdgeLost`** |  |  | The carrier's own edge was lost. |
+| 7 | **`CarrierNoBudget`** |  |  | The remaining budget did not exceed the reserve. |
+| 7.0 | `remaining_ms` | `u64` |  | The origin's remaining milliseconds. |
+| 7.1 | `reserve_ms` | `u64` |  | The reply reserve in milliseconds. |
+| 8 | **`NotForwardable`** |  |  | The requested op cannot be forwarded. |
+| 8.0 | `op` | `u8` |  | The inner op. |
+| 9 | **`NoActiveRoute`** |  |  | No active route was selected. |
+| 10 | **`AdmissionBlocked`** |  |  | The source admits no new connection. |
+
 <a id="t-rdm_core-views-OsStopped"></a>
 
 ### `OsStopped`
@@ -2547,6 +2594,20 @@ One step of a `BuildChange::Recipe`: one node primitive acting on the node a `pa
 | 3.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
 | 4 | **`Delete`** |  |  | node.delete of the node at `node`: its identity and name are released, its storage kept. |
 | 4.0 | `node` | `PathName` → [`PathName`](#t-rdm_core-path-PathName) |  | The node. |
+
+<a id="t-rdm_core-outcome-ResolveFailure"></a>
+
+### `ResolveFailure`
+
+`crates/rdm-core/src/outcome.rs` · enum · 3 variants · rdm-core
+
+Why a resolver gave no node.
+
+| # | variant · field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | **`Unknown`** |  |  | No node by that target was ever known. |
+| 1 | **`Gone`** |  |  | The node departed and does not return. |
+| 2 | **`Unavailable`** |  |  | The node is known and cannot be reached now. |
 
 <a id="t-rdm_core-status-RetryOn"></a>
 
