@@ -205,3 +205,32 @@ fn served_named_connections_have_per_element_codes_in_both_protocols() {
     assert_eq!(outcomes[0].code, Code::Ok);
     assert_eq!(outcomes[1].code, Code::NotFound);
 }
+
+#[test]
+fn resolver_unknown_is_not_found_and_gone_is_unavailable_with_its_typed_detail() {
+    use rdm_core::outcome::{NotSentReason, PreCommit, ResolveFailure, RpcOutcome};
+    for (reason, code) in [(ResolveFailure::Unknown, Code::NotFound), (ResolveFailure::Gone, Code::Unavailable), (ResolveFailure::Unavailable, Code::Unavailable)] {
+        let out: RpcOutcome<()> = PreCommit::begin(1).not_sent(NotSentReason::Resolve(reason));
+        assert_eq!(out.code(), code);
+        assert!(out.proves_not_dispatched());
+        match out {
+            RpcOutcome::NotSent(n) => assert_eq!(n.reason(), &NotSentReason::Resolve(reason)),
+            other => panic!("resolver refusal before dispatch: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn lost_reply_is_unknown_but_handler_fault_and_protocol_violation_are_internal() {
+    use rdm_core::outcome::{IndeterminateReason, PreCommit, RequestFinished, RpcOutcome};
+    let committed = || PreCommit::begin(1).commit(RequestFinished::after_complete_write(1, 1).unwrap());
+    let lost: RpcOutcome<()> = committed().indeterminate(IndeterminateReason::ReplyLost("streaming EOF after Started before Terminal".into()));
+    assert_eq!(lost.code(), Code::Unknown);
+    let violation: RpcOutcome<()> = committed().indeterminate(IndeterminateReason::ProtocolViolation("Data before Started".into()));
+    assert_eq!(violation.code(), Code::Internal);
+    for (reset, code) in [(423, Code::Internal), (424, Code::Internal), (501, Code::Unknown)] {
+        let out: RpcOutcome<()> = committed().reset(reset);
+        assert_eq!(out.code(), code);
+        assert!(matches!(out, RpcOutcome::Indeterminate(_)));
+    }
+}
