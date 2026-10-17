@@ -1326,8 +1326,22 @@ async fn node_command_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transp
             let (send, mut recv) = conn.accept_bi().await.unwrap();
             // Deliberately split the read at every header byte: the body must be consumed even
             // when it is not delivered in the read that completes the transport header.
-            let h = read_header_chunks::<1>(&mut recv, &mut Vec::new()).await.unwrap();
+            let mut pending = Vec::new();
+            let h = read_header_chunks::<1>(&mut recv, &mut pending).await.unwrap();
             if matches!(h, TransportHeader::Request { .. }) {
+                // A request is its header AND its target/context/body sections. Until those are
+                // consumed, the next bytes in this direction are not transport ACK headers.
+                let mut chunk = [0u8; 4096];
+                loop {
+                    match decode_request(&pending, |_| Some(NodeCommand::MAX_REQUEST_FRAME_BYTES)) {
+                        Ok((op, _, _)) => { assert_eq!(op, NodeCommand::OP); break; }
+                        Err(rdm_core::framing::RequestHead::NeedMore | rdm_core::framing::RequestHead::Targeted { .. } | rdm_core::framing::RequestHead::Ready { .. }) => {
+                            let n = recv.read(&mut chunk).await.unwrap().expect("the request body arrives whole");
+                            pending.extend_from_slice(&chunk[..n]);
+                        }
+                        Err(other) => panic!("the 0x22 request does not decode: {other:?}"),
+                    }
+                }
                 break (conn, send, recv, h);
             }
             assert!(matches!(h, TransportHeader::Ack { .. }), "only an earlier frame's ack may precede the invocation");
