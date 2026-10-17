@@ -225,7 +225,26 @@ No new ruling question is raised by this comparison; R10 remains open and no e3 
   onto it; close R10 by construction (a status carries its author's committed revision in `order`).
   Not before e2: a field chosen before its row proved the need is the universal-field design a1
   refused, and a second reseal would follow.
-- **Shape (to be frozen against the e2 rows):**
+- **Standard (Luke, 2026-10-16: "just standards, CloudEvents").** The envelope is CloudEvents 1.0 with
+  its Sequence extension; no RDM-named attribute on the wire. The mapping, which e3's packet freezes
+  and a1 reviews first:
+
+  | CloudEvents attribute | RDM meaning |
+  |---|---|
+  | `specversion` | `1.0` |
+  | `id` | the delivery identity, one per frame, kept on a resend |
+  | `source` | the author's exact birth as a URI, `rdm://<fabric_id>/<node_id>/<incarnation>`; a new incarnation is a new source |
+  | `type` | the frame kind (`rdm.mesh.digest`, `rdm.mesh.members`, `rdm.node.deleted`, …); a reserved kind is a `type` the receiver refuses |
+  | `subject` | the key the fact is about: a birth, `(mesh, publisher)`, a cohort, a fabric |
+  | `sequence` (Sequence extension) | the per-`(source, subject)` version: `digest_seq`, `topology_version`, the seat `revision` |
+  | `time` | rafka-time of the fact; never an ordering |
+  | `data` | the body |
+
+  Receive rule in those terms: for one `(source, subject)`, a higher `sequence` installs, equal with
+  identical content is a duplicate, lower is stale, a gap is repair; a new incarnation in `source`
+  supersedes the old one's facts for that subject. The page cites the CloudEvents 1.0 specification
+  and its Sequence extension.
+- **Shape before the standard was chosen (superseded by the table above; kept for the e2 notes):**
 
   ```text
   GossipFrame {
