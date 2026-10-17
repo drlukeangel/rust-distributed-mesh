@@ -416,7 +416,9 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                             let (invocation, seq) = a.position();
                             (invocation.clone(), seq)
                         });
-                        let (invocation_id, seq) = self.position.as_ref().map(|(id, seq)| (id.to_string(), *seq)).expect("stream response carries its transport position");
+                        let Some((invocation_id, seq)) = self.position.as_ref().map(|(id, seq)| (id.to_string(), *seq)) else {
+                            return Some(self.fail(StreamFailure::Violation("a response frame carries no transport position".into())));
+                        };
                         let kind = P::frame_kind(&frame);
                         let code = P::classify_reply(&frame).code();
                         let detail = P::reply_detail(&frame);
