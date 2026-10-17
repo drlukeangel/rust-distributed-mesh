@@ -114,7 +114,7 @@ fn in_netns(id: &str, tool: &str, args: &[&str], stdin: Option<&str>) -> Result<
     let binary = std::fs::canonicalize(format!("/usr/sbin/{tool}"))
         .map_err(|e| format!("resolve the host's {tool}: {e}"))?;
     let mut cmd = Command::new("docker");
-    cmd.args(["exec", "--privileged", "-i", id]).arg(&binary).arg(tool).args(args);
+    cmd.args(["exec", "--user", "0", "--privileged", "-i", id]).arg(&binary).arg(tool).args(args);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("{tool} in the namespace of {id}: {e}"))?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {

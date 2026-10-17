@@ -322,7 +322,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     };
     let cut_at = now_nanos();
     let rules_at_cut = silenced.rules().expect("the packet filters are listed");
-    let primitive = json!({"docker": "exec --privileged <exact-id> xtables-multi iptables-restore", "network": network, "chain": container_faults::SILENCE_CHAIN, "silenced": silenced, "rules": rules_at_cut});
+    let primitive = json!({"docker": "exec --user 0 --privileged <exact-id> xtables-multi iptables-restore", "network": network, "chain": container_faults::SILENCE_CHAIN, "silenced": silenced, "rules": rules_at_cut});
     let mut ev = Evidence::new(Family::PartitionHeal, format!("network:silence-{silenced_subject}"));
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
     let after_cut = inspect_all(&silenced);
