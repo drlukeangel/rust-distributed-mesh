@@ -729,6 +729,18 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   re-claimed"). The Build watcher is an owner that demonstrates reconstruction: reattach by `build_id`
   after a connection close, resume from the receipts. Cell: a watched Build whose connection closes
   mid-stream reattaches and ends `Complete` with no step run twice. Not part of R24's landing.
+  Landed `bfb6078c` (reattach by re-submit). The envelope's reattachment section (node-rpc-envelope.md
+  "Frames, durable receipts and reattachment": "`build.get` for the receipts, then the outer stream
+  again, resuming from the receipts") makes each reattachment a `build.get` first:
+  `BuildCarrier::reattach` reads the receipts, then re-submits from the current attempt they name, and
+  `follow_with` keeps each completed receipt once as its step frame before reading the stream again;
+  the cell helper (`Estate::follow`) reattaches the same way. Cell
+  `build_op::a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_completes_with_no_step_run_twice`
+  now asserts a `build.get` per reattachment: RED on `afff4d44` (1 reattachment, only the cell's own
+  read), GREEN after (flame: the reattachment's `build.get`
+  http://192.168.68.99:16687/trace/e11ad210a16f1a5b2f91750bbd732055, then the outer stream again
+  http://192.168.68.99:16687/trace/2f113923fc46c101a5f11cf4939bb4ec, `complete`); `build_op::` and
+  `sticky_seat::` 17/17, rdm-client 3/3.
   **State: done.** `rdm_client::follow_with` / `BuildCarrier::follow` read the stream; a break
   (`Indeterminate`) or a `SeatMoved` frame reattaches by `build_id` with `resubmit(build_id, attempt)`,
   steps de-duplicated by (attempt, operation, step), ending on `Complete | Failed | Got | Deleted`;

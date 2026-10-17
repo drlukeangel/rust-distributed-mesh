@@ -259,12 +259,14 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 
 /// What a `build.attempt.run` sent to `to` for `attempt` answers, whole: the refusal, or the first frame.
 /// CONTRACT (i146; build.md: "a live run is reattached, never re-claimed"; Q22: the reattach after a
-/// `Budget::Stream` connection closes is the owner's): a watched Build whose connection closes
-/// mid-stream is reattached by its build id from the attempt it carried and ends `Complete`, the run
-/// it watched left running: no second attempt, no step receipted twice. The Build grows mesh2 by an
-/// rpc node; its watcher reads the first frame, then every connection of the watching client is
-/// closed, the stream's with them. Must NOT happen: the watcher ending on the break, a second
-/// attempt, a step run twice.
+/// `Budget::Stream` connection closes is the owner's; node-rpc-envelope.md "Frames, durable receipts and
+/// reattachment": "`build.get` for the receipts, then the outer stream again, resuming from the
+/// receipts"): a watched Build whose connection closes mid-stream is reattached by its build id, each
+/// reattachment a `build.get` and then the outer stream again, and ends `Complete`, the run it watched
+/// left running: no second attempt, no step receipted twice. The Build grows mesh2 by an rpc node; its
+/// watcher reads the first frame, then every connection of the watching client is closed, the stream's
+/// with them. Must NOT happen: the watcher ending on the break, a reattachment that reads no receipts,
+/// a second attempt, a step run twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_completes_with_no_step_run_twice() {
     let test = "a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_completes_with_no_step_run_twice";
@@ -294,6 +296,9 @@ async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_co
     estate.stop().await;
     let spans = estate.spans();
     let build = build_id.to_string();
+    // Each reattachment read the Build's receipts before its stream again; the cell's own read is one more.
+    let gets = spans_named(&spans, "rdm.node_admin.build.serve.via-node-rpc").into_iter().filter(|sp| s(&sp["attributes"]["call"]) == "get").count();
+    assert!(gets as u32 > followed.reattached, "each reattachment read build.get ({} reattachment(s), {gets} build.get read(s) with the cell's own)", followed.reattached);
     let reconcile = spans_named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == build)

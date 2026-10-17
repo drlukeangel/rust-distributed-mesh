@@ -250,16 +250,27 @@ pub struct Followed {
     pub reattached: u32,
 }
 
+/// What one reattachment read and opened (node-rpc-envelope.md "Frames, durable receipts and
+/// reattachment": "`build.get` for the receipts, then the outer stream again, resuming from the
+/// receipts").
+pub struct Reattached {
+    /// The receipts `build.get` read, every attempt's, in order.
+    pub receipts: Vec<StepReceipt>,
+    /// The outer stream, opened again from the current attempt the receipts name.
+    pub stream: BuildStream,
+}
+
 /// Follow `stream` to its terminal (build.md: "a live run is reattached, never re-claimed"; i146 Q22:
 /// the reattach after a `Budget::Stream` connection closes is the owner's). A stream that breaks
 /// before its terminal (its connection closed: `Indeterminate`), ends without one, or ends
-/// `SeatMoved` is reattached through `reattach` by its `build_id` from the attempt it carried; a step a
-/// reattachment replays is kept once. The terminal is `Complete`, `Failed`, `Got` or `Deleted`. `Err`
-/// is a reattachment refused or not made, named: nothing here waits or tries again on its own.
+/// `SeatMoved` is reattached through `reattach` by its `build_id` from the attempt it carried: the
+/// receipts it reads are kept as step frames, each completed step once, then the stream it opens again
+/// is read on, a step it replays kept once. The terminal is `Complete`, `Failed`, `Got` or `Deleted`.
+/// `Err` is a reattachment refused or not made, named: nothing here waits or tries again on its own.
 pub async fn follow_with<F, Fut>(mut stream: BuildStream, mut reattach: F) -> Result<Followed, CallEnd>
 where
     F: FnMut(BuildId, u32) -> Fut,
-    Fut: std::future::Future<Output = Result<BuildStream, CallEnd>>,
+    Fut: std::future::Future<Output = Result<Reattached, CallEnd>>,
 {
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let mut out = Followed { frames: Vec::new(), reattached: 0 };
@@ -287,14 +298,30 @@ where
             }
         }
         out.reattached += 1;
-        stream = reattach(build_id.clone(), attempt).await?;
+        let again = reattach(build_id.clone(), attempt).await?;
+        for r in again.receipts.into_iter().filter(|r| r.result == rdm_core::build::StepResult::Complete) {
+            if steps.insert((r.attempt, r.operation.clone(), r.step.clone())) {
+                out.frames.push(BuildFrame::Step { attempt: r.attempt, operation: r.operation, step: r.step });
+            }
+        }
+        stream = again.stream;
     }
 }
 
 impl BuildCarrier {
-    /// [`follow_with`] through this carrier: a reattachment is a re-submit of the Build here.
+    /// [`follow_with`] through this carrier, each reattachment [`Self::reattach`].
     pub async fn follow(&self, stream: BuildStream) -> Result<Followed, CallEnd> {
-        follow_with(stream, |id, from| async move { self.resubmit(&id, from).await }).await
+        follow_with(stream, |id, _from| async move { self.reattach(&id).await }).await
+    }
+
+    /// One reattachment by `build_id` (node-rpc-envelope.md "Frames, durable receipts and
+    /// reattachment"): `build.get` for the receipts, then the outer stream again, a re-submit from the
+    /// current attempt the receipts name. Never a new execution: the re-submit of a Build already held
+    /// carries its frames.
+    pub async fn reattach(&self, build_id: &BuildId) -> Result<Reattached, CallEnd> {
+        let got = self.get(build_id).await?;
+        let stream = self.resubmit(build_id, got.attempt).await?;
+        Ok(Reattached { receipts: got.steps, stream })
     }
 
     /// A carrier over `client`, starting at the fabric-primary `fabric_primary`.

@@ -551,7 +551,7 @@ impl Estate {
     /// reaches now. A failed Build or a reattachment refused is a defect of the cell, named.
     pub async fn follow(&self, stream: BuildStream) -> Reconciled {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
-        let followed = rdm_client::follow_with(stream, |id, from| async move { self.carrier().await.resubmit(&id, from).await })
+        let followed = rdm_client::follow_with(stream, |id, _from| async move { self.carrier().await.reattach(&id).await })
             .await
             .unwrap_or_else(|e| panic!("Build {build_id} could not be followed to its terminal from attempt {attempt}: {e}"));
         match followed.frames.last() {

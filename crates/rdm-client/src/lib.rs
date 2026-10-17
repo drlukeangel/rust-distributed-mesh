@@ -8,7 +8,7 @@ mod objects;
 mod peers;
 mod workflow;
 
-pub use build_stream::{follow_with, BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, Followed, MeshCounts, StartDisposition};
+pub use build_stream::{follow_with, BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, Followed, MeshCounts, Reattached, StartDisposition};
 pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
