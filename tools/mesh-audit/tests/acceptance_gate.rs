@@ -47,10 +47,15 @@ fn fixture(tag: &str, command: &str) -> Fixture {
 }
 
 fn run(f: &Fixture) -> (bool, String, Value) {
+    run_env(f, &[])
+}
+
+fn run_env(f: &Fixture, env: &[(&str, &Path)]) -> (bool, String, Value) {
     let out = Command::new("bash")
         .arg(root().join("scripts/i143-acceptance-gate.sh"))
         .arg(&f.job)
         .env("I143_ACCEPTANCE_JOBS", &f.registry)
+        .envs(env.iter().map(|(k, v)| (*k, *v)))
         .current_dir(root())
         .output()
         .expect("the runner starts");
@@ -212,4 +217,40 @@ fn a_model_cell_needs_no_span_and_only_a_unit_cell_may_declare_it() {
     let out = Command::new("bash").arg(root().join("scripts/i143-acceptance-gate.sh")).arg(&p.job).env("I143_ACCEPTANCE_JOBS", &p.registry).env("I143_ACCEPTANCE_SKIP_BUILD", "1").current_dir(root()).output().unwrap();
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!out.status.success() && text.contains("model is for UNIT cells only"), "{text}");
+}
+
+/// The suite built once: registry commands keep their environment and libtest arguments,
+/// execute that exact artifact in its crate directory, and never invoke Cargo in a live batch.
+#[test]
+fn a_prebuilt_acceptance_cell_executes_the_gate_artifact_without_invoking_cargo() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture("prebuilt", "KEPT=yes cargo test -p rdm-test --test main fixture_cell -- --exact");
+    let bin = f.dir.join("bin");
+    let crate_dir = f.dir.join("crate");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&crate_dir).unwrap();
+    let fake_cargo = bin.join("cargo");
+    std::fs::write(&fake_cargo, "#!/bin/sh\necho 'Cargo must not execute in a prebuilt batch' >&2\nexit 77\n").unwrap();
+    std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let exe = bin.join("the-gate-test-binary");
+    std::fs::write(&exe, r#"#!/bin/sh
+[ "$*" = 'fixture_cell --exact' ] || exit 21
+[ "$KEPT" = yes ] || exit 22
+[ "$PWD" = "$CARGO_MANIFEST_DIR" ] || exit 23
+printf '{"passed":true}\n' > "$I143_ACCEPTANCE_DIR/result.json"
+printf '[]\n' > "$I143_ACCEPTANCE_DIR/spans.json"
+echo 'running 1 test'
+echo 'test fixture_cell ... ok'
+echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'
+"#).unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let artifacts = f.dir.join("artifacts.json");
+    let row = serde_json::json!({"reason":"compiler-artifact", "package_id":"path+file:///fixture/rdm-test#0.1.0", "manifest_path":crate_dir.join("Cargo.toml"), "profile":{"test":true}, "target":{"name":"main", "kind":["test"]}, "executable":exe});
+    std::fs::write(&artifacts, serde_json::to_string(&row).unwrap()).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = PathBuf::from(std::env::join_paths(paths).unwrap());
+    let (ok, text, receipt) = run_env(&f, &[("I143_ACCEPTANCE_SKIP_BUILD", Path::new("1")), ("I143_PREBUILT_ARTIFACTS", &artifacts), ("PATH", &path)]);
+    assert!(ok, "the registered cell must execute the built artifact, preserving its environment, cwd and arguments: {text}\n{receipt}");
+    assert_eq!(receipt["outcome"], "ok");
 }
