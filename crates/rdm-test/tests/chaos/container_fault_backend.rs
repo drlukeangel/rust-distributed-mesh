@@ -70,13 +70,28 @@ fn node_in<'a>(nodes: &'a [Value], name: &str) -> Option<&'a Value> {
 }
 
 /// The three legs to one exact node: Direct, ViaPeer through `carrier`, and NoActiveRoute.
-fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
+async fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
     let exact = format!("exact:{target_id}");
-    json!({
-        "direct": estate.probe(&["get", "--target", &exact, "--key", "iso"]),
-        "via_peer": estate.probe(&["get", "--target", &exact, "--via", &format!("path:{carrier}"), "--key", "iso"]),
-        "no_active_route": estate.probe(&["get", "--target", &exact, "--no-route", "--key", "iso"]),
-    })
+    let calls = [
+        ("direct", vec!["get".to_string(), "--target".into(), exact.clone(), "--key".into(), "iso".into()]),
+        ("via_peer", vec!["get".to_string(), "--target".into(), exact.clone(), "--via".into(), format!("path:{carrier}"), "--key".into(), "iso".into()]),
+        ("no_active_route", vec!["get".to_string(), "--target".into(), exact, "--no-route".into(), "--key".into(), "iso".into()]),
+    ];
+    let probe = estate.probe_handle();
+    let birth = estate.entry_birth();
+    let tasks: Vec<_> = calls.into_iter().map(|(leg, args)| {
+        let (probe, birth) = (probe.clone(), birth.clone());
+        tokio::task::spawn_blocking(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            (leg, probe.run(&birth, &args).expect("the route probe answers by name"))
+        })
+    }).collect();
+    let mut replies = serde_json::Map::new();
+    for task in tasks {
+        let (leg, reply) = task.await.expect("the route probe completed");
+        replies.insert(leg.to_string(), reply);
+    }
+    Value::Object(replies)
 }
 
 /// A leg reduced to what must be stable while the silence holds: the typed outcome and the leg.
@@ -275,7 +290,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let put = estate.probe(&["put", "--target", &format!("exact:{target_id}"), "--key", "iso", "--value", "before-isolation"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["incarnation_id"], target_inc.as_str(), "{put}");
-    let control = legs(&estate, &target_id, &carrier);
+    let control = legs(&estate, &target_id, &carrier).await;
     assert!(replied(&control["direct"]) && replied(&control["via_peer"]), "the healthy control reaches the node by both routes: {control}");
     assert_eq!(control["via_peer"]["route"], "via-peer", "{control}");
     assert_eq!(control["no_active_route"]["outcome"], "NotSent", "{control}");
@@ -288,7 +303,25 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // The cut: every container of the mesh silenced against the rest of the estate, held. Each keeps
     // its interface and stays attached to the fabric network.
     let isolated_admins: Vec<String> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str() && n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
+    // Q50 A: this is a pre-expiry healing proof. The cut has its own release deadline,
+    // independent of the probes, and its plan is refused before any filter is installed.
+    let floor = rdm_core::cadence::staleness_floor();
+    let hold_floors = std::env::var("RDM_HUNG_HOLD_FLOORS").ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|n| *n >= 1).unwrap_or(10);
+    let hold = floor.saturating_mul(hold_floors);
+    let planned_silence = floor + Duration::from_secs(20);
+    assert!(planned_silence < hold, "planned silence {planned_silence:?} must be under the declared hold {hold_floors} × {floor:?} = {hold:?}");
+    let silence_started = std::time::Instant::now();
+    let release_at = silence_started + planned_silence;
     let silenced = container_faults::silence(&estate, &isolated_names, &fabric_primary).expect("the isolated mesh's containers are silenced");
+    let (lift_now, release) = std::sync::mpsc::channel();
+    let lift = {
+        let silenced = silenced.clone();
+        std::thread::spawn(move || {
+            let completed = release.recv_timeout(release_at.saturating_duration_since(std::time::Instant::now())).is_ok();
+            silenced.lift().expect("every container's packet filter is restored");
+            (now_nanos(), silence_started.elapsed(), completed)
+        })
+    };
     let cut_at = now_nanos();
     let rules_at_cut = silenced.rules().expect("the packet filters are listed");
     let primitive = json!({"docker": "run --net container:<id> --cap-add NET_ADMIN iptables-restore", "network": network, "chain": container_faults::SILENCE_CHAIN, "silenced": silenced, "rules": rules_at_cut});
@@ -318,26 +351,36 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     })
     .await;
 
-    // Reads while silent: provider state, the view, and the three legs.
-    let mut reads = Vec::new();
-    let mut silence = Vec::new();
-    for _ in 0..3 {
-        let l = legs(&estate, &target_id, &carrier);
-        let inspected = inspect_all(&silenced);
-        let rules = silenced.rules().expect("the packet filters are listed");
-        let nodes_now = observed(observer.clone()).await;
-        // The silenced side's own view, each of its admins' own node.get.
-        let mut own_views = serde_json::Map::new();
-        for name in &isolated_admins {
-            let seen: Value = match if cut == Cut::PeerMesh { local_nodes_at(&nodes, &silenced, name).await } else { nodes_at(&estate, name).await } {
-                Some(v) => json!(v.iter().map(|n| (s(&n["name"]), s(&n["status"]))).collect::<BTreeMap<_, _>>()),
-                None => json!("unanswered"),
-            };
-            own_views.insert(name.clone(), seen);
-        }
-        reads.push(silence_marker(&inspected, &rules, &nodes_now, &l));
-        silence.push(json!({"legs": l, "containers": inspected, "rules": rules, "own_views": own_views, "view": isolated_names.iter().map(|n| json!({"node": n, "status": node_in(&nodes_now, n).map(|x| x["status"].clone())})).collect::<Vec<_>>()}));
-    }
+    // Three independent observations run together; each retains all three routes,
+    // exact provider reads, filters and both sides' own views.
+    let observe = || async {
+        let provider = {
+            let silenced = silenced.clone();
+            tokio::task::spawn_blocking(move || {
+                let inspected = inspect_all(&silenced);
+                let rules = silenced.rules().expect("the packet filters are listed");
+                (inspected, rules)
+            })
+        };
+        let own = async {
+            let mut own_views = serde_json::Map::new();
+            for name in &isolated_admins {
+                let seen = if cut == Cut::PeerMesh { local_nodes_at(&nodes, &silenced, name).await } else { nodes_at(&estate, name).await };
+                own_views.insert(name.clone(), match seen {
+                    Some(v) => json!(v.iter().map(|n| (s(&n["name"]), s(&n["status"]))).collect::<BTreeMap<_, _>>()),
+                    None => json!("unanswered"),
+                });
+            }
+            own_views
+        };
+        let (l, provider, nodes_now, own_views) = tokio::join!(legs(&estate, &target_id, &carrier), provider, observed(observer.clone()), own);
+        let (inspected, rules) = provider.expect("the exact provider and filter observations complete");
+        let marker = silence_marker(&inspected, &rules, &nodes_now, &l);
+        let sample = json!({"legs": l, "containers": inspected, "rules": rules, "own_views": own_views, "view": isolated_names.iter().map(|n| json!({"node": n, "status": node_in(&nodes_now, n).map(|x| x["status"].clone())})).collect::<Vec<_>>()});
+        (marker, sample)
+    };
+    let (first, second, third) = tokio::join!(observe(), observe(), observe());
+    let (reads, silence): (Vec<_>, Vec<_>) = [first, second, third].into_iter().unzip();
     let last = inspect_all(&silenced);
     let held_at_last_read = silenced.active().expect("the packet filters are listed") && last.values().all(|i| i.networks.contains(&network));
     ev.fault = Some(FaultAck { held: after_cut.values().all(|i| i.networks.contains(&network)) && rules_at_cut.values().all(|r| r.contains(container_faults::SILENCE_CHAIN)), names: Some(json!(silenced.members.iter().map(|u| json!({"node": u.node, "container": u.id})).collect::<Vec<_>>())), held_at_last_read });
@@ -357,11 +400,11 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let fp_of = |nodes: &[Value]| nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
     let inc_during = node_in(&nodes_during, &target_name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
 
-    // The heal.
-    let healed_at = {
-        silenced.lift().expect("every container's packet filter is restored");
-        now_nanos()
-    };
+    // The heal. A deadline release also runs if an observation has not returned.
+    let _ = lift_now.send(());
+    let (healed_at, actual_silence, completed) = lift.join().expect("the cut's release completed");
+    assert!(actual_silence < hold, "the cut was lifted after {actual_silence:?}, past its declared {hold:?} hold");
+    assert!(completed, "the observations exceeded the planned {planned_silence:?} silence; the cut was lifted at its release deadline");
     let after_heal = inspect_all(&silenced);
     let hold_ended = !silenced.rules().expect("the packet filters are listed").values().any(|r| r.contains(container_faults::SILENCE_CHAIN));
     ev.release = Some(Release { acked: true, hold_ended });
@@ -371,7 +414,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let conv_started = std::time::Instant::now();
     let agreeing = wait_for("every admin holds the healed fabric", Duration::from_secs(150), || async { converged(&estate, &want_births, &["mesh1", "mesh2"], &fabric_build).await.ok() }).await;
     let converged_ms = conv_started.elapsed().as_millis() as u64;
-    let healed = legs(&estate, &target_id, &carrier);
+    let healed = legs(&estate, &target_id, &carrier).await;
     let kept = estate.probe(&["get", "--target", &format!("exact:{target_id}"), "--key", "iso"]);
     let nodes_after = estate.node_values().await;
     let (seats_after, seats_detail_after) = match seats_as_expected(&nodes_after) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
@@ -476,7 +519,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         Err(r) => (Value::Null, Some(r.to_string())),
     };
     let result = json!({
-        "cell": cell,
+        "cell": cell, "planned_silence_ms": planned_silence.as_millis(), "hold_ms": hold.as_millis(), "actual_silence_ms": actual_silence.as_millis(),
         "provider": estate.owner.provider,
         "network": network,
         "kept_mesh": kept_mesh,

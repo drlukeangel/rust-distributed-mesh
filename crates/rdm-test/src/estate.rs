@@ -1159,7 +1159,10 @@ impl ProbeHandle {
             json!({ "args": args, "result": v, "exit": out.status.code(), "signal": std::os::unix::process::ExitStatusExt::signal(&out.status), "stderr_tail": stderr.chars().rev().take(1200).collect::<Vec<_>>().into_iter().rev().collect::<String>() })
         };
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.artifacts.join("rpc-ledger.jsonl")).map_err(|e| e.to_string())?;
-        writeln!(f, "{entry}").map_err(|e| e.to_string())?;
+        // Concurrent probes append one complete record per write.
+        let mut record = serde_json::to_vec(&entry).map_err(|e| e.to_string())?;
+        record.push(b'\n');
+        f.write_all(&record).map_err(|e| e.to_string())?;
         Ok(v)
     }
 }
