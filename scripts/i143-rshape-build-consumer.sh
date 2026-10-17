@@ -14,6 +14,9 @@
 # Cargo.lock, then `cargo build --locked --bins`. A lockfile the candidate's dependency set no
 # longer satisfies fails `--locked`: the fixture's lock is refreshed deliberately, never here.
 #
+# `--skip-ui-tests` builds the immutable consumer binaries before the gate starts its
+# concurrent test jobs; the gate runs the UI tests beside the other jobs.
+#
 # Output: manifest.json (candidate, fixture/workspace hashes, binaries and their sha256, the
 # executable map), metadata.json (`cargo metadata --locked`), gate.log (the whole build).
 # REFUSED, by name and nonzero: a candidate that is not 40-hex, a build that fails, any RDM package
@@ -29,13 +32,14 @@ RDM_URL=https://github.com/drlukeangel/rust-distributed-mesh
 BINS="rshape-node-admin rshape-compute rshape-gateway rshape-broker"
 refuse() { echo "i143-rshape-build-consumer: REFUSED $*" >&2; exit 1; }
 
-CANDIDATE="" WORKSPACE="" BIN_DIR="" OUTPUT=""
+CANDIDATE="" WORKSPACE="" BIN_DIR="" OUTPUT="" SKIP_UI_TESTS=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --candidate-sha) CANDIDATE="${2:-}"; shift 2 ;;
         --workspace) WORKSPACE="${2:-}"; shift 2 ;;
         --bin-dir) BIN_DIR="${2:-}"; shift 2 ;;
         --output) OUTPUT="${2:-}"; shift 2 ;;
+        --skip-ui-tests) SKIP_UI_TESTS=1; shift ;;
         *) refuse "unknown argument '$1'; usage: --candidate-sha <sha> --workspace <dir> --bin-dir <dir> --output <dir>" ;;
     esac
 done
@@ -64,7 +68,9 @@ materialize_and_build() {
     done
     cargo build --locked --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins || return 1
     # The admin UI's own tests (its flows run against node-admin's real control router).
-    cargo test --locked --manifest-path "$WORKSPACE/Cargo.toml" -p rafka-admin-ui
+    if [ "$SKIP_UI_TESTS" != 1 ]; then
+        cargo test --locked --manifest-path "$WORKSPACE/Cargo.toml" -p rafka-admin-ui || return 1
+    fi
 }
 materialize_and_build > "$LOG" 2>&1 || { tail -20 "$LOG" >&2; refuse "the consumer did not materialize or build at $CANDIDATE (see $LOG)"; }
 
