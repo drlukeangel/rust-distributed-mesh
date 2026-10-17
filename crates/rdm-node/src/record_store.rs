@@ -426,7 +426,7 @@ impl FileRecords {
         let dir = self.0.dir.clone();
         blocking_io(move || {
             let _held = held;
-            remove_file(&dir, &path)
+            remove_file(&dir, &path).map(|_| ())
         })
         .await
     }
@@ -509,12 +509,16 @@ impl FileRecords {
     }
 
     /// Remove the record under `key`, if any: held in the scratchpad while the store holds its
-    /// writes.
-    pub async fn remove(&self, key: &str) -> Result<(), StorageError> {
+    /// writes. Returns whether this call removed a row that stood: the filesystem's own unlink decides
+    /// it (held: the rows the scratchpad holds over the disk, under the write lock), so of two
+    /// removers of one row exactly one is answered `true`.
+    pub async fn remove(&self, key: &str) -> Result<bool, StorageError> {
         let (path, dir) = (self.path(key), self.0.dir.clone());
         let held = self.writer(&path).await?;
-        if self.hold(key, HeldRow::Removed) {
-            return Ok(());
+        if self.holding() {
+            let stood = self.holds(key).await?;
+            self.hold(key, HeldRow::Removed);
+            return Ok(stood);
         }
         blocking_io(move || {
             let _held = held;
@@ -793,10 +797,11 @@ fn sync_dir(dir: &Path, file: &Path) -> Result<(), StorageError> {
 }
 
 /// Remove `path` from `dir`, if it is there; a removal that must survive a crash syncs its directory.
-fn remove_file(dir: &Path, path: &Path) -> Result<(), StorageError> {
+/// `true`: this unlink removed the file; `false`: no file was there.
+fn remove_file(dir: &Path, path: &Path) -> Result<bool, StorageError> {
     match std::fs::remove_file(path) {
-        Ok(()) => sync_dir(dir, path),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(()) => sync_dir(dir, path).map(|()| true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
     }
 }
@@ -1121,7 +1126,7 @@ mod tests {
         let named = |e: &Result<(), StorageError>| matches!(e, Err(StorageError::Io { reason, .. }) if reason.contains("directory") && reason.contains("could not be synced"));
         let wrote = r.write("a", "thing/1", &"one".to_string()).await;
         let inserted = r.insert("b", "thing/1", &"two".to_string()).await.map(|_| ());
-        let removed = r.remove("gone").await;
+        let removed = r.remove("gone").await.map(|_| ());
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(named(&wrote), "a write whose directory fsync failed answered {wrote:?}");
         assert!(named(&inserted), "an insert whose directory fsync failed answered {inserted:?}");
@@ -1169,6 +1174,33 @@ mod tests {
         let later = FileRecords::open_held(&d, "later", &w, &pad, "later".into()).await.unwrap();
         assert!(!later.holding(), "a store opened after the publication writes to the disk from its open");
         assert_eq!(pad.publish().await.unwrap().written(), 0, "a second publication finds nothing held");
+    }
+
+    /// CONTRACT (`FileRecords::remove`: "of two removers of one row exactly one is answered `true`"):
+    /// a removal answers whether this call removed a row that stood, on the disk (the unlink decides)
+    /// and held (the scratchpad's rows over the disk decide, under the write lock): of two removals of
+    /// one standing row one is `true` and one `false`, and a key never written is `false`. Must NOT
+    /// happen: both removals answered `true` (R24's relanding gate: one os-stopped row cleared twice).
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn two_removals_of_one_row_answer_true_once_on_the_disk_and_held() {
+        let d = tempdir("records-remove-once");
+        let w = crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("remove")).unwrap();
+        let once = |a: Result<bool, StorageError>, b: Result<bool, StorageError>| [a.unwrap(), b.unwrap()].iter().filter(|r| **r).count();
+        let disk = FileRecords::open(&d, "disk", &w).await.unwrap();
+        disk.write("r", "thing/1", &"x".to_string()).await.unwrap();
+        let (a, b) = tokio::join!(disk.remove("r"), disk.remove("r"));
+        assert_eq!(once(a, b), 1, "two removals of one row on the disk: one removed it");
+        assert!(!disk.remove("never").await.unwrap(), "a removal of a key never written removed nothing");
+        FileRecords::open(&d, "held", &w).await.unwrap().write("theirs", "thing/1", &"t".to_string()).await.unwrap();
+        let pad = Scratchpad::new();
+        let held = FileRecords::open_held(&d, "held", &w, &pad, "held".into()).await.unwrap();
+        held.write("mine", "thing/1", &"m".to_string()).await.unwrap();
+        for key in ["theirs", "mine"] {
+            let (a, b) = tokio::join!(held.remove(key), held.remove(key));
+            assert_eq!(once(a, b), 1, "two held removals of {key}: one removed it");
+        }
+        assert!(!held.remove("never").await.unwrap(), "a held removal of a key never written removed nothing");
     }
 
     /// CONTRACT (this module: "a file this build does not recognise ... is refused by name, never read

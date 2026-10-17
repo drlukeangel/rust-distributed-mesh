@@ -889,7 +889,7 @@ impl NodesStorage for FileNodesStorage {
         self.mesh(&record.name.mesh).await?.contacts.write(record.node_id.as_str(), NODE_FORMAT, record).await
     }
     async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), StorageError> {
-        self.mesh(mesh).await?.contacts.remove(node_id.as_str()).await
+        self.mesh(mesh).await?.contacts.remove(node_id.as_str()).await.map(|_| ())
     }
     async fn put_node_row(&self, row: &NodeRow) -> Result<Result<(), NameHeld>, StorageError> {
         // One row write at a time: the look at the key and the write are one step against every

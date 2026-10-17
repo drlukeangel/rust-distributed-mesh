@@ -345,9 +345,10 @@ pub trait StatusStorage: Send + Sync {
         Ok(())
     }
     /// Remove the `os-stopped` row of the birth `(node_id, incarnation_id)` among the status rows of
-    /// the mesh named `mesh` (R-PV1).
-    async fn remove_node_os_stopped_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-        Ok(())
+    /// the mesh named `mesh` (R-PV1): `true` when this call removed a row that stood, so of two
+    /// removers of one row exactly one is answered `true`.
+    async fn remove_node_os_stopped_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
+        Ok(false)
     }
     /// The `data-dir-lost` row of the birth `(node_id, incarnation_id)` among the status rows of
     /// the mesh named `mesh` (R-FM2).
@@ -536,12 +537,9 @@ impl StatusStorage for MemoryStatusStorage {
         self.os_stopped_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
-    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
         let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
-        if let Some(rows) = self.os_stopped_named.lock().unwrap().get_mut(mesh) {
-            rows.remove(&key);
-        }
-        Ok(())
+        Ok(self.os_stopped_named.lock().unwrap().get_mut(mesh).and_then(|rows| rows.remove(&key)).is_some())
     }
     async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
         let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);
@@ -799,9 +797,9 @@ impl StatusStorage for FileStatusStorage {
     async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
         if mesh == self.mesh {
-            return self.held_running.remove(&key).await;
+            return self.held_running.remove(&key).await.map(|_| ());
         }
-        self.other(mesh, "held-running").await?.remove(&key).await
+        self.other(mesh, "held-running").await?.remove(&key).await.map(|_| ())
     }
     async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
         let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
@@ -816,7 +814,7 @@ impl StatusStorage for FileStatusStorage {
         }
         self.other(mesh, "os-stopped").await?.write(&row.key(), NODE_OS_STOPPED_FORMAT, row).await
     }
-    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
         let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
         if mesh == self.mesh {
             return self.os_stopped.remove(&key).await;
@@ -864,9 +862,9 @@ impl StatusStorage for FileStatusStorage {
     async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
         if mesh == self.mesh {
-            return self.data_dir_unreadable.remove(&key).await;
+            return self.data_dir_unreadable.remove(&key).await.map(|_| ());
         }
-        self.other(mesh, "data-dir-unreadable").await?.remove(&key).await
+        self.other(mesh, "data-dir-unreadable").await?.remove(&key).await.map(|_| ())
     }
 }
 

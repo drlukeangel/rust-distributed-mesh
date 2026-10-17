@@ -154,7 +154,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
         self.0.list(CONNECTION_FORMAT).await
     }
     async fn remove_connection(&self, index: &ConnectionIndex) -> Result<(), StorageError> {
-        self.0.remove(&connection_key(index)).await
+        self.0.remove(&connection_key(index)).await.map(|_| ())
     }
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
         self.append_history_line(fact).await

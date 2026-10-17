@@ -70,18 +70,20 @@ pub type ExitVerdicts = Mutex<HashMap<(NodeId, IncarnationId), Inspected>>;
 
 /// Remove the `os-stopped` row of `n`'s exact birth from `storage` (deployment-provider.md §2.5: the
 /// mesh-primary removes it on `Running` or `Exited`), `verdict` naming what ended it (`running`,
-/// `exited`, `returned`, `reached`, `deleted`). Spanned `cleared` when a row stood, `refused` when its
-/// removal was refused; nothing when no row stood.
-pub(crate) async fn remove_os_stopped(storage: &dyn crate::status_storage::StatusStorage, n: &Node, verdict: &str) {
-    let Some(inc) = n.incarnation_id.as_ref() else { return };
-    let Ok(Some(row)) = storage.node_os_stopped_of(&n.mesh, &n.node_id, inc).await else { return };
-    let removed = storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, inc).await;
-    let (outcome, detail) = match &removed {
-        Ok(()) => ("cleared", verdict.to_string()),
+/// `exited`, `returned`, `reached`, `deleted`). Spanned `cleared` when this call's removal took the row
+/// (the removal decides it, so a row two removers race for is cleared once), `refused` when its
+/// removal was refused; nothing when no row stood or another remover took it first.
+pub(crate) async fn remove_os_stopped(storage: &dyn crate::status_storage::StatusStorage, n: &Node, verdict: &str) -> bool {
+    let Some(inc) = n.incarnation_id.as_ref() else { return false };
+    let Ok(Some(row)) = storage.node_os_stopped_of(&n.mesh, &n.node_id, inc).await else { return false };
+    let (outcome, detail) = match storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, inc).await {
+        Ok(true) => ("cleared", verdict.to_string()),
+        Ok(false) => return false,
         Err(e) => ("refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
     };
     tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = row.since as i64, outcome, detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the os-stopped fact is cleared"));
+    outcome == "cleared"
 }
 
 /// The verdict rule of a loop that proves exits (node-recovery.md "Exited is the proof, recorded
@@ -845,5 +847,131 @@ mod hold_gate_tests {
         assert_eq!(hold_gate(&[refused.clone(), after], Some(5)), HoldGate::Refused(refused), "a later inspection failure never lifts a refusal");
         let unproven = failed(1, Some(10), TerminateStage::Unproven);
         assert_eq!(hold_gate(std::slice::from_ref(&unproven), Some(50)), HoldGate::Refused(unproven.clone()), "an unproven exit forbids every later hold");
+    }
+}
+
+#[cfg(test)]
+mod os_stopped_clear_tests {
+    use super::*;
+    use crate::model::{IncarnationId, MeshId, NodeId};
+    use crate::record_store::StorageError;
+    use crate::status_storage::*;
+    use rdm_core::status::MeshState;
+    use std::collections::HashMap;
+
+    /// The memory store, its os-stopped read yielding once: a second remover reads the row before the
+    /// first removes it, as two admins' tasks do on one store.
+    struct Yielding(MemoryStatusStorage);
+
+    #[async_trait::async_trait]
+    impl StatusStorage for Yielding {
+        async fn put_mesh_status(&self, row: &MeshStatusRow) -> Result<(), StorageError> {
+            self.0.put_mesh_status(row).await
+        }
+        async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError> {
+            self.0.mesh_statuses().await
+        }
+        async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError> {
+            self.0.put_fabric_event(row).await
+        }
+        async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
+            self.0.fabric_events().await
+        }
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
+            self.0.fabric_events_of(mesh).await
+        }
+        async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
+            self.0.put_node_declared(row).await
+        }
+        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+            self.0.remove_node_declared(node_id, incarnation_id).await
+        }
+        async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
+            self.0.node_declared().await
+        }
+        async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
+            self.0.put_node_silence(row).await
+        }
+        async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
+            self.0.node_silences().await
+        }
+        async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
+            self.0.put_node_exit(row).await
+        }
+        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+            self.0.node_exit(node_id, incarnation_id).await
+        }
+        async fn mesh_status_held_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError> {
+            self.0.mesh_status_held_of(mesh, row).await
+        }
+        async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
+            self.0.put_mesh_status_of(mesh, row).await
+        }
+        async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
+            self.0.node_exit_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
+            self.0.put_node_exit_of(mesh, row).await
+        }
+        async fn node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
+            self.0.node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
+            self.0.put_node_held_running_of(mesh, row).await
+        }
+        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+            self.0.remove_node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+            self.0.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
+            self.0.node_data_dir_lost_in_mesh(mesh).await
+        }
+        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+            self.0.put_node_data_dir_lost_of(mesh, row).await
+        }
+        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+            self.0.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_unreadable_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
+            self.0.node_data_dir_unreadable_in_mesh(mesh).await
+        }
+        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+            self.0.put_node_data_dir_unreadable_of(mesh, row).await
+        }
+        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+            self.0.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
+            let row = self.0.node_os_stopped_of(mesh, node_id, incarnation_id).await;
+            tokio::task::yield_now().await;
+            row
+        }
+        async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError> {
+            self.0.put_node_os_stopped_of(mesh, row).await
+        }
+        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
+            self.0.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+    }
+
+    /// CONTRACT (deployment-provider.md §2.5: the `os-stopped` row "removed on `Running` or `Exited`";
+    /// the explicit delete's cell: "the `os-stopped` row is removed once"): the delete and the recovery
+    /// tick's exit verdict both remove an os-stopped birth's row, and exactly one of them clears it; the
+    /// other finds it gone and names nothing. Must NOT happen: two `cleared` for one row (R24's
+    /// relanding gate on `ac22b6b1`: `cleared` `deleted`, then `cleared` `exited`).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn two_removers_of_one_os_stopped_row_clear_it_once() {
+        let store = Yielding(MemoryStatusStorage::default());
+        let mut n = Node::allocated("mesh1.rpc.1".parse().unwrap());
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(IncarnationId::mint());
+        let row = NodeOsStoppedRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), since: 1, inspections: 1 };
+        store.put_node_os_stopped_of(&n.mesh, &row).await.unwrap();
+        let (deleted, exited) = tokio::join!(remove_os_stopped(&store, &n, "deleted"), remove_os_stopped(&store, &n, "exited"));
+        assert_eq!([deleted, exited].iter().filter(|c| **c).count(), 1, "exactly one remover clears the row: deleted {deleted}, exited {exited}");
+        assert!(store.node_os_stopped_of(&n.mesh, &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().is_none(), "the row is gone");
     }
 }
