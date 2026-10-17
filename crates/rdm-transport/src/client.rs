@@ -83,6 +83,22 @@ pub struct CallOptions {
     /// or reach that fails before the commit cut ends the call `NotSent`, never resent. Once
     /// committed the request is owed as any other.
     pub unsent_is_final: bool,
+    /// The route an Owed call's resends take once an attempt sent nothing (node-rpc.md §43, §45; i146
+    /// Q52): its owner's carrier policy, answered per attempt by the route projection. `None`: every
+    /// attempt is direct.
+    pub route: Option<RoutePolicy>,
+}
+
+/// An owner's carrier policy for an Owed call (node-rpc.md §43, §45; i146 Q52): given the attempt
+/// number, the route the projection answers now for the call's one receiver. The receiver is the same
+/// on every leg; only the leg changes.
+#[derive(Clone)]
+pub struct RoutePolicy(pub Arc<dyn Fn(u32) -> crate::route::RouteChoice + Send + Sync>);
+
+impl std::fmt::Debug for RoutePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RoutePolicy")
+    }
 }
 
 /// The origin's delivery identity a carrier's inner call keeps.
@@ -105,6 +121,7 @@ impl Default for CallOptions {
             carried: None,
             once: false,
             unsent_is_final: false,
+            route: None,
         }
     }
 }
@@ -1106,6 +1123,9 @@ enum StreamEnd {
     NoAck,
     /// The stream (or its connection) is gone.
     Lost,
+    /// A carried attempt's carrier answered that it did not reach the call's receiver (its
+    /// `ForwardReply` names why): the request is not acked and is resent (i146 Q52).
+    CarrierFailed(String),
 }
 
 /// The task that sends one owed request and resends it, with the same identity, until it is acked,
@@ -1135,6 +1155,16 @@ struct Attempts {
 impl Attempts {
     fn receiver_gone(&self) -> Option<String> {
         self.client.receiver_gone(&self.target, self.birth.as_ref()?)
+    }
+
+    /// The request as one carrier's Forward to the call's receiver, `remaining` the bound its inner
+    /// call is told (i146 Q52). A request built at its write, or a target that names no exact receiver,
+    /// is not carried.
+    fn forward_payload(&self, remaining: Duration) -> Result<Payload, String> {
+        let NodeTarget::ExactNode(receiver) = &self.target else { return Err("a carried attempt needs an exact receiver".into()) };
+        let Payload::Ready(inner) = &self.payload else { return Err("the request is built at its write".into()) };
+        let forward = rdm_core::forward::ForwardRequest::Forward { target: receiver.clone(), inner_op: self.op, inner: inner.clone(), remaining_ms: remaining.as_millis() as u64 };
+        <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::encode_request(&forward).map(Payload::Ready).map_err(|e| e.0)
     }
 
     fn end_receiver_gone(&self, why: String, attempts: u32) -> AttemptEnd {
@@ -1184,6 +1214,9 @@ impl Attempts {
         let mut attempt = 0u32;
         let mut committed = false;
         let mut last = NotSentReason::Deadline;
+        // The last attempt sent nothing to the receiver: the next one asks the owner's carrier policy
+        // (i146 Q52).
+        let mut sent_nothing = false;
         loop {
             if self.state.borrow().complete {
                 return AttemptEnd::CompleteAtTurn;
@@ -1234,7 +1267,33 @@ impl Attempts {
                 (true, (_, Some(overall))) => overall,
                 _ => started + pacing.floor,
             };
-            let node = match self.client.reach(&self.target) {
+            // The leg of this attempt (node-rpc.md §43, §45; i146 Q52): direct first; once an attempt sent
+            // nothing, the owner's carrier policy answers per attempt, every leg aimed at the same receiver
+            // under the same delivery identity.
+            let leg = match (&self.opts.route, sent_nothing) {
+                (Some(policy), true) => (policy.0)(attempt),
+                _ => crate::route::RouteChoice::Direct,
+            };
+            let mut carried = match &leg {
+                crate::route::RouteChoice::Direct => None,
+                crate::route::RouteChoice::ViaPeer { carrier, path } => match self.forward_payload(pacing.floor) {
+                    Ok(p) => Some((NodeTarget::ExactNode(carrier.clone()), path.to_string(), p)),
+                    Err(why) => {
+                        tracing::info_span!("rdm.node_rpc.delivery.reject.via-carried-leg", delivery_id = %self.id, attempt, carrier = %path, reason = %why)
+                            .in_scope(|| tracing::info!("the attempt is not carried: it goes direct"));
+                        None
+                    }
+                },
+                crate::route::RouteChoice::NoActiveRoute => {
+                    last = NotSentReason::NoActiveRoute;
+                    let _ = self.tx.send(Attempted::NotSent(last.clone()));
+                    sent_nothing = true;
+                    self.pause(resume_at).await;
+                    continue;
+                }
+            };
+            let target = carried.as_ref().map(|(t, _, _)| t.clone()).unwrap_or_else(|| self.target.clone());
+            let node = match self.client.reach(&target) {
                 Ok(n) => n,
                 Err(r) if self.opts.unsent_is_final && !committed => {
                     let _ = self.tx.send(Attempted::EndedPreCommit(PreCommit::begin(self.op).not_sent(r)));
@@ -1243,12 +1302,20 @@ impl Attempts {
                 Err(r) => {
                     last = r.clone();
                     let _ = self.tx.send(Attempted::NotSent(r));
+                    sent_nothing = true;
                     self.pause(resume_at).await;
                     continue;
                 }
             };
             let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
-            let phase = self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await;
+            let phase = match carried.as_mut() {
+                Some((carrier_target, carrier, payload)) => {
+                    tracing::info_span!("rdm.node_rpc.delivery.update.via-carried-attempt", delivery_id = %self.id, attempt, carrier = %carrier)
+                        .in_scope(|| tracing::info!("the owed request is carried to its receiver through a live peer"));
+                    self.client.attempt(carrier_target, &node, <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::OP, &header, payload, &self.opts, deadline, &self.evidence).await
+                }
+                None => self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await,
+            };
             match phase {
                 Phase::ReceiverGone(why) => return self.end_receiver_gone(why, attempt),
                 Phase::Done(out) => {
@@ -1264,6 +1331,7 @@ impl Attempts {
                             last = n.reason().clone();
                             let _ = self.tx.send(Attempted::NotSent(last.clone()));
                         }
+                        sent_nothing = true;
                         self.pause(resume_at).await;
                         continue;
                     }
@@ -1287,7 +1355,8 @@ impl Attempts {
                     // request asked once is never resent: it waits on its stream for its answer.
                     let ack_by = (!self.state.borrow().acked && !self.opts.once).then(|| Instant::now() + pacing.after(attempt));
                     let resend_at = ack_by.unwrap_or(next_at);
-                    match self.read(opened, ack_by).await {
+                    sent_nothing = false;
+                    match self.read(opened, ack_by, carried.is_some()).await {
                         StreamEnd::Complete => return AttemptEnd::StreamComplete,
                         StreamEnd::Violation => return AttemptEnd::StreamViolation,
                         StreamEnd::Definitive(code) => {
@@ -1303,6 +1372,14 @@ impl Attempts {
                             if !self.state.borrow().acked {
                                 self.pause(resend_at).await;
                             }
+                        }
+                        // A carrier failure never ends the call (i146 Q52): the request is unacked, and the
+                        // next attempt asks the owner's carrier policy again.
+                        StreamEnd::CarrierFailed(why) => {
+                            tracing::info_span!("rdm.node_rpc.delivery.update.via-carrier-failed", delivery_id = %self.id, attempt, reason = %why)
+                                .in_scope(|| tracing::info!("the carrier did not reach the receiver: the request is resent"));
+                            sent_nothing = true;
+                            self.pause(resend_at).await;
                         }
                     }
                 }
@@ -1370,7 +1447,7 @@ impl Attempts {
 
     /// Read one attempt's stream: acks of the request and response frames, delivered to the
     /// invocation and acked on the request direction. `ack_by`: when an unacked request is resent.
-    async fn read(&mut self, opened: Opened, ack_by: Option<Instant>) -> StreamEnd {
+    async fn read(&mut self, opened: Opened, ack_by: Option<Instant>, carried: bool) -> StreamEnd {
         let d = self.client.delivery.clone();
         let Opened { send, recv, key, conn } = opened;
         let out = FrameOut::new(send);
@@ -1403,7 +1480,9 @@ impl Attempts {
                     Ok(Some(h @ TransportHeader::Ack { .. })) => d.on_ack(&h),
                     Ok(Some(h @ TransportHeader::Response { .. })) => {
                         let TransportHeader::Response { invocation_id, .. } = &h else { unreachable!() };
-                        let body = match reader.body(d.reply_bound(invocation_id)).await {
+                        // A carried attempt's answer is its carrier's Forward reply around the receiver's.
+                        let bound = if carried { d.reply_bound(invocation_id).max(<rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::MAX_REPLY_FRAME_BYTES) } else { d.reply_bound(invocation_id) };
+                        let body = match reader.body(bound).await {
                             Ok(b) => b,
                             Err(ReadEnd::Violation(why)) => {
                                 violation(why);
@@ -1412,6 +1491,23 @@ impl Attempts {
                                 return StreamEnd::Violation;
                             }
                             Err(_) => return self.lost(&key, &conn),
+                        };
+                        // The receiver's answer is handed on as the call's; anything else is the carrier's
+                        // failure to reach it: acked to the carrier, the call's request left unacked (i146 Q52).
+                        let body = if carried {
+                            match <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::decode_reply(&body) {
+                                Ok(rdm_core::forward::ForwardReply::Forwarded { inner }) => inner,
+                                Ok(other) => {
+                                    d.write_ack_header(&out, &h.ack()).await;
+                                    return StreamEnd::CarrierFailed(format!("{other:?}"));
+                                }
+                                Err(e) => {
+                                    d.write_ack_header(&out, &h.ack()).await;
+                                    return StreamEnd::CarrierFailed(format!("the carrier's reply does not decode: {}", e.0));
+                                }
+                            }
+                        } else {
+                            body
                         };
                         match d.on_response(&h, body, AckTo::Stream(out.clone())) {
                             ResponseVerdict::Ack(acks) => {
