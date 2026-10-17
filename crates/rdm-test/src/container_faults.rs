@@ -102,21 +102,19 @@ pub fn address_of(estate: &impl ContainerEstate, id: &str) -> Result<String, Str
 /// The packet-filter chain a silence installs in each silenced container's own network namespace.
 pub const SILENCE_CHAIN: &str = "RDM-SILENCE";
 
-/// Run `/usr/sbin/<tool> <args>` in the network namespace of container `id` with `NET_ADMIN`, in a
-/// throwaway container of the runtime image that mounts the host's tool directories read-only.
-/// The target container is not touched: its interface, its sockets and its processes stay as they
-/// are. `stdin` is fed to the tool.
+/// Run the host's selected filter tool in the exact existing container's namespace.
+/// Only this test process receives NET_ADMIN; the node's process and privileges stay as-is.
+/// A filter read or release never starts another container while the cut's clock runs.
 fn in_netns(id: &str, tool: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     use std::io::Write;
     use std::process::Stdio;
+    // The runtime mounts /usr and its libraries. Resolve the host's alternatives link
+    // here: /etc/alternatives need not exist in the runtime image. Both xtables
+    // implementations accept the selected command as their first argument.
+    let binary = std::fs::canonicalize(format!("/usr/sbin/{tool}"))
+        .map_err(|e| format!("resolve the host's {tool}: {e}"))?;
     let mut cmd = Command::new("docker");
-    cmd.args(["run", "--rm", "-i", "--net", &format!("container:{id}"), "--cap-add", "NET_ADMIN"]);
-    for d in ["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/alternatives"] {
-        if std::path::Path::new(d).exists() {
-            cmd.args(["-v", &format!("{d}:{d}:ro")]);
-        }
-    }
-    cmd.arg(RUNTIME_IMAGE).arg(format!("/usr/sbin/{tool}")).args(args);
+    cmd.args(["exec", "--privileged", "-i", id]).arg(&binary).arg(tool).args(args);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("{tool} in the namespace of {id}: {e}"))?;
     if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {

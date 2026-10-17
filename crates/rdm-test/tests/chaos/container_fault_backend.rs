@@ -322,7 +322,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     };
     let cut_at = now_nanos();
     let rules_at_cut = silenced.rules().expect("the packet filters are listed");
-    let primitive = json!({"docker": "run --net container:<id> --cap-add NET_ADMIN iptables-restore", "network": network, "chain": container_faults::SILENCE_CHAIN, "silenced": silenced, "rules": rules_at_cut});
+    let primitive = json!({"docker": "exec --privileged <exact-id> xtables-multi iptables-restore", "network": network, "chain": container_faults::SILENCE_CHAIN, "silenced": silenced, "rules": rules_at_cut});
     let mut ev = Evidence::new(Family::PartitionHeal, format!("network:silence-{silenced_subject}"));
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
     let after_cut = inspect_all(&silenced);
@@ -379,8 +379,17 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     };
     let (first, second, third) = tokio::join!(observe(), observe(), observe());
     let (reads, silence): (Vec<_>, Vec<_>) = [first, second, third].into_iter().unzip();
-    let last = inspect_all(&silenced);
-    let held_at_last_read = silenced.active().expect("the packet filters are listed") && last.values().all(|i| i.networks.contains(&network));
+    // These independent last reads all belong to the held observation, not a
+    // sequence of extra RPCs after the route samples have completed.
+    let last_provider = {
+        let silenced = silenced.clone();
+        tokio::task::spawn_blocking(move || (inspect_all(&silenced), silenced.rules().expect("the packet filters are listed")))
+    };
+    let (last_provider, nodes_during, attempt_during, fabric_during) = tokio::join!(
+        last_provider, estate.node_values(), estate.attempt_of_build(&fabric_build), fabric_json(&estate)
+    );
+    let (last, last_rules) = last_provider.expect("the last exact provider and filter reads complete");
+    let held_at_last_read = last_rules.values().all(|r| r.contains(&format!("-A INPUT -j {}", container_faults::SILENCE_CHAIN)) && r.contains(&format!("-A OUTPUT -j {}", container_faults::SILENCE_CHAIN))) && last.values().all(|i| i.networks.contains(&network));
     ev.fault = Some(FaultAck { held: after_cut.values().all(|i| i.networks.contains(&network)) && rules_at_cut.values().all(|r| r.contains(container_faults::SILENCE_CHAIN)), names: Some(json!(silenced.members.iter().map(|u| json!({"node": u.node, "container": u.id})).collect::<Vec<_>>())), held_at_last_read });
     let reached = silence.iter().any(|r| replied(&r["legs"]["direct"]) || replied(&r["legs"]["via_peer"]));
     let heard_ready = silence.iter().any(|r| r["view"].as_array().unwrap().iter().any(|v| v["status"] == "ready-for-traffic"));
@@ -390,11 +399,8 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         observed_routable: reached,
         observed: silence.iter().map(|r| format!("direct {} via-peer {} none {}", r["legs"]["direct"]["outcome"], r["legs"]["via_peer"]["outcome"], r["legs"]["no_active_route"]["outcome"])).collect::<Vec<_>>().join("; "),
     });
-    let nodes_during = estate.node_values().await;
     let (seats_during, seats_detail_during) = match seats_as_expected(&nodes_during) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
     let provider_alive_during = last.values().all(|i| i.running && i.status == "running");
-    let attempt_during = estate.attempt_of_build(&fabric_build).await;
-    let fabric_during = fabric_json(&estate).await;
     let fp_of = |nodes: &[Value]| nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
     let inc_during = node_in(&nodes_during, &target_name).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
 
