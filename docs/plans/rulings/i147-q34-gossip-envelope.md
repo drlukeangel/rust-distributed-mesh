@@ -1,3 +1,5 @@
+**Q34: A — Luke, 2026-10-17. The three §3.1 replacements in gossip-envelope-binding.md are approved together with the envelope and R10 landing.**
+
 # Q34 — freeze the CloudEvents gossip envelope
 
 **Awaiting Luke's ruling.** a1 approved the mapping and its six resolutions, relayed by Luke

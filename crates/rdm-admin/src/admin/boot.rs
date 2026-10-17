@@ -1774,13 +1774,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
                                         membership.set_completion_carrier(Arc::new(move |f: &rdm_transport::membership::Frame| {
                                             use rdm_transport::membership::{CompletionCarry, Frame};
-                                            if matches!(f, Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
+                                            if matches!(f.data(), Frame::StateCommitted { .. } | Frame::TrafficOpened { .. }) {
                                                 return rounds.mesh_book.carry_check_in(f, |f| {
                                                     let (backbone, f) = (backbone.clone(), f.clone());
                                                     tokio::spawn(async move { backbone.carry_completion(f).await });
                                                 });
                                             }
-                                            let (Frame::NodeLeft { op, .. } | Frame::NodeConnectionsDeleted { op, .. }) = f else { return CompletionCarry::NotHeld };
+                                            let (Frame::NodeLeft { op, .. } | Frame::NodeConnectionsDeleted { op, .. }) = f.data() else { return CompletionCarry::NotHeld };
                                             let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
                                             if commands.is_open(&key) {
                                                 let (backbone, f) = (backbone.clone(), f.clone());

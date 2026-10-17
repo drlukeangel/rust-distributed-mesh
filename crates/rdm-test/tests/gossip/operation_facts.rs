@@ -26,6 +26,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        crate::declare_gossip_probe(&sender);
         let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
         let op = LifecycleOp { build_id: "deletion-build".into(), attempt: 1, operation: "node.delete:mesh1.rpc.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1 };
         assert!(receiver.book.record(MeshDigest {
@@ -38,13 +39,13 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        sender.forward(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["taken"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("unrelated newer traffic is applied first");
-        sender.forward(&Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: None }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-node-deleted" && s["attributes"]["applied"] == "true") {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -58,7 +59,7 @@ fn node_deleted_story(repeat: bool) -> (Vec<Value>, LifecycleOp) {
             let before = *changes.borrow();
             // Different forwarding metadata reaches RDM past the transport's byte dedup;
             // the operation and exact birth remain identical.
-            sender.forward(&Frame::NodeDeleted { op: op.clone(), forwarded_by: Some("mesh2.admin.1".into()) }).await.unwrap();
+            crate::forward_gossip_probe(&sender, &Frame::NodeDeleted { op: op.clone(), forwarded_by: Some("mesh2.admin.1".into()) }).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-node-deleted").count() < 2 {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -129,12 +130,14 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
         learn_addresses(&peer_ep, &[address(&receiver_ep)]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        crate::declare_gossip_probe(&sender);
         let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address(&sender_ep)]).await.unwrap();
         let peer = Membership::join(&peer_gossip, &peer_ep, &fabric, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![address(&peer_ep)]).await.unwrap();
         let key = RoundKey { kind: if kind.starts_with("state-") { RoundKind::StateCommit } else { RoundKind::OpenTraffic }, fabric_id: fabric.clone(), build_id: "held-round-build".into(), attempt: 1 };
         let (subject_id, subject_incarnation) = (NodeId::mint(), IncarnationId::mint());
+        sender.set_author(&rdm_core::PublisherId { node: "mesh1.rpc.2".into(), node_id: subject_id.clone(), incarnation: subject_incarnation.clone() });
         let book = Arc::new(RoundBook::default());
         assert!(book.open(&key));
         book.expect(&key, std::collections::BTreeMap::from([(subject_id.clone(), rdm_admin::fabric_state::Expected { incarnation: subject_incarnation.clone(), name: "mesh1.rpc.2".into() })]), Vec::new());
@@ -158,7 +161,7 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("live mesh and backbone neighbours");
-        sender.forward(&Frame::MeshStatus { mesh: "mesh3".into(), status: "ready-for-traffic".into(), publisher: "mesh3.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh3".into(), status: "ready-for-traffic".into(), publisher: "mesh3.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while receiver.mesh_status("mesh3").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
@@ -178,7 +181,7 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
                 "traffic-opening" => Frame::TrafficOpening { hook: offered, forwarded_by },
                 _ => Frame::TrafficOpened { hook: offered, forwarded_by },
             };
-            sender.forward(&f).await.unwrap();
+            crate::forward_gossip_probe(&sender, &f).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| {
                     s["name"] == "rdm.mesh.membership.update.via-round-frame" && s["attributes"]["kind"] == kind && s["attributes"]["node"] == "mesh1.admin.1"

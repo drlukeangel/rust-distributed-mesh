@@ -35,7 +35,7 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_seat() {
         let (mesh_sender, _mesh_rx) = mesh_topic.split();
         let (backbone_sender, _backbone_rx) = backbone_topic.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
+        let digest = MeshDigest { fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
         receiver.book.record(digest);
         assert!(receiver.book.started(&node_id, &incarnation));
         let holder = SeatHolder { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
@@ -50,13 +50,13 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_seat() {
         let overlays = receiver.book.overlay_changes();
         let before = (*seats.borrow(), *births.borrow(), *overlays.borrow());
         let frame = Frame::Concern { seat: Seat::FabricPrimary, node_id: node_id.clone(), incarnation, observer: "mesh2.admin.1".into() };
-        assert_eq!(frame.encode()[0], 9, "reserved position 10 retains its zero-based postcard discriminant");
+        assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, "rdm.mesh.concern", "reserved position 10 has its named type");
         for (n, sender) in [&mesh_sender, &backbone_sender].into_iter().enumerate() {
-            sender.broadcast(frame.encode().into()).await.unwrap();
+            sender.broadcast(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             // A following frame on this same channel proves processing finished, without changing
             // the concerned mesh's status or relying on an arbitrary delay.
             let revision = n as u64 + 10;
-            sender.broadcast(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.encode().into()).await.unwrap();
+            sender.broadcast(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < revision) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the following frame was applied on this channel");

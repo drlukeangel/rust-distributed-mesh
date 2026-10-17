@@ -1,12 +1,11 @@
 //! Receive classification for gossip and topology-read installs. Decisions use the frame's
 //! declared subject, identity and ordering fields, never the transport sender.
 //!
-//! MeshStatus and FabricStatus use [`admit_status`] against the actual held projection under the status
-//! book's installation lock. An older timestamp emits `via-stale` with both keys. Equal declared
-//! publisher/timestamp and identical status emits `via-duplicate` with outcome `ignored`;
-//! different status content emits `via-inconsistent`. Forwarding metadata is not status content.
-//! No publisher revision is inferred: the MeshStatus/FabricStatus publisher-revision gap (R10)
-//! remains open, including the existing timestamp comparison across publishers.
+//! MeshStatus and FabricStatus compare the envelope's composite committed-seat revision and
+//! change-time sequence through [`admit_status_context`] under the status book's installation lock. A delayed predecessor loses
+//! by revision even with a later timestamp (R10). Within one held author/revision, [`admit_status`]
+//! preserves change-time ordering and the existing named duplicate/inconsistency outcomes.
+//! Forwarding metadata never changes status content; retained context survives entry installation.
 //!
 //! Digest uses [`admit_digest`] against the actual installed heartbeat under the digest book's
 //! lock, including a read-installed floor. Lower is `via-stale`; equal wire content is
@@ -14,7 +13,7 @@
 //! The primary's separately held membership status is not heartbeat content. A refused or
 //! repeated digest supplies no address and no clock observation to its caller.
 //!
-//! Seated and PrimaryUpdating/PrimaryUpdated use [`SeatReceipts`] under the seat installation
+//! Seated replacement data and PrimaryUpdating/PrimaryUpdated operation data use [`SeatReceipts`] under the seat installation
 //! lock, against the actual installed records and retained primary publication content. A read or
 //! local seat install supplies the settled floor; updating moves no holder. Every named cohort is
 //! checked before any receipt or record moves. Lower revision/stage is `via-stale`, equal identical
@@ -27,7 +26,7 @@
 //!   regardless of publication timestamp. The existing cross-publisher publication check remains.
 //!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
 //!   content under its installation lock: duplicates install nothing; conflicts are inconsistent.
-//!   Equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
+//!   Publication identity includes its owner birth and counter; equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
 //!   the exact repeated publication never completes repair. A new publication at the same material
 //!   version carries fresh hearing evidence. A directed topology read can resume the held version.
 //! - NodeDeleting, NodeRestarting and NodeStopped: operation identity is recorded before the
@@ -56,19 +55,20 @@
 //! repeats emit `via-duplicate`. These receipts drive no checklist or lifecycle. Only the admin's
 //! existing open-round book decides whether an ordinary check-in is carried (Q21: x).
 //!
-//! [`refuse_reserved`] handles Concern (position 10, Q23), NodeConnectionsDeleting (11),
+//! The envelope refuses reserved types before domain decoding. [`refuse_reserved`] also protects
+//! in-process domain calls for Concern (position 10, Q23), NodeConnectionsDeleting (11),
 //! NodeLeaving (12), NodeLeft (13), NodeConnectionsDeleted (14), and NewFabricPrimary (15).
 //! Receipt emits `via-reserved` before any identity book, apply span or carrier runs. No reserved
 //! body installs a projection, records a fact, registers a contact or commands investigation.
 
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// Reserved wire positions have one receive outcome. Inspect only the kind, before any book,
+/// Reserved page positions have one receive outcome. Inspect only the kind, before any book,
 /// identity receipt, ordinary apply span or completion carrier can run.
 pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
-    let (frame, position) = match f {
+    let (frame, position) = match f.data() {
         Frame::Concern { .. } => ("concern", 10),
         Frame::NodeConnectionsDeleting { .. } => ("node-connections-deleting", 11),
         Frame::NodeLeaving { .. } => ("node-leaving", 12),
@@ -80,6 +80,28 @@ pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
     tracing::info_span!("rdm.mesh.membership.reject.via-reserved", node, frame, position, via)
         .in_scope(|| tracing::info!("the reserved position installs nothing and invokes no carrier"));
     true
+}
+
+/// Compare composite status sequences under the actual status installation lock. `None`
+/// delegates same-author/revision content to the established timestamp classifier.
+pub(crate) fn admit_status_context(frame: &str, subject: &str, held: Option<&crate::envelope::Context>, offered: Option<&crate::envelope::Context>, held_status: &str, status: &str) -> Option<bool> {
+    let (held, offered) = (held?, offered?);
+    let (h, o) = (held.sequence.as_ref()?, offered.sequence.as_ref()?);
+    if held.source == offered.source && held.seat_revision() == offered.seat_revision() { return None; }
+    if o < h {
+        tracing::info_span!("rdm.mesh.membership.reject.via-stale", frame, subject, held_key = %h, frame_key = %o)
+            .in_scope(|| tracing::info!("status sequence is below the held committed revision and change time"));
+        return Some(false);
+    }
+    if o > h { return Some(true); }
+    if held_status == status {
+        tracing::info_span!("rdm.mesh.membership.update.via-duplicate", frame, identity = %offered.id, outcome = "ignored")
+            .in_scope(|| tracing::info!("identical status sequence and content"));
+    } else {
+        tracing::info_span!("rdm.mesh.membership.reject.via-inconsistent", frame, subject, revision = %o)
+            .in_scope(|| tracing::info!("equal status sequence with conflicting content"));
+    }
+    Some(false)
 }
 
 /// Admit a replacement status against the projection held under the status book's lock. The
@@ -177,7 +199,7 @@ impl SeatReceipts {
     /// Local execution committed this exact primary publication. Retain its content too: gossip
     /// cannot rewrite an operation at the same revision just because its row was installed locally.
     pub(crate) fn installed_primary(&mut self, op: &rdm_core::LifecycleOp, seats: &[rdm_core::seat::transfer::CommittedSeat]) {
-        let content = Frame::PrimaryUpdated { op: op.clone(), seats: seats.to_vec() }.encode();
+        let content = Frame::PrimaryUpdated { op: op.clone(), seats: seats.to_vec() }.content_bytes();
         for c in seats {
             let subject = receipt_seat(c);
             if self.publications.get(&subject).is_none_or(|h| (c.revision, true) >= (h.revision, h.settled)) {
@@ -200,13 +222,13 @@ impl SeatReceipts {
     /// No refused frame can advance another cohort's floor. The caller installs accepted settled
     /// records under this same lock; updating never installs a holder.
     pub(crate) fn admit(&mut self, f: &Frame, current: &[(rdm_core::seat::transfer::CommittedSeat, Option<rdm_core::SeatHolder>)]) -> bool {
-        let (frame, settled) = match f {
+        let (frame, settled) = match f.data() {
             Frame::Seated { .. } => ("seated", true),
             Frame::PrimaryUpdating { .. } => ("primary-updating", false),
             Frame::PrimaryUpdated { .. } => ("primary-updated", true),
             _ => unreachable!("only seat publications use the seat classifier"),
         };
-        let content = f.encode();
+        let content = f.content_bytes();
         let mut advances = false;
         // Staleness wins across the complete row. A settled record at the same revision is later
         // than updating, whether that record arrived in gossip, a read, or local execution.
@@ -401,7 +423,7 @@ impl RoundReceipts {
     /// Admit each full operation identity once, before its span and carrier effect. Non-hook
     /// frames are untouched. The caller serializes admission across local apply and all channels.
     pub(crate) fn admit(&mut self, f: &Frame) -> bool {
-        let (kind, hook) = match f {
+        let (kind, hook) = match f.data() {
             Frame::StateCommitting { hook, .. } => ("state-committing", hook),
             Frame::StateCommitted { hook, .. } => ("state-committed", hook),
             Frame::TrafficOpening { hook, .. } => ("traffic-opening", hook),
@@ -421,13 +443,30 @@ impl RoundReceipts {
     }
 }
 
+/// Exact applied counters as inclusive runs: quiet anti-entropy does not allocate a scoped
+/// identity record per publication, and an unheard counter in a gap remains admissible.
+#[derive(Debug, Default)]
+struct PublicationCounters(BTreeMap<u64, u64>);
+impl PublicationCounters {
+    fn contains(&self, counter: u64) -> bool { self.0.range(..=counter).next_back().is_some_and(|(_, end)| *end >= counter) }
+    fn insert(&mut self, counter: u64) {
+        let previous = self.0.range(..=counter).next_back().map(|(&start, &end)| (start, end));
+        if previous.is_some_and(|(_, end)| end >= counter) { return; }
+        let (mut start, mut end) = (counter, counter);
+        if let Some((a, _)) = previous.filter(|(_, b)| b.checked_add(1) == Some(counter)) { self.0.remove(&a); start = a; }
+        let next = self.0.range(counter..).next().map(|(&a, &b)| (a, b));
+        if let Some((a, b)) = next.filter(|(a, _)| counter.checked_add(1) == Some(*a)) { self.0.remove(&a); end = b; }
+        self.0.insert(start, end);
+    }
+}
+
 /// The source a frame's order key orders within.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Source {
     /// One mesh's publications.
     Mesh(String),
     /// One publisher's lifecycle facts of one mesh.
-    Lifecycle { publisher: String, mesh: String },
+    Lifecycle { publisher: PublisherId, mesh: String },
 
 }
 
@@ -466,16 +505,16 @@ fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
 
 /// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
-    match f {
+    match f.data() {
         Frame::Members { mesh, topology_version, published_at_rafka_ms, .. } => {
             Some(("members", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
         Frame::MembersDelta { mesh, topology_version, published_at_rafka_ms, .. } => {
             Some(("members-delta", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
-        Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
-        Frame::NodeRestarting { op, publisher, topology_version, .. } => Some(("node-restarting", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
-        Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::NodeRestarting { op, publisher, topology_version, .. } => Some(("node-restarting", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.clone(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         _ => None,
     }
 }
@@ -497,6 +536,7 @@ pub(crate) struct Earlier {
 /// each mesh: one for the node, shared by every channel it hears and by its topology-read install.
 #[derive(Debug, Default)]
 pub(crate) struct ReceiveOrder {
+    publications: HashMap<(String, PublisherId, u64, crate::envelope::Birth), PublicationCounters>,
     newest: HashMap<Source, Key>,
     /// Operation receipt is independent of projection admission: even a version-refused frame is
     /// seen, so another publisher or a higher carried version cannot replay its operation effect.
@@ -516,7 +556,7 @@ struct InstalledSource {
 
 /// The publisher a `Members` or `MembersDelta` names and its `topology_version`.
 fn publication_of(f: &Frame) -> Option<(&str, &PublisherId, u64)> {
-    match f {
+    match f.data() {
         Frame::Members { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
         Frame::MembersDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
         _ => None,
@@ -528,7 +568,7 @@ impl ReceiveOrder {
     /// repeat, even when the first receipt's carried revision was refused. This identity is shared
     /// by every channel, and contains the exact birth but neither publisher nor event timestamp.
     pub(crate) fn admit_lifecycle_identity(&mut self, f: &Frame) -> bool {
-        let (frame, op) = match f {
+        let (frame, op) = match f.data() {
             Frame::NodeDeleting { op, .. } => ("node-deleting", op),
             Frame::NodeRestarting { op, .. } => ("node-restarting", op),
             Frame::NodeStopped { op, .. } => ("node-stopped", op),
@@ -610,6 +650,17 @@ impl ReceiveOrder {
         Some((&h.publisher, h.version, h.full.as_ref()?, h.snapshot_id))
     }
 
+    pub(crate) fn installed_for_owner(&self, mesh: &str, owner: Option<&crate::envelope::Birth>, offered_counter: u64) -> Option<crate::snapshot::InstalledProjection<'_>> {
+        let (publisher, version, full, counter) = self.installed_snapshot(mesh)?;
+        let counter = match owner { Some(owner) => self.publications.get(&(mesh.to_string(), publisher.clone(), version, owner.clone())).is_some_and(|c| c.contains(offered_counter)).then_some(offered_counter), None => counter };
+        Some((publisher, version, full, counter))
+    }
+
+    pub(crate) fn publication_installed(&mut self, mesh: &str, publisher: &PublisherId, version: u64, owner: &crate::envelope::Birth, counter: u64) {
+        self.publications.retain(|(m, p, v, _), _| m != mesh || (p == publisher && *v == version));
+        self.publications.entry((mesh.to_string(), publisher.clone(), version, owner.clone())).or_default().insert(counter);
+    }
+
     /// The image and its floor move only after the complete projection was installed. Keeping
     /// them in one record prevents another channel from classifying against an older local image.
     pub(crate) fn installed_projection(&mut self, mesh: &str, publisher: &PublisherId, version: u64, stamp: Option<u64>, full: &crate::snapshot::Full, snapshot_id: Option<u64>) {
@@ -625,6 +676,34 @@ impl ReceiveOrder {
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn publication_receipts_compact_runs_without_treating_unheard_gaps_as_duplicates() {
+        let mut ids = PublicationCounters::default();
+        ids.insert(1); ids.insert(3);
+        assert!(ids.contains(1) && ids.contains(3)); assert!(!ids.contains(2));
+        ids.insert(2); assert_eq!(ids.0.len(), 1);
+        for counter in (4..=10_000).rev() { ids.insert(counter); }
+        assert_eq!(ids.0.len(), 1, "a quiet source keeps one run rather than one record per heartbeat publication");
+        assert!(ids.contains(1) && ids.contains(10_000)); assert!(!ids.contains(10_001));
+        ids.insert(0); ids.insert(u64::MAX);
+        assert!(ids.contains(0) && ids.contains(u64::MAX)); assert!(!ids.contains(u64::MAX - 1));
+    }
+
+    /// The source's descriptive row name cannot reset the exact birth's installed floor.
+    #[test]
+    fn a_renamed_publisher_keeps_its_installed_version_floor() {
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let mut order = ReceiveOrder::default();
+        order.installed_projection("mesh1", &publisher, 10, None, &crate::snapshot::Full::default(), None);
+        let renamed = PublisherId { node: "mesh1.admin.2".into(), ..publisher };
+        let old = Frame::Members { mesh: "mesh1".into(), publisher: renamed.clone(), forwarded_by: None, topology_version: 9, published_at_rafka_ms: 999, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] };
+        assert!(order.admit(&old).is_err());
+        let operation = rdm_core::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };
+        assert!(order.admit(&StatusEvent::Stopped.frame(operation.clone(), renamed.clone(), 20)).is_ok());
+        let relabeled = PublisherId { node: "mesh1.admin.3".into(), ..renamed };
+        assert!(order.admit(&StatusEvent::Stopped.frame(operation, relabeled, 19)).is_err(), "a carried projection floor belongs to the birth, not its label");
+    }
+
     /// CONTRACT: every membership Frame variant has exactly one receive-table row naming its
     /// category, subject, ordering and identity; a new variant without a rule fails by name.
     #[test]
@@ -632,12 +711,13 @@ mod tests {
         let source = include_str!("membership.rs");
         let declaration = source.split_once("pub enum Frame {").unwrap().1.split_once("\n}\n").unwrap().0;
         let spec = include_str!("../../../docs/architecture/gossip.md");
-        let table = spec.split_once("| frame | category | subject | ordering | identity |").unwrap().1.split_once("\n\n").unwrap().0;
+        let table = spec.split_once("| frame / type | category | source / subject | sequence / data validity | id / identity |").unwrap().1.split_once("\n\n").unwrap().0;
         let rows: Vec<Vec<&str>> = table.lines().skip(2).map(|line| line.trim_matches('|').split(" | ").map(str::trim).collect()).collect();
         let mut count = 0;
         for line in declaration.lines() {
             let Some(line) = line.strip_prefix("    ") else { continue };
             let name = line.split([' ', '(', ',', '{']).next().unwrap_or_default();
+            if name == "Authored" { continue; }
             if !name.chars().next().is_some_and(char::is_uppercase) { continue; }
             count += 1;
             let named = format!("`{name}`");

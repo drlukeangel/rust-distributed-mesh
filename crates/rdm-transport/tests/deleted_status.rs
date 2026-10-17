@@ -111,17 +111,18 @@ fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_
         let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![]).await.unwrap();
         let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()]).await.unwrap();
         let y = Membership::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr]).await.unwrap();
+        p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
+        let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         m.wait_for_neighbour().await;
         y.wait_for_neighbour().await;
 
         // mesh2's status as X published it, held by mesh2.admin.2.
-        let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
+        let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }.authored(&rdm_transport::envelope::Birth { fabric: fabric(), node: x.clone(), incarnation: x_inc.clone() }, 1, 5);
         p.learn_statuses(&[fact]);
         let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
         assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
 
         // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
-        let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "node.delete:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
         p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
         until("Y and the member to hold X departed", || y.book.is_departed(x.as_str()) && m.book.is_departed(x.as_str())).await;
@@ -129,7 +130,7 @@ fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_
 
         // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.
         let answer = p.status_frames("mesh2.admin.2");
-        assert!(matches!(answer.as_slice(), [Frame::MeshStatus { publisher, forwarded_by: Some(by), .. }] if publisher == "mesh2.admin.1" && by == "mesh2.admin.2"), "{answer:?}");
+        assert!(matches!(answer.as_slice(), [frame] if matches!(frame.data(), Frame::MeshStatus { publisher, forwarded_by: Some(by), .. } if publisher == "mesh2.admin.1" && by == "mesh2.admin.2")), "{answer:?}");
         y.learn_statuses(&answer);
         assert_eq!(y.mesh_status("mesh2"), held, "Y takes its mesh's status before its first heartbeat: X's departure never refuses the name Y holds");
         m.learn_statuses(&answer);

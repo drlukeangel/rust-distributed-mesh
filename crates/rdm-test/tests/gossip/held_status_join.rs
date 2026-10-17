@@ -111,12 +111,12 @@ impl Observer {
 }
 
 fn is_status(f: &Frame) -> bool {
-    matches!(f, Frame::MeshStatus { .. } | Frame::FabricStatus { .. })
+    matches!(f.data(), Frame::MeshStatus { .. } | Frame::FabricStatus { .. })
 }
 
 /// (kind, scope, status, publisher, forwarded_by, instant)
 fn parts(f: &Frame) -> (&'static str, String, String, String, Option<String>, u64) {
-    match f {
+    match f.data() {
         Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } => ("mesh-status", mesh.clone(), status.clone(), publisher.clone(), forwarded_by.clone(), *changed_at_rafka_ms),
         Frame::FabricStatus { fabric, status, publisher, forwarded_by, changed_at_rafka_ms } => ("fabric-status", fabric.to_string(), status.clone(), publisher.clone(), forwarded_by.clone(), *changed_at_rafka_ms),
         _ => ("other", String::new(), String::new(), String::new(), None, 0),
@@ -157,8 +157,8 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let early = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
     until_arrival("the early observer hears the backbone's aggregate and mesh1's heartbeat", Duration::from_secs(30), &early.arrivals, || {
         let all = early.all();
-        let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame, Frame::Members { .. }));
-        let digest = all.iter().any(|x| x.channel == "mesh1" && matches!(x.frame, Frame::Digest { .. }));
+        let members = all.iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { .. }));
+        let digest = all.iter().any(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Digest { .. }));
         (members && digest).then_some(())
     })
     .await;
@@ -171,7 +171,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
 
     // The change's frames: mesh2's status, authored by mesh2's admin, on the backbone.
     let authored = |o: &Observer| -> Vec<Seen> {
-        o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(&x.frame, Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")).collect()
+        o.statuses().into_iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::MeshStatus { mesh, publisher, forwarded_by: None, .. } if mesh == "mesh2" && publisher == "mesh2.admin.1")).collect()
     };
     until_arrival("the early observer heard mesh2's status", Duration::from_secs(30), &early.arrivals, || (!authored(&early).is_empty()).then_some(())).await;
     // A member joins while the sends are still running (the first was just heard; the second is due
@@ -179,7 +179,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let joiner = Observer::join(&fabric, &mesh1_id, seeds_of(&estate.node_views().await)).await;
     let joined_at = Instant::now();
     until_arrival("the member that joined mid-window holds mesh2's status", Duration::from_secs(30), &joiner.arrivals, || (!authored(&joiner).is_empty()).then_some(())).await;
-    let joiner_heard_at = joiner.statuses().iter().filter(|x| matches!(&x.frame, Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).map(|x| x.at).min().unwrap();
+    let joiner_heard_at = joiner.statuses().iter().filter(|x| matches!(x.frame.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).map(|x| x.at).min().unwrap();
     // Let the five sends finish, then keep watching: nothing more is sent.
     tokio::time::sleep(Duration::from_secs(8)).await;
     // A new mesh is pending, then ready-for-traffic (states.md, Mesh line): two status facts, each one
@@ -216,14 +216,14 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     assert_eq!(primary_before, primary_after, "no seat moved during the quiet window");
     let status_in_window: Vec<&Seen> = window.iter().filter(|x| is_status(&x.frame)).collect();
     assert!(status_in_window.is_empty(), "a quiet fabric carries no status frame: {:#?}", status_in_window.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
-    let members_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame, Frame::Members { .. })).count();
-    let digests_in_window = window.iter().filter(|x| x.channel == "mesh1" && matches!(x.frame, Frame::Digest { .. })).count();
+    let members_in_window = window.iter().filter(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { .. })).count();
+    let digests_in_window = window.iter().filter(|x| x.channel == "mesh1" && matches!(x.frame.data(), Frame::Digest { .. })).count();
     assert!(members_in_window > 0 && digests_in_window > 0, "the aggregate ({members_in_window}) and the heartbeat ({digests_in_window}) keep going");
     assert!(early.all().len() > before);
     // No Members frame carries a status: the frame has no such field.
-    for x in early.all().iter().filter(|x| matches!(x.frame, Frame::Members { .. })) {
+    for x in early.all().iter().filter(|x| matches!(x.frame.data(), Frame::Members { .. })) {
         // The frame's own fields, not its wire bytes (postcard, R-W1).
-        let v: Value = serde_json::to_value(&x.frame).unwrap()["Members"].clone();
+        let v: Value = serde_json::to_value(x.frame.data()).unwrap()["Members"].clone();
         assert!(v.is_object(), "a Members frame: {v}");
         assert!(v.get("status").is_none() && v.get("mesh_status").is_none() && v.get("fabric_status").is_none(), "Members carries no status: {v}");
     }
@@ -241,7 +241,7 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     .await;
     let told_at = Instant::now();
     let told: Vec<Seen> = late.statuses();
-    let told_mesh2: Vec<&Seen> = told.iter().filter(|x| matches!(&x.frame, Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).collect();
+    let told_mesh2: Vec<&Seen> = told.iter().filter(|x| matches!(x.frame.data(), Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).collect();
     for x in &told_mesh2 {
         let p = parts(&x.frame);
         assert_eq!(p.3, "mesh2.admin.1", "the replay keeps mesh2's primary as publisher: {:?}", row(&late, x));

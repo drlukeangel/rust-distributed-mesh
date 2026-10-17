@@ -14,8 +14,8 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, frame: Frame, serial: u64) {
     // A following status on the same channel proves receipt has finished.
-    sender.broadcast_neighbors(frame.encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.encode().into()).await.unwrap();
+    sender.broadcast_neighbors(frame.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame was applied on this channel");

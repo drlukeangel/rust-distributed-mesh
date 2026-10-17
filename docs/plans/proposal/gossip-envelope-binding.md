@@ -1,6 +1,6 @@
 # Q34 appendix — reviewed binding, cost and page lines
 
-**Proposal only; no envelope code or architecture edits before Q34 is ruled.**
+**Q34 ruled A by Luke, 2026-10-17; the three exact §3.1 replacements are approved with the implementation.**
 
 ## Binding frozen by arm A
 
@@ -133,7 +133,7 @@ review's approximate figure; it introduces no alternative encoding or recommenda
 messages, including metadata and both prefixes, must fit the unchanged MAX_FRAME of 4032 B (4096 B transport limit minus its existing 64 B reserve). Pack/chunk
 measurements use the complete encoded message. Reserved kinds have no publisher cadence/cost.
 
-## Proposed exact page lines — §3.1 only, not applied
+## Approved exact page lines — §3.1 only
 
 ### Page replacement 1
 

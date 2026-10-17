@@ -5,6 +5,8 @@
 //! literals are derived from the postcard rules by hand. Never regenerate an expectation from the Rust
 //! serializer to make a schema change pass.
 
+use crate::gossip_wire::{WireGolden, golden};
+
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, PublisherId};
 use rdm_transport::membership::Frame;
 
@@ -41,7 +43,8 @@ const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
 fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_its_status() {
     let heartbeat = format!("00 {WIRE_DIGEST}");
     for status in ["draining", "ready-for-traffic"] {
-        assert_eq!(Frame::Digest { digest: digest(status) }.encode(), bytes(&heartbeat), "a {status} heartbeat");
+        let frame = Frame::Digest { digest: digest(status) };
+        assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&heartbeat)), "a {status} heartbeat");
     }
 
     let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
@@ -59,8 +62,9 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         departed: vec![],
     };
     let members_hex = format!("01 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
-    assert_eq!(members.encode(), bytes(&members_hex), "Members: one projection entry, digest then status");
-    let Frame::Members { digests, .. } = Frame::decode(&bytes(&members_hex)).expect("the Members frame decodes") else { panic!("not Members") };
+    let members_golden = golden(&members, &bytes(&members_hex));
+    assert_eq!(members.golden_encode(), members_golden, "Members: one projection entry, digest then status");
+    let Frame::Members { digests, .. } = Frame::decode(&members_golden).expect("the Members frame decodes").into_data() else { panic!("not Members") };
     assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
 
     let delta = Frame::MembersDelta {
@@ -75,8 +79,9 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         departed: vec![],
     };
     let delta_hex = format!("02 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
-    assert_eq!(delta.encode(), bytes(&delta_hex), "MembersDelta: one changed projection entry, digest then status");
-    let Frame::MembersDelta { changed, .. } = Frame::decode(&bytes(&delta_hex)).expect("the MembersDelta frame decodes") else { panic!("not MembersDelta") };
+    let delta_golden = golden(&delta, &bytes(&delta_hex));
+    assert_eq!(delta.golden_encode(), delta_golden, "MembersDelta: one changed projection entry, digest then status");
+    let Frame::MembersDelta { changed, .. } = Frame::decode(&delta_golden).expect("the MembersDelta frame decodes").into_data() else { panic!("not MembersDelta") };
     assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
 }
 
@@ -84,10 +89,50 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
 #[test]
 fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
     let frame = Frame::Digest { digest: digest("ready-for-traffic") };
-    let encoded = frame.encode();
+    let author = rdm_transport::envelope::Birth { fabric: digest("ready-for-traffic").fabric_id, node: digest("ready-for-traffic").node.node_id, incarnation: digest("ready-for-traffic").node.incarnation };
+    let encoded = frame.authored(&author, 0, 9).encode();
     let (attributes, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&encoded).expect("CloudEvents binary metadata and opaque data");
     assert_eq!(attributes.iter().find(|(name, _)| name == "specversion").map(|(_, v)| v.as_str()), Some("1.0"));
     assert_eq!(attributes.iter().find(|(name, _)| name == "type").map(|(_, v)| v.as_str()), Some("rdm.mesh.digest"));
     assert!(!body.is_empty());
     assert!(encoded.len() <= rdm_transport::membership::MAX_FRAME);
+}
+
+/// The largest fixed byte golden includes the complete metadata and both vector prefixes.
+/// Its long API address deliberately brings the complete message near the transport ceiling.
+#[test]
+fn the_largest_complete_message_golden_fits_max_frame() {
+    let mut d = digest("ready-for-traffic");
+    d.admin_api_base = Some("x".repeat(3600));
+    let frame = Frame::Digest { digest: d };
+    // The existing literal digest prefix through node_state; Some API string has a two-byte
+    // postcard length (3600 = 0x90 0x1c), then sequence, stamp and all remaining empty fields.
+    let mut data = bytes("00 0c313132333435363738396162 0c303132333435363738396162 0b6d657368312e7270632e31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 901c");
+    data.extend(std::iter::repeat_n(b'x', 3600));
+    data.extend(bytes("07 09 00 00 00 00 00 00"));
+    let expected = golden(&frame, &data);
+    let actual = frame.golden_encode();
+    assert_eq!(actual, expected, "the complete near-ceiling golden is independent of the serializer");
+    assert!(expected.len() <= rdm_transport::membership::MAX_FRAME);
+    assert!(expected.len() > 3900);
+    crate::gossip_wire::assert_roundtrip(&frame, &expected);
+    println!("largest complete message golden: {} B; MAX_FRAME {} B", expected.len(), rdm_transport::membership::MAX_FRAME);
+}
+
+/// A body that fits by itself can overflow once its metadata and both prefixes are counted.
+#[test]
+fn members_chunks_are_sized_against_the_complete_message() {
+    let mut first = digest("ready-for-traffic"); first.admin_api_base = Some("x".repeat(1800));
+    let mut second = first.clone(); second.node.node_id = rdm_core::NodeId::parse("1123456789ab").unwrap(); second.node.name = "mesh1.rpc.2".parse().unwrap();
+    let author = crate::gossip_wire::author();
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: author.incarnation.clone(), node_id: author.node.clone() };
+    let shape = |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, departed }.authored(&author, 0, 1);
+    let complete = shape(vec![first.clone(), second.clone()], vec![], vec![], 0, 1).encode();
+    let (_, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&complete).unwrap();
+    assert!(body.len() < 4032);
+    assert!(complete.len() > 4032, "metadata makes this otherwise fitting body too large");
+    let chunks = rdm_transport::snapshot::chunks_of(&rdm_transport::snapshot::Full::new(vec![first, second], vec![], vec![]), shape);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks.iter().map(|f| match f.data() { Frame::Members { digests, .. } => digests.len(), _ => unreachable!() }).sum::<usize>(), 2);
+    assert!(chunks.iter().all(|f| f.encode().len() <= 4032));
 }

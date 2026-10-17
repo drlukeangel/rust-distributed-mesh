@@ -28,12 +28,13 @@ fn story(kind: StatusEvent, scenario: Story) {
         let command = match kind { StatusEvent::Deleting => "delete", StatusEvent::Restarting => "restart", StatusEvent::Stopped => "stop" };
         let op = LifecycleOp { build_id: "lifecycle-build".into(), attempt: 1, operation: format!("node.{command}:mesh1.rpc.2"), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.2".parse().unwrap(), event_at_rafka_ms: 1 };
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        sender.set_author(&publisher);
         receiver.book.record(MeshDigest { fabric_id: fabric, node: MeshNode { node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None });
         assert!(receiver.book.started(&op.node_id, &op.incarnation));
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
-        sender.forward(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
+        crate::forward_gossip_probe(&sender, &Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10_000 }).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async { while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
         assert!(receiver.book.routable(op.node_id.as_str()));
         if matches!(scenario, Story::Completed) {
@@ -52,7 +53,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         if matches!(scenario, Story::Stale) {
             let mut other = op.clone(); other.node_id = NodeId::mint(); other.incarnation = IncarnationId::mint(); other.name = "mesh1.rpc.3".parse().unwrap(); other.operation = format!("node.{command}:mesh1.rpc.3");
             let other_id = other.node_id.to_string();
-            sender.forward(&frame(other, 20)).await.unwrap();
+            crate::forward_gossip_probe(&sender, &frame(other, 20)).await.unwrap();
             // An open overlay is visible before the same receive finishes its birth notification.
             // Capture the baseline only after that operation's enclosing receipt has closed.
             tokio::time::timeout(Duration::from_secs(5), async {
@@ -65,7 +66,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let receipts = if matches!(scenario, Story::Control) { 1 } else { 2 };
         for n in 1..=receipts {
             let mut offered = op.clone(); if n == 2 { offered.event_at_rafka_ms = 2; }
-            sender.forward(&frame(offered, if n == 2 && matches!(scenario, Story::Stale) { 21 } else { 10 })).await.unwrap();
+            crate::forward_gossip_probe(&sender, &frame(offered, if n == 2 && matches!(scenario, Story::Stale) { 21 } else { 10 })).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == op.node_id.to_string()).count() < n { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the lifecycle receipt finished classification and application");
@@ -74,7 +75,7 @@ fn story(kind: StatusEvent, scenario: Story) {
             // Operation identity was already seen at the refused v10. Its repeat at v21 runs no
             // effect, while that independent projection key still advances the publisher floor.
             let mut third = op.clone(); third.node_id = NodeId::mint(); third.name = "mesh1.rpc.4".parse().unwrap(); third.operation = format!("node.{command}:mesh1.rpc.4");
-            sender.forward(&frame(third.clone(), 20)).await.unwrap();
+            crate::forward_gossip_probe(&sender, &frame(third.clone(), 20)).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == third.node_id.to_string()) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.unwrap();

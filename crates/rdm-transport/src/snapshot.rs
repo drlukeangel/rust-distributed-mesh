@@ -13,10 +13,11 @@
 //! RECEIVER         MembersDelta -> applied only at exactly base_version, else the source desyncs
 //! ```
 
-use crate::membership::{pack, Frame, MAX_FRAME};
+use crate::membership::{Frame, MAX_FRAME};
 use rdm_core::{LifecycleOp, MeshDigest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 pub use rdm_core::PublisherId;
 
@@ -177,10 +178,14 @@ impl Delta {
 pub struct SourceVersion {
     version: u64,
     last: Option<Full>,
-    snapshots: u64,
+    snapshots: Arc<AtomicU64>,
 }
 
 impl SourceVersion {
+    pub(crate) fn with_publication_counter(snapshots: Arc<AtomicU64>) -> Self {
+        Self { version: 0, last: None, snapshots }
+    }
+
     /// The version of `full`: the held one, or the next when `full` is a different topology.
     pub fn observe(&mut self, full: &Full) -> u64 {
         if self.last.as_ref().is_none_or(|l| !l.same_topology(full)) {
@@ -203,8 +208,7 @@ impl SourceVersion {
 
     /// The next snapshot id of this publisher.
     pub fn next_snapshot_id(&mut self) -> u64 {
-        self.snapshots += 1;
-        self.snapshots
+        self.snapshots.fetch_add(1, Ordering::Relaxed) + 1
     }
 }
 
@@ -232,6 +236,12 @@ fn split(run: Vec<Item>) -> (Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>
 /// one gossip message (sized with the widest index and count, so a filled-in chunk never
 /// overflows), and an empty full is one empty chunk: an empty Mesh is a complete snapshot.
 pub fn chunks_of(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>, u32, u32) -> Frame) -> Vec<Frame> {
+    chunks_measured(full, shape, |f| f.encode())
+}
+
+/// Split a complete snapshot using the exact complete-message encoding of its channel.
+/// Gossip uses its envelope; a directed read measures its own reply schema.
+pub fn chunks_measured<T>(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>, u32, u32) -> T, encode: impl Fn(&T) -> Vec<u8>) -> Vec<T> {
     let items: Vec<Item> = full
         .digests()
         .into_iter()
@@ -239,10 +249,16 @@ pub fn chunks_of(full: &Full, shape: impl Fn(Vec<MeshDigest>, Vec<LifecycleOp>, 
         .chain(full.in_flight().into_iter().map(Item::InFlight))
         .chain(full.departed().into_iter().map(Item::Departed))
         .collect();
-    let sized = pack(items, |run| {
-        let (d, i, x) = split(run);
-        shape(d, i, x, u32::MAX, u32::MAX)
+    let (sized, refused) = crate::chunking::pack_in_order(items, |run: &[Item]| {
+        let (d, i, x) = split(run.to_vec());
+        let bytes = encode(&shape(d, i, x, u32::MAX, u32::MAX));
+        if bytes.len() > MAX_FRAME { Err(bytes.len()) } else { Ok(bytes.into()) }
     });
+    for len in refused {
+        tracing::info_span!("rdm.mesh.membership.reject.via-item-too-large", frame_bytes = len, limit = MAX_FRAME)
+            .in_scope(|| tracing::warn!("a snapshot item fits no complete message"));
+    }
+    let sized: Vec<_> = sized.into_iter().map(|(run, _)| run).collect();
     let runs = if sized.is_empty() { vec![Vec::new()] } else { sized };
     let count = runs.len() as u32;
     runs.into_iter()
@@ -454,6 +470,7 @@ pub enum Moved {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SourceKey {
+    owner: Option<crate::envelope::Birth>,
     mesh: String,
     publisher: PublisherId,
     // Read chunk ordinals belong to that directed answer, not the author's gossip publication.
@@ -462,6 +479,7 @@ struct SourceKey {
 
 #[derive(Debug, Clone)]
 struct Pending {
+    owner: Option<crate::envelope::Birth>,
     version: u64,
     snapshot_id: u64,
     count: u32,
@@ -514,22 +532,26 @@ impl SnapshotReceiver {
     /// hearing evidence; its exact repeat does nothing, including no repair completion. Repeated
     /// chunks of an unfinished publication leave its other chunks admissible.
     pub fn take_chunk(&mut self, c: Chunk) -> Taken {
-        self.chunk(c, false, None)
+        self.chunk(c, false, None, None)
     }
 
     /// The directed topology read is the repair completion: an identical held version may resume
     /// a desynchronized source. It still cannot replace different content at the same revision.
     pub fn take_read_chunk(&mut self, c: Chunk) -> Taken {
-        self.chunk(c, true, None)
+        self.chunk(c, true, None, None)
     }
 
     /// Classify against the node's complete installed image, including an install on another
     /// channel. This receiver's pending chunks still assemble independently of that image.
     pub(crate) fn take_chunk_against(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>) -> Taken {
-        self.chunk(c, from_read, installed)
+        self.chunk(c, from_read, installed, None)
     }
 
-    fn chunk(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>) -> Taken {
+    pub(crate) fn take_authored_chunk(&mut self, c: Chunk, owner: Option<crate::envelope::Birth>, installed: Option<InstalledProjection<'_>>) -> Taken {
+        self.chunk(c, false, installed, owner)
+    }
+
+    fn chunk(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>, owner: Option<crate::envelope::Birth>) -> Taken {
         use crate::receive_order::{publication_duplicate, publication_inconsistent, publication_stale};
         if c.chunk_count == 0 || c.chunk_index >= c.chunk_count {
             return Taken::Refused(Refusal::MalformedChunk { chunk_index: c.chunk_index, chunk_count: c.chunk_count, why: "the index is outside the count" });
@@ -549,7 +571,7 @@ impl SnapshotReceiver {
                 return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
             }
             if !from_read && c.topology_version == h.version {
-                if let Some(p) = h.publication.as_ref().filter(|p| p.snapshot_id == c.snapshot_id) {
+                if let Some(p) = h.publication.as_ref().filter(|p| p.snapshot_id == c.snapshot_id && p.owner == owner) {
                     if p.count != c.chunk_count { return conflict(); }
                     if let Some(parts) = p.chunks.get(&c.chunk_index) {
                         return if same_parts(parts, &c) { duplicate() } else { conflict() };
@@ -557,7 +579,7 @@ impl SnapshotReceiver {
                 }
             }
         }
-        let key = SourceKey { mesh: c.mesh.clone(), publisher: c.publisher.clone(), from_read };
+        let key = SourceKey { owner: owner.clone(), mesh: c.mesh.clone(), publisher: c.publisher.clone(), from_read };
         if let Some(p) = self.pending.get(&key) {
             let same = p.version == c.topology_version && p.snapshot_id == c.snapshot_id;
             if !same && (c.topology_version, c.snapshot_id) < (p.version, p.snapshot_id) {
@@ -572,7 +594,7 @@ impl SnapshotReceiver {
                 }
             }
         }
-        let p = self.pending.entry(key.clone()).or_insert_with(|| Pending { version: c.topology_version, snapshot_id: c.snapshot_id, count: c.chunk_count, chunks: BTreeMap::new() });
+        let p = self.pending.entry(key.clone()).or_insert_with(|| Pending { owner: owner.clone(), version: c.topology_version, snapshot_id: c.snapshot_id, count: c.chunk_count, chunks: BTreeMap::new() });
         p.chunks.insert(c.chunk_index, (c.digests.clone(), c.in_flight.clone(), c.departed.clone()));
         if (p.chunks.len() as u32) < p.count { return Taken::Waiting { held: p.chunks.len() as u32, of: p.count }; }
         let publication = self.pending.remove(&key).expect("just assembled");
@@ -599,9 +621,10 @@ impl SnapshotReceiver {
         };
         let same = self.held.get(&mesh).filter(|h| h.publisher == publisher && h.version == version);
         let last_delta = same.and_then(|h| h.last_delta.clone());
+        let owner = publication.owner.clone();
         let retained = if from_read { same.and_then(|h| h.publication.clone()) } else { Some(publication) };
         self.unbased.remove(&mesh);
-        self.pending.retain(|k, p| !(k.mesh == mesh && k.publisher == publisher && p.version <= version));
+        self.pending.retain(|k, p| !(k.mesh == mesh && k.publisher == publisher && (p.version < version || (k.owner == owner && p.version == version))));
         self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: None, publication: retained, last_delta });
         Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, new_revision, resumed, refreshed }))
     }
@@ -736,8 +759,9 @@ pub enum Forward {
 /// fulls the forwarder holds, not a replay of the versions between.
 #[derive(Debug, Default)]
 pub struct Forwarder {
+    author: Option<crate::envelope::Birth>,
     published: HashMap<String, Published>,
-    snapshots: u64,
+    snapshots: Arc<AtomicU64>,
     /// Whether this node holds the forwarder role (it is its mesh's primary) now.
     role_on: bool,
     /// The term of the role: bumped on every take and every loss, so a decision made in one term
@@ -746,6 +770,16 @@ pub struct Forwarder {
 }
 
 impl Forwarder {
+    /// Supply this publisher's owned exact birth before making a publication.
+    pub fn set_author(&mut self, author: crate::envelope::Birth) { self.author = Some(author); }
+
+    pub(crate) fn author_frame(&self, frame: Frame, now_ms: u64) -> Frame {
+        assert!(frame.context().is_some() || !matches!(frame.data(), Frame::MeshStatus { .. } | Frame::FabricStatus { .. }), "a forwarded status retains its original author and revision");
+        frame.authored(self.author.as_ref().expect("forwarder requires its supplied author birth"), 0, now_ms)
+    }
+
+    pub(crate) fn publication_counter(&self) -> Arc<AtomicU64> { self.snapshots.clone() }
+
     /// A forwarder that takes (or loses) the seat has published nothing: the first publication of
     /// every source is a full.
     pub fn reset(&mut self) {
@@ -771,8 +805,8 @@ impl Forwarder {
     }
 
     fn full_frames(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Vec<Frame> {
-        self.snapshots += 1;
-        let snapshot_id = self.snapshots;
+        let snapshot_id = self.snapshots.fetch_add(1, Ordering::Relaxed) + 1;
+        let author = self.author.as_ref().expect("forwarder requires its supplied author birth");
         chunks_of(full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
             mesh: mesh.to_string(),
             publisher: publisher.clone(),
@@ -785,7 +819,7 @@ impl Forwarder {
             digests,
             in_flight,
             departed,
-        })
+        }.authored(author, 0, now_ms))
     }
 
     /// The source `mesh` is now held at `version` (a complete snapshot with loads). What to
@@ -822,7 +856,7 @@ impl Forwarder {
             removed: delta.removed,
             in_flight: delta.in_flight,
             departed: delta.departed,
-        };
+        }.authored(self.author.as_ref().expect("forwarder requires its supplied author birth"), 0, now_ms);
         self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version, full: stripped.clone() });
         // A delta is an optimization: one too large for a message is the full instead.
         if frame.encode().len() > MAX_FRAME {

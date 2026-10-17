@@ -1,7 +1,9 @@
 //! Fixed bytes for the node command and completion frames on the membership channels (R-W1:
-//! postcard, positional, append-only). The literals lock the discriminants and field order
+//! postcard, positional, append-only). The literals lock the type names and data field order
 //! independently of codec round trips; they are derived from the postcard rules by hand. Never
 //! regenerate an expectation from the Rust serializer to make a schema change pass.
+
+use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
 use rdm_core::{IncarnationId, LifecycleOp, MeshId, NodeId, PublisherId};
 use rdm_transport::membership::{forward_of, Frame};
@@ -41,17 +43,19 @@ fn op(operation: &str) -> LifecycleOp {
 #[test]
 fn node_command_frames_match_the_frozen_wire_schema() {
     let fixtures = [
+        (Frame::NodeDeleted { op: op("node.delete:mesh1.rpc.1"), forwarded_by: None }, "04 0c363668387172717661616a6b 01 17 6e6f64652e64656c6574653a6d657368312e7270632e31 0c303132333435363738396162 0c397763707266677776746879 0b6d657368312e7270632e31 ac02 00"),
         (Frame::NodeConnectionsDeleting { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
         (Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31"),
         (Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None }, "0c 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
         (Frame::NodeConnectionsDeleted { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
     ];
     for (frame, hex) in fixtures {
-        assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
-        assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
+        let expected = golden(&frame, &bytes(&hex));
+        assert_eq!(frame.golden_encode(), expected, "{frame:?}");
+        assert_roundtrip(&frame, &expected);
     }
     // The frames that existed keep their positions.
-    assert_eq!(Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 1 }.encode()[0], 5);
+    assert_eq!(Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 1 }.type_position(), 5);
 }
 
 /// CONTRACT: a peer mesh's primary forwards a command or completion frame onto its own channel,
@@ -69,7 +73,7 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
             Frame::NodeConnectionsDeleted { op, .. } => (op.clone(), 13),
             _ => unreachable!(),
         };
-        assert_eq!(forwarded.encode()[0], kind);
+        assert_eq!(forwarded.type_position(), kind);
         match forwarded {
             Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
                 assert_eq!(op, want_op, "the op is preserved");
@@ -120,11 +124,12 @@ fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publi
         ),
     ];
     for (frame, hex) in fixtures {
-        assert_eq!(frame.encode(), bytes(hex), "{frame:?}");
-        assert_eq!(Frame::decode(&bytes(hex)).unwrap().encode(), bytes(hex), "{frame:?} decodes and re-encodes to the same bytes");
-        let kind = frame.encode()[0];
+        let expected = golden(&frame, &bytes(hex));
+        assert_eq!(frame.golden_encode(), expected, "{frame:?}");
+        assert_roundtrip(&frame, &expected);
+        let kind = frame.type_position();
         let forwarded = forward_of(frame.clone(), "mesh3.admin.1", "mesh3").expect("a peer mesh forwards it");
-        assert_eq!(forwarded.encode()[0], kind);
+        assert_eq!(forwarded.type_position(), kind);
         match (&frame, &forwarded) {
             (Frame::NodeDeleting { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeDeleting { op: b, forwarded_by, publisher: pb, topology_version: vb })
             | (Frame::NodeRestarting { op: a, publisher: pa, topology_version: va, .. }, Frame::NodeRestarting { op: b, forwarded_by, publisher: pb, topology_version: vb })

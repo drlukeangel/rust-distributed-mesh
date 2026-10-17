@@ -65,3 +65,16 @@ fn the_answers_member_cert_name_and_config_are_the_control_frames_last_fields_be
     let bytes = answer_to_wire(&a).unwrap();
     assert_eq!(&bytes[bytes.len() - 6..], &[0xac, 0x02, 0x00, 0x00, 0x00, 0x00], "{bytes:02x?}");
 }
+
+/// An entry answer carries the retained envelope, including its original author and R10 floor.
+#[test]
+fn joined_statuses_keep_the_authored_context_and_committed_revision() {
+    let mut answer = answer();
+    let author = crate::gossip_wire::author();
+    let frame = rdm_transport::membership::Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 1000 }.authored(&author, 2, 1000);
+    answer.statuses.push(frame.clone());
+    let restored = answer_from_wire(&answer_to_wire(&answer).unwrap()).unwrap();
+    assert_eq!(restored.statuses[0].encode(), frame.encode());
+    assert_eq!(restored.statuses[0].context().unwrap().source, author);
+    assert_eq!(restored.statuses[0].context().unwrap().sequence.as_deref(), Some("00000000000000000002.00000000000000001000"));
+}

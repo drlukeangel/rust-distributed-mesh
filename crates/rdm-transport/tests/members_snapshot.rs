@@ -111,11 +111,11 @@ fn members_chunks(full: &Full, p: &PublisherId, version: u64, snapshot_id: u64, 
         digests,
         in_flight,
         departed,
-    })
+    }.authored(&crate::gossip_wire::author(), 0, 1))
 }
 
 fn chunk_of(f: &Frame) -> Chunk {
-    match f.clone() {
+    match f.clone().into_data() {
         Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => {
             Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed }
         }
@@ -124,7 +124,7 @@ fn chunk_of(f: &Frame) -> Chunk {
 }
 
 fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
-    match f.clone() {
+    match f.clone().into_data() {
         Frame::MembersDelta { mesh, source_publisher, base_version, topology_version, changed, removed, in_flight, departed, .. } => {
             (mesh, source_publisher, base_version, topology_version, Delta { changed, removed, in_flight, departed })
         }
@@ -394,6 +394,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         d43[2].in_flight = Some(3);
         let f43 = Full::new(d43, vec![], vec![]);
         let mut fwd = Forwarder::default();
+        fwd.set_author(crate::gossip_wire::author());
         let first = fwd.source("mesh1.admin.1", "mesh2", &src, 41, &f41, 1);
         let Forward::Full(first_frames) = first else { panic!("the first publication of a source is a full") };
         let carried_loads = first_frames.iter().any(|f| matches!(f, Frame::Members { digests, .. } if digests.iter().any(|d| d.in_flight.is_some())));

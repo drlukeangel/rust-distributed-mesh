@@ -64,6 +64,7 @@ pub struct BuildFloor {
 struct WireJoinAnswer {
     served_by: String,
     control: WireControl,
+    #[serde(with = "rdm_transport::envelope::frames")]
     statuses: Vec<rdm_transport::membership::Frame>,
 }
 

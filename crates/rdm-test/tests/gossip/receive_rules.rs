@@ -4,7 +4,7 @@ use rdm_core::{FabricId, MeshId};
 use rdm_transport::membership::{learn_addresses, Frame, Membership};
 use std::time::Duration;
 
-async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
+pub(super) async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
     let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
@@ -28,6 +28,7 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        crate::declare_gossip_probe(&sender);
         let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
         let frame = |status: &str| Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
         // Wait for the actual neighbour event, without sending or retrying the subject frame.
@@ -37,11 +38,11 @@ fn an_unkeyed_mesh_status_with_equal_revision_and_different_content_is_refused_i
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await.expect("the receiver joins the live mesh");
-        sender.forward(&frame("ready-for-traffic")).await.unwrap();
+        crate::forward_gossip_probe(&sender, &frame("ready-for-traffic")).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while receiver.mesh_status("mesh1").is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.expect("the receiver holds the initial status");
-        sender.forward(&frame("deleting")).await.unwrap();
+        crate::forward_gossip_probe(&sender, &frame("deleting")).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let spans = capture.spans().unwrap();
@@ -74,6 +75,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
         let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        crate::declare_gossip_probe(&sender);
         let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == "mesh1.rpc.1") {
@@ -81,7 +83,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
             }
         }).await.expect("the receiver joins the live mesh");
         let initial = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
-        sender.forward(&initial).await.unwrap();
+        crate::forward_gossip_probe(&sender, &initial).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.expect("the receiver holds the initial status");
@@ -90,7 +92,7 @@ fn mesh_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serde_
         // A forwarded copy has different wire bytes, so iroh-gossip's content dedup does not hide
         // the receipt from RDM. Its declared identity and status content remain unchanged.
         let offered = Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: revision };
-        sender.forward(&offered).await.unwrap();
+        crate::forward_gossip_probe(&sender, &offered).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status").count() < 2 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -143,6 +145,7 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
         let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        crate::declare_gossip_probe(&sender);
         let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == "mesh1.rpc.1") {
@@ -150,14 +153,14 @@ fn fabric_status_receipt(service: &str, status: &str, revision: u64) -> Vec<serd
             }
         }).await.expect("the receiver joins the live mesh");
         let initial = Frame::FabricStatus { fabric: fabric.clone(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 100 };
-        sender.forward(&initial).await.unwrap();
+        crate::forward_gossip_probe(&sender, &initial).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-fabric-status" && s["attributes"]["taken"] == "true") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.expect("the receiver holds the initial status");
         // A forwarded copy has different wire bytes, so iroh-gossip's content dedup does not hide
         // the receipt from RDM. Its declared identity and status content remain unchanged.
         let offered = Frame::FabricStatus { fabric: fabric.clone(), status: status.into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: revision };
-        sender.forward(&offered).await.unwrap();
+        crate::forward_gossip_probe(&sender, &offered).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-fabric-status").count() < 2 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -206,4 +209,44 @@ fn a_fabric_status_with_equal_revision_and_different_content_is_refused_inconsis
     assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-inconsistent"
         && s["attributes"]["frame"] == "fabric-status" && s["attributes"]["subject"] == "fab000000001 mesh1.admin.1"
         && s["attributes"]["revision"] == "100"), "conflicting fabric content at one revision must be refused by name");
+}
+
+/// R10: a predecessor's later wall time loses to the successor's higher committed seat revision.
+#[test]
+fn delayed_status_predecessors_lose_by_committed_revision() {
+    let capture = rdm_transport::EvidenceCapture::start(&std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance"), "rdm-status-author-revision").unwrap();
+    capture.run(2, async {
+        let (sender_ep, gossip, _sender_router) = endpoint().await;
+        let (receiver_ep, receiver_gossip, _receiver_router) = endpoint().await;
+        let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
+        learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
+        let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
+        let sender = Membership::join(&gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.admin.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
+        let birth = || rdm_transport::envelope::Birth { fabric: fabric.clone(), node: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let (successor, predecessor) = (birth(), birth());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up" && s["attributes"]["node"] == "mesh1.rpc.1") { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        for fabric_scope in [false, true] {
+            let frame = |status: &str, publisher: &str, changed_at_rafka_ms| if fabric_scope {
+                Frame::FabricStatus { fabric: fabric.clone(), status: status.into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms }
+            } else {
+                Frame::MeshStatus { mesh: "mesh1".into(), status: status.into(), publisher: publisher.into(), forwarded_by: None, changed_at_rafka_ms }
+            };
+            crate::forward_gossip_probe(&sender, &frame("ready-for-traffic", "mesh1.admin.2", 1000).authored(&successor, 2, 1000)).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while if fabric_scope { receiver.fabric_status().is_none() } else { receiver.mesh_status("mesh1").is_none() } { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap();
+            crate::forward_gossip_probe(&sender, &frame("deleting", "mesh1.admin.1", 9000).authored(&predecessor, 1, 9000)).await.unwrap();
+            let kind = if fabric_scope { "fabric-status" } else { "mesh-status" };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["frame"] == kind) { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap();
+            let held = if fabric_scope { receiver.fabric_status().map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) } else { receiver.mesh_status("mesh1").map(|h| (h.status, h.publisher, h.changed_at_rafka_ms)) };
+            assert_eq!(held, Some(("ready-for-traffic".into(), "mesh1.admin.2".into(), 1000)));
+            assert!(capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["frame"] == kind && s["attributes"]["held_key"] == "00000000000000000002.00000000000000001000" && s["attributes"]["frame_key"] == "00000000000000000001.00000000000000009000"));
+        }
+        sender_ep.close().await; receiver_ep.close().await;
+    });
 }

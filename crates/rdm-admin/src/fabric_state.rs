@@ -216,7 +216,7 @@ impl RoundBook {
     /// its named outcome is returned to the hook's receive span (Q21: x).
     pub fn carry_check_in(&self, frame: &rdm_transport::membership::Frame, carry: impl FnOnce(&rdm_transport::membership::Frame)) -> rdm_transport::membership::CompletionCarry {
         use rdm_transport::membership::{CompletionCarry, Frame};
-        let (hook, kind) = match frame {
+        let (hook, kind) = match frame.data() {
             Frame::StateCommitted { hook, .. } => (hook, RoundKind::StateCommit),
             Frame::TrafficOpened { hook, .. } => (hook, RoundKind::OpenTraffic),
             _ => return CompletionCarry::NotHeld,

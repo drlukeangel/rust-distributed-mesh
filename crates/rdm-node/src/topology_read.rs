@@ -11,8 +11,8 @@
 
 use rdm_core::wire::ProjectionEntry;
 use rdm_core::{MeshDigest, PublisherId};
-use rdm_transport::membership::{Frame, Membership};
-use rdm_transport::snapshot::{chunks_of, Chunk, SourceSnapshot, Taken};
+use rdm_transport::membership::Membership;
+use rdm_transport::snapshot::{chunks_measured, Chunk, SourceSnapshot, Taken};
 use rdm_transport::stream::StreamItem;
 use rdm_transport::{NodeRpcClient, NodeTarget, ServerBuilder};
 use rdm_core::catalog::OpOwner;
@@ -88,35 +88,14 @@ pub type TopologySlot = Arc<OnceLock<Arc<TopologyDoor>>>;
 /// The chunks of one held source as the replies that carry them, in the one chunking gossip uses.
 pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyReply> {
     let full = s.full();
-    chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+    chunks_measured(&full, |digests, in_flight, departed, chunk_index, chunk_count| TopologyReply::Snapshot {
         mesh: s.mesh.clone(),
         publisher: s.publisher.clone(),
-        forwarded_by: None,
         topology_version: s.topology_version,
-        published_at_rafka_ms: 0,
-        snapshot_id,
-        chunk_index,
-        chunk_count,
-        digests,
-        in_flight,
-        departed,
-    })
-    .into_iter()
-    .map(|f| match f {
-        Frame::Members { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => TopologyReply::Snapshot {
-            mesh,
-            publisher,
-            topology_version,
-            snapshot_id,
-            chunk_index,
-            chunk_count,
-            digests: digests.iter().map(ProjectionEntry::from).collect(),
-            in_flight,
-            departed,
-        },
-        _ => unreachable!("chunks_of builds Members frames"),
-    })
-    .collect()
+        snapshot_id, chunk_index, chunk_count,
+        digests: digests.iter().map(ProjectionEntry::from).collect(),
+        in_flight, departed,
+    }, |reply| rdm_transport::wire::encode(reply).expect("topology reply serializes"))
 }
 
 impl TopologyDoor {

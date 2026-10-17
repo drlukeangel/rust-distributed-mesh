@@ -37,7 +37,7 @@ fn reserved(kind: Kind) {
         let (mesh_sender, _mesh_rx) = mesh_topic.split();
         let (backbone_sender, _backbone_rx) = backbone_topic.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
+        let digest = MeshDigest { fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
         receiver.book.record(digest);
         assert!(receiver.book.started(&node_id, &incarnation));
         let holder = SeatHolder { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
@@ -67,13 +67,13 @@ fn reserved(kind: Kind) {
             Kind::Left => Frame::NodeLeft { op, forwarded_by: None },
             Kind::FabricPrimary => Frame::NewFabricPrimary { holder: SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 99 }, endpoint_id: unknown.to_string(), transport_addr: "127.0.0.1:12009".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:9".into()) },
         };
-        assert_eq!(frame.encode()[0], kind.named().1 - 1, "the reserved wire position stays fixed");
+        assert_eq!(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).context().unwrap().kind, rdm_transport::envelope::TYPES[kind.named().1 as usize - 1], "the reserved type retains its historical page position");
         for (n, sender) in [&mesh_sender, &backbone_sender].into_iter().enumerate() {
-            sender.broadcast_neighbors(frame.encode().into()).await.unwrap();
+            sender.broadcast_neighbors(frame.clone().authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             // A following frame on this same channel proves processing finished, without changing
             // the concerned mesh's status or relying on an arbitrary delay.
             let revision = n as u64 + 10;
-            sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.encode().into()).await.unwrap();
+            sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: revision }.authored(&crate::gossip_author(&fabric), 0, 1).encode().into()).await.unwrap();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < revision) { tokio::time::sleep(Duration::from_millis(10)).await; }
             }).await.expect("the following frame was applied on this channel");

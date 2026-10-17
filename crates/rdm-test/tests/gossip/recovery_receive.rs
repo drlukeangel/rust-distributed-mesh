@@ -1,4 +1,6 @@
 //! A real node.topology.get installs the recovery floor; subsequent gossip cannot roll it back.
+use tracing::Instrument;
+
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, SeatHolder};
 use rdm_core::seat::transfer::CommittedSeat;
 use rdm_transport::membership::{learn_addresses, mesh_topic, Frame, Membership, StatusEvent};
@@ -11,9 +13,10 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip) {
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     (ep, gossip)
 }
-async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, frame: Frame, serial: u64) {
-    sender.broadcast_neighbors(frame.encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: serial }.encode().into()).await.unwrap();
+async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, frame: Frame, serial: u64, author: &rdm_transport::envelope::Birth) {
+    let source = match frame.data() { Frame::Digest { digest } => rdm_transport::envelope::Birth { fabric: digest.fabric_id.clone(), node: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone() }, _ => author.clone() };
+    sender.broadcast_neighbors(frame.authored(&source, 10, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(author, 10, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame proves this receipt finished");
@@ -27,18 +30,21 @@ fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
 
 /// CONTRACT: topology RPC installs the held version, births, terminal/lifecycle evidence and seats.
 /// Stale replacement state, publications/deltas, delayed facts and reserved positions then change
-/// none of that state. R10 stays open: mesh/fabric statuses are held from prior author gossip.
+/// none of that state. Statuses retain their prior authored context; R10 has its own revision cell.
 #[test]
 fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
     let dir=std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");std::fs::create_dir_all(&dir).unwrap();
     let capture=rdm_transport::EvidenceCapture::start(&dir,"rdm-recovery-receive").unwrap();
     capture.run(4,async {
+        let root = tracing::info_span!("rdm.test.gossip.update.via-read-recovery");
+        async {
         let (fabric,mesh)=(FabricId::mint(),MeshId::mint());
         let (server_ep,server_gossip)=endpoint().await;
         let server_addr=server_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap();
         let mut own=birth(&fabric,&mesh,"mesh1.admin.1",10);
         own.node.endpoint_id=EndpointId(server_ep.id().to_string());own.node.transport_addr=server_addr;
         let publisher=PublisherId::from(&own.node);
+        let author=rdm_transport::envelope::Birth::publisher(&fabric,&publisher);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
         let server_membership=Membership::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());
@@ -61,11 +67,11 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         for (seat,d) in [(Seat::MeshPrimary,&own),(Seat::FabricPrimary,&own),(Seat::Cohort(NodeKind::RpcNode),&holder)] {server_membership.seats().take(seat,&seat_of(d,10));}
         let answer_own=own.clone();assert!(slot.set(Arc::new(rdm_node::topology_read::TopologyDoor::new(server_membership.clone(),Arc::new(move||answer_own.clone()),time))).is_ok());
         let mut serial=0;
-        for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial).await;}
+        for d in [&own,&restarted,&started,&deleted,&holder] {serial+=1;let mut old=d.clone();old.digest_seq=1;send(&sender,&receiver,Frame::Digest{digest:old},serial,&author).await;}
         let old_full=vec![own.clone(),restarted.clone(),deleted.clone(),holder.clone()].into_iter().map(|mut d|{d.digest_seq=1;d}).collect();
-        serial+=1;send(&sender,&receiver,Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},serial).await;
-        serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial).await;
-        serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial).await;
+        serial+=1;send(&sender,&receiver,Frame::Members{mesh:"mesh1".into(),publisher:publisher.clone(),forwarded_by:Some("mesh1.admin.1".into()),topology_version:10,published_at_rafka_ms:10,snapshot_id:1,chunk_index:0,chunk_count:1,digests:old_full,in_flight:vec![restart.clone(),stop.clone(),delete.clone()],departed:vec![]},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::MeshStatus{mesh:"mesh1".into(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
+        serial+=1;send(&sender,&receiver,Frame::FabricStatus{fabric:fabric.clone(),status:"ready-for-traffic".into(),publisher:"mesh1.admin.1".into(),forwarded_by:None,changed_at_rafka_ms:100},serial,&author).await;
         let resolver=Arc::new(StaticResolver::new());resolver.insert(ResolvedNode{node_id:own.node.node_id.clone(),name:own.node.name.clone(),endpoint_id:server_ep.id(),transport_addr:server_addr,incarnation:own.node.incarnation.clone()});
         let client=NodeRpcClient::new(receiver_ep.clone(),resolver);
         let read=rdm_node::topology_read::get_topology(&client,&NodeTarget::ExactNode(own.node.node_id.clone()),"mesh1",&receiver,None,None).await.unwrap();
@@ -98,7 +104,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
             Frame::NewFabricPrimary{holder:seat_of(&restarted,99),endpoint_id:bad.to_string(),transport_addr:"127.0.0.1:12099".parse().unwrap(),admin_api_base:None},
         ];
         for frame in frames.drain(..) {
-            serial+=1;send(&sender,&receiver,frame,serial).await;
+            serial+=1;send(&sender,&receiver,frame,serial,&author).await;
             assert_eq!(receiver.held_source_version("mesh1"),Some((publisher.clone(),100)));
             for held in &before {assert_eq!(receiver.book.get(held.node.node_id.as_str()).unwrap().0,*held,"no category rolls back the read-installed birth");}
             assert_eq!((receiver.mesh_status("mesh1"),receiver.fabric_status()),statuses);
@@ -109,8 +115,10 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
             assert!(receiver.desynced_sources().is_empty());assert!(receiver.location_book().addrs(bad).is_empty(),"refused gossip supplies no endpoint");
         }
         server_ep.close().await;receiver_ep.close().await;
+        }.instrument(root).await;
     });
     let spans=capture.spans().unwrap();
+    assert!(!spans.iter().any(|s| s["name"]=="rdm.mesh.membership.reject.via-undecodable-frame"), "every category reaches its receive rule on a valid envelope");
     for s in &spans {if s["name"].as_str().is_some_and(|n|n.starts_with("rdm.mesh.membership.")||n.contains("topology")){println!("{}",serde_json::to_string(s).unwrap());}}
     assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-snapshot-installed"&&s["attributes"]["node"]=="mesh1.rpc.9"&&s["attributes"]["channel"]=="topology-read"&&s["attributes"]["topology_version"]=="100"));
     for frame in ["digest","mesh-status","fabric-status","seated","primary-updating","primary-updated","members","members-delta"] {assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-stale"&&s["attributes"]["frame"]==frame),"{frame} names its stale refusal after the read");}

@@ -474,7 +474,7 @@ impl HandoverDoor {
     fn fabric_seat_incumbent(&self) -> Option<HandoverBirth> {
         let book = self.membership.seats();
         let held = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation))?;
-        book.held_frames().into_iter().find_map(|f| match f {
+        book.held_frames().into_iter().find_map(|f| match f.into_data() {
             rdm_transport::membership::Frame::PrimaryUpdated { op, seats } if seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary && c.record() == held) => {
                 Some(HandoverBirth { mesh: op.name.mesh.clone(), node_id: op.node_id, incarnation: op.incarnation })
             }

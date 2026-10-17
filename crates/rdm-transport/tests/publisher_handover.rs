@@ -194,7 +194,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let late_from = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
         m1.forward(&late_full).await.unwrap();
         m1.forward(&late_delta).await.unwrap();
-        m2.forward(&late_stop).await.unwrap();
+        m2.forward(&late_stop.clone().authored(&rdm_transport::envelope::Birth::publisher(&fabric(), &pub2), 0, 1)).await.unwrap();
         m2.forward(&late_heartbeat).await.unwrap();
         // A newer heartbeat from each sender, after its late frames: once the member holds it, the late
         // frames ahead of it on the same channel were received.
@@ -294,5 +294,51 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         until("the member to apply the next source version", || mem.held_source_version("mesh2").is_some_and(|(_, v)| v > version)).await;
         assert_eq!(mem.held_source_version("mesh2").unwrap().0, author);
         for n in [&source, &forwarder, &member, &reader] { n.ep.close().await; }
+    });
+}
+
+/// The same birth's source full and own-mesh forwarded full are distinct publications, so their
+/// standard source+id pairs must remain unique even at an unchanged material version.
+#[test]
+fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
+    use futures_lite::StreamExt;
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-publication-counter").unwrap();
+    capture.run(4, async {
+        let (source, probe) = (node().await, node().await);
+        learn_addresses(&probe.ep, &[addr_of(&source.ep)]).unwrap();
+        learn_addresses(&source.ep, &[addr_of(&probe.ep)]).unwrap();
+        let mesh = MeshId::mint();
+        let author = PublisherId { node: "mesh1.admin.1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let membership = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&source.gossip, &source.ep, &membership, "mesh1", author.clone(), vec![]).await.unwrap();
+        backbone.set_mesh_primary(true);
+        let mut local = probe.gossip.subscribe(rdm_transport::membership::mesh_topic(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
+        let mut remote = probe.gossip.subscribe(rdm_transport::membership::backbone_topic(&fabric()), vec![source.ep.id()]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), local.joined()).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), remote.joined()).await.unwrap().unwrap();
+        let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();
+        let mut ids = std::collections::BTreeSet::new();
+        for count in [2, 1] {
+            assert!(backbone.publish(&membership, vec![]).await);
+            let events = tokio::time::timeout(Duration::from_secs(5), async {
+                let mut events = Vec::new();
+                while events.len() < count {
+                    let event = tokio::select! { event = local.next() => event, event = remote.next() => event };
+                    if let Some(Ok(iroh_gossip::api::Event::Received(message))) = event {
+                        let frame = Frame::decode(&message.content).unwrap();
+                        if matches!(frame.data(), Frame::Members { .. }) { events.push(frame); }
+                    }
+                }
+                events
+            }).await.unwrap();
+            for event in events {
+                let context = event.context().unwrap();
+                assert_eq!(context.source, rdm_transport::envelope::Birth::publisher(&fabric(), &author));
+                assert_eq!(context.sequence.as_deref(), Some("00000000000000000001"));
+                assert!(ids.insert(context.id.clone()), "distinct source and forwarded publications reused {}", context.id);
+            }
+        }
+        assert_eq!(ids.len(), 3);
+        source.ep.close().await; probe.ep.close().await;
     });
 }

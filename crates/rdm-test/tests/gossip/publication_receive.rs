@@ -13,8 +13,8 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, frame: Frame, serial: u64) {
     // A following status on the same channel proves receipt has finished.
-    sender.broadcast_neighbors(frame.encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.encode().into()).await.unwrap();
+    sender.broadcast_neighbors(frame.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame was applied on this channel");
@@ -22,9 +22,9 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, fr
 
 
 
-#[derive(Clone, Copy)] enum Story { Stale, ReadFloor, Duplicate, Inconsistent, Chunks, PendingConflict, Gap, DeltaApply, DeltaRepeat, DeltaInconsistent, DeltaStale, LowerStamp, ReadRepair, CrossReadRefresh, CrossReadConflict, CrossDeltaBase, NewPublication, CrossRepeat }
+#[derive(Clone, Copy)] enum Story { Stale, ReadFloor, Duplicate, Inconsistent, Chunks, PendingConflict, Gap, DeltaApply, DeltaRepeat, DeltaInconsistent, DeltaStale, LowerStamp, ReadRepair, CrossReadRefresh, CrossReadConflict, CrossDeltaBase, NewPublication, CrossRepeat, TwoForwarders }
 fn story(story: Story) {
-    let suffix = match story { Story::Stale => "stale", Story::ReadFloor => "read-floor", Story::Duplicate => "duplicate", Story::Inconsistent => "inconsistent", Story::Chunks => "chunks", Story::PendingConflict => "pending-conflict", Story::Gap => "gap", Story::DeltaApply => "delta-apply", Story::DeltaRepeat => "delta-repeat", Story::DeltaInconsistent => "delta-inconsistent", Story::DeltaStale => "delta-stale", Story::LowerStamp => "lower-stamp", Story::ReadRepair => "read-repair", Story::CrossReadRefresh => "cross-read-refresh", Story::CrossReadConflict => "cross-read-conflict", Story::CrossDeltaBase => "cross-delta-base", Story::NewPublication => "new-publication", Story::CrossRepeat => "cross-repeat" };
+    let suffix = match story { Story::Stale => "stale", Story::ReadFloor => "read-floor", Story::Duplicate => "duplicate", Story::Inconsistent => "inconsistent", Story::Chunks => "chunks", Story::PendingConflict => "pending-conflict", Story::Gap => "gap", Story::DeltaApply => "delta-apply", Story::DeltaRepeat => "delta-repeat", Story::DeltaInconsistent => "delta-inconsistent", Story::DeltaStale => "delta-stale", Story::LowerStamp => "lower-stamp", Story::ReadRepair => "read-repair", Story::CrossReadRefresh => "cross-read-refresh", Story::CrossReadConflict => "cross-read-conflict", Story::CrossDeltaBase => "cross-delta-base", Story::NewPublication => "new-publication", Story::CrossRepeat => "cross-repeat", Story::TwoForwarders => "two-forwarders" };
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance"); std::fs::create_dir_all(&dir).unwrap();
     let capture = rdm_transport::EvidenceCapture::start(&dir, &format!("rdm-publication-{suffix}")).unwrap();
     capture.run(2, async {
@@ -124,6 +124,20 @@ fn story(story: Story) {
                 if matches!(story, Story::DeltaInconsistent) { let mut wrong=changed.clone();wrong.config.insert("contradiction".into(), "yes".into());send(&sender, &receiver, delta(10, 11, vec![wrong], 101), 3).await; }
                 expected=11;
             },
+            Story::TwoForwarders => {
+                let owner_b = rdm_transport::envelope::Birth { fabric: receiver.fabric_id().clone(), node: NodeId::mint(), incarnation: IncarnationId::mint() };
+                send(&sender, &receiver, baseline.clone().authored(&owner_b, 0, 100), 2).await;
+                let installs = || capture.spans().unwrap().iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-snapshot-installed").count();
+                assert_eq!(installs(), 2, "a second forwarder's counter 1 is a distinct publication install");
+                let repeated = |by: &str| { let mut f = baseline.clone(); if let Frame::Members { forwarded_by, .. } = &mut f { *forwarded_by = Some(by.into()); } f };
+                send(&sender, &receiver, repeated("mesh1.admin.4"), 3).await;
+                assert_eq!(installs(), 2, "the first owner's resend is still a duplicate after the other owner's publication");
+                send(&sender, &receiver, snapshot(10, 2, 0, 1, vec![digest.clone()], 101), 4).await;
+                assert_eq!(installs(), 3, "the first owner's new counter is a new publication install");
+                send(&sender, &receiver, repeated("mesh1.admin.5"), 5).await;
+                assert_eq!(installs(), 3, "an older exact publication id stays seen after a newer counter");
+                assert_eq!(receiver.book.get(id.as_str()).unwrap().1, heard_before, "a peer mesh projection on this mesh channel supplies no liveness");
+            },
             Story::DeltaStale => send(&sender, &receiver, delta(8, 9, vec![], 200), 2).await,
         }
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher, expected)));
@@ -140,7 +154,7 @@ fn story(story: Story) {
         if matches!(story, Story::Gap | Story::ReadRepair) { assert_eq!(named["attributes"]["repair_requested"], "true"); }
         else if matches!(story, Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat) { assert_eq!(named["attributes"]["outcome"], "ignored"); }
     }
-    let snapshots=if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication) { 2 } else { 1 };
+    let snapshots=if matches!(story, Story::TwoForwarders) { 3 } else if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication) { 2 } else { 1 };
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.membership.update.via-snapshot-installed").count(),snapshots);
     let deltas=usize::from(matches!(story, Story::DeltaApply | Story::DeltaRepeat | Story::DeltaInconsistent | Story::ReadRepair | Story::CrossDeltaBase));
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.membership.update.via-delta").count(),deltas);
@@ -197,3 +211,6 @@ fn story(story: Story) {
 
 /// CONTRACT: a publication forwarded onto another channel retains its identity and runs no effect twice.
 #[test] fn publication_repeat_on_another_channel_is_duplicate() { story(Story::CrossRepeat); }
+
+/// Forwarding births namespace equal counters; exact older resends remain duplicates.
+#[test] fn distinct_forwarders_at_one_material_version_install_once_each() { story(Story::TwoForwarders); }

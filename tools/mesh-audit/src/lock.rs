@@ -235,7 +235,7 @@ pub const JSON_CODEC_TOKENS: &[&str] = &[
 pub const JSON_VALUE_EDGE: &str = "crates/rdm-admin/src/wire.rs";
 
 /// The gossip topics' frame codecs go through the one shared codec, never `postcard` directly.
-pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/membership.rs", "crates/rdm-admin/src/fabric_builds.rs"];
+pub const GOSSIP_FRAME_SOURCES: &[&str] = &["crates/rdm-transport/src/membership.rs", "crates/rdm-transport/src/envelope.rs", "crates/rdm-admin/src/fabric_builds.rs"];
 pub const WIRE_CODEC: &str = "crates/rdm-transport/src/wire.rs";
 pub const WIRE_CELLS: &str = "crates/rdm-admin/tests/gossip_frames_wire.rs";
 /// Where a span guard held across an `.await` is refused: every workspace source that is not a test.
@@ -723,13 +723,14 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             scan_non_test_tokens(root, &no_edge, &["serde_json::Value"], ratchet, &mut out);
             scan_non_test_tokens(root, &files_in(root, GOSSIP_FRAME_SOURCES), &["postcard::"], ratchet, &mut out);
             require(root, WIRE_CODEC, &["postcard::to_allocvec", "postcard::take_from_bytes", "bytes left after the frame"], ratchet, &mut out);
-            require(root, "crates/rdm-transport/src/membership.rs", &["crate::wire::encode", "crate::wire::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/membership.rs", &["crate::envelope::encode", "crate::envelope::decode", "rdm.mesh.membership.reject.via-undecodable-frame", "Seated { seat: Seat, holder: SeatHolder }", "Concern { seat: Seat, node_id: NodeId"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/envelope.rs", &["crate::wire", "wire::encode", "wire::decode", "specversion", "datacontenttype", "rdm.mesh.digest", "rdm.node.primary.updating"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn seat_frames_match_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/fabric_builds.rs", &["rdm_transport::wire::encode", "rdm_transport::wire::decode", "rdm.node_admin.build.reject.via-undecodable-fact"], ratchet, &mut out);
             require(root, JOIN_SOURCE, &["crate::wire::answer_to_wire"], ratchet, &mut out);
             require(root, "crates/rdm-node/src/join.rs", &["WireDigest::from", "crate::wire::answer_from_wire"], ratchet, &mut out);
             require(root, JOIN_CELLS, &["fn a_join_request_and_its_answer_round_trip_through_postcard"], ratchet, &mut out);
-            require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "ProjectionEntry::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
+            require(root, TOPOLOGY_SOURCE, &["chunks_measured", "take_read_chunk", "ProjectionEntry::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);

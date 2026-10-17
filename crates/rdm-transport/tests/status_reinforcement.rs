@@ -80,7 +80,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             assert_eq!(status_of(f), "pending");
             assert!(matches!(f, Frame::MeshStatus { mesh, forwarded_by: None, .. } if mesh == "mesh1"));
         }
-        assert_eq!(sends[0].encode(), sends[4].encode(), "the fifth send is the first, byte for byte");
+        assert_eq!(crate::gossip_wire::authored(&sends[0]).encode(), crate::gossip_wire::authored(&sends[4]).encode(), "the fifth send is the first, byte for byte");
 
         // The same status observed again, however often, sends nothing.
         let mut unchanged_sends = 0;
@@ -183,7 +183,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         };
         // The frame is positional postcard: this pattern names every field the frame carries, and
         // none of them is a status.
-        let Ok(Frame::Members { mesh: _, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, departed: _ }) = Frame::decode(&members.encode()) else {
+        let Ok(Frame::Members { mesh: _, publisher: _, forwarded_by: _, topology_version: _, published_at_rafka_ms: _, snapshot_id: _, chunk_index: _, chunk_count: _, digests: _, in_flight: _, departed: _ }) = Frame::decode(&crate::gossip_wire::authored(&members).encode()).map(Frame::into_data) else {
             panic!("Members round-trips as Members, carrying no status field");
         };
 
@@ -196,9 +196,13 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             (ep, g)
         };
         let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+        let author = rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
+        let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.announce_statuses("pending", "pending", true, true).await;
         assert!(membership.mesh_status("mesh1").is_none() && membership.fabric_status().is_none(), "a node holding no role publishes no status");
+        let holder = rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: author.node_id.clone(), incarnation: author.incarnation.clone(), revision: 2 };
+        membership.seats().take(rdm_core::Seat::MeshPrimary, &holder);
+        membership.seats().take(rdm_core::Seat::FabricPrimary, &holder);
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         backbone.announce_statuses("ready-for-traffic", "ready-for-traffic", true, true).await;
@@ -215,6 +219,9 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         endpoint.close().await;
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+        for span in spans.iter().filter(|s| s["name"] == "rdm.mesh.fabric.update.via-status-send" && s["attributes"]["node"] == me) {
+            assert_eq!(span["attributes"]["committed_revision"], "2", "every reinforcement retains the publisher's held committed row revision");
+        }
         let roles: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.fabric.update.via-status-publisher" && s["attributes"]["node"] == me).collect();
         let role_of = |r: &str| roles.iter().filter(|s| s["attributes"]["role"] == r).count();
         assert_eq!((role_of("start"), role_of("stop")), (1, 1), "the fabric publisher role started and stopped once: {roles:?}");

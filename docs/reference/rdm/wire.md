@@ -2522,7 +2522,7 @@ The author of a versioned topology: its descriptive name and exact node/incarnat
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
-| 0 | `node` | `String` |  | The publisher's node name. |
+| 0 | `node` | `String` |  | The publisher's descriptive node name; it is not part of the birth identity. |
 | 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
 | 2 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The author's logical node, supplied at publication, never resolved from its name. |
 

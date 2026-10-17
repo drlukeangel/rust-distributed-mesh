@@ -60,6 +60,7 @@ impl ForwardPath {
     /// `owes_full` is the flag whose set state makes the next publication a full of every source.
     #[cfg(test)]
     pub(crate) fn new(forwarder: Arc<Mutex<Forwarder>>, owes_full: Arc<AtomicBool>, sink: Sink) -> Self {
+        forwarder.lock().unwrap().set_author(test_author());
         let (me, rx) = Self::pair(forwarder, owes_full);
         me.spawn_sender(rx, sink);
         me
@@ -157,8 +158,9 @@ impl ForwardPath {
         if frames.is_empty() {
             return (0, 0, 0);
         }
+        let frames: Vec<_> = frames.into_iter().map(|f| forwarder.author_frame(f, now_ms)).collect();
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-        let fulls = frames.iter().filter(|f| matches!(f, Frame::Members { .. })).count();
+        let fulls = frames.iter().filter(|f| matches!(f.data(), Frame::Members { .. })).count();
         let len = frames.len();
         self.enqueue(Job::Replayed { me: me.to_string(), epoch, frames });
         (len, fulls, bytes)
@@ -191,7 +193,7 @@ fn frames_of(out: Forward) -> Vec<Frame> {
 
 /// The source a forward frame belongs to: mesh, publisher and the version it moves the source to.
 fn identity(frame: &Frame) -> Option<(&str, &PublisherId, u64)> {
-    match frame {
+    match frame.data() {
         Frame::Members { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
         Frame::MembersDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
         _ => None,
@@ -295,7 +297,7 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
             frames
         }
         Forward::Delta(frame) => {
-            if let (Frame::MembersDelta { base_version, changed, removed, in_flight, departed, .. }, Some((mesh, publisher, version))) = (frame.as_ref(), &source) {
+            if let (Frame::MembersDelta { base_version, changed, removed, in_flight, departed, .. }, Some((mesh, publisher, version))) = (frame.data(), &source) {
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-forwarded-delta",
                     node = %me,
@@ -327,6 +329,11 @@ async fn send_forward(sink: &Sink, owes_full: &AtomicBool, me: String, source: O
             refused(owes_full, &me, frame, &cause);
         }
     }
+}
+
+#[cfg(test)]
+fn test_author() -> crate::envelope::Birth {
+    crate::envelope::Birth { fabric: rdm_core::FabricId::parse("fab000000001").unwrap(), node: rdm_core::NodeId::parse("0123456789ab").unwrap(), incarnation: rdm_core::IncarnationId::parse("yrz49j303yh4").unwrap() }
 }
 
 #[cfg(test)]
@@ -400,7 +407,7 @@ mod tests {
                     if me.fail.lock().unwrap().contains(&n) {
                         anyhow::bail!("the channel refused call {n}");
                     }
-                    let key = match &f {
+                    let key = match f.data() {
                         Frame::MembersDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
                         Frame::Members { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } if me.carried_marker => (1, 1),
@@ -511,7 +518,9 @@ mod tests {
         let owes = Arc::new(AtomicBool::new(false));
         let (queue, rx) = mpsc::unbounded_channel();
         drop(rx);
-        let path = ForwardPath { forwarder: Arc::default(), queue, owes_full: owes.clone() };
+        let forwarder = Arc::new(Mutex::new(Forwarder::default()));
+        forwarder.lock().unwrap().set_author(test_author());
+        let path = ForwardPath { forwarder, queue, owes_full: owes.clone() };
         path.forwarder.lock().unwrap().set_role(true);
         let p = publisher();
         path.source("mesh2.admin.1", "mesh1", &p, 10, &source_at(&ids, 10), 1);
@@ -545,7 +554,7 @@ mod tests {
                         me.entered.notify_one();
                         me.release.acquire().await.unwrap().forget();
                     }
-                    let key = match &f {
+                    let key = match f.data() {
                         Frame::MembersDelta { base_version, topology_version, .. } => (*base_version, *topology_version),
                         Frame::Members { topology_version, .. } => (0, *topology_version),
                         Frame::Digest { .. } => (1, 1),
@@ -656,7 +665,7 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let (p, q) = (publisher(), publisher());
-        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }).len();
+        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }.authored(&test_author(), 0, 1)).len();
         assert!(chunks > 1, "the full spans {chunks} chunks");
         path.source("mesh2.admin.1", "mesh1", &p, 10, &big(10), 1);
         path.source("mesh2.admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);

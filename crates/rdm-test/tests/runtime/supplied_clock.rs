@@ -69,6 +69,7 @@ struct Seen {
 /// A member of the backbone and one mesh channel: it records every frame it decodes and can
 /// broadcast one frame on the mesh channel.
 struct Observer {
+    author: rdm_transport::envelope::Birth,
     endpoint: Endpoint,
     _router: iroh::protocol::Router,
     seen: Arc<Mutex<Vec<Seen>>>,
@@ -106,7 +107,7 @@ impl Observer {
                 }
             });
         }
-        Self { endpoint, _router: router, seen, arrivals, mesh_sender: mesh_sender.unwrap() }
+        Self { author: crate::gossip_author(fabric), endpoint, _router: router, seen, arrivals, mesh_sender: mesh_sender.unwrap() }
     }
 
     fn all(&self) -> Vec<Seen> {
@@ -118,7 +119,7 @@ impl Observer {
         self.all()
             .into_iter()
             .filter(|x| x.channel == "mesh1")
-            .filter_map(|x| match &x.frame {
+            .filter_map(|x| match x.frame.data() {
                 Frame::Digest { digest } if digest.node.name.to_string() == node => Some((x.clone(), digest.clone())),
                 _ => None,
             })
@@ -126,7 +127,7 @@ impl Observer {
     }
 
     async fn broadcast(&self, f: &Frame) {
-        self.mesh_sender.broadcast(Bytes::from(f.encode())).await.unwrap();
+        self.mesh_sender.broadcast(Bytes::from(f.clone().authored(&self.author, 0, 1).encode())).await.unwrap();
     }
 }
 
@@ -160,7 +161,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     // The real frames: several heartbeats of the rpc node's one birth, and a Members publication.
     let observer = Observer::join(&fabric, &mesh1_id, seeds_of(&nodes)).await;
     until_arrival("the observer decodes six heartbeats of the rpc node and a Members publication", Duration::from_secs(60), &observer.arrivals, || {
-        let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame, Frame::Members { .. }));
+        let members = observer.all().iter().any(|x| x.channel == "backbone" && matches!(x.frame.data(), Frame::Members { .. }));
         (observer.heartbeats_of(NODE).len() >= 6 && members).then_some(())
     })
     .await;
@@ -179,7 +180,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     let members_published: Vec<u64> = observer
         .all()
         .iter()
-        .filter_map(|x| match &x.frame {
+        .filter_map(|x| match x.frame.data() {
             Frame::Members { published_at_rafka_ms, .. } if x.channel == "backbone" => Some(x.heard_at_ms.abs_diff(*published_at_rafka_ms)),
             _ => None,
         })

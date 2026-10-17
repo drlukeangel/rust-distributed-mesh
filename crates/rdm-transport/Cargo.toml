@@ -37,6 +37,7 @@ thiserror = "1"
 blake3 = "1"
 sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [features]
 # The test-only OS-clock skew (`clock::skew_os_clock_for_testkit`): enabled by the testkit alone.

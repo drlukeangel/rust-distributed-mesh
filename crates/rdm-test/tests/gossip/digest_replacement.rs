@@ -14,8 +14,8 @@ async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol
 async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, digest: MeshDigest, serial: u64) {
     // Neighbor delivery passes identical heartbeat bytes to RDM without waiting for swarm dedup
     // retention. A following status on the same channel proves receipt has finished.
-    sender.broadcast_neighbors(Frame::Digest { digest }.encode().into()).await.unwrap();
-    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::Digest { digest }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
+    sender.broadcast_neighbors(Frame::MeshStatus { mesh: "barrier".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.2".into(), forwarded_by: None, changed_at_rafka_ms: serial }.authored(&crate::gossip_author(receiver.fabric_id()), 0, 1).encode().into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while receiver.mesh_status("barrier").is_none_or(|s| s.changed_at_rafka_ms < serial) { tokio::time::sleep(Duration::from_millis(10)).await; }
     }).await.expect("the following frame was applied on this channel");
@@ -65,7 +65,7 @@ fn story(story: Story) {
             Story::Stale | Story::ReadFloor => { offered.digest_seq = 90; offered.config.insert("obsolete".into(), "yes".into()); }
             Story::Duplicate => {
                 offered.status = MemberStatus::Leaving; // absent from the wire; the held status is Ready.
-                assert_eq!(Frame::Digest { digest: offered.clone() }.encode(), Frame::Digest { digest: digest.clone() }.encode());
+                assert_eq!(Frame::Digest { digest: offered.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode(), Frame::Digest { digest: digest.clone() }.authored(&crate::gossip_author(&digest.fabric_id), 0, 1).encode());
                 receiver.location_book().forget(key);
             }
             Story::Inconsistent => { offered.node.endpoint_id = EndpointId(other_key.to_string()); }

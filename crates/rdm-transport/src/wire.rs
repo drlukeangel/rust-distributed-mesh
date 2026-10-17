@@ -1,12 +1,10 @@
-//! The one codec every gossip frame goes through: postcard, positional, no field names, no
-//! self-description. A membership [`Frame`](crate::membership::Frame) and a Build-topic message
-//! (`rafka-node-admin-core` `fabric_builds`) are encoded here and nowhere else, so what a
-//! sender measured to fit one gossip message ([`crate::chunking`]) is exactly what travels.
+//! The shared postcard codec. Gossip uses the CloudEvents binary binding in `envelope`: literal
+//! standard metadata names and separately selected opaque data, with no numeric kind on the wire.
+//! Build-topic and directed RPC data retain their positional postcard schemas. Every caller
+//! measures its complete encoded message; this codec rejects a valid prefix with trailing bytes.
 //!
-//! Postcard decodes by position. A type that reaches this codec therefore carries no
-//! `skip_serializing_if`, no internally tagged enum and no `serde_json::Value`: those shift
-//! fields or need a self-describing format. A type that is JSON elsewhere (REST, a journal, a
-//! file) keeps its JSON shape and is mirrored by a wire type beside the codec's caller.
+//! Positional data contains no `skip_serializing_if`, internally tagged enums or JSON values.
+//! Types used by JSON surfaces keep a separate wire shape where required.
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt;
@@ -51,3 +49,10 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WireError> {
 // shape in a heartbeat and in the join; a mesh-primary's member projection carries each member as a
 // `ProjectionEntry` (its digest, then its status).
 pub use rdm_core::wire::{digest, entries, ProjectionEntry, WireDigest};
+
+/// Consume one postcard value from a selected data schema, retaining its remaining fields.
+pub(crate) fn take<T: DeserializeOwned>(bytes: &mut &[u8]) -> Result<T, WireError> {
+    let (value, rest) = postcard::take_from_bytes(bytes).map_err(|e| WireError::new(format!("postcard field: {e}")))?;
+    *bytes = rest;
+    Ok(value)
+}

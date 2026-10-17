@@ -334,11 +334,10 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     // ---- every Frame variant: decode(encode(f)) is f, and re-encodes to the same bytes ----
     let all_frames = frames();
     for f in &all_frames {
-        let bytes = f.encode();
-        let back = Frame::decode(&bytes).unwrap_or_else(|e| panic!("{f:?} does not decode: {e}"));
-        assert_eq!(format!("{back:?}"), format!("{f:?}"), "a frame decodes to the value it was made from");
-        assert_eq!(back.encode(), bytes, "and re-encodes to the same bytes");
-        assert!(bytes.len() <= MAX_MESSAGE_BYTES, "{f:?} fits one gossip message");
+        let event = crate::gossip_wire::authored(f);
+        let bytes = event.encode();
+        crate::gossip_wire::assert_roundtrip(f, &bytes);
+        assert!(bytes.len() <= MAX_MESSAGE_BYTES, "{f:?} fits one complete gossip message");
     }
     result.insert("frame_variants_round_tripped".into(), json!(all_frames.len()));
 
@@ -390,13 +389,13 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
         digests,
         in_flight,
         departed,
-    });
+    }.authored(&crate::gossip_wire::author(), 0, 1));
     assert!(chunks.len() > 2);
     let mut heard = 0;
     for c in &chunks {
         let bytes = c.encode();
         assert!(bytes.len() <= MAX_MESSAGE_BYTES, "a Members chunk of {} bytes fits the ceiling", bytes.len());
-        match Frame::decode(&bytes).unwrap() {
+        match Frame::decode(&bytes).unwrap().into_data() {
             Frame::Members { digests, .. } => heard += digests.len(),
             other => panic!("{other:?}"),
         }
@@ -406,7 +405,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
 
     // ---- sizes: one digest, postcard against the JSON-shaped MeshDigest ----
     let one = digest(1, Some(process_runtime()), true);
-    let wire_bytes = Frame::Digest { digest: one.clone() }.encode().len();
+    let wire_bytes = crate::gossip_wire::authored(&Frame::Digest { digest: one.clone() }).encode().len();
     let json_bytes = serde_json::to_vec(&one).unwrap().len();
     assert!(wire_bytes < json_bytes, "postcard {wire_bytes} B against JSON {json_bytes} B");
     result.insert("digest_bytes".into(), json!({ "postcard_frame": wire_bytes, "json_digest": json_bytes }));
@@ -416,7 +415,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     assert!(garbage.contains("postcard decode of 4 bytes as"), "{garbage}");
     let json_frame = Frame::decode(br#"{"frame":"digest","digest":{}}"#).unwrap_err().to_string();
     assert!(json_frame.contains("postcard decode"), "a JSON frame is refused, not read: {json_frame}");
-    let mut padded = all_frames[5].encode();
+    let mut padded = crate::gossip_wire::authored(&all_frames[5]).encode();
     padded.push(0);
     let trailing = Frame::decode(&padded).unwrap_err().to_string();
     assert!(trailing.contains("1 bytes left after the frame"), "{trailing}");
@@ -441,4 +440,22 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     let dir = acceptance_dir();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&Value::Object(result)).unwrap()).unwrap();
+}
+
+/// All 22 kinds declare their literal standard type; reserved kinds remain named refusals.
+#[test]
+fn every_kind_declares_its_ruled_type_string() {
+    let mut cases = frames();
+    let (op, seats) = cases.iter().find_map(|f| match f { Frame::PrimaryUpdated { op, seats } => Some((op.clone(), seats.clone())), _ => None }).unwrap();
+    cases.push(Frame::PrimaryUpdating { op, seats });
+    let expected = ["rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.node.stopped", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.mesh.status", "rdm.fabric.status", "rdm.seat.seated", "rdm.seat.seated", "rdm.mesh.concern", "rdm.fabric.primary.new", "rdm.node.primary.updated", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened", "rdm.node.primary.updating"];
+    assert_eq!(cases.len(), expected.len());
+    for (frame, kind) in cases.iter().zip(expected) {
+        let bytes = crate::gossip_wire::authored(frame).encode();
+        let (attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&bytes).unwrap();
+        assert_eq!(attrs.iter().find(|(n, _)| n == "type").unwrap().1, kind);
+        crate::gossip_wire::assert_roundtrip(frame, &bytes);
+        assert!(bytes.len() <= 4032);
+    }
+    assert_eq!(expected.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 22);
 }

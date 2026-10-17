@@ -230,7 +230,7 @@ pub struct Columns {
 pub fn type_section(out: &mut String, ws: &Workspace, decl: &Decl, cols: Columns, linked: &BTreeSet<String>) {
     out.push_str(&format!("<a id=\"{}\"></a>\n\n### `{}`\n\n", decl.anchor(), decl.name()));
     let (attrs, shape) = match &decl.item {
-        DeclItem::Enum(e) => (&e.attrs[..], format!("enum · {} variants", e.variants.len())),
+        DeclItem::Enum(e) => (&e.attrs[..], format!("enum · {} variants", e.variants.iter().filter(|v| !source::serde_attrs(&v.attrs).iter().any(|a| a == "skip")).count())),
         DeclItem::Struct(s) => (&s.attrs[..], match &s.fields {
             syn::Fields::Named(f) => format!("struct · {} fields", f.named.len()),
             syn::Fields::Unnamed(f) => format!("tuple struct · {} fields", f.unnamed.len()),
@@ -276,6 +276,7 @@ fn enum_table(out: &mut String, ws: &Workspace, decl: &Decl, e: &syn::ItemEnum, 
     head.push("doc");
     out.push_str(&format!("| {} |\n|{}\n", head.join(" | "), "---|".repeat(head.len())));
     for (i, v) in e.variants.iter().enumerate() {
+        if source::serde_attrs(&v.attrs).iter().any(|a| a == "skip") { continue; }
         let mut row = vec![i.to_string(), format!("**`{}`**{}", v.ident, v.discriminant.as_ref().map(|(_, d)| format!(" = {}", code(&source::text(d)))).unwrap_or_default())];
         if cols.serde_name {
             row.push(match (source::derives(&e.attrs, "Serialize"), serde_name(&e.attrs, v)) {
@@ -343,7 +344,7 @@ pub fn with_module(f: &syn::Field) -> bool {
 /// The fields of a struct or enum declaration (every variant's), in declaration order.
 pub fn fields<'a>(decl: &'a Decl) -> Vec<&'a syn::Field> {
     match &decl.item {
-        DeclItem::Enum(e) => e.variants.iter().flat_map(|v| v.fields.iter()).collect(),
+        DeclItem::Enum(e) => e.variants.iter().filter(|v| !source::serde_attrs(&v.attrs).iter().any(|a| a == "skip")).flat_map(|v| v.fields.iter()).collect(),
         DeclItem::Struct(s) => s.fields.iter().collect(),
         DeclItem::Macro { .. } => Vec::new(),
     }

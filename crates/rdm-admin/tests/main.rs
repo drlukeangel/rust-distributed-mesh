@@ -87,3 +87,7 @@ mod stopped_view;
 mod store_root_boot;
 mod topology_read;
 mod fabric_delete;
+
+#[allow(dead_code)]
+#[path = "../../../tools/test-support/gossip_wire.rs"]
+mod gossip_wire;

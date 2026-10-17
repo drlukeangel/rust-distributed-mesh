@@ -177,9 +177,9 @@ fn read_chunks(topology: &[rdm_transport::snapshot::SourceSnapshot], mesh: &str)
         digests,
         in_flight,
         departed,
-    })
+    }.authored(&crate::gossip_wire::author(), 0, 1))
     .into_iter()
-    .map(|f| match f {
+    .map(|f| match f.into_data() {
         Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed },
         _ => unreachable!("chunks_of shapes Members"),
     })
@@ -223,7 +223,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
         // The mesh-primary's own digest, heard by the member directly.
-        let p_digest = digest("mesh1.admin.1", &NodeId::mint(), &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_001);
+        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_001);
         p.publish(&p_digest).await.unwrap();
         learn_primary_seat(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         // mesh1.rpc.1: its heartbeats as the primary and the member hear them.
@@ -354,7 +354,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         let round = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
-        let p_digest = digest("mesh1.admin.1", &NodeId::mint(), &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_021);
+        let p_digest = digest("mesh1.admin.1", &p_node_id, &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_021);
         p.publish(&p_digest).await.unwrap();
         learn_primary_seat(&m, "mesh1", &p_digest.node.node_id, &p_birth);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());

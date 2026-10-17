@@ -1,7 +1,9 @@
 //! Fixed bytes for the seat frames on the membership channels (R-A2; R-W1: postcard, positional,
-//! append-only). These literals lock the discriminants and the field order independently of codec
+//! append-only). These literals lock the type names and the data field order independently of codec
 //! round trips. Never regenerate an expectation from the Rust serializer to make a schema change
 //! pass: a changed byte here is a moved wire format and needs a rebirth.
+
+use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
 use rdm_core::{IncarnationId, NodeId, Seat, SeatHolder};
 use rdm_transport::membership::{Frame, SeatBook, SeatTaken};
@@ -28,18 +30,24 @@ fn seat_frames_match_the_frozen_wire_schema() {
     // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 0c <fixture("i")> = the incarnation; 02 = revision.
     let node_hex = "0c 303472616a303970337a7037";
     let fixtures = [
+        (Frame::MeshStatus { mesh: "m".into(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }, "06 016d 0173 0170 00 01".to_string()),
+        (Frame::FabricStatus { fabric: rdm_core::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }, "07 0c303472616a303970337a7037 0173 0170 00 01".to_string()),
         (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0c79727a34396a333033796834 02")),
         (Frame::Seated { seat: Seat::MeshPrimary, holder: holder(300) }, format!("08 00 016d {node_hex} 0c79727a34396a333033796834 ac02")),
         (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("i")).unwrap(), observer: "o".into() }, format!("09 01 {node_hex} 0c79727a34396a333033796834 016f")),
     ];
     for (frame, hex) in fixtures {
-        assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
-        assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
+        let expected = golden(&frame, &bytes(&hex));
+        assert_eq!(frame.golden_encode(), expected, "{frame:?}");
+        assert_roundtrip(&frame, &expected);
     }
     // The frames that existed keep their positions.
-    assert_eq!(Frame::FabricStatus { fabric: rdm_core::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.encode()[0], 7);
+    assert_eq!(Frame::FabricStatus { fabric: rdm_core::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.type_position(), 7);
     // A seat this build does not know is refused by name, never read as a prefix.
-    let e = Frame::decode(&bytes("08 02 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02")).unwrap_err().to_string();
+    let mut malformed = golden(&Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, &bytes("08 01 016d 0c303472616a303970337a7037 0c79727a34396a333033796834 02"));
+    let (attrs, mut body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&malformed).unwrap();
+    body[0] = 3; malformed = rdm_transport::wire::encode(&(attrs, body)).unwrap();
+    let e = Frame::decode(&malformed).unwrap_err().to_string();
     assert!(e.contains("postcard decode"), "{e}");
 }
 
@@ -55,8 +63,8 @@ fn a_seat_book_holds_the_superseding_record_and_replays_what_it_holds() {
     assert_eq!(book.take(Seat::MeshPrimary, &holder(1)), SeatTaken::Held { previous: None }, "a mesh's seat is its own record");
     assert_eq!(book.fabric(), Some(holder(3)));
     assert_eq!(book.mesh("m"), Some(holder(1)));
-    let replay: Vec<Vec<u8>> = book.held_frames().iter().map(Frame::encode).collect();
-    assert_eq!(replay, vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(1) }.encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(3) }.encode()]);
+    let replay: Vec<Vec<u8>> = book.held_frames().iter().map(|f| f.golden_encode()).collect();
+    assert_eq!(replay, vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(1) }.golden_encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(3) }.golden_encode()]);
 }
 
 /// CONTRACT: `NewFabricPrimary` is variant 14, appended after `NodeConnectionsDeleted` (13), a reserved position (R-G3): the committed
@@ -69,10 +77,11 @@ fn new_fabric_primary_matches_the_frozen_wire_schema() {
     let frame = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
     // 0e = variant 14; holder 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
     let hex = format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
-    assert_eq!(frame.encode(), bytes(&hex));
-    assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
+    let expected = golden(&frame, &bytes(&hex));
+    assert_eq!(frame.golden_encode(), expected);
+    assert_roundtrip(&frame, &expected);
     let none = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
-    assert_eq!(none.encode(), bytes(&format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00")));
+    assert_eq!(none.golden_encode(), golden(&none, &bytes(&format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00"))));
 }
 
 
@@ -104,8 +113,10 @@ fn primary_updated_matches_the_frozen_wire_schema() {
     // 17 = variant 23; op: 0162 01 016f {node} 0c79727a34396a333033796834 09"m.admin.1" 01; seats: 02 | MeshPrimary=1 { 016d }
     // birth 016d {node} 0c79727a34396a333033796834 epoch 04 | FabricPrimary=0 birth 016d {node} 0c79727a34396a333033796834 epoch 09.
     let hex = format!("14 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 04 00 016d {node_hex} 0c79727a34396a333033796834 09");
-    assert_eq!(primary_updated(4, 9).encode(), bytes(&hex));
-    assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
+    let frame = primary_updated(4, 9);
+    let expected = golden(&frame, &bytes(&hex));
+    assert_eq!(frame.golden_encode(), expected);
+    assert_roundtrip(&frame, &expected);
 }
 
 /// CONTRACT (the same edit): `PrimaryUpdating` is variant 24, the next after `PrimaryUpdated` (23),
@@ -117,9 +128,10 @@ fn primary_updating_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let frame = Frame::PrimaryUpdating { op: op(), seats: both(5, 9) };
     let hex = format!("15 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 05 00 016d {node_hex} 0c79727a34396a333033796834 09");
-    assert_eq!(frame.encode(), bytes(&hex));
-    assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
-    assert_eq!(primary_updated(1, 1).encode()[0], 20, "PrimaryUpdated keeps its position");
+    let expected = golden(&frame, &bytes(&hex));
+    assert_eq!(frame.golden_encode(), expected);
+    assert_roundtrip(&frame, &expected);
+    assert_eq!(primary_updated(1, 1).type_position(), 20, "PrimaryUpdated keeps its position");
 }
 
 /// CONTRACT (proposal Part C2, Q1: "the one row of C1 commits both seats to NA2 at their next epochs,
@@ -135,10 +147,10 @@ fn a_seat_book_holds_seats_together_and_replays_them_together() {
     book.take(Seat::FabricPrimary, &holder(8));
     assert!(book.take_together(&op(), &both(4, 9)).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
     assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(9))));
-    assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![primary_updated(4, 9).encode()], "both seats replay as the one update");
+    assert_eq!(book.held_frames().iter().map(|f| f.golden_encode()).collect::<Vec<_>>(), vec![primary_updated(4, 9).golden_encode()], "both seats replay as the one update");
     // A later record of one seat supersedes the update: the records replay one by one again.
     book.take(Seat::FabricPrimary, &holder(10));
-    assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(4) }.encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(10) }.encode()]);
+    assert_eq!(book.held_frames().iter().map(|f| f.golden_encode()).collect::<Vec<_>>(), vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(4) }.golden_encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(10) }.golden_encode()]);
     // An older update moves neither seat.
     assert!(book.take_together(&op(), &both(2, 2)).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
     assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(10))));

@@ -322,9 +322,13 @@ fn emit() { tracing::info_span!(target: "rafka.customer-target", "rdm.node_rpc.r
 #[test]
 fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-transport/src/membership.rs", "crate::wire::encode(self).expect(\"frame serializes\")", "serde_json::to_vec(self).expect(\"frame serializes\")");
+    t.edit("crates/rdm-transport/src/membership.rs", "crate::envelope::encode(context, frame)", "serde_json::to_vec(self)");
     let v = only(check(t.root()), Ratchet::NoJsonOnTheWire);
     assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("membership.rs") && token == "serde_json::to_vec")), "{v:?}");
+
+    let envelope = Planted::of_tree();
+    envelope.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes()?, body(context, frame)?))", "serde_json::to_vec(&(context.attributes()?, body(context, frame)?))");
+    only(check(envelope.root()), Ratchet::NoJsonOnTheWire);
 
     // The Build topic too, and a direct postcard call beside the shared codec.
     let t = Planted::of_tree();

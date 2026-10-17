@@ -1,8 +1,10 @@
 //! Fixed bytes for the fabric round hook frames on the membership channels (R-W1: postcard,
 //! positional, append-only; gossip.md, "Fabric round gossip hooks"). The literals lock the
-//! discriminants and field order independently of codec round trips; they are derived from the
+//! type names and data field order independently of codec round trips; they are derived from the
 //! postcard rules by hand. Never regenerate an expectation from the Rust serializer to make a
 //! schema change pass.
+
+use crate::gossip_wire::{WireGolden, golden, assert_roundtrip};
 
 use rdm_core::{FabricId, IncarnationId, NodeId, RoundHook};
 use rdm_transport::membership::{forward_of, Frame};
@@ -50,13 +52,14 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
         (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("12 {SUBJECT} {OPEN} {PUBLISHER} {SOME}")),
     ];
     for (frame, hex) in fixtures {
-        assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
-        assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
+        let expected = golden(&frame, &bytes(&hex));
+        assert_eq!(frame.golden_encode(), expected, "{frame:?}");
+        assert_roundtrip(&frame, &expected);
     }
     // The frames that existed keep their positions.
     assert_eq!(Frame::NodeConnectionsDeleted { op: rdm_core::LifecycleOp {
         build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
-        forwarded_by: None }.encode()[0], 13);
+        forwarded_by: None }.type_position(), 13);
 }
 
 /// CONTRACT: a peer mesh's primary forwards a round hook onto its own channel, the authored fields
@@ -71,7 +74,7 @@ fn a_peer_mesh_primary_forwards_round_hooks_unchanged_and_the_authors_mesh_does_
         (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 18),
     ] {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
-        assert_eq!(forwarded.encode()[0], kind);
+        assert_eq!(forwarded.type_position(), kind);
         let (want, got, by) = match (&original, forwarded) {
             (Frame::StateCommitting { hook: w, .. }, Frame::StateCommitting { hook: g, forwarded_by })
             | (Frame::StateCommitted { hook: w, .. }, Frame::StateCommitted { hook: g, forwarded_by })

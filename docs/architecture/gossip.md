@@ -226,8 +226,9 @@ Size:
 
 #### Reserved lifecycle frame positions
 
-The frame enum keeps the positions of NodeConnectionsDeleting, NodeLeaving, NodeLeft, NodeConnectionsDeleted and
-NewFabricPrimary. None of the five is published. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
+The six reserved type names in the receive table retain their historical page positions; their
+old numeric wire discriminants are not reused. None is published. Each type is refused before data
+decode as via-reserved; an unknown type is refused distinctly. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
 connections-deleted and stopping reach peers as the member's status in its mesh-primary's member
 projection (the `Members` and `MembersDelta` rows of the catalog), and node.connections.deleted is a
 reply on the call, never gossip. The typed node.stop's stopped is a frame on its call stream, not a
@@ -512,23 +513,25 @@ projection, seat record and snapshot publication. What a receiver may do with an
 | operation fact | — ; an unrelated newer frame does not supersede it, and its effect is reconciled against the same operation's completion and the exact birth's later lifecycle evidence: a completed operation is never reopened | the same operation identity already applied | — |
 | reserved | — | — | — ; refused by name, nothing applied |
 
-| frame | category | subject | ordering | identity |
-|---|---|---|---|---|
-| `Digest` | replacement state | the exact birth | `digest_seq`, higher is newer | `(birth, digest_seq)` |
-| `Members` (source publication and forwarded full) | snapshot | `(mesh, source_publisher)` | `topology_version` against the installed-version floor: within one publisher revision a lower version never overwrites a higher installed one whatever its `published_at_rafka_ms`, including a version installed by a topology read | `(mesh, source_publisher, topology_version, snapshot_id, chunk_index)` |
-| `MembersDelta` | delta | `(mesh, source_publisher)` | `base_version` = installed: apply; `topology_version` ≤ installed: stale (duplicate if already applied); `base_version` > installed: gap, repair | `(mesh, source_publisher, base_version, topology_version)` |
-| `NodeDeleting`, `NodeRestarting`, `NodeStopped` | operation fact, carrying the publisher's `topology_version` as the projection it rides | `(build_id, attempt, operation, node_id, incarnation)` | the fact: reconciled against the operation's completion and the birth's later lifecycle (a `NodeRestarting` after that restart's `node.started` reopens nothing); the carried `topology_version`: replacement state for the projection | the operation identity |
-| `NodeDeleted` | operation fact, terminal | `(build_id, attempt, operation, node_id, incarnation)` | stands after any unrelated frame; never discarded because other traffic arrived first | the operation identity |
-| `MeshStatus`, `FabricStatus` | replacement state | `(mesh \| fabric, publisher)` | `changed_at_rafka_ms`, higher is newer. **Gap:** they carry a publisher string and a timestamp, not the publisher's revision, so a delayed predecessor's frame is not refused by revision; closing it is an i147 packet (a field, or the status riding the publisher's projection) | `(subject, publisher, changed_at_rafka_ms)` |
-| `Seated` | replacement state | the cohort `(mesh, node_type)`, or the fabric seat | the committed `revision` | `(cohort, revision)` |
-| `PrimaryUpdating`, `PrimaryUpdated` | replacement state | each named cohort `(mesh, node_type)` or the fabric seat | the committed `revision` per cohort; at one revision `updated` is later than `updating`; a frame naming two cohorts is ignored when either holds a newer key | `(cohort, revision, stage)` |
-| `Concern` (position 10) | reserved | — | — | refused by name (`rdm.mesh.membership.reject.via-reserved`), nothing applied. Retired (Luke, Q23, 2026-10-16): a receiver that started an investigation because a frame told it to was deciding on gossip (§10); the fabric-primary's silence is measured by each admin itself and acted on with the directed tickle |
-| `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` | operation fact | `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)` | none: a hook drives no checklist and reopens nothing by construction (gossip receipt never replaces the directed completion). Its only effects are its span and, on the mesh-admin holding an open round, carrying an ordinary node's check-in onto the backbone; a hook of a closed or superseded round is carried nowhere (`via-round-frame` with `carried = closed-round`) | the identity |
-| `NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`, `NodeLeft`, `NewFabricPrimary` | reserved | — | — | refused by name, nothing applied |
+P(n) is the 20-digit zero-padded decimal representation of the existing u64 version. Context is CloudEvents §3.4; sequencetype is unset. Operation facts omit sequence. Identity admission is in the envelope; carried projection and committed-seat data retain their existing validity rules. A receiver decides nothing on a frame.
 
-A publisher change: a delayed frame from a predecessor publisher cannot overwrite the successor's
-projection where the frame carries the publisher's committed revision (`Members`, `Seated`,
-`PrimaryUpdated`); for `MeshStatus` and `FabricStatus` this is the gap above until closed. A recovery
+| frame / type | category | source / subject | sequence / data validity | id / identity |
+|---|---|---|---|---|
+| `Digest` (`rdm.mesh.digest`) | replacement state | the author birth / that exact birth | `P(digest_seq)`, higher is newer | birth and digest sequence |
+| `Members` (`rdm.mesh.members`, source publication and forwarded full) | snapshot | the original author birth / `(mesh, source_publisher)` | `P(topology_version)` against the installed floor, including a topology read; equal material version admits a new publication's hearing and distinct unfinished chunks | source projection, topology version, publication owner's exact birth and counter, chunk index; a resend keeps id |
+| `MembersDelta` (`rdm.mesh.members.delta`) | delta | the original author birth / `(mesh, source_publisher)` | `P(topology_version)`; `base_version` in data equals installed to apply, ahead requests repair as via-gap, lower version is stale | source projection, base version and topology version |
+| `NodeDeleting`, `NodeRestarting`, `NodeStopped` (`rdm.node.deleting`, `rdm.node.restarting`, `rdm.node.stopped`) | operation fact | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; the operation cannot reopen after completion or the exact birth's later lifecycle. The carried `topology_version` is data, checked on the projection's own subject by its existing per-publisher floor rule, even for a repeated fact | kind and the complete operation identity; a repeat runs no effect twice, including when the carried version is refused |
+| `NodeDeleted` (`rdm.node.deleted`) | operation fact, terminal | the author birth / `(build_id, attempt, operation, node_id, incarnation)` | absent; stands after unrelated traffic | kind and the complete operation identity |
+| `MeshStatus`, `FabricStatus` (`rdm.mesh.status`, `rdm.fabric.status`) | replacement state | the author birth / stable mesh or fabric status scope | `P(committed seat revision) + "." + P(changed_at_rafka_ms)`, lexical order; the publisher takes its revision from its own held committed seat row. A predecessor's later timestamp loses to the successor's higher revision; within one holder its change time orders changes | subject and composite sequence; equal sequence is duplicate with identical content, inconsistent with different content |
+| `Seated` (`rdm.seat.seated`) | replacement state | the announcing birth / complete cohort `(mesh, node_type)` or fabric seat | `P(committed revision)` against the installed cohort record | cohort and committed revision |
+| `PrimaryUpdating`, `PrimaryUpdated` (`rdm.node.primary.updating`, `rdm.node.primary.updated`) | operation fact: announcement of one committed transfer | the announcing birth / `handover/<build_id>/<attempt>/<operation>` | absent; type names the stage. Per-cohort revisions are data: every cohort is checked atomically against the committed rows, the whole frame is refused when either cohort is stale, and updated is later than updating at one revision. Equal-revision content conflicts remain inconsistent. Gossip announces, never supplies authority | type/stage and transfer operation; a repeat runs no effect twice |
+| `Concern` (`rdm.mesh.concern`, position 10) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
+| `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` (`rdm.fabric.state.committing`, `rdm.fabric.state.committed`, `rdm.fabric.traffic.opening`, `rdm.fabric.traffic.opened`) | operation fact | the original author birth / `(fabric_id, build_id, attempt, operation, node_id, incarnation)` | absent; Q21 stands: no checklist or reopening, ordinary span and the existing open-round carrier only; a closed or superseded round is carried nowhere | kind and complete round operation identity; a repeat invokes no carrier |
+| `NodeConnectionsDeleting`, `NodeLeaving`, `NodeLeft`, `NodeConnectionsDeleted`, `NewFabricPrimary` (`rdm.node.connections.deleting`, `rdm.node.leaving`, `rdm.node.left`, `rdm.node.connections.deleted`, `rdm.fabric.primary.new`) | reserved | not read to act | absent; type refused before decoding data | via-reserved, nothing applied |
+
+A publisher change: a delayed predecessor cannot replace the successor's status: the author's
+committed seat revision is the first component of status sequence, before change time. The other
+source-projection and cohort floors remain as specified above. A recovery
 through a topology read installs the held version under the receiver's one hold; stale gossip after
 it is refused by these rules and never rolls it back. Spans: `rdm.mesh.membership.reject.via-stale`
 (frame, subject, held key, frame key), `rdm.mesh.membership.update.via-duplicate` (frame, identity,

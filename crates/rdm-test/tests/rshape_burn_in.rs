@@ -5254,7 +5254,7 @@ impl Observer {
                 while let Some(ev) = receiver.next().await {
                     if let Ok(iroh_gossip::api::Event::Received(m)) = ev {
                         if let Ok(frame) = Frame::decode(&bytes::Bytes::copy_from_slice(&m.content)) {
-                            seen.lock().unwrap().push((channel, frame));
+                            seen.lock().unwrap().push((channel, frame.into_data()));
                         }
                     }
                 }
