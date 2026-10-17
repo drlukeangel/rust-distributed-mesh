@@ -539,13 +539,16 @@ impl NodeSelf {
         let report = {
             let sink = sink.clone();
             move || async move {
-                let sent = sink.lock().await.progress(NodeCommandReply::ConnectionsDeleting { node_id, incarnation }).await;
+                // The span opens before the report leaves, so it starts before whatever the report causes
+                // (an in-process recorder may take it before the send returns).
+                let span = tracing::info_span!("rdm.node_admin.node.connections.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = tracing::field::Empty, "otel.kind" = "internal");
+                let sent = sink.lock().await.progress(NodeCommandReply::ConnectionsDeleting { node_id, incarnation }).instrument(span.clone()).await;
                 let outcome = match &sent {
                     Ok(()) => "sent".to_string(),
                     Err(e) => format!("caller gone: {e}"),
                 };
-                tracing::info_span!("rdm.node_admin.node.connections.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = %outcome, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("node.connections.delete All is admitted: the block on new application work is in force; the node reports connections-deleting on the command's stream"));
+                span.record("outcome", outcome.as_str());
+                span.in_scope(|| tracing::info!("node.connections.delete All is admitted: the block on new application work is in force; the node reports connections-deleting on the command's stream"));
             }
         };
         let span = tracing::info_span!(

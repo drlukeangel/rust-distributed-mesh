@@ -424,7 +424,11 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   red once in three local runs at :573: the resumed birth's `declare_once` addressed only
   `mesh1.admin.2` (`RejectedNotAuthority`, the book not yet hearing `mesh1.admin.1`), so NodeStopped
   came from the stop stream (trace `2f1267dca2a797afb6fd18ae6325ac29`); the declaration's addressee is
-  the admins the digest book hears, not the mesh's primary.
+  the admins the digest book hears, not the mesh's primary. The gate on `44488b29` red at
+  `node_connections_delete.rs:204` (a mesh-primary's own All: its record at +7.88 ms before its
+  report's span at +8.40 ms, trace `bc35a360fc2a6ac900320ea6250e2170`): the report's span opened
+  after the report was sent, and the in-process recorder took it first. The span opens before the
+  send now and records its outcome after.
   The landing's gate on `4c8c3cb7` red three times, read: the declaration then went out after the
   reply, unawaited, so a restart's start (`begin_cycle`, `session.rs`) cleared the declared row and the
   late Leaving applied over it, refusing the start's ReadyForTraffic as backward
