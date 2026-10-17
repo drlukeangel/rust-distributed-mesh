@@ -11,16 +11,15 @@ proof → export) is last and the lead's.
 | e12.s90 | 13 criteria | **closed as superseded** by i144 (e1 the four states, e2 the fact, e3 resumption and delete, e4 canaries all landed); nothing builds here | lead (record) | — |
 | e12.s57 | the two fabric_recovery cells that kill the fabric-primary with no hand-off | **absorbed by i144 e6.2**: under Q24 a fabric-primary lost with its mesh is the takeover, and `fabric_takeover::…` is that cell; the two acceptance cells are restated to the takeover path in e6.2's landing | i144 dev (opus) | Codex's s75/s88 |
 | e12.s23 | the sticky_seat.rs:551 read (a planned hand-over moves both seats in one row before the new one acts) | **absorbed by i144 e6.1**: `seat-moves/<T>` is that one row; the cell is e6.1's | i144 dev | — |
-| e12.s75 | `NodeRpcServer::drain()` and its 9 callers (RDM); the `epoch` field in rafka-v2's reach-reroute and node-base | RDM rename: Codex, one landing after Q47; rafka-v2 rename: the rafka lead, coordinated | Codex / rafka lead | everything |
+| e12.s75 | `NodeRpcServer::drain()` and its 9 callers (RDM); the `epoch` field in rafka-v2's reach-reroute and node-base | RDM rename: Codex, one landing after Q47; the rafka-v2 rename: Codex too, after s88 (the rafka lead stays on i144, Luke 2026-10-17) | Codex | everything |
 | e12.s88 | R14 item 6: the container provider's store-root qualification cell, the bind mount and `RDM_STORE_DIR` in the container env, the three container cells unskipped in the gate, green in release | independent of every other open block; needs the docker host | Codex, after s75 | the dev's e6 and i146 e3 |
 | e12.s89 | the five `rshape-*-process` jobs green in one release run; each red read where it lives | most of its reds were the defects i144/i146/i147 fixed (C17 → i144 e2 landed; stopping on admission → D2 landed; identity after restart → Q47; authority hand-offs → e6; control loss hearing two births → i147). **One release run after Q47 and e6 land**, then the remaining reds split: authority and lifecycle jobs to the i144 dev, routing and partition jobs to Codex; the `node-not-live` page question is answered (node-restart.md's row, Q2) | lead runs; dev + Codex read | — |
-| e12.s69 | Rafka side: the entry pull off the rafka-mesh-ops projection frames onto node.topology.get; the belt and accept loop move under i145 (post-chaos) | rafka-v2 work; the entry-pull part can run now | rafka lead | everything |
+| e12.s69 | Rafka side: the entry pull off the rafka-mesh-ops projection frames onto node.topology.get; the belt and accept loop move under i145 (post-chaos) | rafka-v2 work; Codex, after s88 (the rafka lead stays on i144, Luke 2026-10-17) | Codex | the dev's e6 and i146 e3 |
 | e12.s55 | R-HB3 | stays parked post-beta | — | — |
 | e10.s2 | one green SHA, the import manifest, the parity scan, the export gate | **sequential tail**, after every row above | lead | — |
 | e11.s12 | the seeded soaks and the container proof on that SHA | after e10.s2's SHA; the container proof needs s88 | lead, with the dev | — |
 
-Order: (1) Q47 lands (Codex); e6.1 → e6.2 → e6 item 3 → i146 e3 owners (dev); s75 → s88 (Codex); s69 and the
-`epoch` rename (rafka lead), all in parallel. (2) One release run at the resulting SHA (lead); s89's remaining
+Order: (1) Q47 lands (Codex); e6.1 → e6.2 → e6 item 3 → i146 e3 owners (dev); s75 → s88 → s69 and the rafka-v2 `epoch` rename (Codex), all in parallel with the dev. (2) One release run at the resulting SHA (lead); s89's remaining
 reds read and fixed, split as above. (3) The fast gate and the release suite green on one SHA → e10.s2 → e11.s12.
 i145 lands after that (post-chaos). Every landing still goes through the land script, RED first, with its flame.
 
