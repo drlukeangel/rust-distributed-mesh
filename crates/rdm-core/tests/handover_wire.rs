@@ -94,6 +94,7 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
 /// wrong-birth refusal (R-UC1a, R-RX5).
 #[test]
 fn replies_match_the_frozen_seventeen_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     use NodePrimaryUpdateReply::*;
     let fixtures = [
         // revisions (len 1) | seat FabricPrimary=0 | holder birth | revision 8
@@ -121,11 +122,15 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         (Failed { step: "s".into(), reason: "r".into() }, "10 0173 0172".to_string()),
     ];
     for (r, hex) in fixtures {
+        variants.insert(NodePrimaryUpdate::encode_reply(&r).unwrap()[0]);
+        crate::outcome_codes::check::<NodePrimaryUpdate>(&r);
         assert_eq!(NodePrimaryUpdate::encode_reply(&r).unwrap(), bytes(&hex), "{r:?}");
         assert_eq!(NodePrimaryUpdate::decode_reply(&bytes(&hex)).unwrap(), r);
     }
     assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 17);
     assert_eq!(NodePrimaryUpdate::decode_reply(&[17]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(variants.len(), NodePrimaryUpdate::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<NodePrimaryUpdate>();
 }
 
 #[test]
@@ -147,7 +152,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
         Incomplete { reason: "i".into() },
         Failed { step: "s".into(), reason: "r".into() },
     ] {
-        assert_eq!(NodePrimaryUpdate::classify_reply(&r), ReplyKind::ProtocolRefusal, "{r:?}");
+        assert_eq!(NodePrimaryUpdate::classify_reply(&r).code(), match r { RejectedStaleSeat { .. } | RejectedConflict { .. } => rdm_core::outcome::Code::Aborted, RejectedRecordAbsent { .. } => rdm_core::outcome::Code::NotFound, _ => rdm_core::outcome::Code::FailedPrecondition }, "{r:?}");
     }
 }
 
@@ -180,4 +185,9 @@ fn the_largest_request_fits_the_frame_ceiling() {
     // Each refusal's reason is cut to the reply's bound, never reset.
     let r = NodePrimaryUpdateReply::no_successor(&huge);
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
+}
+
+#[test]
+fn every_reply_variant_of_node_primary_update_classifies_to_one_code() {
+    replies_match_the_frozen_seventeen_variant_wire_schema();
 }

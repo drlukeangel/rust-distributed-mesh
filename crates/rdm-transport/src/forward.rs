@@ -144,7 +144,7 @@ async fn carry_once(
         ..CallOptions::default()
     };
     let (out, _evidence) = client
-        .invoke_raw::<Vec<u8>, _>(&NodeTarget::ExactNode(node_id), inner_op, inner, max_reply, &opts, |d| match d {
+        .invoke_raw::<ForwardReply, _>(&NodeTarget::ExactNode(node_id), inner_op, inner, max_reply, &opts, |d| match d {
             Decode::Committed(c, bytes) => c.forwarded(bytes),
             Decode::Early(e, bytes) => e.forwarded(bytes),
         })
@@ -152,7 +152,7 @@ async fn carry_once(
     span.record("outcome", out.name());
     span.in_scope(|| tracing::info!("one direct inner call"));
     match out {
-        RpcOutcome::Reply(r) => ForwardReply::Forwarded { inner: r.into_value() },
+        RpcOutcome::Reply(r) => r.into_value(),
         RpcOutcome::NotSent(n) => {
             // Only a dial that ended in this carrier's own Direct fact speaks for the edge.
             let at_the_dial = matches!(n.reason(), NotSentReason::Connection(_) | NotSentReason::Deadline);

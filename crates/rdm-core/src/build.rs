@@ -596,34 +596,36 @@ impl NodeProtocol for Build {
 
     fn classify_reply(reply: &BuildReply) -> ReplyKind {
         match reply {
-            BuildReply::Started { .. }
-            | BuildReply::Step { .. }
-            | BuildReply::Blocked { .. }
-            | BuildReply::Steps { .. }
-            | BuildReply::Complete { .. }
-            | BuildReply::Failed { .. }
-            | BuildReply::HandedOff { .. }
-            | BuildReply::SeatMoved { .. }
-            | BuildReply::Got { .. }
-            | BuildReply::Deleted { .. } => ReplyKind::Success,
-            BuildReply::NotFabricPrimary { .. }
-            | BuildReply::NotExecutor { .. }
-            | BuildReply::StaleClaim { .. }
-            | BuildReply::UnknownBuild { .. }
-            | BuildReply::Rejected { .. }
-            | BuildReply::BuildInProgress { .. }
-            | BuildReply::NotClaimant { .. }
-            | BuildReply::AttemptTaken { .. }
-            | BuildReply::SeatYielded { .. }
-            | BuildReply::CannotDelete { .. } => ReplyKind::ProtocolRefusal,
+            BuildReply::Started { disposition: Disposition::AlreadyApplied, .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
+            BuildReply::Started { .. } => ReplyKind::Success,
+            BuildReply::Step { .. } => ReplyKind::Success,
+            BuildReply::Blocked { .. } => ReplyKind::Success,
+            BuildReply::Steps { .. } => ReplyKind::Success,
+            BuildReply::Complete { .. } => ReplyKind::Success,
+            BuildReply::Failed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::HandedOff { .. } => ReplyKind::Success,
+            BuildReply::Got { .. } => ReplyKind::Success,
+            BuildReply::Deleted { .. } => ReplyKind::Success,
+            BuildReply::NotFabricPrimary { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::NotExecutor { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::StaleClaim { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            BuildReply::UnknownBuild { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
+            BuildReply::Rejected { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::BuildInProgress { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
+            BuildReply::AttemptTaken { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            BuildReply::SeatYielded { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::CannotDelete { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildReply::NotReady { .. } => ReplyKind::NotReady,
             BuildReply::Busy { .. } => ReplyKind::Busy,
             BuildReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            BuildReply::SeatMoved { .. } => ReplyKind::Success,
+            BuildReply::NotClaimant { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
+
     fn peer_unresolved(reason: String) -> BuildReply {
         BuildReply::PeerUnresolved { reason }
     }

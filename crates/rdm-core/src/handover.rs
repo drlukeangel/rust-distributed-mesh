@@ -349,18 +349,27 @@ impl NodeProtocol for NodePrimaryUpdate {
     type Reply = NodePrimaryUpdateReply;
 
     fn classify_reply(reply: &NodePrimaryUpdateReply) -> ReplyKind {
-        use NodePrimaryUpdateReply::*;
         match reply {
-            PrimaryUpdated { .. } => ReplyKind::Success,
-            RejectedConflict { .. } | RejectedFabricNotReady { .. } | RejectedNoSuccessor { .. } | RejectedNotAuthority { .. } | RejectedStaleSeat { .. } | RejectedRevisionOverflow { .. } | RejectedSourceFailed { .. } | RejectedRecordAbsent { .. } | Incomplete { .. } | Failed { .. } => ReplyKind::ProtocolRefusal,
-            NotReady { .. } => ReplyKind::NotReady,
-            Malformed { kind } => ReplyKind::Malformed(*kind),
-            PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
-            Busy { .. } => ReplyKind::Busy,
-            ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
-            Unauthorized { .. } => ReplyKind::Unauthorized,
+            NodePrimaryUpdateReply::PrimaryUpdated { .. } => ReplyKind::Success,
+            NodePrimaryUpdateReply::RejectedConflict { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            NodePrimaryUpdateReply::RejectedFabricNotReady { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedNoSuccessor { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedNotAuthority { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedStaleSeat { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            NodePrimaryUpdateReply::RejectedRevisionOverflow { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::RejectedRecordAbsent { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
+            NodePrimaryUpdateReply::Incomplete { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::NotReady { .. } => ReplyKind::NotReady,
+            NodePrimaryUpdateReply::Malformed { kind } => ReplyKind::Malformed(*kind),
+            NodePrimaryUpdateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
+            NodePrimaryUpdateReply::Busy { .. } => ReplyKind::Busy,
+            NodePrimaryUpdateReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
+            NodePrimaryUpdateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            NodePrimaryUpdateReply::Failed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
+
     fn peer_unresolved(reason: String) -> NodePrimaryUpdateReply {
         NodePrimaryUpdateReply::PeerUnresolved { reason }
     }

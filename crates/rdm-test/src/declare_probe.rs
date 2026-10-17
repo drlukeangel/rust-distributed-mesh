@@ -112,7 +112,7 @@ impl NodeProtocol for DeclareProbe {
     fn classify_reply(reply: &DeclareReply) -> ReplyKind {
         match reply {
             DeclareReply::Answered { .. } => ReplyKind::Success,
-            DeclareReply::BadTarget { .. } => ReplyKind::ProtocolRefusal,
+            DeclareReply::BadTarget { .. } => ReplyKind::new(rdm_core::outcome::Code::InvalidArgument),
             DeclareReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             DeclareReply::NotReady { .. } => ReplyKind::NotReady,
             DeclareReply::Busy { .. } => ReplyKind::Busy,
@@ -121,6 +121,7 @@ impl NodeProtocol for DeclareProbe {
             DeclareReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
     }
+
     fn peer_unresolved(reason: String) -> DeclareReply {
         DeclareReply::PeerUnresolved { reason }
     }

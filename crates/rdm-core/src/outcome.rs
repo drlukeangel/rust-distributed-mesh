@@ -95,27 +95,67 @@ impl Code {
     pub fn from_number(n: u8) -> Option<Self> { Self::ALL.into_iter().find(|c| c.number() == n) }
 }
 
-/// Shared reply semantics; the bytes stay protocol-owned (node-rpc.md §25).
+/// A view over the standard code. RDM's typed detail is the protocol reply in Replied<R>.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReplyKind {
-    /// The reply is a success.
-    Success,
-    /// The reply says the peer the call needed could not be resolved.
-    PeerUnresolved,
-    /// The reply says the node is not ready.
-    NotReady,
-    /// The reply says the node is at its admission bound.
-    Busy,
-    /// The reply says the node is connections-deleting.
-    ConnectionsDeleting,
-    /// The reply says the request frame was malformed, and how.
-    Malformed(MalformedKind),
-    /// The reply says the caller is not allowed the call.
-    Unauthorized,
-    /// The reply is the protocol's own typed refusal.
-    ProtocolRefusal,
-    /// The reply bytes were handed across undecoded.
-    Unclassified,
+pub struct ReplyKind { code: Code }
+
+#[allow(non_upper_case_globals, non_snake_case)]
+impl ReplyKind {
+    /// View a derived standard code; no parallel classification namespace exists.
+    pub const fn new(code: Code) -> Self { Self { code } }
+    /// The standard code.
+    pub const fn code(self) -> Code { self.code }
+    /// Applied, read result or completion.
+    pub const Success: Self = Self::new(Code::Ok);
+    /// The required subject is not known.
+    pub const PeerUnresolved: Self = Self::new(Code::NotFound);
+    /// The receiver is not ready.
+    pub const NotReady: Self = Self::new(Code::Unavailable);
+    /// The receiver is busy.
+    pub const Busy: Self = Self::new(Code::Unavailable);
+    /// The receiver takes no new work.
+    pub const ConnectionsDeleting: Self = Self::new(Code::Unavailable);
+    /// Reserved codec meaning only; never produced by a mesh handler.
+    pub const Unauthorized: Self = Self::new(Code::PermissionDenied);
+    /// The malformed kind retains its own standard code.
+    pub const fn Malformed(kind: MalformedKind) -> Self {
+        Self::new(match kind {
+            MalformedKind::TooLarge => Code::ResourceExhausted,
+            MalformedKind::UnknownVariant => Code::InvalidArgument,
+            MalformedKind::Corrupt => Code::DataLoss,
+        })
+    }
+}
+
+/// The named result of one item in a served set edit. Lists stay in their existing wire positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementDetail {
+    /// The item was applied.
+    Applied,
+    /// The tag was already carried.
+    AlreadyCarried,
+    /// The tag was not carried.
+    NotCarried,
+    /// The named connection is not an open entry (unknown or already closed in today's reply).
+    NotOpen,
+}
+
+/// A borrowed element and its derived code; never an added wire field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ElementOutcome<'a, T: ?Sized> {
+    /// The requested element.
+    pub element: &'a T,
+    /// Its standard code.
+    pub code: Code,
+    /// Its named typed result.
+    pub detail: ElementDetail,
+}
+
+/// The code view of the existing named-connection lists. A not-open id has no current open entry;
+/// the existing list deliberately contains both unknown ids and entries that were already closed.
+pub fn connection_outcomes<'a>(closed: &'a [crate::ConnectionId], not_open: &'a [crate::ConnectionId]) -> Vec<ElementOutcome<'a, crate::ConnectionId>> {
+    closed.iter().map(|id| ElementOutcome { element: id, code: Code::Ok, detail: ElementDetail::Applied })
+        .chain(not_open.iter().map(|id| ElementOutcome { element: id, code: Code::NotFound, detail: ElementDetail::NotOpen })).collect()
 }
 
 /// How a request frame was malformed.
@@ -240,6 +280,8 @@ impl<R> Replied<R> {
     pub fn value(&self) -> &R {
         &self.value
     }
+    /// The typed named RDM result/refusal beside the code.
+    pub fn detail(&self) -> &R { &self.value }
     /// How the protocol classified the reply.
     pub fn class(&self) -> ReplyKind {
         self.class
@@ -328,6 +370,17 @@ pub enum RpcOutcome<R> {
 }
 
 impl<R> RpcOutcome<R> {
+    /// The code derived from the reply or the local typed proving condition.
+    pub fn code(&self) -> Code {
+        match self {
+            Self::Reply(r) => r.class.code(),
+            Self::NotSent(n) => n.code(),
+            Self::Indeterminate(i) => i.code(),
+            Self::Unserved(_) => Code::Unimplemented,
+            Self::RejectedStale(_) => Code::Aborted,
+        }
+    }
+
     /// The outcome's variant name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -462,9 +515,9 @@ impl EarlyRefusal {
     }
 
     /// The early refusal's payload undecoded, for a carrier handing it across verbatim.
-    pub fn forwarded(self, reply_payload: Option<&[u8]>) -> RpcOutcome<Vec<u8>> {
+    pub fn forwarded(self, reply_payload: Option<&[u8]>) -> RpcOutcome<crate::forward::ForwardReply> {
         match reply_payload {
-            Some(b) => RpcOutcome::Reply(Replied { value: b.to_vec(), class: ReplyKind::Unclassified }),
+            Some(b) => forwarded_reply(b),
             None => RpcOutcome::NotSent(NotSent { reason: NotSentReason::FrameNotSent }),
         }
     }
@@ -515,9 +568,16 @@ impl Committed {
     }
 
     /// The reply payload undecoded, for a carrier handing an inner reply across verbatim.
-    pub fn forwarded(self, reply_payload: &[u8]) -> RpcOutcome<Vec<u8>> {
-        RpcOutcome::Reply(Replied { value: reply_payload.to_vec(), class: ReplyKind::Unclassified })
+    pub fn forwarded(self, reply_payload: &[u8]) -> RpcOutcome<crate::forward::ForwardReply> {
+        forwarded_reply(reply_payload)
     }
+}
+
+// The carrier classifies its own Forward reply, while the origin decodes the inner protocol.
+fn forwarded_reply(payload: &[u8]) -> RpcOutcome<crate::forward::ForwardReply> {
+    let value = crate::forward::ForwardReply::Forwarded { inner: payload.to_vec() };
+    let class = crate::forward::Forward::classify_reply(&value);
+    RpcOutcome::Reply(Replied { value, class })
 }
 
 /// The outcome of a carried call of protocol `P`, from the outcome of its outer forward call to

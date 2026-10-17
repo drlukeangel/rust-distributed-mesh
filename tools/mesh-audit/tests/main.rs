@@ -11,3 +11,5 @@ mod lock_ratchets;
 mod parity_scanner;
 mod public_api_frozen;
 mod rshape_definition;
+
+mod outcome_codes;

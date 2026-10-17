@@ -294,19 +294,19 @@ impl NodeProtocol for Forward {
     fn classify_reply(reply: &ForwardReply) -> ReplyKind {
         match reply {
             ForwardReply::Forwarded { .. } => ReplyKind::Success,
-            ForwardReply::InnerNotSent { .. }
-            | ForwardReply::InnerUnserved { .. }
-            | ForwardReply::InnerRejectedStale { .. }
-            | ForwardReply::InnerIndeterminate { .. }
-            | ForwardReply::NotForwardable { .. }
-            | ForwardReply::CarrierEdgeLost { .. }
-            | ForwardReply::NoInnerBudget { .. } => ReplyKind::ProtocolRefusal,
+            ForwardReply::InnerNotSent { .. } => ReplyKind::new(reply.code()),
+            ForwardReply::InnerUnserved { .. } => ReplyKind::new(reply.code()),
+            ForwardReply::InnerRejectedStale { .. } => ReplyKind::new(reply.code()),
+            ForwardReply::InnerIndeterminate { .. } => ReplyKind::new(reply.code()),
+            ForwardReply::NotForwardable { .. } => ReplyKind::new(reply.code()),
             ForwardReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ForwardReply::NotReady { .. } => ReplyKind::NotReady,
             ForwardReply::Busy { .. } => ReplyKind::Busy,
             ForwardReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             ForwardReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             ForwardReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            ForwardReply::CarrierEdgeLost { .. } => ReplyKind::new(reply.code()),
+            ForwardReply::NoInnerBudget { .. } => ReplyKind::new(reply.code()),
         }
     }
 

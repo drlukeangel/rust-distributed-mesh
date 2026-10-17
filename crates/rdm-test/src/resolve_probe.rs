@@ -149,8 +149,11 @@ impl NodeProtocol for ResolveProbe {
 
     fn classify_reply(reply: &ResolveReply) -> ReplyKind {
         match reply {
-            ResolveReply::Found { .. } | ResolveReply::Gone { .. } | ResolveReply::Unknown { .. } | ResolveReply::Unavailable { .. } => ReplyKind::Success,
-            ResolveReply::BadTarget { .. } => ReplyKind::ProtocolRefusal,
+            ResolveReply::Found { .. } => ReplyKind::Success,
+            ResolveReply::Gone { .. } => ReplyKind::Success,
+            ResolveReply::Unknown { .. } => ReplyKind::Success,
+            ResolveReply::Unavailable { .. } => ReplyKind::Success,
+            ResolveReply::BadTarget { .. } => ReplyKind::new(rdm_core::outcome::Code::InvalidArgument),
             ResolveReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ResolveReply::NotReady { .. } => ReplyKind::NotReady,
             ResolveReply::Busy { .. } => ReplyKind::Busy,

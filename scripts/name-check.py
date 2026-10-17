@@ -33,55 +33,136 @@ for n in sorted(added - removed):
     bad = words(n) & RETIRED
     if bad: hits.append(f"identifier {n}: retired word {sorted(bad)}")
     if re.search(r'_acceptance_\d+', n): hits.append(f"identifier {n}: named by an issue id")
-# The authN/authZ audit (Luke 2026-10-16, R24, Q12): a landing that adds a runtime call to `unauthorized(..)`
-# or runtime construction of `NotAuthority::SenderNotSubject` is refused, as a retired word is. Exempt by the
-# kind of code, never by directory: a codec definition (`fn unauthorized(`, the variant's own line in its enum),
-# a classifier (a pattern: a match arm `=>`, a `let`/`if let`, `matches!`), reserved-byte fixtures and test
-# assertions (a test file, or a `#[cfg(test)]` module of a source file), comments and string literals. Location
-# under rdm-core/src or rdm-test/src alone exempts nothing. The reserved discriminants stay, inert.
-CALL = re.compile(r'(?<![A-Za-z0-9_])unauthorized\s*\(')
-DEFN = re.compile(r'\bfn\s+unauthorized\s*\(')
-SNS = re.compile(r'\bSenderNotSubject\s*\{')
-VARIANT_DEF = re.compile(r'^\s*SenderNotSubject\s*\{\s*$')
-PATTERN = re.compile(r'=>|^\s*(?:if\s+let|while\s+let|let)\b|matches!\s*\(')
-STRING = re.compile(r'"(?:\\.|[^"\\])*"')
-def test_ranges(text):
-    """Line ranges (1-based, inclusive) of `#[cfg(test)]` modules, by brace matching from the mod's `{`."""
-    lines = text.split("\n"); out = []
-    for i, l in enumerate(lines):
-        if l.strip().startswith("#[cfg(test)]"):
+# R24 and e5 share one syntax-aware auth check. A directory exempts no function.
+# e5: reserved gRPC auth codes are definitions/classification/fixtures only. The scanner
+# uses syntactic scopes and expression positions, never a source directory as an exemption.
+TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|::|=>|[{}()\[\],;:=#|!]")
+
+def mask_rust(text):
+    """Keep offsets and newlines while removing Rust strings, characters and nested comments."""
+    out, i = list(text), 0
+    while i < len(text):
+        end = None
+        if text.startswith('//', i):
+            end = text.find('\n', i)
+            if end < 0: end = len(text)
+        elif text.startswith('/*', i):
+            depth, end = 1, i + 2
+            while end < len(text) and depth:
+                if text.startswith('/*', end): depth += 1; end += 2
+                elif text.startswith('*/', end): depth -= 1; end += 2
+                else: end += 1
+        else:
+            raw = re.match(r'r(#+)?"', text[i:])
+            char = re.match(r"'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\])'", text[i:]) if text[i] == "'" else None
+            if raw:
+                close = '"' + (raw.group(1) or '')
+                at = text.find(close, i + len(raw.group()))
+                end = len(text) if at < 0 else at + len(close)
+            elif text[i] == '"':
+                end = i + 1
+                while end < len(text):
+                    if text[end] == '\\': end += 2
+                    elif text[end] == '"': end += 1; break
+                    else: end += 1
+            elif char: end = i + len(char.group())
+        if end is None: i += 1; continue
+        for n in range(i, end):
+            if out[n] != '\n': out[n] = ' '
+        i = end
+    return ''.join(out)
+
+def runtime_auth_codes(text):
+    clean = mask_rust(text)
+    ts = [(m.group(), m.start()) for m in TOKEN.finditer(clean)]
+    vals = [t for t, _ in ts]
+    ends, opened = {}, []
+    for i, t in enumerate(vals):
+        if t in ['{', '(', '[']: opened.append(i)
+        elif t in ['}', ')', ']'] and opened:
+            a = opened.pop(); ends[a] = i
+    funcs, code_impls, enums, impls, imports = [], [], [], [], []
+    for i, t in enumerate(vals):
+        if t == 'use':
             j = i + 1
-            while j < len(lines) and lines[j].strip().startswith("#["): j += 1
-            if j < len(lines) and re.match(r'\s*(pub(\([^)]*\))?\s+)?mod\s+\w+\s*\{', lines[j]):
+            while j < len(ts) and vals[j] != ';': j += 1
+            imports.append((i, j))
+        if t not in ['fn', 'impl', 'enum'] or i + 1 >= len(ts): continue
+        j = i + 2
+        while j < len(ts) and vals[j] not in ['{', ';']: j += 1
+        if j not in ends or vals[j] != '{': continue
+        if t == 'fn':
+            # Only the innermost function's own test attribute is a fixture exemption.
+            a = i - 1
+            while a >= 0 and vals[a] not in ['{', '}', ';']: a -= 1
+            prefix = clean[ts[a + 1][1]:ts[i][1]]
+            fixture = bool(re.search(r'#\s*\[\s*(?:[A-Za-z_]+\s*::\s*)?test(?:\s*\]|\s*\()', prefix))
+            funcs.append((j, ends[j], vals[i + 1], fixture))
+        elif t == 'impl':
+            impls.append((j, ends[j], 'NodeProtocol' if 'NodeProtocol' in vals[i:j] and 'for' in vals[i:j] else vals[i + 1]))
+            if vals[i + 1] in ['Code', 'ReplyKind']: code_impls.append((j, ends[j]))
+        elif t == 'enum': enums.append((j, ends[j]))
+    aliases = {'PermissionDenied': 'PermissionDenied', 'Unauthenticated': 'Unauthenticated', 'Unauthorized': 'PermissionDenied', 'SenderNotSubject': 'PermissionDenied', 'CallerRefused': 'PermissionDenied'}
+    for a, b in imports:
+        for q in range(a, b - 2):
+            if vals[q] in aliases and vals[q + 1] == 'as': aliases[vals[q + 2]] = aliases[vals[q]]
+    found = []
+    for i, (token, at) in enumerate(ts):
+        name = aliases.get(token)
+        if token == 'Unauthorized' and i >= 2 and vals[i - 2:i] == ['ReplyKind', '::']: name = 'PermissionDenied'
+        if token == 'Code' and vals[i:i + 4] == ['Code', '::', 'from_number', '(']:
+            arg = vals[i + 4] if i + 4 < len(vals) else ''
+            if arg in ['7', '16'] or not arg.isdigit(): name = 'PermissionDenied/Unauthenticated via numeric factory'
+        if token == 'Code' and vals[i:i + 3] == ['Code', '::', 'ALL']: name = 'PermissionDenied/Unauthenticated via ALL'
+        if token == 'unauthorized' and i + 1 < len(vals) and vals[i + 1] == '(' and (i == 0 or vals[i - 1] != 'fn'):
+            name = 'PermissionDenied via unauthorized(..)'
+        if token in ['Unauthorized', 'SenderNotSubject'] and i + 1 < len(vals) and vals[i + 1] == '{':
+            name = 'PermissionDenied via ' + token
+        if name is None: continue
+        if any(a < i < b for a, b in enums): continue
+        # An import names a variant but constructs no value.
+        if any(a <= i <= b for a, b in imports): continue
+        a = i - 1
+        while a >= 0 and vals[a] not in [';', '{', '}']: a -= 1
+        if 'use' in vals[a + 1:i]: continue
+        enclosing = [f for f in funcs if f[0] < i < f[1]]
+        function = max(enclosing, default=None, key=lambda f: f[0])
+        if function and (function[3] or function[2] == 'classify_reply'): continue
+        if function and any(a < i < b and owner == 'Code' for a, b, owner in impls) and function[2] in ['from_number', 'number', 'name']: continue
+        if function and function[2] == 'unauthorized' and any(a < i < b and owner == 'NodeProtocol' for a, b, owner in impls): continue
+        if function and function[2] == 'code' and any(a < i < b and owner.endswith('Reply') for a, b, owner in impls): continue
+        # Assertion macros compare codes; only their own expression range is exempt.
+        if any(a < i < b and a >= 2 and vals[a - 1] == '!' and vals[a - 2] in ['assert', 'assert_eq', 'assert_ne', 'debug_assert', 'debug_assert_eq', 'debug_assert_ne'] for a, b in ends.items()): continue
+        if not function and any(a < i < b for a, b in code_impls): continue
+        # A pattern reads an existing code. An arm's expression constructs one.
+        j = i + 1
+        if j in ends and vals[j] == '{': j = ends[j] + 1
+        while j < len(vals) and vals[j] in [')', '|', 'Code', 'Self', '::', 'PermissionDenied', 'Unauthenticated']: j += 1
+        if j < len(vals) and vals[j] == '=>': continue
+        if j < len(vals) and vals[j] == '=' and 'let' in vals[a + 1:i] and '=' not in vals[a + 1:i]: continue
+        # matches!(value, PATTERN) — exempt only the pattern after its comma.
+        in_pattern = False
+        for a, b in ends.items():
+            if a < i < b and vals[a] == '(' and a >= 2 and vals[a - 2:a] == ['matches', '!']:
                 depth = 0
-                for k in range(j, len(lines)):
-                    code = STRING.sub('""', lines[k].split("//", 1)[0])
-                    depth += code.count("{") - code.count("}")
-                    if depth == 0 and k >= j:
-                        out.append((j + 1, k + 1)); break
-    return out
-for line in git("diff", "--name-only", f"{base}..{head}", "--", "*.rs").splitlines():
-    path = line.strip()
-    if not path: continue
-    is_test_file = "/tests/" in path or path.startswith("tests/")
-    try:
-        text = git("show", f"{head}:{path}")
-    except subprocess.CalledProcessError:
-        continue
-    ranges = [] if is_test_file else test_ranges(text)
-    hunk_line = None
-    for l in git("diff", "-U0", f"{base}..{head}", "--", path).splitlines():
-        m = re.match(r'@@ -\S+ \+(\d+)(?:,\d+)? @@', l)
-        if m: hunk_line = int(m.group(1)); continue
-        if l.startswith("+++") or l.startswith("---") or hunk_line is None: continue
-        if l.startswith("+"):
-            n = hunk_line; hunk_line += 1
-            if is_test_file or any(a0 <= n <= b0 for a0, b0 in ranges): continue
-            code = STRING.sub('""', l[1:].split("//", 1)[0])
-            if CALL.search(code) and not DEFN.search(code):
-                hits.append(f"{path}:{n}: a runtime call to unauthorized(..): {l[1:].strip()[:120]}")
-            if SNS.search(code) and not VARIANT_DEF.match(code) and not PATTERN.search(code):
-                hits.append(f"{path}:{n}: runtime construction of NotAuthority::SenderNotSubject: {l[1:].strip()[:120]}")
-        elif not l.startswith("-"):
-            hunk_line += 1
+                for q in range(a + 1, i):
+                    if vals[q] in ['(', '[', '{']: depth += 1
+                    elif vals[q] in [')', ']', '}']: depth -= 1
+                    elif vals[q] == ',' and depth == 0: in_pattern = True
+        if in_pattern: continue
+        found.append((clean.count('\n', 0, at) + 1, name))
+    return found
+
+for path in git("diff", "--name-only", f"{base}..{head}", "--", "*.rs").splitlines():
+    try: text = git("show", f"{head}:{path}")
+    except subprocess.CalledProcessError: continue
+    added_lines, n = set(), None
+    for line in git("diff", "-U0", f"{base}..{head}", "--", path).splitlines():
+        m = re.match(r'@@ -\S+ \+(\d+)(?:,\d+)? @@', line)
+        if m: n = int(m.group(1)); continue
+        if n is None or line.startswith(('+++', '---')): continue
+        if line.startswith('+'): added_lines.add(n); n += 1
+        elif not line.startswith('-'): n += 1
+    for n, code in runtime_auth_codes(text):
+        if n in added_lines: hits.append(f"{path}:{n}: runtime construction of Code::{code}")
 print("\n".join(hits))

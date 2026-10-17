@@ -245,13 +245,14 @@ impl NodeProtocol for ProofStore {
 
     fn classify_reply(reply: &ProofReply) -> ReplyKind {
         match reply {
-            ProofReply::Value { .. }
-            | ProofReply::Absent { .. }
-            | ProofReply::Stored { .. }
-            | ProofReply::Deleted { .. }
-            | ProofReply::Swapped { .. }
-            | ProofReply::Mismatch { .. } => ReplyKind::Success,
-            ProofReply::TooLarge { .. } | ProofReply::StoreFailed { .. } => ReplyKind::ProtocolRefusal,
+            ProofReply::Value { .. } => ReplyKind::Success,
+            ProofReply::Absent { .. } => ReplyKind::Success,
+            ProofReply::Stored { .. } => ReplyKind::Success,
+            ProofReply::Deleted { .. } => ReplyKind::Success,
+            ProofReply::Swapped { .. } => ReplyKind::Success,
+            ProofReply::Mismatch { .. } => ReplyKind::Success,
+            ProofReply::TooLarge { .. } => ReplyKind::new(rdm_core::outcome::Code::ResourceExhausted),
+            ProofReply::StoreFailed { .. } => ReplyKind::new(rdm_core::outcome::Code::Internal),
             ProofReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ProofReply::NotReady { .. } => ReplyKind::NotReady,
             ProofReply::Busy { .. } => ReplyKind::Busy,

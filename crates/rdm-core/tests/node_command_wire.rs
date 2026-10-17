@@ -37,6 +37,7 @@ fn the_request_matches_the_frozen_one_variant_wire_schema() {
 /// `All`), then the refusals.
 #[test]
 fn replies_match_the_frozen_eleven_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     assert_eq!(NodeCommand::REPLY_VARIANTS, 11);
     use NodeCommandReply::*;
     for (reply, hex) in [
@@ -54,13 +55,19 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
         (Unauthorized { reason: "r".into() }, "0a0172"),
     ] {
         let expected = bytes(hex);
+        variants.insert(NodeCommand::encode_reply(&reply).unwrap()[0]);
+        crate::outcome_codes::check::<NodeCommand>(&reply);
         assert_eq!(NodeCommand::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(NodeCommand::decode_reply(&expected).unwrap(), reply);
     }
     let malformed = Malformed { kind: MalformedKind::Corrupt };
+    variants.insert(NodeCommand::encode_reply(&malformed).unwrap()[0]);
+    crate::outcome_codes::check::<NodeCommand>(&malformed);
     let encoded = NodeCommand::encode_reply(&malformed).unwrap();
     assert_eq!(encoded[0], 0x09, "Malformed is position 9: {encoded:?}");
     assert_eq!(NodeCommand::decode_reply(&encoded).unwrap(), malformed);
+    assert_eq!(variants.len(), NodeCommand::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<NodeCommand>();
 }
 
 /// CONTRACT (Luke Q7: "NodeCommand seals non-forwardable and streaming; Status still seals
@@ -77,4 +84,9 @@ fn node_command_seals_streaming_and_never_forwarded_beside_a_forwarded_status() 
     let forwarded = CatalogEntry { forwardable: true, ..command };
     let refused = CatalogBuilder::new().serve(forwarded).seal().expect_err("a forwarded stream is refused at the seal");
     assert!(refused.iter().any(|e| matches!(e, SealError::ForwardableStream { op: 0x22, .. })), "{refused:?}");
+}
+
+#[test]
+fn every_reply_variant_of_node_command_classifies_to_one_code() {
+    replies_match_the_frozen_eleven_variant_wire_schema();
 }

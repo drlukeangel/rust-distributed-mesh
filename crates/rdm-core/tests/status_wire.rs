@@ -91,6 +91,7 @@ fn requests_match_the_frozen_thirty_variant_wire_schema() {
 
 #[test]
 fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -184,9 +185,13 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
         let expected = bytes(hex);
+        variants.insert(Status::encode_reply(&reply).unwrap()[0]);
+        crate::outcome_codes::check::<Status>(&reply);
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
     }
+    assert_eq!(variants.len(), Status::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<Status>();
 }
 
 /// CONTRACT: a `ConnectionsDeleted` carries its `ConnectionsReceipt` in frozen bytes after the ids it
@@ -331,4 +336,9 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(ProviderKind::Container, "01");
     // build_id "b" | attempt 300 (ac 02) | operation "o"
     golden(MeshDeleteRound { build_id: "b".into(), attempt: 300, operation: "o".into() }, "0162ac02016f");
+}
+
+#[test]
+fn every_reply_variant_of_status_classifies_to_one_code() {
+    replies_match_the_frozen_fifty_two_variant_wire_schema();
 }

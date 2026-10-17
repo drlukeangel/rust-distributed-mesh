@@ -228,16 +228,23 @@ impl NodeProtocol for Topology {
 
     fn classify_reply(reply: &TopologyReply) -> ReplyKind {
         match reply {
-            TopologyReply::Snapshot { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Stored { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } | TopologyReply::End { .. } | TopologyReply::Started => ReplyKind::Success,
-            TopologyReply::UnknownMesh { .. } => ReplyKind::ProtocolRefusal,
-            TopologyReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
+            TopologyReply::Snapshot { .. } => ReplyKind::Success,
+            TopologyReply::Unchanged { .. } => ReplyKind::Success,
+            TopologyReply::End { .. } => ReplyKind::Success,
             TopologyReply::NotReady { .. } => ReplyKind::NotReady,
+            TopologyReply::UnknownMesh { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
+            TopologyReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             TopologyReply::Busy { .. } => ReplyKind::Busy,
             TopologyReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             TopologyReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             TopologyReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            TopologyReply::Started  => ReplyKind::Success,
+            TopologyReply::Stored { .. } => ReplyKind::Success,
+            TopologyReply::Seats { .. } => ReplyKind::Success,
+            TopologyReply::RafkaTime { .. } => ReplyKind::Success,
         }
     }
+
     fn peer_unresolved(reason: String) -> TopologyReply {
         TopologyReply::PeerUnresolved { reason }
     }

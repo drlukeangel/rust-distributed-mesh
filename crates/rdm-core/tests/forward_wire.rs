@@ -27,6 +27,7 @@ fn the_request_matches_the_frozen_one_variant_wire_schema() {
 
 #[test]
 fn replies_match_the_frozen_fourteen_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     assert_eq!(Forward::REPLY_VARIANTS, 14);
     use ForwardReply::*;
     let fixtures = [
@@ -48,7 +49,14 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
     assert_eq!(fixtures.len() as u32, Forward::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
         let expected = bytes(&hex);
+        variants.insert(Forward::encode_reply(&reply).unwrap()[0]);
+        crate::outcome_codes::check::<Forward>(&reply);
         assert_eq!(Forward::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(Forward::decode_reply(&expected).unwrap(), reply);
     }
+    assert_eq!(variants.len(), Forward::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<Forward>();
 }
+
+#[test]
+fn every_reply_variant_of_forward_classifies_to_one_code() { replies_match_the_frozen_fourteen_variant_wire_schema(); }

@@ -27,6 +27,7 @@ fn requests_match_the_frozen_wire_schema() {
 
 #[test]
 fn replies_match_the_frozen_ten_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     use BuildFactsReply::*;
     let fixtures = [
         (Facts { build_id: "b".into(), chunk_index: 1, chunk_count: 2, facts: vec![0xAA, 0xBB] }, "00 01 62 01 02 02 aabb"),
@@ -42,11 +43,15 @@ fn replies_match_the_frozen_ten_variant_wire_schema() {
         (Started, "09"),
     ];
     for (r, hex) in fixtures {
+        variants.insert(BuildFacts::encode_reply(&r).unwrap()[0]);
+        crate::outcome_codes::check::<BuildFacts>(&r);
         assert_eq!(BuildFacts::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(BuildFacts::decode_reply(&bytes(hex)).unwrap(), r);
     }
     assert_eq!(BuildFacts::REPLY_VARIANTS, 10);
     assert_eq!(BuildFacts::decode_reply(&[10]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(variants.len(), BuildFacts::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<BuildFacts>();
 }
 
 #[test]
@@ -58,7 +63,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(BuildFacts::frame_kind(&Facts { build_id: "b".into(), chunk_index: 0, chunk_count: 1, facts: vec![] }), FrameKind::Data);
     assert_eq!(BuildFacts::frame_kind(&End { build_id: "b".into(), facts: 0, chunks: 0, complete: false }), FrameKind::Terminal);
     assert_eq!(BuildFacts::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
-    assert_eq!(BuildFacts::frame_kind(&UnknownBuild { build_id: "b".into() }), FrameKind::Refusal(ReplyKind::ProtocolRefusal));
+    assert_eq!(BuildFacts::frame_kind(&UnknownBuild { build_id: "b".into() }), FrameKind::Refusal(ReplyKind::new(rdm_core::outcome::Code::NotFound)));
 }
 
 #[test]
@@ -70,4 +75,9 @@ fn a_full_chunk_fits_the_reply_frame_ceiling() {
 /// The Build topic's message bound (`rafka-mesh-transport` `chunking::MAX_MESSAGE_BYTES`, 4096 - 64).
 fn rafka_mesh_transport_bound() -> usize {
     4096 - 64
+}
+
+#[test]
+fn every_reply_variant_of_build_facts_classifies_to_one_code() {
+    replies_match_the_frozen_ten_variant_wire_schema();
 }

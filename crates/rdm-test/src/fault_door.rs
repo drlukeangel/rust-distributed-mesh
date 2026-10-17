@@ -309,8 +309,10 @@ impl NodeProtocol for FaultDoor {
 
     fn classify_reply(reply: &FaultReply) -> ReplyKind {
         match reply {
-            FaultReply::Armed { .. } | FaultReply::Released { .. } | FaultReply::State(_) => ReplyKind::Success,
-            FaultReply::Refused { .. } => ReplyKind::ProtocolRefusal,
+            FaultReply::State(_) => ReplyKind::Success,
+            FaultReply::Armed { .. } => ReplyKind::Success,
+            FaultReply::Released { .. } => ReplyKind::Success,
+            FaultReply::Refused { .. } => ReplyKind::new(rdm_core::outcome::Code::FailedPrecondition),
             FaultReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             FaultReply::NotReady { .. } => ReplyKind::NotReady,
             FaultReply::Busy { .. } => ReplyKind::Busy,

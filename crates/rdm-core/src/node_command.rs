@@ -164,6 +164,16 @@ impl NodeCommandReply {
     }
 }
 
+impl NodeCommandReply {
+    /// The per-element code view of a served named-connection answer, shared with Status.
+    pub fn connection_outcomes(&self) -> Vec<crate::outcome::ElementOutcome<'_, crate::ConnectionId>> {
+        match self {
+            Self::ConnectionsDeleted { closed, not_open, .. } => crate::outcome::connection_outcomes(closed, not_open),
+            _ => Vec::new(),
+        }
+    }
+}
+
 impl NodeProtocol for NodeCommand {
     const OP: u8 = 0x22;
     const NAME: &'static str = "node-command";
@@ -185,8 +195,12 @@ impl NodeProtocol for NodeCommand {
 
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
-            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::ConnectionsDeleted { .. } => ReplyKind::Success,
-            NodeCommandReply::RejectedConnectionScope { .. } | NodeCommandReply::RejectedStaleIncarnation { .. } => ReplyKind::ProtocolRefusal,
+            NodeCommandReply::CommandAccepted { .. } => ReplyKind::Success,
+            NodeCommandReply::ConnectionsDeleting { .. } => ReplyKind::Success,
+            NodeCommandReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { .. }), .. } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
+            NodeCommandReply::ConnectionsDeleted { .. } => ReplyKind::Success,
+            NodeCommandReply::RejectedConnectionScope { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            NodeCommandReply::RejectedStaleIncarnation { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
             NodeCommandReply::NotReady { .. } => ReplyKind::NotReady,
             NodeCommandReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             NodeCommandReply::Busy { .. } => ReplyKind::Busy,
@@ -195,6 +209,7 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
     }
+
     fn peer_unresolved(reason: String) -> NodeCommandReply {
         NodeCommandReply::PeerUnresolved { reason }
     }

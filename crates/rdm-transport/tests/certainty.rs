@@ -170,6 +170,7 @@ async fn admission_full_is_an_immediate_typed_busy_and_the_handler_never_runs() 
     eventually("the first call holds the only permit", || c.handled.load(Ordering::SeqCst) == 1).await;
     let (out, _) = c.client.call::<Ping>(&c.target, &echo(b"second"), &CallOptions::default()).await;
     assert_eq!(out.reply().expect("typed reply").class(), ReplyKind::Busy, "{out:?}");
+    assert!(matches!(out.reply().unwrap().detail(), PingReply::Busy { .. }), "{out:?}");
     assert_eq!(c.handled.load(Ordering::SeqCst), 1, "the refused call never ran");
     assert_eq!(ServerStats::get(&c.stats.busy), 1);
     let _ = hang.await;

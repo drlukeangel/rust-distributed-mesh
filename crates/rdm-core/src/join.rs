@@ -165,15 +165,19 @@ impl NodeProtocol for Join {
     fn classify_reply(reply: &JoinReply) -> ReplyKind {
         match reply {
             JoinReply::Joined { .. } => ReplyKind::Success,
-            JoinReply::JoinMismatch { .. } | JoinReply::NotAuthority { .. } | JoinReply::DeploymentAbandoned { .. } | JoinReply::CertRefused { .. } => ReplyKind::ProtocolRefusal,
+            JoinReply::JoinMismatch { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            JoinReply::NotAuthority { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             JoinReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             JoinReply::NotReady { .. } => ReplyKind::NotReady,
             JoinReply::Busy { .. } => ReplyKind::Busy,
             JoinReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             JoinReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             JoinReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            JoinReply::DeploymentAbandoned { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            JoinReply::CertRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
         }
     }
+
     fn peer_unresolved(reason: String) -> JoinReply {
         JoinReply::PeerUnresolved { reason }
     }
@@ -202,10 +206,10 @@ mod tests {
     fn every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip() {
         let all = [
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
-            (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::ProtocolRefusal),
-            (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
-            (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&crate::fixture_crockford60("i")).unwrap() }, ReplyKind::ProtocolRefusal),
-            (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::ProtocolRefusal),
+            (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&crate::fixture_crockford60("i")).unwrap() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),
             (Join::busy("b".into()), ReplyKind::Busy),

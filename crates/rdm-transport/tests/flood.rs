@@ -7,7 +7,7 @@ use rdm_core::{IncarnationId, NodeId};
 use rdm_transport::admission::Limits;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, ServerStats, StaticResolver};
 use rdm_core::catalog::OpOwner;
-use rdm_core::outcome::{ReplyKind, RpcOutcome};
+use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::protocol::NodeProtocol;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -167,7 +167,7 @@ async fn a_flood_over_the_in_flight_limit_is_refused_busy_and_the_handler_never_
     let (mut busy, mut pong) = (0, 0);
     for c in calls {
         match c.await.unwrap() {
-            RpcOutcome::Reply(rep) if rep.class() == ReplyKind::Busy => busy += 1,
+            RpcOutcome::Reply(rep) if matches!(rep.detail(), PingReply::Busy { .. }) => busy += 1,
             RpcOutcome::Reply(rep) if matches!(rep.value(), PingReply::Pong { .. }) => pong += 1,
             other => panic!("a flooded call is answered Busy or Pong, not {}", other.name()),
         }

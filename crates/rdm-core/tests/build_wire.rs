@@ -53,10 +53,12 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
 
 #[test]
 fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     use BuildReply::*;
     let b = || "b".to_string();
     let s = |v: &str| v.to_string();
     let fixtures = [
+        (Started { build_id: b(), attempt: 1, disposition: Disposition::AlreadyApplied }, "00 01 62 01 03"),
         (Started { build_id: b(), attempt: 1, disposition: Disposition::Created }, "00 01 62 01 00"),
         (Started { build_id: b(), attempt: 1, disposition: Disposition::Reattached }, "00 01 62 01 05"),
         (Step { build_id: b(), attempt: 1, operation: s("o"), step: s("s") }, "01 01 62 01 01 6f 01 73"),
@@ -89,11 +91,15 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(s("p")), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
     ];
     for (r, hex) in fixtures {
+        variants.insert(Build::encode_reply(&r).unwrap()[0]);
+        crate::outcome_codes::check::<Build>(&r);
         assert_eq!(Build::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Build::decode_reply(&bytes(hex)).unwrap(), r);
     }
     assert_eq!(Build::REPLY_VARIANTS, 26);
     assert_eq!(Build::decode_reply(&[26]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(variants.len(), Build::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<Build>();
 }
 
 #[test]
@@ -131,7 +137,8 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         SeatYielded { node: "n".into(), by: "b".into() },
         CannotDelete { build_id: "b".into(), reason: "r".into() },
     ] {
-        assert_eq!(Build::frame_kind(&refusal), FrameKind::Refusal(ReplyKind::ProtocolRefusal), "{refusal:?}");
+        assert!(matches!(Build::frame_kind(&refusal), FrameKind::Refusal(_)), "{refusal:?}");
+        crate::outcome_codes::check::<Build>(&refusal);
     }
     assert_eq!(Build::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
 }
@@ -150,4 +157,9 @@ fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() 
         hand_off_to: Some("mesh1.admin.1".into()),
     };
     assert!(Build::encode_request(&q).unwrap().len() <= Build::MAX_REQUEST_FRAME_BYTES);
+}
+
+#[test]
+fn every_reply_variant_of_build_classifies_to_one_code() {
+    replies_match_the_frozen_twenty_six_variant_wire_schema();
 }

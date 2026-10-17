@@ -521,6 +521,7 @@ async fn a_named_refusal_ends_the_retry_and_is_delivered_until_acked() {
     cd.seams().drop_next_response_ack();
     let (out, _) = client.call::<Command>(&s.target(), &run(5, Mode::Apply), &budget(Duration::from_secs(5))).await;
     assert_eq!(out.reply().map(|r| r.class()), Some(ReplyKind::NotReady), "{out:?}");
+    assert!(matches!(out.reply().unwrap().detail(), CommandReply::NotReady { .. }), "{out:?}");
     eventually("the refusal's unacked frame is resent and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0 && get(&s.delivery.stats().responses_resent) >= 1).await;
     assert_eq!(get(&cd.stats().resends), 0, "the refusal ended the request's retry");
     assert_eq!(get(&s.stats.dispatched), 0);

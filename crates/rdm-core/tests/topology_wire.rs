@@ -61,8 +61,10 @@ fn requests_match_the_frozen_wire_schema() {
 
 #[test]
 fn replies_match_the_frozen_fourteen_variant_wire_schema() {
+    let mut variants = std::collections::BTreeSet::new();
     use TopologyReply::*;
     let fixtures = [
+        (Snapshot { mesh: "m".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }, "00 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 00 00 00"),
         (Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 7 }, "01 016d 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 07"),
         (End { meshes: 2 }, "0202"),
         (NotReady { reason: "n".into() }, "03016e"),
@@ -82,11 +84,15 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         (RafkaTime { ms: 7, seat: Some(Seat::MeshPrimary) }, "0d 07 01 00"),
     ];
     for (r, hex) in fixtures {
+        variants.insert(Topology::encode_reply(&r).unwrap()[0]);
+        crate::outcome_codes::check::<Topology>(&r);
         assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Topology::decode_reply(&bytes(hex)).unwrap(), r);
     }
     assert_eq!(Topology::REPLY_VARIANTS, 14);
     assert_eq!(Topology::decode_reply(&[14]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(variants.len(), Topology::REPLY_VARIANTS as usize);
+    crate::outcome_codes::check_malformed::<Topology>();
 }
 
 /// CONTRACT (gossip.md §3.1: the topology read serves the member projection a node holds): a
@@ -172,5 +178,10 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Topology::frame_kind(&Seats { seat: Seat::FabricPrimary, holder, gone: false }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&RafkaTime { ms: 1, seat: None }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));
-    assert_eq!(Topology::frame_kind(&UnknownMesh { mesh: "m".into() }), FrameKind::Refusal(ReplyKind::ProtocolRefusal));
+    assert_eq!(Topology::frame_kind(&UnknownMesh { mesh: "m".into() }), FrameKind::Refusal(ReplyKind::new(rdm_core::outcome::Code::NotFound)));
+}
+
+#[test]
+fn every_reply_variant_of_topology_classifies_to_one_code() {
+    replies_match_the_frozen_fourteen_variant_wire_schema();
 }

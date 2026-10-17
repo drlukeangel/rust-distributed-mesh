@@ -151,16 +151,19 @@ impl NodeProtocol for BuildFacts {
 
     fn classify_reply(reply: &BuildFactsReply) -> ReplyKind {
         match reply {
-            BuildFactsReply::Facts { .. } | BuildFactsReply::End { .. } | BuildFactsReply::Started => ReplyKind::Success,
-            BuildFactsReply::UnknownBuild { .. } => ReplyKind::ProtocolRefusal,
-            BuildFactsReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
+            BuildFactsReply::Facts { .. } => ReplyKind::Success,
+            BuildFactsReply::End { .. } => ReplyKind::Success,
             BuildFactsReply::NotReady { .. } => ReplyKind::NotReady,
+            BuildFactsReply::UnknownBuild { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
+            BuildFactsReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildFactsReply::Busy { .. } => ReplyKind::Busy,
             BuildFactsReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildFactsReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildFactsReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            BuildFactsReply::Started  => ReplyKind::Success,
         }
     }
+
     fn peer_unresolved(reason: String) -> BuildFactsReply {
         BuildFactsReply::PeerUnresolved { reason }
     }

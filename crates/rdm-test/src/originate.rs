@@ -245,22 +245,23 @@ impl NodeProtocol for Originate {
     type Reply = OriginateReply;
     fn classify_reply(reply: &OriginateReply) -> ReplyKind {
         match reply {
-            OriginateReply::Called { .. }
-            | OriginateReply::FaultArmed { .. }
-            | OriginateReply::FaultReleased { .. }
-            | OriginateReply::Snapshot { .. }
-            | OriginateReply::ProxyRecorded { .. }
-            | OriginateReply::Dialed { .. }
-            | OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
-            OriginateReply::BadDestination { .. } => ReplyKind::ProtocolRefusal,
+            OriginateReply::Called { .. } => ReplyKind::Success,
+            OriginateReply::FaultArmed { .. } => ReplyKind::Success,
+            OriginateReply::FaultReleased { .. } => ReplyKind::Success,
+            OriginateReply::Snapshot { .. } => ReplyKind::Success,
+            OriginateReply::BadDestination { .. } => ReplyKind::new(rdm_core::outcome::Code::InvalidArgument),
             OriginateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             OriginateReply::NotReady { .. } => ReplyKind::NotReady,
             OriginateReply::Busy { .. } => ReplyKind::Busy,
             OriginateReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             OriginateReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             OriginateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            OriginateReply::ProxyRecorded { .. } => ReplyKind::Success,
+            OriginateReply::Dialed { .. } => ReplyKind::Success,
+            OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
         }
     }
+
     fn peer_unresolved(reason: String) -> OriginateReply {
         OriginateReply::PeerUnresolved { reason }
     }

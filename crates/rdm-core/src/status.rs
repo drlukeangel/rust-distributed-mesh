@@ -1500,6 +1500,29 @@ impl StatusReply {
     }
 }
 
+impl StatusReply {
+    /// The result for a label in the served request. An unlisted requested label was applied;
+    /// the existing exception lists prove already-carried and not-carried without adding bytes.
+    pub fn tag_outcome<'a>(&self, label: &'a str) -> Option<crate::outcome::ElementOutcome<'a, str>> {
+        use crate::outcome::{Code, ElementDetail, ElementOutcome};
+        let (code, detail) = match self {
+            Self::TagsCreated { already_carried, .. } if already_carried.contains(label) => (Code::AlreadyExists, ElementDetail::AlreadyCarried),
+            Self::TagsDeleted { not_carried, .. } if not_carried.contains(label) => (Code::NotFound, ElementDetail::NotCarried),
+            Self::TagsCreated { .. } | Self::TagsDeleted { .. } => (Code::Ok, ElementDetail::Applied),
+            _ => return None,
+        };
+        Some(ElementOutcome { element: label, code, detail })
+    }
+
+    /// Codes for the ids the served named-connection answer accounts for, in its existing lists.
+    pub fn connection_outcomes(&self) -> Vec<crate::outcome::ElementOutcome<'_, ConnectionId>> {
+        match self {
+            Self::ConnectionsDeleted { closed, not_open, .. } => crate::outcome::connection_outcomes(closed, not_open),
+            _ => Vec::new(),
+        }
+    }
+}
+
 impl NodeProtocol for Status {
     const OP: u8 = 0x1B;
     const NAME: &'static str = "status";
@@ -1521,60 +1544,65 @@ impl NodeProtocol for Status {
 
     fn classify_reply(reply: &StatusReply) -> ReplyKind {
         match reply {
-            StatusReply::Applied
-            | StatusReply::AlreadyApplied
-            | StatusReply::Reserved2 { .. }
-            | StatusReply::Current { .. }
-            | StatusReply::CurrentParked { .. }
-            | StatusReply::ConfigUpdated { .. }
-            | StatusReply::Blocked { .. }
-            | StatusReply::NameUpdated { .. }
-            | StatusReply::Stopped { .. }
-            | StatusReply::ConnectionsDeleted { .. }
-            | StatusReply::Nodes { .. }
-            | StatusReply::Meshes { .. }
-            | StatusReply::Fabric { .. }
-            | StatusReply::Connections { .. }
-            | StatusReply::TagsCreated { .. }
-            | StatusReply::TagsDeleted { .. }
-            | StatusReply::Started
-            | StatusReply::MeshJoined { .. }
-            | StatusReply::MeshLeft { .. } => ReplyKind::Success,
-            StatusReply::RejectedStaleIncarnation { .. }
-            | StatusReply::RejectedStaleMesh { .. }
-            | StatusReply::RejectedStaleFabric { .. }
-            | StatusReply::RejectedNotAuthority { .. }
-            | StatusReply::RequestNotHandled { .. }
-            | StatusReply::RejectedInvalidNodeTransition { .. }
-            | StatusReply::RejectedInvalidMeshTransition { .. }
-            | StatusReply::RejectedUnmatchedCompletion { .. }
-            | StatusReply::StartFailed { .. }
-            | StatusReply::RejectedConfig { .. }
-            | StatusReply::ConfigRowRefused { .. }
-            | StatusReply::ConfigNotApplied { .. }
-            | StatusReply::RejectedAdmittingConnections { .. }
-            | StatusReply::NameHeld { .. }
-            | StatusReply::NodeRowRefused { .. }
-            | StatusReply::NameNotApplied { .. }
-            | StatusReply::RejectedConnectionScope { .. }
-            | StatusReply::UnknownMesh { .. }
-            | StatusReply::ReadOverBound { .. }
-            | StatusReply::RejectedStaleRound { .. }
-            | StatusReply::RejectedConflictingRound { .. }
-            | StatusReply::RejectedIncompleteManifest { .. }
-            | StatusReply::RejectedSourceFailed { .. }
-            | StatusReply::RejectedTags { .. }
-            | StatusReply::RejectedFabricNotReady { .. }
-            | StatusReply::RejectedName { .. }
-            | StatusReply::BusyHoldingConnections { .. } => ReplyKind::ProtocolRefusal,
+            StatusReply::Applied  => ReplyKind::Success,
+            StatusReply::AlreadyApplied  => ReplyKind::new(crate::outcome::Code::AlreadyExists),
+            StatusReply::Reserved2 { .. } => ReplyKind::Success,
+            StatusReply::Current { .. } => ReplyKind::Success,
+            StatusReply::RejectedStaleIncarnation { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::RejectedStaleMesh { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::RejectedStaleFabric { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown { .. } } => ReplyKind::new(crate::outcome::Code::NotFound),
+            StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { .. } } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedNotAuthority { why: NotAuthority::SenderNotSubject { .. } } => ReplyKind::new(crate::outcome::Code::PermissionDenied),
+            StatusReply::RejectedInvalidNodeTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedInvalidMeshTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
             StatusReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             StatusReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             StatusReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            StatusReply::RejectedUnmatchedCompletion { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { .. } }
+            | StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { .. }), .. } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
+            StatusReply::Stopped { .. } => ReplyKind::Success,
+            StatusReply::Started  => ReplyKind::Success,
+            StatusReply::StartFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::CurrentParked { .. } => ReplyKind::Success,
+            StatusReply::ConfigUpdated { .. } => ReplyKind::Success,
+            StatusReply::RejectedConfig { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::ConfigRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::ConfigNotApplied { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::Blocked { .. } => ReplyKind::Success,
+            StatusReply::NameUpdated { .. } => ReplyKind::Success,
+            StatusReply::RejectedAdmittingConnections { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::NameHeld { .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
+            StatusReply::NodeRowRefused { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::NameNotApplied { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::ConnectionsDeleted { .. } => ReplyKind::Success,
+            StatusReply::RejectedConnectionScope { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::Nodes { .. } => ReplyKind::Success,
+            StatusReply::Meshes { .. } => ReplyKind::Success,
+            StatusReply::Fabric { .. } => ReplyKind::Success,
+            StatusReply::Connections { .. } => ReplyKind::Success,
+            StatusReply::UnknownMesh { .. } => ReplyKind::new(crate::outcome::Code::NotFound),
+            StatusReply::ReadOverBound { .. } => ReplyKind::new(crate::outcome::Code::ResourceExhausted),
+            StatusReply::RejectedStaleRound { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            StatusReply::RejectedConflictingRound { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedIncompleteManifest { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedSourceFailed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::RejectedTags { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::RejectedFabricNotReady { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            StatusReply::TagsCreated { .. } => ReplyKind::Success,
+            StatusReply::TagsDeleted { .. } => ReplyKind::Success,
+            StatusReply::RejectedName { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
+            StatusReply::BusyHoldingConnections { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
+            StatusReply::MeshJoined { .. } => ReplyKind::Success,
+            StatusReply::MeshLeft { .. } => ReplyKind::Success,
+            StatusReply::RequestNotHandled { .. } => ReplyKind::new(crate::outcome::Code::Unimplemented),
         }
     }
+
     fn peer_unresolved(reason: String) -> StatusReply {
         StatusReply::PeerUnresolved { reason }
     }
@@ -1652,57 +1680,57 @@ mod tests {
     fn every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip() {
         let all = [
             (StatusReply::Applied, ReplyKind::Success),
-            (StatusReply::AlreadyApplied, ReplyKind::Success),
+            (StatusReply::AlreadyApplied, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
             (StatusReply::Reserved2 { in_flight: 3 }, ReplyKind::Success),
             (StatusReply::Current { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic }, ReplyKind::Success),
-            (StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, ReplyKind::new(crate::outcome::Code::NotFound)),
+            (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Status::not_ready("n".into()), ReplyKind::NotReady),
             (Status::busy("b".into()), ReplyKind::Busy),
             (Status::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
-            (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 2, closed: vec![ConnectionId::mint()], held: vec![ConnectionId::mint()] } }, ReplyKind::Success),
+            (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 2, closed: vec![ConnectionId::mint()], held: vec![ConnectionId::mint()] } }, ReplyKind::new(crate::outcome::Code::DeadlineExceeded)),
             (StatusReply::Started, ReplyKind::Success),
-            (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
             (StatusReply::ConfigUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::ProtocolRefusal),
-            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedConfig { over: ConfigOverCap { keys: 33, bytes: 10, max_keys: 32, max_bytes: 2048 } }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::Draining, held_connections: vec![ConnectionId::mint()] }, ReplyKind::ProtocolRefusal),
-            (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::Draining, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
+            (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![], receipt: None }, ReplyKind::Success),
-            (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
             (StatusReply::Fabric { fabric: crate::views::FabricView { id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()), held_running: None } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
-            (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::ProtocolRefusal),
-            (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
-            (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::ProtocolRefusal),
-            (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::ProtocolRefusal),
-            (StatusReply::rejected_fabric_not_ready("node.update mesh1.rpc.1", "state-sync"), ReplyKind::ProtocolRefusal),
+            (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
+            (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
+            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::rejected_fabric_not_ready("node.update mesh1.rpc.1", "state-sync"), ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::TagsCreated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), already_carried: ["red".to_string()].into() }, ReplyKind::Success),
             (StatusReply::TagsDeleted { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), not_carried: ["blue".to_string()].into() }, ReplyKind::Success),
-            (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
+            (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::Unavailable)),
             (StatusReply::MeshJoined { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, ReplyKind::Success),
             (StatusReply::MeshLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::Success),
-            (StatusReply::RequestNotHandled { request: "declare-node-state".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RequestNotHandled { request: "declare-node-state".into() }, ReplyKind::new(crate::outcome::Code::Unimplemented)),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {

@@ -661,7 +661,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.connection.evict.via-incarnation-superseded` | `crates/rdm-transport/src/pool.rs` | 184 |
 | `rdm.node_rpc.connection.reject.via-admission-block` | `crates/rdm-transport/src/client.rs` | 543 |
 | `rdm.node_rpc.connection.reject.via-stale-target` | `crates/rdm-transport/src/client.rs` | 1442 |
-| `rdm.node_rpc.declare_probe.serve.via-request` | `crates/rdm-test/src/declare_probe.rs` | 178 |
+| `rdm.node_rpc.declare_probe.serve.via-request` | `crates/rdm-test/src/declare_probe.rs` | 179 |
 | `rdm.node_rpc.delivery.remove.via-ack-dropped-by-seam` | `crates/rdm-transport/src/delivery.rs` | 605 |
 | `rdm.node_rpc.delivery.remove.via-caller-finished` | `crates/rdm-transport/src/server.rs` | 707 |
 | `rdm.node_rpc.delivery.remove.via-receiver-gone` | `crates/rdm-transport/src/client.rs` | 1161 |
@@ -681,7 +681,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.node.update.via-membership` | `crates/rdm-node/src/node_rpc.rs` | 106 |
 | `rdm.node_rpc.proof_store.reject.via-probe-arguments` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 366 |
 | `rdm.node_rpc.proof_store.resolve.via-probe` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 371 |
-| `rdm.node_rpc.proof_store.serve.via-request` | `crates/rdm-test/src/proof_store.rs` | 484 |
+| `rdm.node_rpc.proof_store.serve.via-request` | `crates/rdm-test/src/proof_store.rs` | 485 |
 | `rdm.node_rpc.request.reject.via-busy` | `crates/rdm-transport/src/server.rs` | 798 |
 | `rdm.node_rpc.request.reject.via-carrier-edge-lost` | `crates/rdm-transport/src/forward.rs` | 174 |
 | `rdm.node_rpc.request.reject.via-forward-budget-spent` | `crates/rdm-transport/src/forward.rs` | 110 |
@@ -700,7 +700,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.request.update.via-call` | `crates/rdm-transport/src/stream.rs` | 472 |
 | `rdm.node_rpc.request.update.via-context-dropped` | `crates/rdm-transport/src/client.rs` | 390 |
 | `rdm.node_rpc.request.update.via-context-dropped` | `crates/rdm-transport/src/server.rs` | 861 |
-| `rdm.node_rpc.resolve_probe.serve.via-request` | `crates/rdm-test/src/resolve_probe.rs` | 205 |
+| `rdm.node_rpc.resolve_probe.serve.via-request` | `crates/rdm-test/src/resolve_probe.rs` | 208 |
 | `rdm.node_rpc.route.resolve.via-connections` | `crates/rdm-transport/src/route.rs` | 104 |
 | `rdm.node_rpc.route.resolve.via-held-projection` | `crates/rdm-transport/src/route.rs` | 178 |
 | `rdm.node_rpc.status.update.via-authority-moved` | `crates/rdm-node/src/node.rs` | 671 |

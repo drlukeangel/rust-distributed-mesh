@@ -170,15 +170,19 @@ impl NodeProtocol for BuildClaim {
     fn classify_reply(reply: &BuildClaimReply) -> ReplyKind {
         match reply {
             BuildClaimReply::Won { .. } => ReplyKind::Success,
-            BuildClaimReply::Lost { .. } | BuildClaimReply::NotOpen { .. } | BuildClaimReply::NotClaimant { .. } | BuildClaimReply::BuildInProgress { .. } => ReplyKind::ProtocolRefusal,
+            BuildClaimReply::Lost { .. } => ReplyKind::new(crate::outcome::Code::Aborted),
+            BuildClaimReply::NotOpen { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildClaimReply::NotClaimant { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
             BuildClaimReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildClaimReply::NotReady { .. } => ReplyKind::NotReady,
             BuildClaimReply::Busy { .. } => ReplyKind::Busy,
             BuildClaimReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildClaimReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildClaimReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            BuildClaimReply::BuildInProgress { .. } => ReplyKind::new(crate::outcome::Code::Unavailable),
         }
     }
+
     fn peer_unresolved(reason: String) -> BuildClaimReply {
         BuildClaimReply::PeerUnresolved { reason }
     }
@@ -207,16 +211,16 @@ mod tests {
     fn every_reply_variant_encodes_and_classifies_the_same_after_a_round_trip() {
         let all = [
             (BuildClaimReply::Won { context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None } }, ReplyKind::Success),
-            (BuildClaimReply::Lost { holder: "mesh1.admin.1".into() }, ReplyKind::ProtocolRefusal),
-            (BuildClaimReply::NotOpen { next: Some(7) }, ReplyKind::ProtocolRefusal),
-            (BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, ReplyKind::ProtocolRefusal),
+            (BuildClaimReply::Lost { holder: "mesh1.admin.1".into() }, ReplyKind::new(crate::outcome::Code::Aborted)),
+            (BuildClaimReply::NotOpen { next: Some(7) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (BuildClaim::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (BuildClaim::not_ready("n".into()), ReplyKind::NotReady),
             (BuildClaim::busy("b".into()), ReplyKind::Busy),
             (BuildClaim::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (BuildClaim::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (BuildClaim::unauthorized("u".into()), ReplyKind::Unauthorized),
-            (BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
+            (BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some("mesh1.admin.1".into()) }, ReplyKind::new(crate::outcome::Code::Unavailable)),
         ];
         assert_eq!(all.len() as u32, BuildClaim::REPLY_VARIANTS);
         for (r, kind) in all {
