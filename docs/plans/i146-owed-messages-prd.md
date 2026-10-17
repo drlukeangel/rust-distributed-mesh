@@ -715,6 +715,16 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   `stopped` had recorded it; the cell asserted `applied`, the order the awaited call used to give. Q36
   publishes NodeStopped once from whichever arrives first, which the cell's next assertion holds; the
   declaration's own answer is either.
+  A duplicate send by the declarer (2026-10-17, land gate `ad8633d6`,
+  `admin_start_declares::a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again`:
+  mesh1.admin.2's ReadyForTraffic declared twice to mesh1.admin.1 as two calls 16 ms apart, `applied` then
+  `already-applied`): a call's end released the key's in-flight claim before it recorded the end, and a
+  round whose `due` read predated the end found neither the claim nor the answer and sent the key again.
+  The end is now recorded before the claim is released, and the send is decided under the in-flight
+  lock from the key still being owed (`Declarer::still_due`). Cell
+  `status_declare::tests::a_send_decided_before_the_keys_call_ended_is_not_made_once_that_end_finished_it`:
+  RED on the old decision (the stale read sends the answered key again), GREEN after; rdm-admin lib
+  458/458, main 421/421, `admin_start_declares::`, `status::`, `node_stop::`, `build_op::` 30/30.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its

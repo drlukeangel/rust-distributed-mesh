@@ -416,7 +416,7 @@ impl Declarer {
             // authority answers; the declarer only retargets it.
             let to = Destination::of(&target);
             let mut inflight = self.inflight.lock().unwrap();
-            if inflight.get(&p.key).is_some_and(|f| f.to == to) {
+            if !self.still_due(&inflight, &p.key, &to) {
                 continue;
             }
             if let Some(old) = inflight.remove(&p.key) {
@@ -437,17 +437,27 @@ impl Declarer {
                     }
                     other => (format!("{}: {}", other.name(), other.code().name()), false, false),
                 };
+                // The end is recorded before the in-flight claim is released: a round that finds the
+                // claim gone finds the key finished too ([`Declarer::still_due`]).
+                this.declared(&me, &p, &target, "node-rpc", addressed_now, outcome, finished, typed);
                 {
                     let mut inflight = this.inflight.lock().unwrap();
                     if inflight.get(&p.key).is_some_and(|f| f.to == sent_to) {
                         inflight.remove(&p.key);
                     }
                 }
-                this.declared(&me, &p, &target, "node-rpc", addressed_now, outcome, finished, typed);
                 wake.poke();
             });
             inflight.insert(key, Inflight { to, task });
         }
+    }
+
+    /// Whether a send of `key` to `to`, decided from a [`Self::due`] read, still goes out, read under the
+    /// in-flight lock (`inflight`): the key is still owed and no call of it is in flight to `to`. A
+    /// `due` read can predate the end of the key's last call; that end is recorded before its in-flight
+    /// claim is released, so a key it finished is owed no longer here.
+    fn still_due(&self, inflight: &BTreeMap<Key, Inflight>, key: &Key, to: &Destination) -> bool {
+        self.pending.lock().unwrap().contains_key(key) && !inflight.get(key).is_some_and(|f| &f.to == to)
     }
 
     /// The end of one send of `p` to `target`, spanned: an answer that finishes it records the key done
@@ -925,6 +935,24 @@ mod tests {
         let addressed: BTreeSet<NodeId> = [fp.node_id.clone()].into();
         let asked: Vec<Key> = d.due(&me_id, &v, &addressed).into_iter().map(|(p, _)| p.key).collect();
         assert!(asked.contains(&mesh_key()), "the fabric-primary addressing this admin sends the key owed to it again: {asked:?}");
+    }
+
+    /// CONTRACT (node-rpc.md §43, i146 Q44: one Owed call per key, the layer resending it until the
+    /// authority answers): a send decided from a `due` read taken before the key's call ended is not made
+    /// once that end finished the key. The gate's `admin_start_declares` red: mesh1.admin.2's
+    /// ReadyForTraffic declared twice 16 ms apart, `applied` then `already-applied`. Must NOT happen: the
+    /// stale read sending the answered key again.
+    #[test]
+    fn a_send_decided_before_the_keys_call_ended_is_not_made_once_that_end_finished_it() {
+        let me_id = NodeId::mint();
+        let v = view("mesh2.admin.1", "mesh1.admin.1");
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owe_all(&d);
+        let (p, target) = d.due(&me_id, &v, &none).into_iter().find(|(p, _)| p.key == mesh_key()).expect("the Mesh key is owed");
+        // The key's call ends answered: its end is recorded, and its in-flight claim released.
+        d.declared(&"mesh2.admin.1".parse().unwrap(), &p, &target, "node-rpc", false, "applied".into(), true, true);
+        assert!(!d.still_due(&BTreeMap::new(), &p.key, &Destination::of(&target)), "the read taken before the end sends the answered key again");
     }
 
     /// CONTRACT: a destination that changes to a deliverable birth is sent to once.
