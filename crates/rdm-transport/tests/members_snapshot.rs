@@ -136,7 +136,7 @@ fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
 fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
     let mut last = None;
     for f in members_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("topology-read")) {
-        last = Some(rx.take_chunk(chunk_of(&f)));
+        last = Some(rx.take_read_chunk(chunk_of(&f)));
     }
     last.expect("a snapshot has at least one chunk")
 }
@@ -255,15 +255,15 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let last = chunks.len() - 1;
         assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Waiting { held: 1, .. }));
         assert!(matches!(rx.take_chunk(chunk_of(&chunks[last])), Taken::Waiting { held: 2, .. }));
-        assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Waiting { held: 2, .. }), "a duplicate chunk adds nothing");
+        assert!(matches!(rx.take_chunk(chunk_of(&chunks[0])), Taken::Refused(rdm_transport::snapshot::Refusal::Duplicate)), "a duplicate chunk is ignored by name and adds nothing");
         assert_eq!(rx.held_version("mesh2"), held_before, "a partial snapshot moves no version");
         assert!(rx.held_full("mesh2").is_none(), "a partial snapshot installs nothing");
         // A delta derived from the incomplete one is not applied either.
         let a_delta = Delta { changed: vec![big.digests(4)[0].clone()], ..Default::default() };
         assert!(matches!(rx.take_delta("mesh2", &p, 4, 5, &a_delta), Moved::Desynced { gap: Gap::NoBaseline, .. }), "no delta is derived from an incomplete snapshot");
         // The chunks between arrive: the snapshot completes with the last of them, and not before.
-        for c in &chunks[1..last - 1] {
-            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { .. }));
+        for (offset, c) in chunks[1..last - 1].iter().enumerate() {
+            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Waiting { held, .. } if held == offset as u32 + 3), "the duplicate retained exactly the original two chunks");
             assert_eq!(rx.held_version("mesh2"), held_before, "still nothing installed, no version moved");
         }
         // The delta above desynchronized the source; the complete snapshot resumes it.
@@ -292,16 +292,18 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!((i.topology_version, i.snapshot_id), (7, 11));
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 7)));
 
-        // A republish of the same version (a new snapshot id) only refreshes. A snapshot older than
-        // the version held never reaches the receiver: the receive path ignores it (R-RX3).
+        // A republish with the same normalized projection is a duplicate, even with a new
+        // snapshot id and heartbeat sequence. Only a directed read can complete repair at equality.
         let again = members_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13, None);
-        let mut refreshed = None;
+        let mut duplicate = false;
         for c in &again {
-            if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
-                refreshed = Some(*i);
+            match rx.take_chunk(chunk_of(c)) {
+                Taken::Refused(rdm_transport::snapshot::Refusal::Duplicate) => duplicate = true,
+                Taken::Waiting { .. } => {},
+                other => panic!("a repeated publication installs nothing: {other:?}"),
             }
         }
-        assert!(refreshed.expect("the republish completes").refreshed, "the same version again only hears the members again");
+        assert!(duplicate, "the complete repeated projection is classified duplicate");
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 7)));
 
         // Malformed chunks are refused by name.
@@ -381,7 +383,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         }
         assert_eq!(done.expect("the newer snapshot completes").topology_version, 10);
         let straggler = rx.take_chunk(chunk_of(&lossy2[1]));
-        assert!(matches!(straggler, Taken::Waiting { .. }), "a chunk of the superseded snapshot installs nothing (the receive path ignores it before the receiver, R-RX3): {straggler:?}");
+        assert!(matches!(straggler, Taken::Refused(rdm_transport::snapshot::Refusal::OlderThanHeld { held_version: 10, offered_version: 9 })), "the superseded chunk is refused against the actual installed floor, never retained: {straggler:?}");
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 10)));
 
         // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------

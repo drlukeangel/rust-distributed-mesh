@@ -1413,30 +1413,16 @@ struct Channel {
 /// Classify the families whose ordering state ReceiveOrder holds. Lifecycle identities are
 /// recorded before their carried revision is judged, even on a revision refusal. Digest is
 /// classified once, against its installed content under the digest book's lock; it has no
-/// second receive-history floor. Remaining keyed families retain their existing refusal names.
-fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str, sender: &dyn std::fmt::Display) -> bool {
+/// second receive-history floor. Every ordering refusal is named via-stale.
+fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str) -> bool {
     let first_fact = order.admit_lifecycle_identity(f);
     match order.admit(f) {
         Ok(()) => first_fact,
         Err(e) => {
-            if matches!(f, Frame::NodeDeleting { .. } | Frame::NodeRestarting { .. } | Frame::NodeStopped { .. }) {
-                tracing::info_span!(
-                    "rdm.mesh.membership.reject.via-stale",
-                    node, channel, frame = e.frame, subject = %e.source, held_key = %e.held, frame_key = %e.offered,
-                ).in_scope(|| tracing::info!("the frame's replacement revision is below the held one"));
-                return false;
-            }
             tracing::info_span!(
-                "rdm.mesh.membership.reject.via-earlier-version",
-                node = %node,
-                channel = %channel,
-                frame = e.frame,
-                source = %e.source,
-                held = %e.held,
-                offered = %e.offered,
-                sender = %sender,
-            )
-            .in_scope(|| tracing::info!("a gossip frame received after a newer one of its source: ignored"));
+                "rdm.mesh.membership.reject.via-stale",
+                node, channel, frame = e.frame, subject = %e.source, held_key = %e.held, frame_key = %e.offered,
+            ).in_scope(|| tracing::info!("the frame's replacement revision is below the held one"));
             false
         }
     }
@@ -1529,7 +1515,7 @@ impl Channel {
                                     };
                                     let _receipt = receipt.as_ref().map(tracing::Span::enter);
                                     let mut held = order.lock().unwrap();
-                                    if admitted(&mut held, &f, &node, &channel, &m.delivered_from.fmt_short()) {
+                                    if admitted(&mut held, &f, &node, &channel) {
                                         on_frame(f, &mut held);
                                     }
                                 }
@@ -2313,9 +2299,10 @@ impl View {
                 // the held version never sees a version ahead of the book it describes.
                 let mut rx = self.receiver(side).lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
-                let taken = rx.take_chunk(chunk);
+                let taken = rx.take_chunk_against(chunk, false, order.installed_snapshot(mesh));
                 match taken {
                     Taken::Waiting { .. } => SnapshotTaken::default(),
+                    Taken::Refused(crate::snapshot::Refusal::Duplicate | crate::snapshot::Refusal::Inconsistent | crate::snapshot::Refusal::OlderThanHeld { .. } | crate::snapshot::Refusal::OlderThanPending { .. }) => SnapshotTaken::default(),
                     Taken::Refused(r) => {
                         drop(rx);
                         tracing::info_span!(
@@ -2334,7 +2321,7 @@ impl View {
                     Taken::Installed(i) => {
                         let installed = self.installed(&i, fabric, side, *published_at_rafka_ms, prior);
                         drop(rx);
-                        order.installed(&i.mesh, &i.publisher, i.topology_version, Some(*published_at_rafka_ms));
+                        order.installed_projection(&i.mesh, &i.publisher, i.topology_version, Some(*published_at_rafka_ms), &i.full);
                         installed
                     }
                 }
@@ -2351,7 +2338,7 @@ impl View {
                 let delta = Delta { changed: changed.clone(), removed: removed.clone(), in_flight: in_flight.clone(), departed: departed.clone() };
                 let mut rx = self.mesh_rx.lock().unwrap();
                 let prior = Prior::of(&rx, mesh);
-                let moved = rx.take_delta(mesh, source_publisher, *base_version, *topology_version, &delta);
+                let moved = rx.take_delta_against(mesh, source_publisher, *base_version, *topology_version, &delta, order.installed_snapshot(mesh));
                 match moved {
                     Moved::Applied { delta, .. } => {
                         tracing::info_span!(
@@ -2371,16 +2358,12 @@ impl View {
                         let held_full = rx.held_full(mesh);
                         let fence = prior.fence(source_publisher, side, *topology_version, held_full);
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &fence);
+                        let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
-                        order.installed(mesh, source_publisher, *topology_version, Some(*published_at_rafka_ms));
+                        order.installed_projection(mesh, source_publisher, *topology_version, Some(*published_at_rafka_ms), &installed_full);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
-                    Moved::Duplicate { held_version } => {
-                        drop(rx);
-                        tracing::info_span!("rdm.mesh.membership.update.via-delta-already-held", node = %self.current_name(), mesh = %mesh, held_version, topology_version = *topology_version)
-                            .in_scope(|| tracing::info!("a delta at or below the held version: a copy already applied"));
-                        SnapshotTaken::default()
-                    }
+                    Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
                     Moved::Desynced { gap, .. } => {
                         drop(rx);
                         let (held_version, held_publisher) = match &gap {
@@ -2389,7 +2372,8 @@ impl View {
                             _ => (-1, String::new()),
                         };
                         tracing::info_span!(
-                            "rdm.mesh.membership.update.via-version-gap",
+                            "rdm.mesh.membership.reject.via-gap",
+                            frame = "members-delta", repair_requested = true,
                             node = %self.current_name(),
                             mesh = %mesh,
                             source_publisher = %source_publisher,
@@ -2435,13 +2419,13 @@ impl View {
         let mut order = self.order.lock().unwrap();
         if let Err(e) = order.admit_read(&chunk.mesh, &chunk.publisher, chunk.topology_version) {
             tracing::info_span!(
-                "rdm.mesh.membership.reject.via-earlier-version",
+                "rdm.mesh.membership.reject.via-stale",
                 node = %self.current_name(),
                 channel = side.name(),
                 frame = e.frame,
-                source = %e.source,
-                held = %e.held,
-                offered = %e.offered,
+                subject = %e.source,
+                held_key = %e.held,
+                frame_key = %e.offered,
                 publisher = %chunk.publisher,
             )
             .in_scope(|| tracing::info!("a topology read of a version below the one this node installed of its source: ignored"));
@@ -2450,11 +2434,12 @@ impl View {
         }
         let mut rx = self.mesh_rx.lock().unwrap();
         let prior = Prior::of(&rx, &chunk.mesh);
-        let taken = rx.take_chunk(chunk);
+        let installed = order.installed_snapshot(&chunk.mesh);
+        let taken = rx.take_chunk_against(chunk, true, installed);
         if let Taken::Installed(i) = &taken {
             self.installed(i, fabric, side, 0, prior);
             drop(rx);
-            order.installed(&i.mesh, &i.publisher, i.topology_version, None);
+            order.installed_projection(&i.mesh, &i.publisher, i.topology_version, None, &i.full);
         }
         taken
     }
@@ -5411,9 +5396,6 @@ impl DigestBook {
             if older {
                 return false;
             }
-            if held.node.incarnation == d.node.incarnation && d.digest_seq == held.digest_seq && held.node == d.node {
-                return true;
-            }
             held_entry = Some((*at, *heard));
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
@@ -6218,7 +6200,8 @@ mod tests {
 
         let refused = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
         let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["door"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
-        assert_eq!(projection, vec![("1".into(), "1".into(), "2".into())], "only the refresh before the stop listed the birth, older than the version the event carried: {refused:?}");
+        assert!(projection.is_empty(), "the framework ignores the repeated v1 before it can reach the stopped-entry data rule: {refused:?}");
+        assert!(spans.named("rdm.mesh.membership.update.via-duplicate").iter().any(|f| f["frame"] == "members" && f["identity"].contains("topology_version=1")), "the v1 repeat is refused by identity, never re-applied");
         assert!(refused.iter().any(|f| f["door"] == "heartbeat" && f["digest_seq"] == "3"), "{refused:?}");
         let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");
         assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
@@ -7530,7 +7513,7 @@ mod tests {
     /// `f` heard on `side` of `view` as a channel's receive path hands it on: the one ordering check
     /// of that channel first (`order`, R-RX3), then the view. `false` when the check ignored it.
     fn hear(order: &mut crate::receive_order::ReceiveOrder, view: &View, f: &Frame, fabric: &FabricId, side: Side) -> bool {
-        if !admitted(order, f, &view.node, side.name(), &"cell") {
+        if !admitted(order, f, &view.node, side.name()) {
             return false;
         }
         if let Frame::Seated { seat, holder } = f {
@@ -7598,9 +7581,9 @@ mod tests {
             let v4 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 4, 4, vec![publisher.clone(), pending.clone()], vec![], vec![]), 40);
             assert!(!hears(&v4), "{mesh}: the backbone's v4 is older than the v5 the read installed: ignored");
             assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the member never leaves Ready");
-            let ignored = spans.named("rdm.mesh.membership.reject.via-earlier-version");
+            let ignored = spans.named("rdm.mesh.membership.reject.via-stale");
             assert!(
-                ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "members" && f["source"] == mesh && f["held"].ends_with("topology_version=5") && f["offered"] == "published_at_rafka_ms=40 topology_version=4"),
+                ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "members" && f["subject"] == mesh && f["held_key"].ends_with("topology_version=5") && f["frame_key"] == "published_at_rafka_ms=40 topology_version=4"),
                 "{mesh}: the ignore span names the backbone, the source, the version held and the one offered: {ignored:#?}"
             );
             let v5 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 5, 5, vec![publisher.clone(), ready.clone()], vec![], vec![]), 50);
@@ -7781,13 +7764,13 @@ mod tests {
     /// orders nothing by version. An ordinary node of mesh1 holds mesh1.admin.1's v7 full and applies
     /// its 7→8 delta; then:
     /// - a copy of that delta is taken by the receive path (its key equals the held one) and the
-    ///   receiver absorbs it as a copy (`via-delta-already-held`), with no gap;
+    ///   receiver absorbs it as a copy (`via-duplicate`), with no gap;
     /// - the publisher's v6 full, its 6→7 delta and a topology read of its v6 are each ignored by the
     ///   receive path, the ignore span naming the frame, the source, the key held and the one offered;
     /// - the top-up installs the publisher's v9 and its 9→11 delta applies; the 8→9 delta the top-up
     ///   already covered is ignored by the receive path.
     /// Must NOT happen: an earlier frame of the held publisher reaching the receiver (a `via-snapshot`
-    /// refusal, or a `via-delta-already-held` for anything but the copy); the held projection moved
+    /// refusal, or a `via-duplicate` for anything but the copy); the held projection moved
     /// back; a source marked desynchronized.
     #[test]
     fn an_earlier_full_delta_or_read_of_the_held_publisher_is_ignored_by_the_receive_path_before_the_snapshot_receiver_reads_it() {
@@ -7809,21 +7792,21 @@ mod tests {
         assert!(hears(&delta(7, 8, 800)));
         assert_eq!(held(), Some((p.clone(), 8)), "the delta applied at exactly its base");
         assert!(hears(&delta(7, 8, 800)), "a copy of the applied delta carries the held key: taken");
-        let copies = spans.named("rdm.mesh.membership.update.via-delta-already-held");
-        assert!(copies.len() == 1 && copies[0]["held_version"] == "8" && copies[0]["topology_version"] == "8", "the receiver absorbs the copy: {copies:#?}");
+        let copies = spans.named("rdm.mesh.membership.update.via-duplicate");
+        assert!(copies.len() == 1 && copies[0]["identity"] == format!("mesh1 {p} base_version=7 topology_version=8") && copies[0]["outcome"] == "ignored", "the receiver absorbs the copy: {copies:#?}");
 
         assert!(!hears(&full(6, 600)), "the held publisher's v6 full is ignored by the receive path");
         assert!(!hears(&delta(6, 7, 650)), "the held publisher's 6→7 delta is ignored by the receive path");
         let refused = reads(read(6));
         assert!(matches!(refused, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version: 8, offered_version: 6 })), "a read of v6 is ignored by the receive path: {refused:?}");
         assert_eq!(held(), Some((p.clone(), 8)), "nothing earlier moved the held projection back");
-        let ignored = spans.named("rdm.mesh.membership.reject.via-earlier-version");
+        let ignored = spans.named("rdm.mesh.membership.reject.via-stale");
         for (frame, held, offered) in [
-            ("members", "published_at_rafka_ms=800 topology_version=8", "published_at_rafka_ms=600 topology_version=6"),
-            ("members-delta", "published_at_rafka_ms=800 topology_version=8", "published_at_rafka_ms=650 topology_version=7"),
+            ("members", &*format!("publisher={p} topology_version=8"), "published_at_rafka_ms=600 topology_version=6"),
+            ("members-delta", &*format!("publisher={p} topology_version=8"), "published_at_rafka_ms=650 topology_version=7"),
             ("topology-read", &*format!("publisher={p} topology_version=8"), "topology_version=6"),
         ] {
-            assert!(ignored.iter().any(|f| f["frame"] == frame && f["source"] == "mesh1" && f["held"] == held && f["offered"] == offered), "the receive path names the ignored {frame}, its source and both keys: {ignored:#?}");
+            assert!(ignored.iter().any(|f| f["frame"] == frame && f["subject"] == "mesh1" && f["held_key"] == held && f["frame_key"] == offered), "the receive path names the ignored {frame}, its source and both keys: {ignored:#?}");
         }
 
         assert!(matches!(reads(read(9)), Taken::Installed(_)), "the top-up installs v9");
@@ -7833,7 +7816,7 @@ mod tests {
         assert_eq!(held(), Some((p.clone(), 11)), "the held projection stands");
 
         assert!(spans.named("rdm.mesh.membership.reject.via-snapshot").is_empty(), "no earlier frame reached the receiver: {:#?}", spans.named("rdm.mesh.membership.reject.via-snapshot"));
-        assert_eq!(spans.named("rdm.mesh.membership.update.via-delta-already-held").len(), 1, "the receiver absorbed the copy and nothing else");
+        assert_eq!(spans.named("rdm.mesh.membership.update.via-duplicate").len(), 1, "the receiver absorbed the copy and nothing else");
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked desynchronized: {:?}", member.mesh_rx.lock().unwrap().desynced());
     }
 
@@ -8002,7 +7985,7 @@ mod tests {
     /// forwarded in version order, and a member hearing the mesh channel installs both versions in order.
     /// Must NOT happen: `now_rafka_ms()` read outside `self.version.lock()` / `self.forwarder.lock()` so a
     /// concurrent publish or replay stamps `v1` at 471 ms while `v2` is stamped at 459 ms, causing
-    /// `ReceiveOrder` to ignore `MembersDelta(1 -> 2)` as `via-earlier-version`.
+    /// `ReceiveOrder` to ignore `MembersDelta(1 -> 2)` as `via-stale`.
     #[tokio::test]
     async fn interleaved_backbone_publishes_and_neighbour_up_replay_stamp_and_forward_in_version_order() {
         use crate::clock::{Clock, SharedClock};
@@ -8073,7 +8056,7 @@ mod tests {
         assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone()]).await);
         assert!(racing.replayed_during_stamp.lock().unwrap().is_empty(), "replay could not interleave inside the stamp critical section");
         assert_eq!(m.view.forwarder.lock().unwrap().published_version("mesh1"), Some((p, 2)), "forwarder advanced to v2 under the version lock");
-        assert!(spans.named("rdm.mesh.membership.reject.via-earlier-version").is_empty(), "no frame was ignored as earlier");
+        assert!(spans.named("rdm.mesh.membership.reject.via-stale").is_empty(), "no frame was ignored as earlier");
     }
 }
 

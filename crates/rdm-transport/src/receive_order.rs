@@ -23,18 +23,22 @@
 //!
 //! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
 //! and topology-read installs:
-//! - Members and MembersDelta: publication timestamp then topology version per mesh, with the
-//!   installed publisher/version floor also enforced regardless of publication timestamp.
+//! - Members and MembersDelta: the actual installed publisher/version floor orders that source,
+//!   regardless of publication timestamp. The existing cross-publisher publication check remains.
+//!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
+//!   content under its installation lock: duplicates install nothing; conflicts are inconsistent.
+//!   Equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
+//!   repeated gossip never completes repair. A directed topology read can resume the held version.
 //! - NodeDeleting, NodeRestarting and NodeStopped: operation identity is recorded before the
 //!   existing topology-version check per publisher and subject mesh. A carried revision refused
 //!   with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs no
 //!   handler. The carried revision is still judged independently, even for a repeated operation:
 //!   an admissible higher revision advances its publisher floor without replaying the fact.
 //!
-//! Equal keys in the remaining keyed families stay admissible to their handlers pending their
-//! rows; distinct chunks of an unfinished publication remain admissible. A Members or MembersDelta key advances only when the
-//! complete snapshot installs or the delta applies; [`ReceiveOrder::installed`] also records
-//! the source version installed by a topology read, whose chunks carry no publication timestamp.
+//! Distinct equal-key chunks of an unfinished publication remain admissible; an exact repeat is
+//! ignored without discarding its other chunks. Publication state advances only when a complete
+//! snapshot installs or a delta applies. [`ReceiveOrder::installed_projection`] retains the source
+//! image and version installed by any channel or topology read; no refused frame moves that image.
 //!
 //! Lifecycle overlay installation uses [`admit_overlay`] under the actual overlay lock for
 //! local execution, received frames and snapshots. Retained completion is keyed by the complete
@@ -251,6 +255,23 @@ fn seat_order((revision, settled): (u64, bool)) -> String {
     format!("revision={revision} {}", if settled { "updated" } else { "updating" })
 }
 
+/// Name a publication's classification at the installation door. The caller holds the actual
+/// source projection lock; forwarding metadata never supplies its identity or ordering.
+pub(crate) fn publication_duplicate(frame: &'static str, identity: &str) {
+    tracing::info_span!("rdm.mesh.membership.update.via-duplicate", frame, identity, outcome = "ignored")
+        .in_scope(|| tracing::info!("the publication identity and content are already held"));
+}
+
+pub(crate) fn publication_inconsistent(frame: &'static str, mesh: &str, publisher: &PublisherId, revision: u64) {
+    tracing::info_span!("rdm.mesh.membership.reject.via-inconsistent", frame, subject = %format!("{mesh} {publisher}"), revision)
+        .in_scope(|| tracing::info!("equal publication revision or chunk identity with different content: refused"));
+}
+
+pub(crate) fn publication_stale(frame: &'static str, mesh: &str, publisher: &PublisherId, held: u64, offered: u64) {
+    tracing::info_span!("rdm.mesh.membership.reject.via-stale", frame, subject = %format!("{mesh} {publisher}"), held_key = %format!("topology_version={held}"), frame_key = %format!("topology_version={offered}"))
+        .in_scope(|| tracing::info!("the publication is below the actual installed source version"));
+}
+
 /// The disposition of a NodeDeleted fact against the retained terminal record.
 pub(crate) enum NodeDeletedReceipt {
     /// No terminal record is held for the NodeId: apply the fact.
@@ -462,7 +483,14 @@ pub(crate) struct ReceiveOrder {
     /// seen, so another publisher or a higher carried version cannot replay its operation effect.
     lifecycle_seen: HashSet<LifecycleIdentity>,
     /// The source version each mesh's last install moved to: its publisher and `topology_version`.
-    installed: HashMap<String, (PublisherId, u64)>,
+    installed: HashMap<String, InstalledSource>,
+}
+
+#[derive(Debug)]
+struct InstalledSource {
+    publisher: PublisherId,
+    version: u64,
+    full: Option<crate::snapshot::Full>,
 }
 
 /// The publisher a `Members` or `MembersDelta` names and its `topology_version`.
@@ -495,6 +523,14 @@ impl ReceiveOrder {
     /// when its snapshot installs or its delta applies ([`Self::installed`]).
     pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
         let (frame, keys) = orders_of(f);
+        if let Some((mesh, publisher, version)) = publication_of(f) {
+            if self.installed.get(mesh).is_some_and(|h| &h.publisher == publisher) {
+                // Within an installed publisher, the committed version orders the projection.
+                // A lower publication timestamp cannot hide a newer version or an ahead-base gap.
+                self.below_installed(frame, mesh, publisher, version, || keys.first().map(|(_, k)| k.to_string()).unwrap_or_default())?;
+                return Ok(());
+            }
+        }
         // Every key is judged before any is held: a frame ignored for one of its sources moves none.
         for (source, key) in &keys {
             if let Some(held) = self.newest.get(source).filter(|held| key < *held) {
@@ -522,8 +558,8 @@ impl ReceiveOrder {
     /// `Err` when the source version installed of `mesh` is `publisher`'s, above `topology_version`.
     fn below_installed(&self, frame: &'static str, mesh: &str, publisher: &PublisherId, topology_version: u64, offered: impl FnOnce() -> String) -> Result<(), Earlier> {
         match self.installed.get(mesh) {
-            Some((held, version)) if held == publisher && topology_version < *version => {
-                Err(Earlier { frame, source: mesh.to_string(), held: format!("publisher={held} topology_version={version}"), offered: offered() })
+            Some(h) if &h.publisher == publisher && topology_version < h.version => {
+                Err(Earlier { frame, source: mesh.to_string(), held: format!("publisher={} topology_version={}", h.publisher, h.version), offered: offered() })
             }
             _ => Ok(()),
         }
@@ -531,7 +567,7 @@ impl ReceiveOrder {
 
     /// The `topology_version` of the source version installed of `mesh`.
     pub(crate) fn installed_version(&self, mesh: &str) -> Option<u64> {
-        self.installed.get(mesh).map(|(_, v)| *v)
+        self.installed.get(mesh).map(|h| h.version)
     }
 
     /// `mesh`'s snapshot state moved to `publisher`'s `topology_version`: a snapshot installed or a
@@ -545,8 +581,21 @@ impl ReceiveOrder {
                 self.newest.insert(source, key);
             }
         }
-        self.installed.insert(mesh.to_string(), (publisher.clone(), topology_version));
+        self.installed.insert(mesh.to_string(), InstalledSource { publisher: publisher.clone(), version: topology_version, full: None });
     }
+    /// The actual installed source image, shared by the backbone, mesh channel and read path.
+    pub(crate) fn installed_snapshot(&self, mesh: &str) -> Option<crate::snapshot::InstalledProjection<'_>> {
+        let h = self.installed.get(mesh)?;
+        Some((&h.publisher, h.version, h.full.as_ref()?))
+    }
+
+    /// The image and its floor move only after the complete projection was installed. Keeping
+    /// them in one record prevents another channel from classifying against an older local image.
+    pub(crate) fn installed_projection(&mut self, mesh: &str, publisher: &PublisherId, version: u64, stamp: Option<u64>, full: &crate::snapshot::Full) {
+        self.installed(mesh, publisher, version, stamp);
+        self.installed.get_mut(mesh).expect("just installed").full = Some(full.clone());
+    }
+
 }
 
 #[cfg(test)]
@@ -621,8 +670,8 @@ mod tests {
     /// CONTRACT (R-RX3: Members and MembersDelta order by `published_at_rafka_ms` then
     /// `topology_version`, per mesh; R-RX2: no cross-publisher rule; gossip.md §3.1: a snapshot install
     /// and a delta move the held source version): both chunks of one publication are taken (they share
-    /// its key), and its key is held once it installed; a chunk of the installed publication is taken
-    /// again (the handler absorbs it); a full of another publisher stamped later is taken whatever its
+    /// its key), and its key is held once it installed; a chunk of the installed publication reaches its content classifier
+    /// again (the classifier ignores its identical repeat); a full of another publisher stamped later is taken whatever its
     /// version; a delta stamped later is taken; then a full and a delta stamped before what is held are
     /// ignored, each naming the mesh, the key held and the key offered, while another mesh's publication
     /// of any stamp is taken. Must NOT happen: a later chunk of a held publication ignored; a

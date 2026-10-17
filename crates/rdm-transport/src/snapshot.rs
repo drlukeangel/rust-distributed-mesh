@@ -321,13 +321,19 @@ pub struct Install {
     pub new_revision: bool,
     /// This source was desynchronized and is resumed by this snapshot.
     pub resumed: bool,
-    /// The same publisher and version were already held: nothing moved, the members were heard again.
+    /// A directed read installed the same publisher/version again, including a repair completion.
+    /// Gossip repeats never install and never return this flag.
     pub refreshed: bool,
 }
 
 /// Why a chunk or snapshot was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
+    /// An identical chunk or complete publication is already held; no effect is repeated.
+    Duplicate,
+    /// The held revision or chunk identity has different content; nothing is installed.
+    Inconsistent,
+
     /// The chunk names an index outside its count, or a count that disagrees with its snapshot's.
     /// The chunk is malformed.
     MalformedChunk {
@@ -414,6 +420,11 @@ impl std::fmt::Display for Gap {
 /// What a delta did.
 #[derive(Debug, Clone)]
 pub enum Moved {
+    /// Below the actual source version; no delta is applied.
+    Stale,
+    /// Equal delta identity/revision with conflicting content; nothing is applied.
+    Inconsistent,
+
     /// Applied at exactly its base: the held version is now `topology_version`.
     /// The delta applied.
     Applied {
@@ -445,10 +456,11 @@ pub enum Moved {
 struct SourceKey {
     mesh: String,
     publisher: PublisherId,
-    forwarded_by: Option<String>,
+    // Read chunk ordinals belong to that directed answer, not the author's gossip publication.
+    from_read: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Pending {
     version: u64,
     snapshot_id: u64,
@@ -462,7 +474,22 @@ struct Held {
     version: u64,
     full: Full,
     desynced: Option<Gap>,
+    publication: Option<Pending>,
+    last_delta: Option<(u64, Delta)>,
 }
+
+fn same_parts(parts: &(Vec<MeshDigest>, Vec<LifecycleOp>, Vec<LifecycleOp>), c: &Chunk) -> bool {
+    Full::new(parts.0.clone(), parts.1.clone(), parts.2.clone()).same_topology(&Full::new(c.digests.clone(), c.in_flight.clone(), c.departed.clone()))
+}
+
+fn same_delta(a: &Delta, b: &Delta) -> bool {
+    a.removed.iter().collect::<std::collections::BTreeSet<_>>() == b.removed.iter().collect()
+        && Full::new(a.changed.clone(), a.in_flight.clone(), a.departed.clone()).same_topology(&Full::new(b.changed.clone(), b.in_flight.clone(), b.departed.clone()))
+}
+
+/// Borrow the complete image under ReceiveOrder's shared installation lock; inspecting a chunk
+/// does not copy the installed publication just to compare its version or completed content.
+pub(crate) type InstalledProjection<'a> = (&'a PublisherId, u64, &'a Full);
 
 /// A node's held cross-Mesh projection, one source Mesh at a time.
 ///
@@ -470,10 +497,10 @@ struct Held {
 /// of it is held; until then the held projection and the held source version stand and no delta
 /// is derived from a partial. A delta applies only when the held version is exactly its
 /// `base_version`; a copy of the delta held (its `topology_version` is the held one) is a no-op;
-/// any other is a gap that desynchronizes that source alone. Nothing here orders by version: a
-/// frame earlier than what the node holds of its source was ignored by the receive path before it
-/// reached here (R-RX3, [`crate::receive_order`]). A desynchronized source applies no delta until a complete snapshot or a top-up
-/// resumes it. Nothing is held for later and nothing is requested here.
+/// an ahead-base delta is a gap that desynchronizes that source alone. Classification against the
+/// installed floor and content happens under this receiver's installation lock. A repeated gossip
+/// publication installs nothing and never completes repair; a directed read can resume the source
+/// at its held version. No delta is saved for later; the membership caller requests the repair.
 #[derive(Debug, Default)]
 pub struct SnapshotReceiver {
     pending: HashMap<SourceKey, Pending>,
@@ -483,58 +510,112 @@ pub struct SnapshotReceiver {
 }
 
 impl SnapshotReceiver {
-    /// One chunk. The snapshot installs when it is complete. A chunk earlier than what this node
-    /// holds of its source never reaches here: the receive path ignored it (R-RX3).
+    /// A gossip chunk. Only a complete newer source projection installs. Repeated chunks of an
+    /// unfinished publication leave its other chunks admissible; repeated installed content does
+    /// nothing, including no repair completion.
     pub fn take_chunk(&mut self, c: Chunk) -> Taken {
+        self.chunk(c, false, None)
+    }
+
+    /// The directed topology read is the repair completion: an identical held version may resume
+    /// a desynchronized source. It still cannot replace different content at the same revision.
+    pub fn take_read_chunk(&mut self, c: Chunk) -> Taken {
+        self.chunk(c, true, None)
+    }
+
+    /// Classify against the node's complete installed image, including an install on another
+    /// channel. This receiver's pending chunks still assemble independently of that image.
+    pub(crate) fn take_chunk_against(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>) -> Taken {
+        self.chunk(c, from_read, installed)
+    }
+
+    fn chunk(&mut self, c: Chunk, from_read: bool, installed: Option<InstalledProjection<'_>>) -> Taken {
+        use crate::receive_order::{publication_duplicate, publication_inconsistent, publication_stale};
         if c.chunk_count == 0 || c.chunk_index >= c.chunk_count {
             return Taken::Refused(Refusal::MalformedChunk { chunk_index: c.chunk_index, chunk_count: c.chunk_count, why: "the index is outside the count" });
         }
-        let key = SourceKey { mesh: c.mesh.clone(), publisher: c.publisher.clone(), forwarded_by: c.forwarded_by.clone() };
-        // One snapshot per source is assembled at a time: a newer one drops the stale partial.
+        let identity = format!("{} {} topology_version={} snapshot_id={} chunk_index={}", c.mesh, c.publisher, c.topology_version, c.snapshot_id, c.chunk_index);
+        let conflict = || {
+            publication_inconsistent("members", &c.mesh, &c.publisher, c.topology_version);
+            Taken::Refused(Refusal::Inconsistent)
+        };
+        let duplicate = || {
+            publication_duplicate("members", &identity);
+            Taken::Refused(Refusal::Duplicate)
+        };
+        if let Some(h) = self.held.get(&c.mesh).filter(|h| h.publisher == c.publisher) {
+            if c.topology_version < h.version {
+                publication_stale("members", &c.mesh, &c.publisher, h.version, c.topology_version);
+                return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
+            }
+            if !from_read && c.topology_version == h.version {
+                if let Some(p) = h.publication.as_ref().filter(|p| p.snapshot_id == c.snapshot_id) {
+                    if p.count != c.chunk_count { return conflict(); }
+                    if let Some(parts) = p.chunks.get(&c.chunk_index) {
+                        return if same_parts(parts, &c) { duplicate() } else { conflict() };
+                    }
+                }
+            }
+        }
+        let key = SourceKey { mesh: c.mesh.clone(), publisher: c.publisher.clone(), from_read };
         if let Some(p) = self.pending.get(&key) {
             let same = p.version == c.topology_version && p.snapshot_id == c.snapshot_id;
-            if !same && (c.snapshot_id, c.topology_version) < (p.snapshot_id, p.version) {
-                return Taken::Refused(Refusal::OlderThanPending {
-                    pending_version: p.version,
-                    pending_snapshot: p.snapshot_id,
-                    offered_version: c.topology_version,
-                    offered_snapshot: c.snapshot_id,
-                });
+            if !same && (c.topology_version, c.snapshot_id) < (p.version, p.snapshot_id) {
+                publication_stale("members", &c.mesh, &c.publisher, p.version, c.topology_version);
+                return Taken::Refused(Refusal::OlderThanPending { pending_version: p.version, pending_snapshot: p.snapshot_id, offered_version: c.topology_version, offered_snapshot: c.snapshot_id });
             }
-            if !same {
-                self.pending.remove(&key);
-            } else if p.count != c.chunk_count {
-                return Taken::Refused(Refusal::MalformedChunk { chunk_index: c.chunk_index, chunk_count: c.chunk_count, why: "the count disagrees with the snapshot's earlier chunks" });
+            if !same { self.pending.remove(&key); }
+            else {
+                if p.count != c.chunk_count { return conflict(); }
+                if let Some(parts) = p.chunks.get(&c.chunk_index) {
+                    return if same_parts(parts, &c) { duplicate() } else { conflict() };
+                }
             }
         }
         let p = self.pending.entry(key.clone()).or_insert_with(|| Pending { version: c.topology_version, snapshot_id: c.snapshot_id, count: c.chunk_count, chunks: BTreeMap::new() });
-        p.chunks.entry(c.chunk_index).or_insert((c.digests, c.in_flight, c.departed));
-        if (p.chunks.len() as u32) < p.count {
-            return Taken::Waiting { held: p.chunks.len() as u32, of: p.count };
-        }
-        let p = self.pending.remove(&key).expect("just assembled");
-        let (mut digests, mut in_flight, mut departed) = (Vec::new(), Vec::new(), Vec::new());
-        for (_, (d, i, x)) in p.chunks {
-            digests.extend(d);
-            in_flight.extend(i);
-            departed.extend(x);
-        }
+        p.chunks.insert(c.chunk_index, (c.digests.clone(), c.in_flight.clone(), c.departed.clone()));
+        if (p.chunks.len() as u32) < p.count { return Taken::Waiting { held: p.chunks.len() as u32, of: p.count }; }
+        let publication = self.pending.remove(&key).expect("just assembled");
+        let mut digests = Vec::new(); let mut in_flight = Vec::new(); let mut departed = Vec::new();
+        for (d, i, x) in publication.chunks.values() { digests.extend(d.clone()); in_flight.extend(i.clone()); departed.extend(x.clone()); }
         let full = Full::new(digests, in_flight, departed);
-        self.install(c.mesh, c.publisher, p.version, p.snapshot_id, full)
+        if let Some(h) = self.held.get(&c.mesh).filter(|h| h.publisher == c.publisher && h.version == c.topology_version) {
+            if !h.full.same_topology(&full) { return conflict(); }
+            if !from_read { return duplicate(); }
+        }
+        if let Some((_, _, installed_full)) = installed.filter(|(p, v, _)| *p == &c.publisher && *v == c.topology_version) {
+            if !installed_full.same_topology(&full) { return conflict(); }
+            if !from_read { return duplicate(); }
+        }
+        self.install(c.mesh, c.publisher, publication, full, from_read)
     }
 
-    fn install(&mut self, mesh: String, publisher: PublisherId, version: u64, snapshot_id: u64, full: Full) -> Taken {
+    fn install(&mut self, mesh: String, publisher: PublisherId, publication: Pending, full: Full, from_read: bool) -> Taken {
+        let version = publication.version; let snapshot_id = publication.snapshot_id;
         let unbased = self.unbased.contains_key(&mesh);
         let (new_revision, resumed, refreshed) = match self.held.get(&mesh) {
             None => (true, unbased, false),
             Some(h) if h.publisher != publisher => (true, h.desynced.is_some() || unbased, false),
             Some(h) => (false, h.desynced.is_some(), version == h.version),
         };
+        let same = self.held.get(&mesh).filter(|h| h.publisher == publisher && h.version == version);
+        let last_delta = same.and_then(|h| h.last_delta.clone());
+        let retained = if from_read { same.and_then(|h| h.publication.clone()) } else { Some(publication) };
         self.unbased.remove(&mesh);
-        // An incomplete snapshot this one supersedes is dropped, never completed later.
         self.pending.retain(|k, p| !(k.mesh == mesh && k.publisher == publisher && p.version <= version));
-        self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: None });
+        self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: None, publication: retained, last_delta });
         Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, new_revision, resumed, refreshed }))
+    }
+
+    /// Use the actual installed source image as the delta base. A channel-local assembly cannot
+    /// turn an exact-base delta into a gap after another channel installed that same source.
+    pub(crate) fn take_delta_against(&mut self, mesh: &str, source: &PublisherId, base: u64, version: u64, delta: &Delta, installed: Option<InstalledProjection<'_>>) -> Moved {
+        if let Some((publisher, installed_version, full)) = installed.filter(|(p, _, _)| *p == source) {
+            if self.held.get(mesh).is_none_or(|local| &local.publisher != publisher || local.version < installed_version) {
+                self.held.insert(mesh.into(), Held { publisher: publisher.clone(), version: installed_version, full: full.clone(), desynced: None, publication: None, last_delta: None });
+            }
+        }
+        self.take_delta(mesh, source, base, version, delta)
     }
 
     /// A delta: applied only at exactly its base.
@@ -550,7 +631,20 @@ impl SnapshotReceiver {
         }
         // A copy of the delta held: gossip can deliver one delta twice, and a top-up may have brought
         // this node to it. Neither is a gap. An earlier one never reaches here (R-RX3, the receive path).
+        if topology_version < h.version {
+            crate::receive_order::publication_stale("members-delta", mesh, source, h.version, topology_version);
+            return Moved::Stale;
+        }
         if h.version == topology_version {
+            let same = match &h.last_delta {
+                Some((base, applied)) => *base == base_version && same_delta(applied, delta),
+                None => { let mut candidate = h.full.clone(); candidate.apply(delta); h.full.same_topology(&candidate) },
+            };
+            if !same {
+                crate::receive_order::publication_inconsistent("members-delta", mesh, source, topology_version);
+                return Moved::Inconsistent;
+            }
+            crate::receive_order::publication_duplicate("members-delta", &format!("{mesh} {source} base_version={base_version} topology_version={topology_version}"));
             return Moved::Duplicate { held_version: h.version };
         }
         if h.desynced.is_some() {
@@ -562,6 +656,8 @@ impl SnapshotReceiver {
         }
         h.full.apply(delta);
         h.version = topology_version;
+        h.publication = None;
+        h.last_delta = Some((base_version, delta.clone()));
         Moved::Applied { mesh: mesh.to_string(), base_version, topology_version, delta: delta.clone() }
     }
 
@@ -792,27 +888,26 @@ mod tests {
         Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }
     }
 
-    /// CONTRACT (R-RX3, Luke 2026-10-13: an earlier frame is ignored "once, in the gossip receive
-    /// path"; i143 s53: out-of-order frames are ignored only in receive_order.rs; gossip.md §3.1: "A
-    /// receiver applies a delta only when it holds exactly base_version of that source and
-    /// publisher"): the receiver is handed only what the receive path took, so it orders nothing by
-    /// version. Holding mesh1.admin.1's v8, a complete snapshot of the same publisher at v6 installs;
-    /// a copy of the delta it applied (its `topology_version` is the one held) is absorbed as a copy;
-    /// a delta whose base it does not hold is a version gap, whatever its version. Must NOT happen: the
-    /// receiver refusing a snapshot as older than the one held, or absorbing as a copy a delta it never
-    /// applied.
+    /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An
+    /// already-applied delta is a duplicate; lower snapshots/deltas cannot regress or request repair.
+    /// An ahead-base delta requests repair, and only a complete newer snapshot or directed read
+    /// resumes that source. Repeated gossip of its held version does nothing.
     #[test]
-    fn a_receiver_orders_nothing_by_version_and_absorbs_only_a_copy_of_the_delta_it_applied() {
+    fn a_receiver_enforces_the_installed_floor_and_resumes_only_from_repair_or_newer_state() {
         let p = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
         let mut rx = SnapshotReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
         assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));
-        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }), "a copy of the applied delta is absorbed");
-        let gap = rx.take_delta("mesh1", &p, 6, 7, &Delta::default());
-        assert!(matches!(gap, Moved::Desynced { gap: Gap::Version { held: 8, base: 6 }, .. }), "a delta whose base is not held is a gap, not a copy: {gap:?}");
-        let taken = rx.take_chunk(chunk(&p, 6));
-        assert!(matches!(&taken, Taken::Installed(i) if i.topology_version == 6 && !i.new_revision), "the receiver installs what it is handed: {taken:?}");
-        assert_eq!(rx.held_version("mesh1"), Some((p, 6)));
-        assert!(rx.desynced().is_empty(), "the complete snapshot resumed the source");
+        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }));
+        assert!(matches!(rx.take_delta("mesh1", &p, 6, 7, &Delta::default()), Moved::Stale));
+        assert!(matches!(rx.take_chunk(chunk(&p, 6)), Taken::Refused(Refusal::OlderThanHeld { held_version: 8, offered_version: 6 })));
+        assert_eq!(rx.held_version("mesh1"), Some((p.clone(), 8)));
+        assert!(rx.desynced().is_empty());
+        assert!(matches!(rx.take_delta("mesh1", &p, 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 8, base: 9 }, .. }));
+        assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Refused(Refusal::Duplicate)));
+        assert!(!rx.desynced().is_empty(), "gossip repeats do not complete repair");
+        assert!(matches!(rx.take_read_chunk(chunk(&p, 8)), Taken::Installed(i) if i.resumed));
+        assert_eq!(rx.held_version("mesh1"), Some((p, 8)));
+        assert!(rx.desynced().is_empty());
     }
 }

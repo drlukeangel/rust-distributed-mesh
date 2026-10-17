@@ -107,7 +107,7 @@ fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
 ///   mesh1.rpc.3, which the member already holds;
 /// - mesh1.rpc.2's heartbeat at a `digest_seq` below the one the member holds.
 /// The receive path ignores each by name (`via-stale` for the lifecycle projection revision,
-/// `via-earlier-version` for the other keyed families), naming
+/// `via-stale` for the other keyed families), naming
 /// the channel, the frame, its source, the key held and the key offered. The member keeps the
 /// successor's projection at its version, holds no stop of mesh1.rpc.4, holds mesh1.rpc.2 at the
 /// newer heartbeat, and marks no source desynchronized. Must NOT happen: a frame refused for who
@@ -212,23 +212,19 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         }
         let spans = capture.spans().expect("the cell's spans reached its evidence file");
         let at = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && attr(s, "node") == node).collect() };
-        let ignored: Vec<&Value> = at("rdm.mesh.membership.reject.via-earlier-version", "mesh1.rpc.1").into_iter()
-            .chain(at("rdm.mesh.membership.reject.via-stale", "mesh1.rpc.1"))
+        let ignored: Vec<&Value> = at("rdm.mesh.membership.reject.via-stale", "mesh1.rpc.1").into_iter()
             .filter(|s| s["start_unix_nano"].as_u64().is_some_and(|t| t >= late_from)).collect();
-        let fields = |s: &Value| {
-            let keys = if s["name"] == "rdm.mesh.membership.reject.via-stale" { ["subject", "held_key", "frame_key"] } else { ["source", "held", "offered"] };
-            (attr(s, "channel"), attr(s, "frame"), attr(s, keys[0]), attr(s, keys[1]), attr(s, keys[2]), s["name"].as_str().unwrap_or_default().to_string())
-        };
+        let fields = |s: &Value| (attr(s, "channel"), attr(s, "frame"), attr(s, "subject"), attr(s, "held_key"), attr(s, "frame_key"), s["name"].as_str().unwrap_or_default().to_string());
         let mut said: Vec<_> = ignored.iter().map(|s| fields(s)).collect();
         let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
         let mut expected = vec![
-            ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.membership.reject.via-earlier-version".to_string()),
-            ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.membership.reject.via-earlier-version".to_string()),
+            ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.membership.reject.via-stale".to_string()),
+            ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.membership.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.membership.reject.via-stale".to_string()),
             ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.membership.reject.via-stale".to_string()),
         ];
         // The successor's delta stamp is the member's held key of mesh1: read it from the span itself.
-        let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "members").map(|s| attr(s, "held")).unwrap_or_default();
+        let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "members").map(|s| attr(s, "held_key")).unwrap_or_default();
         for e in expected.iter_mut().take(2) {
             e.3 = held_stamp.clone();
         }
