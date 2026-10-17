@@ -17,7 +17,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (57 names)
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-admin/src/admin/records.rs` | 158 | fn `AdminConfig::from_env` | literal |
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-core/src/cadence.rs` | 37 | fn `Cadences::from_env` | argument to `ms` |
 | `RDM_BACKBONE_INTERVAL_MS` | `tools/test-runner/src/lib.rs` | 41 | const `CADENCE` | literal |
-| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1089 | fn `start_booted` | argument to `.insert` |
+| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1097 | fn `start_booted` | argument to `.insert` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/records.rs` | 132 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/deployment/container.rs` | 228 | fn `launch_disk` | argument to `.get` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 48 | fn `bin_dir` | argument to `std::env::var` |
@@ -80,7 +80,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (57 names)
 | `RDM_FABRIC` | `crates/rdm-core/src/launch.rs` | 220 | fn `Launch::from_env` | `ENV_FABRIC`, argument to `req` |
 | `RDM_FABRIC` | `crates/rdm-test/src/estate.rs` | 655 | fn `Estate::born` | in `vec!` |
 | `RDM_FABRIC` | `crates/rdm-transport/src/transport_diag.rs` | 94 | fn `header` | argument to `env` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 293 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 301 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 111 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 112 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 192 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |

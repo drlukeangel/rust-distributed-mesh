@@ -55,6 +55,8 @@ pub struct Running {
     /// join that admitted it carried (empty when that admin is configured with no certs). `None`
     /// for a birth that made no JoinNode: the Day-0 root and a recovery start.
     pub member_cert: Option<Vec<u8>>,
+    /// This admin's status authority, once it holds a view.
+    pub(crate) authority: crate::status_rpc::AuthoritySlot,
 }
 
 impl Running {
@@ -87,6 +89,12 @@ impl Running {
     /// naming it reaches once its Status authority has decided it (`status_rpc`'s `serve_command`).
     pub fn node_self(&self) -> Arc<crate::node_self::NodeSelf> {
         self.node_self.clone()
+    }
+
+    /// This admin's status authority, once it holds a view: what decides the declarations of its
+    /// mesh's births while it holds the mesh's seat.
+    pub fn status_authority(&self) -> Option<Arc<crate::status_rpc::StatusAuthority>> {
+        self.authority.get().cloned()
     }
 
     /// Where this admin's `hydrate_before_ready` stands; `None` when the app registered no hook.
@@ -2505,7 +2513,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs") });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone() });
                                     Ok::<_, String>(())
                                 })
                             });

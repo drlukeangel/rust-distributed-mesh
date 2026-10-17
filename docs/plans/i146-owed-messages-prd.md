@@ -470,7 +470,16 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   the unheard mark, and the stop-node committed on a connection still alive (`indeterminate`, attempt
   2), running on release. The idle timer runs from the member's last packet, the unheard mark from its
   last digest, so the mark proves no connection is gone. It and the never-admitted stop cell now
-  dispatch once the ladder records the member os-stopped, after its direct probe failed.
+  dispatch once the ladder records the member os-stopped, after its direct probe failed. The gate on
+  `563b9d3b` red twice, both cells that held what Q39 changed: `status`'s ladder cell asserted the
+  path-order ladder Q39 removed (now
+  `status::a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_its_own_seat_decision`:
+  the restarted node's node.started to the seat's holder alone, and a declaration sent straight to the
+  admin holding no seat answering its own seat decision, `ReceiverNotPrimary`, R24 Q11); and
+  `admin_start_declares` commanded an admin's start from the root's client, skipping the pipeline's
+  `begin_cycle`, so since e3's admin Leaving its node.started was refused backward
+  (`RejectedInvalidNodeTransition { current: Leaving }`); the rig begins the start's cycle at the root's
+  status authority first (`Running::status_authority`), as `send_command` does.
 - **Q37's note withdrawn (Luke 2026-10-17).** The re-sent Leaving across a seat move does not occur: the
   holder already holds the row through its seat fold and a stopped birth re-declares nothing
   (`551d3f63`, the seat-move cell). The gate on `44488b29` red at

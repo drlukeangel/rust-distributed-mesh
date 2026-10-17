@@ -170,18 +170,18 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     estate.record_trace_url(&trace);
 }
 
-/// CONTRACT (R24, Luke Q11: "The admin ladder (node.rs:1094-1114) still reads a real
-/// receiver-not-primary answer from an admin that isn't the primary; show it unaffected"):
-/// `mesh1.admin.1` yields both seats to `mesh1.admin.2` (`node.stop` runs `node.primary.update`
-/// first) and starts again as itself, holding no seat. `mesh1.rpc.1`, restarted, declares its state
-/// up its ladder of the mesh's node-admins in path order: `mesh1.admin.1` answers `RejectedNotAuthority
-/// { ReceiverNotPrimary { needed: "mesh-primary of mesh1" } }`, its own seat decision
-/// (`status_rpc.rs:378-379`), which leaves the declaration owed (`definitive=false`), and
-/// `mesh1.admin.2` takes it (`definitive=true`). Must NOT happen: `RequestNotHandled` from a node-admin
-/// for a declaration, or a ladder that ends at the admin holding no seat.
+/// CONTRACT (i146 Q39: "A node's declaration is owed to the holder of its mesh's primary seat,
+/// resolved from the seat, never to an admin its book happens to hear"; R24, Luke Q11: an admin holding
+/// no seat answers a declaration with its own seat decision): `mesh1.admin.1` yields both seats to
+/// `mesh1.admin.2` (`node.stop` runs `node.primary.update` first) and starts again as itself, holding no
+/// seat. `mesh1.rpc.1`, restarted, declares its state to `mesh1.admin.2`, the seat's holder, which takes
+/// it (`definitive=true`), and to no other admin. A declaration sent straight to `mesh1.admin.1` (the
+/// declare probe) is answered `RejectedNotAuthority { ReceiverNotPrimary { needed: "mesh-primary of
+/// mesh1" } }`, its own seat decision (`status_rpc.rs`'s `decide`). Must NOT happen: a declaration
+/// addressed to the admin holding no seat, or `RequestNotHandled` from a node-admin for a declaration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_nodes_declaration_ladder_reads_the_seat_answer_of_an_admin_holding_none_and_declares_to_the_primary() {
-    let test = "a_nodes_declaration_ladder_reads_the_seat_answer_of_an_admin_holding_none_and_declares_to_the_primary";
+async fn a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_its_own_seat_decision() {
+    let test = "a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_its_own_seat_decision";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
@@ -199,24 +199,33 @@ async fn a_nodes_declaration_ladder_reads_the_seat_answer_of_an_admin_holding_no
     let restart_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     Estate::workflow("node.restart of mesh1.rpc.1", estate.nodes_obj().await.restart(&rpc1).await).await;
     estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again", Duration::from_secs(60), |n| n.filter(|n| n.status == rdm_client::NodeStatus::ReadyForTraffic && !n.parked).map(|_| ())).await;
+
+    // A declaration straight to the admin holding no seat: its own seat decision.
+    let (rpc1v, a1v, a2v) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.admin.1").await, estate.node_value("mesh1.admin.2").await);
+    let holder_id = a2v["node_id"].as_str().unwrap().to_string();
+    let node = format!("exact:{}", rpc1v["node_id"].as_str().unwrap());
+    let seatless = format!("exact:{}", a1v["node_id"].as_str().unwrap());
+    let r = estate.probe(&["declare", "--target", &node, "--to", &seatless, "--state", "ready-for-traffic"]);
+    let (reply, detail) = declared(&r);
+    assert_eq!(reply, "rejected-not-authority", "the admin holding no seat answers by its seat decision: {r}");
+    assert!(detail.contains("ReceiverNotPrimary") && detail.contains("mesh-primary of mesh1"), "{r}");
     estate.stop().await;
+
     let spans = estate.spans();
-    let mut ladder: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
+    // The restart's own declaration names its start (`node.start:mesh1.rpc.1`); the estate's teardown
+    // declares every node's Leaving too, naming no operation.
+    let declared_own: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
+        .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["operation"] == "node.start:mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
-    ladder.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
-    let at = |to: &str| ladder.iter().position(|sp| sp["attributes"]["to"] == to);
-    let (Some(seatless), Some(primary)) = (at("mesh1.admin.1"), at("mesh1.admin.2")) else { panic!("the restarted node's ladder reached both admins: {ladder:#?}") };
-    let (seatless, primary) = (ladder[seatless], ladder[primary]);
-    let outcome = seatless["attributes"]["outcome"].as_str().unwrap_or_default();
-    assert!(outcome.contains("ReceiverNotPrimary") && outcome.contains("mesh-primary of mesh1"), "the admin holding no seat answers its own seat decision: {seatless}");
+    // `to` names the holder by its name while this node hears it, else by its node id.
+    let to_holder = |sp: &Value| sp["attributes"]["to"] == "mesh1.admin.2" || sp["attributes"]["to"] == holder_id.as_str();
     let flag = |v: &Value| v == true || v == "true";
-    assert!(!flag(&seatless["attributes"]["definitive"]), "the declaration stays owed past the admin holding no seat: {seatless}");
-    assert!(flag(&primary["attributes"]["definitive"]), "the primary takes the declaration: {primary}");
-    assert!(seatless["start_unix_nano"].as_u64() <= primary["start_unix_nano"].as_u64(), "path order: mesh1.admin.1, then mesh1.admin.2");
-    assert!(ladder.iter().all(|sp| !sp["attributes"]["outcome"].as_str().unwrap_or_default().contains("RequestNotHandled")), "no node-admin answers a declaration not handled: {ladder:#?}");
-    let trace = seatless["trace_id"].as_str().unwrap_or_default().to_string();
-    println!("the ladder past an admin holding no seat: http://192.168.68.99:16687/trace/{trace}");
+    assert!(declared_own.iter().any(|sp| to_holder(sp) && flag(&sp["attributes"]["definitive"])), "the seat's holder takes the restarted node's declaration: {declared_own:#?}");
+    let elsewhere: Vec<&&Value> = declared_own.iter().filter(|sp| !to_holder(sp)).collect();
+    assert!(elsewhere.is_empty(), "the restarted node declares to the seat's holder alone: {elsewhere:#?}");
+    assert!(declared_own.iter().all(|sp| !sp["attributes"]["outcome"].as_str().unwrap_or_default().contains("RequestNotHandled")), "no node-admin answers a declaration not handled: {declared_own:#?}");
+    let trace = r["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).unwrap_or_default().to_string();
+    println!("a declaration at the admin holding no seat: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }

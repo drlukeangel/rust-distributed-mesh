@@ -163,6 +163,12 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
 
         assert!(matches!(call(&root, &launch, &command(&launch, false)).await, StatusReply::Stopped { .. }), "the launched admin stops");
         let _ = root.runner.joins.expect(deployed(&launch, Some(&launch.name)));
+        // As the mesh-primary's pipeline does before it commands a start (`send_command`): the start
+        // begins the birth's next cycle, so its node.started runs forward from Pending, not from the
+        // Leaving its stop declared.
+        let authority = root.status_authority().expect("the Day-0 admin holds its status authority");
+        let held = authority.topology.read().await.births().find(|n| n.node_id == launch.node_id).cloned().expect("the root's view holds the launched admin");
+        authority.begin_cycle(&held, &launch.incarnation).await;
         assert_eq!(call(&root, &launch, &command(&launch, true)).await, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
         let again = tokio::time::timeout(DECLARED, async {
