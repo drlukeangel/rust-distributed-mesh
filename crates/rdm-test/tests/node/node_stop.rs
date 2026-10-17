@@ -503,8 +503,8 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let pid = estate.pid_of(NODE).await;
 
     // The hold: the stop's attempt is held after its claim; the operating system suspends the exact
-    // runtime; the attempt is dispatched once the mesh-primary marks the birth silent, so no
-    // connection to it lives and the stop's call cannot reach it.
+    // runtime; the attempt is dispatched once the mesh-primary's ladder records the birth os-stopped,
+    // so no connection to it lives and the stop's call cannot reach it.
     let door = Door::at(&estate, &fp).await;
     door.arm("claimed", serde_json::json!({"kind": "claimed-attempt"})).await;
     let stop = tokio::spawn({
@@ -517,11 +517,14 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     held.signal("-STOP", true);
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
+        // The unheard mark alone proves no connection is gone: the idle timer runs from the birth's last
+        // packet, the mark from its last digest. The ladder's os-stopped row follows its direct probe's
+        // failure, past the idle timeout.
         let v = view_of(&nodes, &path).await;
-        if v.status == NodeStatus::PendingReconnect {
+        if v.os_stopped.is_some() {
             break;
         }
-        assert!(std::time::Instant::now() < until, "the mesh-primary marks the held birth silent within 30 s: {v:?}");
+        assert!(std::time::Instant::now() < until, "the mesh-primary's ladder records the held birth os-stopped within 30 s: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     door.release("claimed").await;
@@ -573,6 +576,15 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     assert!(start_ns(node_stopped) <= end_ns(admitted_sent[0]), "NodeStopped, from the birth's declaration, precedes the admission");
     let set = stopping(&second);
     assert!(set.is_empty(), "the admission after NodeStopped sets nothing: {set:#?}");
+    // i146 Q39: the stop's declaration goes to the holder of mesh1's primary seat, direct or carried,
+    // never to an admin the released birth merely hears.
+    let primary = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh1's primary");
+    let leaving: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Leaving" && attr(sp, "operation") == format!("node.stop:{NODE}"))
+        .collect();
+    assert!(leaving.iter().all(|sp| attr(sp, "to") == primary), "the stop's declaration is addressed to mesh1's primary only: {leaving:#?}");
+    assert!(leaving.iter().any(|sp| attr(sp, "outcome") == "applied"), "and applied by it, direct or carried: {leaving:#?}");
     for kind in ["node-leaving", "node-left"] {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
         assert!(heard.is_empty(), "no {kind} frame is published or heard: {heard:#?}");
@@ -1098,4 +1110,76 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
         stopped_published[0]["trace_id"].as_str().unwrap_or("")
     );
     estate.record_trace_url(holder_stopped[0]["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (i146 Q39; node-status.md "Status report"; node-primary-update.md steps 5-8): a node's
+/// declaration is owed to the holder of its mesh's primary seat, and the seat moving is its one
+/// retargeting. In a fabric of two meshes, mesh2's non-primary rpc node is restarted while mesh2's
+/// primary holds the restart's node.started unanswered at its status door (the fault door's
+/// declaration cut): the restart's wait for the node's readiness fails naming the node.started its
+/// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
+/// which moves mesh2's seat to mesh2's other admin first. The node hears the move: its call to the
+/// old holder is cancelled (`via-seat-moved`) and it declares to the new holder, which applies it
+/// once; the old holder decides nothing of it (its cut holds the one call it took). Must NOT happen:
+/// the node.started applied twice, applied by the old holder, or addressed to an admin that does not
+/// hold the seat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder() {
+    let test = "a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder";
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary == primary).map(|n| n.name.clone()).expect("mesh2 has two admins");
+    let (holder, successor) = (admin_of(true), admin_of(false));
+    assert!(!views.iter().any(|n| n.name == holder && n.is_fabric_primary), "mesh2's primary is not the fabric primary: the entry admin stays put");
+    let node = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary).map(|n| n.name.clone()).expect("mesh2 has an rpc node that is not its cohort's primary");
+    let (node_s, holder_s, successor_s) = (node.to_string(), holder.to_string(), successor.to_string());
+    let nodes = estate.nodes_obj().await;
+
+    // The old holder holds the node's node.started at its status door: the declaration stays owed.
+    let door = Door::at(&estate, &holder_s).await;
+    door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node_s, "state": "ReadyForTraffic"})).await;
+    let restarted = frames(nodes.restart(&node).await.expect("the restart was accepted")).await;
+    assert!(
+        matches!(restarted.last(), Some(Frame::Failed { reason, .. }) if reason.contains("WaitForNodeReady") && reason.contains("it took no node.started")),
+        "the restart's wait for readiness fails naming the node.started its primary never took: {restarted:?}"
+    );
+    let hit = door.wait_held("declaration").await;
+    assert_eq!(hit["hit"]["node"], node_s.as_str(), "the old holder holds the node's declaration: {hit}");
+
+    // The seat moves: the old holder's stop runs node.primary.update first.
+    let moved = frames(nodes.stop(&holder).await.expect("the stop of mesh2's primary was accepted")).await;
+    assert_eq!(moved.last(), Some(&Frame::Complete), "{moved:?}");
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let v = view_of(&nodes, &node).await;
+        if v.status == NodeStatus::ReadyForTraffic {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "the new holder sets the node ready from its declaration within 30 s: {v:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
+        .into_iter()
+        // The restart's start names its node.started `node.start:<node>`.
+        .filter(|sp| attr(sp, "node") == node_s && attr(sp, "state") == "ReadyForTraffic" && attr(sp, "operation") == format!("node.start:{node_s}"))
+        .collect();
+    let applied: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "outcome") == "applied").collect();
+    assert_eq!(applied.len(), 1, "the node.started is applied once: {ready:#?}");
+    assert_eq!(attr(applied[0], "to"), successor_s, "by the new holder: {:#?}", applied[0]);
+    assert!(ready.iter().all(|sp| attr(sp, "to") == holder_s || attr(sp, "to") == successor_s), "addressed only to the seat's holders: {ready:#?}");
+    // Before the seat moved, the declaration went to its holder alone: never to an admin that did not
+    // yet hold the seat.
+    let installed = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == successor_s).map(start_ns).min().expect("the successor installed itself");
+    let early: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "to") == successor_s && start_ns(sp) < installed).collect();
+    assert!(early.is_empty(), "no declaration to {successor_s} before it held the seat: {early:#?}");
+    let cancelled: Vec<&Value> = named(&spans, "rdm.node_rpc.status.remove.via-seat-moved").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
+    assert!(!cancelled.is_empty(), "the call to the old holder was cancelled when the seat moved");
+    println!("declaration across a seat move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}", attr(applied[0], "to"), attr(applied[0], "route"), s(&applied[0]["trace_id"]));
+    estate.record_trace_url(applied[0]["trace_id"].as_str().unwrap_or(""));
 }

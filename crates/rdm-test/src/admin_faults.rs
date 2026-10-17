@@ -126,6 +126,15 @@ pub enum CutSpec {
         /// The exact runtime's pid; every runtime when absent.
         #[serde(default)] pid: Option<u32>,
     },
+    /// A node's declaration (`DeclareNodeState`) reached this admin's status door and is not yet
+    /// decided: held unanswered until the release, so its node still owes it (i146 Q39). `node`
+    /// narrows the cut to one declaring node, `state` to one state (`ReadyForTraffic`, `Leaving`, ...).
+    Declaration {
+        /// The declaring node's `path.name`.
+        #[serde(default)] node: Option<String>,
+        /// The state declared, as `NodeState` names it.
+        #[serde(default)] state: Option<String>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -222,6 +231,13 @@ pub enum Probe {
         /// The deployment the runtime belongs to.
         deployment_id: String,
     },
+    /// A node's declaration about to be decided.
+    Declaration {
+        /// The declaring node.
+        node: String,
+        /// The state declared.
+        state: String,
+    },
 }
 
 impl CutSpec {
@@ -242,6 +258,7 @@ impl CutSpec {
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
+            (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
             _ => false,
         }
     }
@@ -263,6 +280,7 @@ impl Probe {
             Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
+            Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
         }
     }
 }
@@ -630,6 +648,17 @@ impl rdm_admin::wiring::ReadSeam for FaultedRead {
     }
 }
 
+/// The status door's seam: an armed [`CutSpec::Declaration`] holds a node's declaration unanswered
+/// before it is decided, until the release.
+struct FaultedDeclaration(Arc<AdminFaults>);
+
+#[async_trait]
+impl rdm_admin::wiring::DeclarationSeam for FaultedDeclaration {
+    async fn before_declaration(&self, node: &str, state: rdm_core::status::NodeState) {
+        self.0.hold(Probe::Declaration { node: node.to_string(), state: format!("{state:?}") }).await;
+    }
+}
+
 /// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`); the
 /// drain phases belong to a transition into `Draining`, which no admin path runs.
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
@@ -643,6 +672,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         announcement_seam: Some(Arc::new(FaultedAnnouncement(faults.clone()))),
         catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
         read_seam: Some(Arc::new(FaultedRead(faults.clone()))),
+        declaration_seam: Some(Arc::new(FaultedDeclaration(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),

@@ -2031,7 +2031,7 @@ The durable `held-running` fact on a birth's status row (R-FM1): the provider re
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 12 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 13 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2080,6 +2080,9 @@ The call a cut held first, as the decorator offered it.
 | 11 | **`ProviderTerminate`** |  |  | A provider `terminate` refused while the cut is armed. |
 | 11.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
 | 11.1 | `deployment_id` | `String` |  | The deployment the runtime belongs to. |
+| 12 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
+| 12.0 | `node` | `String` |  | The declaring node. |
+| 12.1 | `state` | `String` |  | The state it declares. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 

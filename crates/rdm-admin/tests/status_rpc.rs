@@ -171,6 +171,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     }));
     let fabric_id = topology.read().await.fabric.id.clone();
     let authority = Arc::new(StatusAuthority {
+        declaration_seam: None,
         stopped: Default::default(),
         me: me.node.name.clone(),
         node_id: me.node.node_id.clone(),

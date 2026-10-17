@@ -61,6 +61,15 @@ pub trait ReadSeam: Send + Sync {
     async fn before_topology_read(&self, node: &str, authority: &str);
 }
 
+/// Asked by the status door before it decides a node's declaration (`DeclareNodeState`): a testkit
+/// cut holds one there unanswered, so it stays owed across a seat move (i146 Q39). The product passes
+/// none, so a declaration is decided at once.
+#[async_trait::async_trait]
+pub trait DeclarationSeam: Send + Sync {
+    /// Returns when the declaration of `state` by `node` (its `path.name`) may be decided.
+    async fn before_declaration(&self, node: &str, state: rdm_core::status::NodeState);
+}
+
 /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
 /// the gate of its [`Hydration`](crate::app_hydration::Hydration) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
@@ -144,6 +153,8 @@ pub struct Wiring {
     pub announcement_seam: Option<Arc<dyn AnnouncementSeam>>,
     /// Asked by a joining admin's start before it makes its topology read.
     pub read_seam: Option<Arc<dyn ReadSeam>>,
+    /// Asked by the status door before it decides a node's declaration.
+    pub declaration_seam: Option<Arc<dyn DeclarationSeam>>,
     /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the

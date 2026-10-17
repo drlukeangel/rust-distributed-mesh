@@ -42,6 +42,7 @@ enum CutWire {
     TopologyRead,
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
+    Declaration { node: Option<String>, state: Option<String> },
 }
 
 /// A fault door call.
@@ -179,6 +180,13 @@ pub enum Hit {
         /// The deployment the runtime belongs to.
         deployment_id: String,
     },
+    /// A node's declaration at the status door, about to be decided.
+    Declaration {
+        /// The declaring node.
+        node: String,
+        /// The state it declares.
+        state: String,
+    },
 }
 
 impl Hit {
@@ -198,6 +206,7 @@ impl Hit {
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
+            Hit::Declaration { node, state } => json!({"node": node, "state": state}),
         }
     }
 }

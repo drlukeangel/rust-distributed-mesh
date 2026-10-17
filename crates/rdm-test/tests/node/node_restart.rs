@@ -160,9 +160,10 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
 /// CONTRACT (R-PV1: "when the restart's stop was never admitted, the uncompleted stop-then-start
 /// sequence runs again through the caller's resubmit or the lane's next attempt"; node-rpc-envelope.md
 /// build.create: "existing build_id for resubmission"; PRD i144 R11, R12): a member the operating system
-/// holds suspended is restarted; the restart's attempt is dispatched only once the mesh-primary marks
-/// the held member unheard (its connection to the member has outlived the idle timeout), so the
-/// restart's stop-node is never sent, never admitted, and the attempt ends `Failed` naming it. The member is continued. Nothing reopens the failed attempt on its own: two
+/// holds suspended is restarted; the restart's attempt is dispatched only once the mesh-primary's
+/// offline ladder records the held member os-stopped (its inspection follows its direct probe's
+/// failure, so no connection to the member outlives the idle timeout), so the restart's stop-node is
+/// never sent, never admitted, and the attempt ends `Failed` naming it. The member is continued. Nothing reopens the failed attempt on its own: two
 /// staleness floors later the Build's attempt is the failed one, no step ran for the member, and
 /// `node.get` lists the same birth `restarting` (its restart is open: commanded silence its executor
 /// owns). A fresh `node.restart` of it is refused `node-not-live` naming the open restart; the caller's
@@ -188,11 +189,14 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     door.wait_held("claimed").await;
     let until = std::time::Instant::now() + Duration::from_secs(30);
     loop {
+        // The unheard mark alone proves no connection is gone: the idle timer runs from the member's last
+        // packet, the mark from its last digest. The ladder's os-stopped row follows its direct probe's
+        // failure, past the idle timeout.
         let v = view_of(&nodes, &member).await;
-        if matches!(v.status, NodeStatus::PendingReconnect | NodeStatus::Dead) {
+        if v.os_stopped.is_some() {
             break;
         }
-        assert!(std::time::Instant::now() < until, "the mesh-primary marks the held member unheard within 30 s: {v:?}");
+        assert!(std::time::Instant::now() < until, "the mesh-primary's ladder records the held member os-stopped within 30 s: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     door.release("claimed").await;

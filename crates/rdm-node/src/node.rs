@@ -612,7 +612,7 @@ async fn start_booted(
                                         owed.lock().unwrap().owe((state, operation));
                                         let (node, membership, client, owed) = (node.clone(), membership.clone(), client.clone(), owed.clone());
                                         Box::pin(async move {
-                                            let _ = declare_once(&node, &membership, &client, &owed).await;
+                                            let _ = declare_until_seat_moves(&node, &membership, &client, &owed).await;
                                         })
                                     })
                                 };
@@ -672,8 +672,11 @@ async fn start_booted(
                                                 .in_scope(|| tracing::info!("the mesh's primary seat moved to another birth: this birth's state is owed to it"));
                                             owed.lock().unwrap().owe_again(state);
                                         }
-                                        if owed.lock().unwrap().owed.is_some() {
-                                            declare_once(&node, &membership, &client, &owed).await;
+                                        // The seat moving is the one retargeting (i146 Q39): a call still in flight
+                                        // to the old holder is cancelled, and the next pass declares to the holder
+                                        // the seat names now.
+                                        if owed.lock().unwrap().owed.is_some() && declare_until_seat_moves(&node, &membership, &client, &owed).await == Declared::SeatMoved {
+                                            continue;
                                         }
                                         if owed.lock().unwrap().owed.is_none() {
                                             told = holder.map(|h| (h.node_id, h.incarnation));
@@ -1089,7 +1092,7 @@ impl Becoming {
         let _ = self.membership.publish(&d).await;
         let (node, membership, client, owed) = (self.digest.node.clone(), self.membership.clone(), self.client.clone(), self.owed.clone());
         tokio::spawn(async move {
-            declare_once(&node, &membership, &client, &owed).await;
+            declare_until_seat_moves(&node, &membership, &client, &owed).await;
         });
     }
 }
@@ -1130,44 +1133,115 @@ impl OwedDeclaration {
     }
 }
 
-/// One attempt at the owed declaration: the node-admins of this birth's mesh it hears, in path
-/// order, until one answers by name. A definitive answer clears the debt; `RejectedNotAuthority`
-/// (the admin is not the primary, or does not hold this birth yet) and `NotSent`/`Indeterminate`
-/// leave it owed for the next cadence. Nothing here gates gossip: the digest already says the state.
+/// How [`declare_until_seat_moves`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Declared {
+    /// The attempt ran to its end (answered, refused, or not delivered: still owed).
+    Attempted,
+    /// The mesh's primary seat moved while the attempt was in flight: its call was cancelled.
+    SeatMoved,
+}
+
+/// [`declare_once`] until this birth's mesh's primary seat moves (i146 Q39): the seat moving is the one
+/// retargeting, so a call still in flight to the old holder is cancelled, and the declaration stays
+/// owed to the holder the seat names next. A seat record of another mesh changes nothing here.
+async fn declare_until_seat_moves(me: &MeshNode, membership: &Membership, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>) -> Declared {
+    let birth = |h: Option<rdm_core::SeatHolder>| h.map(|h| (h.node_id, h.incarnation));
+    let mut seats = membership.seats().subscribe();
+    seats.borrow_and_update();
+    let from = birth(membership.seats().mesh(&me.name.mesh));
+    let moved = async {
+        loop {
+            if seats.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+            if birth(membership.seats().mesh(&me.name.mesh)) != from {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = declare_once(me, membership, client, owed) => Declared::Attempted,
+        () = moved => {
+            tracing::info_span!("rdm.node_rpc.status.remove.via-seat-moved", node = %membership.held_name(&me.name), from = %from.as_ref().map(|(n, _)| n.to_string()).unwrap_or_default())
+                .in_scope(|| tracing::info!("the mesh's primary seat moved while the declaration was in flight: its call to the old holder is cancelled"));
+            Declared::SeatMoved
+        }
+    }
+}
+
+/// One attempt at the owed declaration (i146 Q39): to the holder of this birth's mesh's primary seat,
+/// resolved from the seat this birth holds (its LeadershipView), never to an admin it merely hears.
+/// Direct first; a direct attempt that sent nothing is carried by Forward through up to two live
+/// peers of the mesh at once (the reach ladder's route rule, node-tickle.md), the first answer from
+/// the holder ending it. A definitive answer clears the debt; `RejectedNotAuthority`, `NotSent` and
+/// `Indeterminate` leave it owed for the next cadence, and with no holder held nothing is sent. Nothing
+/// here gates gossip: the digest already says the state.
 async fn declare_once(me: &MeshNode, membership: &Membership, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>) -> Option<String> {
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::status::{Status, StatusReply, StatusRequest};
+    use futures_util::StreamExt as _;
     let Some((state, operation)) = owed.lock().unwrap().owed.clone() else { return None };
     let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
-    let mut admins: Vec<MeshDigest> = membership
-        .book
-        .current(membership.book.staleness_floor())
-        .into_iter()
-        .filter(|d| d.node.name.kind == rdm_core::NodeKind::NodeAdmin && d.node.name.mesh == me.name.mesh)
-        .collect();
-    admins.sort_by_key(|d| d.node.name.to_string());
-    let mut last = None;
-    for a in &admins {
-        let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(a.node.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
-        let (outcome, definitive) = match &out {
+    let node = membership.held_name(&me.name);
+    let op_name = operation.as_ref().map(|o| o.operation.clone()).unwrap_or_default();
+    let Some(holder) = membership.seats().mesh(&me.name.mesh) else {
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = "", route = "none", outcome = "no-holder: this birth holds no primary seat for its mesh", definitive = false)
+            .in_scope(|| tracing::info!("no primary seat is held for this birth's mesh: the declaration stays owed"));
+        return Some("no-holder".into());
+    };
+    let heard = membership.book.current(membership.book.staleness_floor());
+    let to = heard.iter().find(|d| d.node.node_id == holder.node_id).map(|d| d.node.name.to_string()).unwrap_or_else(|| holder.node_id.to_string());
+    let classify = |out: &RpcOutcome<StatusReply>| -> (String, bool) {
+        match out {
             RpcOutcome::Reply(r) => match r.value() {
                 StatusReply::RejectedNotAuthority { .. } => (format!("{:?}", r.value()), false),
                 v => (v.name().to_string(), true),
             },
             other => (format!("{}: {other:?}", other.name()), false),
+        }
+    };
+    let record = |route: &str, outcome: &str, definitive: bool| {
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %node, state = ?state, operation = %op_name, to = %to, route, outcome = %outcome, definitive)
+            .in_scope(|| tracing::info!("declared own state to the holder of the mesh's primary seat"));
+    };
+    let (out, _) = client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(holder.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
+    let (mut outcome, mut definitive) = classify(&out);
+    record("direct", &outcome, definitive);
+    if !definitive && matches!(out, RpcOutcome::NotSent(_)) {
+        let carriers: Vec<MeshDigest> = {
+            let mut c: Vec<MeshDigest> = heard.into_iter().filter(|d| d.node.name.mesh == me.name.mesh && d.node.node_id != me.node_id && d.node.node_id != holder.node_id).collect();
+            c.sort_by_key(|d| d.node.name.to_string());
+            c.truncate(2);
+            c
         };
-        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %membership.held_name(&me.name), state = ?state, operation = %operation.as_ref().map(|o| o.operation.as_str()).unwrap_or(""), to = %a.node.name, outcome = %outcome, definitive)
-            .in_scope(|| tracing::info!("declared own state to an admin of the mesh"));
-        last = Some(outcome.clone());
-        if definitive {
-            let mut o = owed.lock().unwrap();
-            if o.owed.as_ref() == Some(&(state, operation.clone())) {
-                o.owed = None;
+        let mut carried: futures_util::stream::FuturesUnordered<_> = carriers
+            .iter()
+            .map(|c| {
+                let (carrier, req, holder_id) = (c.node.clone(), req.clone(), holder.node_id.clone());
+                async move {
+                    let (out, _) = client.call_via::<Status>(&rdm_transport::NodeTarget::ExactNode(carrier.node_id.clone()), &holder_id, &req, &rdm_transport::CallOptions::default()).await;
+                    (carrier.name.to_string(), out)
+                }
+            })
+            .collect();
+        while let Some((carrier, out)) = carried.next().await {
+            let (o, d) = classify(&out);
+            record(&format!("carried:{carrier}"), &o, d);
+            outcome = o;
+            definitive = d;
+            if definitive {
+                break;
             }
-            return Some(outcome);
         }
     }
-    last
+    if definitive {
+        let mut o = owed.lock().unwrap();
+        if o.owed.as_ref() == Some(&(state, operation.clone())) {
+            o.owed = None;
+        }
+    }
+    Some(outcome)
 }
 
 

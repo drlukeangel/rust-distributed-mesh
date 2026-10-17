@@ -10,6 +10,7 @@ publish = false
 doctest = false
 
 [dependencies]
+futures-util = "0.3"
 rdm-core = { path = "../rdm-core" }
 rdm-client = { path = "../rdm-client" }
 rdm-transport = { path = "../rdm-transport" }

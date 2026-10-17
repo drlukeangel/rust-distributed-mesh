@@ -279,6 +279,9 @@ pub use rdm_core::status::{declared_of_member, member_of_declared};
 pub struct StatusAuthority {
     /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
+    /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
+    /// is `None`.
+    pub declaration_seam: Option<Arc<dyn crate::wiring::DeclarationSeam>>,
     /// What publishes NodeStopped for a stop this admin recorded as its birth's mesh-primary (i146
     /// Q29, Q36); filled once the admin's backbone exists.
     pub stopped: Arc<OnceLock<StoppedPublisher>>,
@@ -560,6 +563,10 @@ impl StatusAuthority {
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
     /// connection a command spares is the call's own, whether or not the view holds a birth for it.
     pub async fn apply_from(&self, peer: Option<iroh::PublicKey>, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
+        if let (Some(seam), StatusRequest::DeclareNodeState { node_id, state, .. }) = (&self.declaration_seam, req) {
+            let subject = self.topology.read().await.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string());
+            seam.before_declaration(&subject, *state).await;
+        }
         let view = self.topology.read().await.clone();
         let me_name = self.held_name_in(&view);
         if let (Some(from), Some(rounds)) = (sender.as_ref(), self.rounds.get()) {
@@ -1389,6 +1396,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            declaration_seam: None,
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -1449,6 +1457,7 @@ mod tests {
             nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone(), restarted.clone()],
         }));
         let authority = StatusAuthority {
+            declaration_seam: None,
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -1594,6 +1603,7 @@ mod tests {
         }));
         let status: Arc<RacingPuts> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            declaration_seam: None,
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -1656,6 +1666,7 @@ mod tests {
     /// The status authority of the admin born as `me`, deciding over `view`.
     fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
+            declaration_seam: None,
             stopped: Default::default(),
             me: me.name.clone(),
             node_id: me.node_id.clone(),
@@ -1977,6 +1988,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            declaration_seam: None,
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -2070,6 +2082,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            declaration_seam: None,
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),

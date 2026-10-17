@@ -220,6 +220,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rdm_admin::status_rpc::StatusAuthority {
+                    declaration_seam: None,
                     stopped: Default::default(),
                     me: b.name.clone(),
                     node_id: b.node_id.clone(),

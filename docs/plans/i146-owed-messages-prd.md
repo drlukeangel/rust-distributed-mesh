@@ -448,7 +448,29 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   to the old holder is refused by its store fence (Q28) and recorded nothing." Cells: a suspended node
   that can reach only a non-primary admin on release still delivers its stopped declaration to the
   primary (direct when reachable, carried otherwise); a seat move while the declaration is owed
-  delivers it once, to the new holder. State: not started.
+  delivers it once, to the new holder. Built: `declare_once` (`rdm-node/src/node.rs`) addresses the
+  holder of the mesh's primary seat from the birth's seat record (`membership.seats()`), direct first;
+  a direct attempt that sent nothing is carried by Forward through up to two live peers of the mesh at
+  once (`route` on `via-declare-own`: `direct` or `carried:<peer>`); with no holder held nothing is
+  sent and it stays owed. Every declaration path (the stop's, the start's node.started, the declare
+  loop) runs under `declare_until_seat_moves`: the mesh's seat record naming another birth cancels the
+  call in flight (`rdm.node_rpc.status.remove.via-seat-moved`) and the declaration stays owed to the new
+  holder. The fault door gains a declaration cut (`CutSpec::Declaration`, through the status door's
+  `wiring::DeclarationSeam`). Cells: the never-admitted cell asserts the stop's declaration addressed to
+  mesh1's primary only and applied by it (its red occurrence: trace
+  `2f1267dca2a797afb6fd18ae6325ac29`);
+  `node_stop::a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder`
+  (two meshes: mesh2's primary holds the restart's node.started at its cut, so the restart's readiness
+  wait fails naming the node.started its primary never took; mesh2's primary is stopped and the seat
+  moves; the node's call is cancelled at the move and its node.started applied once by the new holder,
+  never sent to it before its install; flame `89914ed455aa3e71a5a12b46220078f7`). The old holder's late
+  delivery refused by its store fence (Q28) is e6's: the fence is built there, and that cell with it.
+  `node_restart::a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission` red
+  once before this landing at :220 (the member listed Leaving, not Restarting): its attempt went out at
+  the unheard mark, and the stop-node committed on a connection still alive (`indeterminate`, attempt
+  2), running on release. The idle timer runs from the member's last packet, the unheard mark from its
+  last digest, so the mark proves no connection is gone. It and the never-admitted stop cell now
+  dispatch once the ladder records the member os-stopped, after its direct probe failed.
 - **Q37's note withdrawn (Luke 2026-10-17).** The re-sent Leaving across a seat move does not occur: the
   holder already holds the row through its seat fold and a stopped birth re-declares nothing
   (`551d3f63`, the seat-move cell). The gate on `44488b29` red at

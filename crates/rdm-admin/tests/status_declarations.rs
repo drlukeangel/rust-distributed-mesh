@@ -149,6 +149,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
+        declaration_seam: None,
         stopped: Default::default(),
         me: admin.node.name.clone(),
         node_id: admin.node.node_id.clone(),
@@ -1994,6 +1995,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         let admin = admin.node.clone();
         async move {
             let authority = StatusAuthority {
+                declaration_seam: None,
                 stopped: Default::default(),
                 me: admin.name.clone(),
                 node_id: admin.node_id.clone(),
