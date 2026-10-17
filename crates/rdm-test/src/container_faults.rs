@@ -162,6 +162,13 @@ pub struct Silenced {
 /// fabric-primary seat: a set that holds it is refused before anything is touched. A member that
 /// cannot be silenced leaves the ones already silenced restored, and the error says which.
 pub fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
+    let silenced = prepare_silence(estate, nodes, fabric_primary)?;
+    silenced.install()?;
+    Ok(silenced)
+}
+
+/// Resolve the exact containers and addresses before the timed silence starts; install nothing.
+pub fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
     if nodes.iter().any(|n| n == fabric_primary) {
         return Err(format!("refused: the silenced set {nodes:?} holds the fabric-primary node-admin {fabric_primary}"));
     }
@@ -175,19 +182,34 @@ pub fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: 
     for (n, id) in estate.live_containers().into_iter().filter(|(n, _)| !nodes.contains(n)) {
         unheard.push(Member { node: n, ip: address_of(estate, &id)?, id });
     }
-    let silenced = Silenced { network: network_of(estate), gateway, members, unheard };
-    let mut done = 0;
-    for m in &silenced.members {
-        if let Err(e) = in_netns(&m.id, "iptables-restore", &["--noflush"], Some(&silenced.install_rules())) {
-            let back: Vec<String> = silenced.members[..done].iter().filter_map(|m| m.lift().err()).collect();
-            return Err(format!("{}: {e} ({done} already silenced were restored; failures: {back:?})", m.node));
-        }
-        done += 1;
-    }
-    Ok(silenced)
+    Ok(Silenced { network: network_of(estate), gateway, members, unheard })
+}
+
+fn on_members<T: Send>(members: &[Member], action: impl Fn(&Member) -> T + Sync) -> Vec<T> {
+    std::thread::scope(|scope| {
+        let action = &action;
+        let tasks: Vec<_> = members.iter().map(|m| scope.spawn(move || action(m))).collect();
+        tasks.into_iter().map(|task| task.join().expect("the exact container operation completed")).collect()
+    })
 }
 
 impl Silenced {
+    /// Install each independent namespace's filter concurrently; restore successes on failure.
+    pub fn install(&self) -> Result<(), String> {
+        let rules = self.install_rules();
+        let results = on_members(&self.members, |m| in_netns(&m.id, "iptables-restore", &["--noflush"], Some(&rules)));
+        let failed: Vec<_> = self.members.iter().zip(&results).filter_map(|(m, r)| r.as_ref().err().map(|e| format!("{}: {e}", m.node))).collect();
+        if failed.is_empty() { return Ok(()); }
+        let applied: Vec<_> = self.members.iter().zip(&results).filter(|(_, r)| r.is_ok()).map(|(m, _)| m.clone()).collect();
+        let back: Vec<_> = on_members(&applied, |m| m.lift()).into_iter().filter_map(Result::err).collect();
+        Err(format!("{} ({} already silenced were restored; failures: {back:?})", failed.join("; "), applied.len()))
+    }
+
+    /// Inspect the exact containers concurrently; an unreadable container is named.
+    pub fn inspect(&self) -> Result<std::collections::BTreeMap<String, Inspected>, String> {
+        on_members(&self.members, |m| inspect(&m.id).map(|i| (m.node.clone(), i)).map_err(|e| format!("{}: {e}", m.node))).into_iter().collect()
+    }
+
     fn install_rules(&self) -> String {
         let mut r = format!("*filter\n:{SILENCE_CHAIN} - [0:0]\n");
         for u in &self.unheard {
@@ -200,7 +222,7 @@ impl Silenced {
 
     /// The rules each member holds now, as its own packet filter lists them.
     pub fn rules(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
-        self.members.iter().map(|m| Ok((m.node.clone(), in_netns(&m.id, "iptables", &["-S"], None)?))).collect()
+        on_members(&self.members, |m| Ok((m.node.clone(), in_netns(&m.id, "iptables", &["-S"], None)?))).into_iter().collect()
     }
 
     /// Every member holds the silence chain, referenced from INPUT and OUTPUT.
@@ -210,7 +232,7 @@ impl Silenced {
 
     /// Restore every member's packet filter. Every failure is named.
     pub fn lift(&self) -> Result<(), String> {
-        let failed: Vec<String> = self.members.iter().filter_map(|m| m.lift().err().map(|e| format!("{}: {e}", m.node))).collect();
+        let failed: Vec<String> = on_members(&self.members, |m| m.lift().err().map(|e| format!("{}: {e}", m.node))).into_iter().flatten().collect();
         if failed.is_empty() {
             Ok(())
         } else {

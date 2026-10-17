@@ -107,7 +107,7 @@ fn replied(l: &Value) -> bool {
 
 /// Every isolated container as the Docker daemon holds it.
 fn inspect_all(silenced: &Silenced) -> BTreeMap<String, Inspected> {
-    silenced.members.iter().map(|u| (u.node.clone(), container_faults::inspect(&u.id).unwrap_or_else(|e| panic!("{}: {e}", u.node)))).collect()
+    silenced.inspect().expect("the exact containers can be inspected")
 }
 
 /// The fixed part of a read taken while the silence holds.
@@ -303,13 +303,14 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // Q50 A: this is a pre-expiry healing proof. The cut has its own release deadline,
     // independent of the probes, and its plan is refused before any filter is installed.
     let floor = rdm_core::cadence::staleness_floor();
-    let hold_floors = std::env::var("RDM_HUNG_HOLD_FLOORS").ok().and_then(|v| v.trim().parse::<u32>().ok()).filter(|n| *n >= 1).unwrap_or(10);
-    let hold = floor.saturating_mul(hold_floors);
+    let hold_floors = std::env::var("RDM_HUNG_HOLD_FLOORS").ok().and_then(|v| v.trim().parse::<u64>().ok()).filter(|n| *n >= 1).unwrap_or(10);
+    let hold = Duration::from_millis(u64::try_from(floor.as_millis()).expect("the declared floor fits milliseconds").saturating_mul(hold_floors));
     let planned_silence = floor + Duration::from_secs(20);
     assert!(planned_silence < hold, "planned silence {planned_silence:?} must be under the declared hold {hold_floors} × {floor:?} = {hold:?}");
+    let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).expect("the exact containers and addresses are resolved before the cut");
     let silence_started = std::time::Instant::now();
     let release_at = silence_started + planned_silence;
-    let silenced = container_faults::silence(&estate, &isolated_names, &fabric_primary).expect("the isolated mesh's containers are silenced");
+    silenced.install().expect("the isolated mesh's containers are silenced");
     let (lift_now, release) = std::sync::mpsc::channel();
     let lift = {
         let silenced = silenced.clone();

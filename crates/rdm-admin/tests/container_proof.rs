@@ -245,20 +245,28 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
     let a = p.spawn(&a).await.expect("writer container");
     let b = p.spawn(&b).await.expect("reader container");
     store_command(&a, "hard-link insert and sync", r#"
-import os, pathlib
+print('python entered hard-link phase', flush=True)
+import os, pathlib, time
+def mark(step):
+    print(f'{time.monotonic():.6f} {step}', flush=True)
 root = pathlib.Path(os.environ['RDM_STORE_DIR'])
 assert root.is_dir(), f'RDM_STORE_DIR {root} is not mounted'
+mark('before create_new')
 with (root / 'insert.tmp').open('xb') as f:
-    f.write(b'first'); f.flush(); os.fsync(f.fileno())
+    f.write(b'first'); f.flush()
+    mark('before first file fsync'); os.fsync(f.fileno()); mark('first file synced')
+mark('before hard link')
 os.link(root / 'insert.tmp', root / 'created')
 assert (root / 'insert.tmp').stat().st_ino == (root / 'created').stat().st_ino
 fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-os.fsync(fd)
+mark('before first directory fsync'); os.fsync(fd); mark('first directory synced')
 (root / 'insert.tmp').unlink(); os.fsync(fd)
+mark('before initial atomic file')
 with (root / 'atomic').open('xb') as f:
-    f.write(b'A' * 131072); f.flush(); os.fsync(f.fileno())
-os.fsync(fd); os.close(fd)
-print('hard-link insertion; file and directory fsync')
+    f.write(b'A' * 131072); f.flush()
+    mark('before initial atomic file fsync'); os.fsync(f.fileno()); mark('initial atomic file synced')
+mark('before final directory fsync'); os.fsync(fd); os.close(fd)
+mark('hard-link insertion; file and directory fsync complete')
 "#).await;
     store_command(&b, "collision and shared listing", r#"
 import os, pathlib
@@ -331,16 +339,41 @@ print('reverse write visible in read and listing on the writer container')
     println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));
 }
 
+async fn read_store_output(mut pipe: impl tokio::io::AsyncRead + Unpin, output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    use tokio::io::AsyncReadExt;
+    let mut chunk = [0; 4096];
+    loop {
+        let n = pipe.read(&mut chunk).await.expect("read the store command's evidence pipe");
+        if n == 0 { return; }
+        output.lock().unwrap().extend_from_slice(&chunk[..n]);
+    }
+}
+
 async fn store_command(handle: &DeploymentHandle, phase: &str, script: &str) -> String {
     let id = container_id(handle);
     let started = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
     eprintln!("container {id}, store-root {phase}: started");
-    let out = tokio::time::timeout(std::time::Duration::from_secs(15), tokio::process::Command::new("docker").args(["exec", &id, "/usr/bin/python3", "-c", script]).output())
-        .await.unwrap_or_else(|e| panic!("container {id} store-root {phase} exceeded 15 s: {e}"))
-        .unwrap_or_else(|e| panic!("container {id} store-root {phase} could not execute: {e}"));
-    assert!(out.status.success(), "container {id}, store-root {phase}, status {}, stdout {}, stderr {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let mut child = tokio::process::Command::new("docker").args(["exec", &id, "/usr/bin/python3", "-u", "-c", script])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true)
+        .spawn().unwrap_or_else(|e| panic!("container {id} store-root {phase} could not execute: {e}"));
+    let spawn_elapsed = started.elapsed();
+    let stdout = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let read_out = tokio::spawn(read_store_output(child.stdout.take().unwrap(), stdout.clone()));
+    let read_err = tokio::spawn(read_store_output(child.stderr.take().unwrap(), stderr.clone()));
+    let status = tokio::time::timeout_at(deadline, child.wait()).await;
+    if status.is_err() { let _ = child.kill().await; }
+    let (out, err) = tokio::join!(read_out, read_err);
+    out.expect("the store stdout capture completed");
+    err.expect("the store stderr capture completed");
+    let stdout = String::from_utf8(stdout.lock().unwrap().clone()).unwrap();
+    let stderr = String::from_utf8_lossy(&stderr.lock().unwrap()).to_string();
+    let status = status.unwrap_or_else(|e| panic!("container {id} store-root {phase} exceeded 15 s: {e}; docker process spawned in {spawn_elapsed:?}; stdout {stdout}; stderr {stderr}"))
+        .unwrap_or_else(|e| panic!("container {id} store-root {phase} could not wait: {e}; stdout {stdout}; stderr {stderr}"));
+    assert!(status.success(), "container {id}, store-root {phase}, status {status}, stdout {stdout}, stderr {stderr}");
     eprintln!("container {id}, store-root {phase}: complete in {:?}", started.elapsed());
-    String::from_utf8(out.stdout).unwrap()
+    stdout
 }
 
 /// R14 item 8: the provider mounts the supplied store, never creates a missing namespace
