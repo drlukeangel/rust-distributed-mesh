@@ -675,8 +675,12 @@ pub enum FabricEvent {
     ShutdownInitiated { initiated_by: String },
 }
 
+// The operation that produced a declared state: a stop's Stopped, a start's Pending and
+// ReadyForTraffic; None for a state the node measured itself.
+pub struct DeclaredOperation { build_id: String, attempt: u32, operation: String }
+
 pub enum StatusRequest {
-    DeclareNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
+    DeclareNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState, operation: Option<DeclaredOperation> },
     DeclareMeshState { mesh_id: MeshId, state: MeshState },
     ApplyNodeState { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
     ProbeNodeState { node_id: NodeId, incarnation: IncarnationId },

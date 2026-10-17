@@ -355,6 +355,14 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   failing at 3001 ms; the gates' `indeterminate` landed inside it). Open: a node-admin's own
   declarations stay `None` (its declarer, `status_declare.rs`, reports states from its view); a
   re-declaration that reaches a new mesh-primary between its seat and its seat fold would apply again.
+- **Q37 (Luke 2026-10-17, A).** The four page lines landed with the code (node-rpc-envelope.md's
+  `DeclareNodeState` schema and `DeclaredOperation`, node-stop.md steps 4-5, node-status.md's
+  declaration). Next landing of e3: a node-admin's own declarations name their operation too
+  (`status_declare.rs`), so one rule holds for every node. A re-sent Leaving reaching a new seat
+  holder after its seat fold finds the declared row held (`AlreadyApplied`) and publishes nothing; were
+  NodeStopped ever published twice, i147's receive rule makes the repeat of an operation fact do
+  nothing at every receiver. Cell, same landing: a parked birth whose mesh seat moves re-declares its
+  Leaving to the new holder, which publishes NodeStopped once across the move.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its

@@ -35,10 +35,14 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
    evidence.
 3. Cut the stop's own transport: its gossip neighbours and its Node RPC pool. Never unbind the
    node's own endpoint or close the stop call's stream.
-4. Emit node.stopped on that same reply stream. The node gossips nothing for this step.
-5. The mesh-primary takes the matching stopped frame and publishes
-   [NodeStopped](../gossip.md#node-stopped-lifecycle-overlay) in its in-flight overlay,
-   retained as that section states; for the last node-admin of a deleted mesh the
+4. Emit node.stopped on that same reply stream, and declare `Stopped` to the mesh-primary naming
+   the stop's operation, an owed message ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes))
+   sent whether or not the stop call's stream is still open. The node gossips nothing for this step.
+5. The mesh-primary takes the matching stopped frame, or the node's declaration of `Stopped`
+   naming the stop's operation, whichever reaches it first, and publishes
+   [NodeStopped](../gossip.md#node-stopped-lifecycle-overlay) with that operation in its in-flight
+   overlay, once: the other finds the stopped state held (`AlreadyApplied`) and publishes nothing.
+   NodeStopped is retained as that section states; for the last node-admin of a deleted mesh the
    fabric-primary publishes it ([Mesh delete](../gossip.md#mesh-delete)). The node's status is
    stopped and its process is live.
 6. A stopped node leaves the stopped status only through [node.start](node-start.md) or
