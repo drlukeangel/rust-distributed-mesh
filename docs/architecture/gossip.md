@@ -118,7 +118,7 @@ Rules:
 - the current mesh primary from the canonical LeadershipView publishes its own mesh's aggregate on the backbone; a mesh with no primary goes unheard: nobody publishes a live mesh on its behalf, and each mesh's primary is the sole publisher of its mesh's Members projection; [mesh investigation](lifecycles/mesh-investigation.md) gives it a node-admin, and that new mesh-primary publishes once it is established (R-RX4);
 - only receiving peer mesh primaries forward remote aggregates locally;
 - lifecycle events are published by the executor on its own mesh channel and reach the backbone only inside Members.in_flight and Members.deleted;
-- ordinary nodes converge to all-mesh topology without a flat fabric-wide membership topic;
+- ordinary nodes converge to all-mesh topology without a flat fabric-wide membership channel;
 - publisher responsibility follows imported leadership changes;
 - leadership projections are derived by the canonical LeadershipView, not trusted because a publisher claimed them;
 - the aggregate/current birth projection preserves the current RuntimeFact and required current runtime metadata needed by an authority-bearing admin to manage that birth.
