@@ -137,8 +137,17 @@ def runtime_auth_codes(text):
         # A pattern reads an existing code. An arm's expression constructs one.
         j = i + 1
         if j in ends and vals[j] == '{': j = ends[j] + 1
-        while j < len(vals) and vals[j] in [')', '|', 'Code', 'Self', '::', 'PermissionDenied', 'Unauthenticated']: j += 1
-        if j < len(vals) and vals[j] == '=>': continue
+        while j < len(vals) and vals[j] in [')', '}', '|', 'Code', 'Self', '::', 'PermissionDenied', 'Unauthenticated']: j += 1
+        if j < len(vals) and vals[j] == '=>':
+            # Nested struct patterns read a value too. A guard may construct one, so only
+            # exempt the pattern before its `if`, never a guard's expression.
+            blocks = [a for a, b in ends.items() if vals[a] == '{' and a < i < j < b]
+            start = max(blocks, default=-1) + 1
+            q = start
+            while q < i:
+                if vals[q] == ',': start = q + 1
+                q = ends[q] + 1 if q in ends and ends[q] < i else q + 1
+            if 'if' not in vals[start:i]: continue
         if j < len(vals) and vals[j] == '=' and 'let' in vals[a + 1:i] and '=' not in vals[a + 1:i]: continue
         # matches!(value, PATTERN) — exempt only the pattern after its comma.
         in_pattern = False

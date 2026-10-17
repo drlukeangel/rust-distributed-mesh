@@ -50,6 +50,12 @@ fn read(code: Code) -> bool { matches!(code, Code::PermissionDenied | Code::Unau
         self.assertIn('PermissionDenied', check('crates/rdm-core/src/handler.rs', 'fn handle(x: bool) -> Code { match x { true => Code::PermissionDenied, false => Code::Ok } }\n'))
         self.assertEqual(check('crates/rdm-core/src/read.rs', 'fn read(x: Code) { match x { Code::PermissionDenied => (), _ => () } }\n'), '')
 
+    def test_nested_struct_patterns_read_values_but_guards_can_construct_them(self):
+        source = 'fn inspect(r: Reply) { match r { Reply::Refused { why: Reason::SenderNotSubject { .. } } => (), _ => () } }'
+        self.assertEqual(check('crates/rdm-core/tests/codec.rs', source), '')
+        source = 'fn handle(x: bool) { match x { true if { accept(Code::PermissionDenied) } => (), _ => () } }'
+        self.assertIn('PermissionDenied', check('crates/rdm-core/tests/handler.rs', source))
+
     def test_a_handler_inside_a_test_module_is_still_a_handler(self):
         source = '#[cfg(test)]\nmod tests {\n fn handle() -> Code { Code::Unauthenticated }\n}\n'
         self.assertIn(':3:', check('crates/rdm-core/tests/handler.rs', source))
