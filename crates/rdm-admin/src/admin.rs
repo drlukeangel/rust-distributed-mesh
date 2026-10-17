@@ -1009,6 +1009,7 @@ mod tests {
                 r.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), NodeId::mint());
                 Arc::new(r)
             },
+            fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::default()),
         };
         let executor_name: PathName = "mesh2.admin.1".parse().unwrap();
         let birth = (executor.node.node_id.to_string(), executor.node.incarnation.to_string());
@@ -1066,6 +1067,7 @@ mod tests {
             provider: Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(1) }, inspected: Default::default() }),
             nodes: Arc::new(CountsRuntimeLists::default()),
             records: records.clone(),
+            fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::default()),
         };
         let name: PathName = "mesh2.admin.1".parse().unwrap();
         assert!(!departure.recorded(&name).await, "nothing is recorded yet");

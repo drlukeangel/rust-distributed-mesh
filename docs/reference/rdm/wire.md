@@ -2112,7 +2112,7 @@ A fabric-seat takeover held because the store could not commit it (fabric-node-l
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 14 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 15 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2167,6 +2167,8 @@ The call a cut held first, as the decorator offered it.
 | 13 | **`RoundAction`** |  |  | A node-admin's round action, about to run. |
 | 13.0 | `node` | `String` |  | The acting admin. |
 | 13.1 | `round` | `String` |  | The round, as its command names it. |
+| 14 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
+| 14.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 

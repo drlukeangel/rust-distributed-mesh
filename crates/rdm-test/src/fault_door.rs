@@ -44,6 +44,7 @@ enum CutWire {
     ProviderTerminate { pid: Option<u32> },
     Declaration { node: Option<String>, state: Option<String> },
     RoundAction { node: Option<String>, round: Option<String> },
+    ProviderUnproven { pids: Vec<u32> },
 }
 
 /// A fault door call.
@@ -195,6 +196,11 @@ pub enum Hit {
         /// The round, as its command names it.
         round: String,
     },
+    /// A provider `inspect` answered `Unknown` while the cut is armed.
+    ProviderInspect {
+        /// The runtime's pid, when the handle names one.
+        pid: Option<u32>,
+    },
 }
 
 impl Hit {
@@ -216,6 +222,7 @@ impl Hit {
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
             Hit::Declaration { node, state } => json!({"node": node, "state": state}),
             Hit::RoundAction { node, round } => json!({"node": node, "round": round}),
+            Hit::ProviderInspect { pid } => json!({"pid": pid}),
         }
     }
 }

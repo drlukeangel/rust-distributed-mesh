@@ -392,7 +392,7 @@ mod tests {
         );
         let storage = crate::fabric_storage::FileFabricStorage::open(&root, &crate::model::IncarnationId::mint()).await.unwrap();
         let moved = crate::fabric_storage::SeatMoveRow {
-            seats: vec![crate::fabric_storage::MovedSeat { seat: rdm_core::seat::transfer::Seat::FabricPrimary, from_revision: 0, revision: 1, holder: by(), from: None }],
+            seats: vec![crate::fabric_storage::MovedSeat { seat: rdm_core::seat::transfer::Seat::FabricPrimary, from_revision: 0, revision: 1, holder: Some(by()), from: None }],
             cause: crate::fabric_storage::MoveCause::Election,
             by: by(),
         };

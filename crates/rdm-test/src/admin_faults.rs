@@ -144,6 +144,14 @@ pub enum CutSpec {
         /// The round, as its command names it: `commit-state` or `open-traffic`.
         #[serde(default)] round: Option<String>,
     },
+    /// The deployment provider's inspection of the runtimes at `pids` answers `Unknown` while the cut is
+    /// armed: no exit proof of them can be read, while every other runtime, a launch of this admin's
+    /// included, is inspected as ever. It models a lost mesh whose runtimes no surviving admin can
+    /// inspect (elections §5, i144 Q51), and nothing parks.
+    ProviderUnproven {
+        /// The runtimes' pids.
+        pids: Vec<u32>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -254,6 +262,11 @@ pub enum Probe {
         /// The round, as its command names it.
         round: &'static str,
     },
+    /// A provider `inspect` about to be made.
+    ProviderInspect {
+        /// The runtime's pid, when the handle names one.
+        pid: Option<u32>,
+    },
 }
 
 impl CutSpec {
@@ -276,6 +289,7 @@ impl CutSpec {
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
             (CutSpec::RoundAction { node, round }, Probe::RoundAction { node: n, round: r }) => node_is(node, n) && round.as_deref().is_none_or(|w| w == *r),
+            (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
             _ => false,
         }
     }
@@ -299,6 +313,7 @@ impl Probe {
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
             Probe::RoundAction { node, round } => Hit::RoundAction { node: node.clone(), round: round.to_string() },
+            Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
         }
     }
 }
@@ -359,7 +374,7 @@ impl AdminFaults {
         // A cut that parked nothing is spent by its release too: it can no longer park.
         c.released = true;
         // A condition (not a parked call) has no parked caller to clear it.
-        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. }) {
+        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. } | CutSpec::ProviderTerminate { .. } | CutSpec::ProviderUnproven { .. }) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             // Dropping the span ends it: the hold span lasts from the first consultation to here.
@@ -568,6 +583,9 @@ impl DeploymentProvider for FaultedProvider {
         self.inner.terminate(handle, mode).await
     }
     async fn inspect(&self, handle: &DeploymentHandle) -> DeploymentStatus {
+        if self.faults.in_force(Probe::ProviderInspect { pid: handle.pid }) {
+            return DeploymentStatus::Unknown;
+        }
         self.inner.inspect(handle).await
     }
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {

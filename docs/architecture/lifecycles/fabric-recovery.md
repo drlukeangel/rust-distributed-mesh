@@ -116,4 +116,8 @@ the fabric brings it back: a person or a script launches a node-admin.
   and each MeshId re-claims its mesh's name
   ([a mesh is an entity](../node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it)).
   A same-id re-claim is idempotent, so there is no NameHeld and no mass delete. A node's name is released by node
-  recovery's node.delete and taken by its node.create, which carries a new node.id.
+  recovery's node.delete and taken by its node.create, which carries a new node.id. A committed takeover
+  ([elections §5](../fabric-node-lifecycle-elections.md#5-day-0-preemption-restart-and-replacement)) vacates the lost
+  mesh's primary seat in its one row and releases the lost node-admin's name: its row is written Deleted with exit
+  proof `takeover { revision }`, and the mesh's re-created node-admin takes the name and, by the ordinary rule, the
+  vacant seat.

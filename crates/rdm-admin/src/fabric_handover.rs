@@ -607,7 +607,7 @@ impl HandoverDoor {
             (self.membership.seats().take_together(&op, &row.seats), claim)
         };
         (self.project_view)().await;
-        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
+        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. } | SeatTaken::RefusedVacant { .. })) {
             "refused-not-newer"
         } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
             "same"
@@ -1289,7 +1289,7 @@ impl HandoverDoor {
             successor = %births(&seats[0].holder),
             mesh_revision = %revision_of(&seats, Seat::MeshPrimary),
             fabric_revision = %revision_of(&seats, Seat::FabricPrimary),
-            outcome = if taken.iter().any(|x| matches!(x, SeatTaken::Refused { .. })) { "refused-not-newer" } else { "held" },
+            outcome = if taken.iter().any(|x| matches!(x, SeatTaken::Refused { .. } | SeatTaken::RefusedVacant { .. })) { "refused-not-newer" } else { "held" },
         )
         .in_scope(|| tracing::info!("the commander installed the seats node.primary.updated answered"));
         (successor, seats)
@@ -1470,10 +1470,10 @@ impl HandoverDoor {
         let committed = moves.iter().find(|m| m.row.cause == crate::fabric_storage::MoveCause::Takeover && m.row.seats.iter().any(|s| s.seat == wire && s.from_revision == expected && s.from.as_ref() == Some(lost)));
         if let Some(m) = committed {
             let s = m.row.seats.iter().find(|s| s.seat == wire).expect("the takeover moves the fabric seat");
-            if &s.holder == me {
+            if s.holder.as_ref() == Some(me) {
                 return rdm_core::reply::handover::already_applied(taken(s.revision));
             }
-            return rdm_core::reply::handover::rejected_conflict(format!("takeover of {} at revision {expected}, committed to {}", births(lost), births(&s.holder)));
+            return rdm_core::reply::handover::rejected_conflict(format!("takeover of {} at revision {expected}, committed to {}", births(lost), s.holder.as_ref().map(births).unwrap_or_else(|| "no holder".into())));
         }
         // The seat as this admin holds it: the lost birth at the revision the proposal names.
         let book = self.membership.seats();
@@ -1492,11 +1492,16 @@ impl HandoverDoor {
             Some(w) if w.node_id == self.node_id => {}
             other => return rdm_core::reply::handover::bounded_not_authority(&format!("in {me_name}'s view the backbone rule with mesh {} excluded seats {}", lost.mesh, other.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin".into()))),
         }
-        let row = crate::fabric_storage::SeatMoveRow {
-            seats: vec![crate::fabric_storage::MovedSeat { seat: wire.clone(), from_revision: expected, revision: expected + 1, holder: me.clone(), from: Some(lost.clone()) }],
-            cause: crate::fabric_storage::MoveCause::Takeover,
-            by: me.clone(),
-        };
+        // One row moves both seats the lost birth holds (i144 Q51): the fabric seat to this admin, and
+        // the lost mesh's primary seat, when its record names the same birth, to no holder. The
+        // lost mesh's next admin fills it by the ordinary rule, and this fabric-primary writes that
+        // mesh's rows until it does.
+        let mesh_seat = book.mesh(&lost.mesh).filter(|h| h.is_birth(&lost.node_id, &lost.incarnation));
+        let mut seats = vec![crate::fabric_storage::MovedSeat { seat: wire.clone(), from_revision: expected, revision: expected + 1, holder: Some(me.clone()), from: Some(lost.clone()) }];
+        if let Some(h) = &mesh_seat {
+            seats.push(crate::fabric_storage::MovedSeat { seat: WireSeat::MeshPrimary { mesh: lost.mesh.clone() }, from_revision: h.revision, revision: h.revision + 1, holder: None, from: Some(lost.clone()) });
+        }
+        let row = crate::fabric_storage::SeatMoveRow { seats, cause: crate::fabric_storage::MoveCause::Takeover, by: me.clone() };
         // The fence: the takeover's row, then the seal of the lost authority's revision. Nothing of
         // the lost authority commits past either, and recovery begins only once both stand.
         let moved = {
@@ -1522,9 +1527,47 @@ impl HandoverDoor {
         }
         let record = rdm_core::SeatHolder { mesh: me.mesh.clone(), node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), revision: expected + 1 };
         book.take(Seat::FabricPrimary, &record);
+        if let Some(h) = &mesh_seat {
+            book.vacate(Seat::MeshPrimary, &lost.mesh, h.revision + 1);
+        }
         (self.project_view)().await;
+        self.release_lost_admin(me_name, lost, moved.t).await;
         self.backbone.announce_seat(Seat::FabricPrimary, record).await;
         Reply::PrimaryUpdated { revisions: taken(expected + 1) }
+    }
+
+    /// The lost birth a committed takeover at seat move `t` superseded (i144 Q51): its exit-proof row
+    /// written `takeover { revision: t }`, the proof kind every projection reads as gone, and its row at
+    /// its `path.name` written `Deleted` (record, config and tags kept), releasing the name its mesh's
+    /// re-created node-admin takes. Its data dir is not touched: only its exit, proven once it returns
+    /// and meets the seal, makes that dir reusable (node-recovery.md `R-FM2`). Each write that cannot be
+    /// made is named on its own span; the re-creation's claim then meets the name still held.
+    async fn release_lost_admin(&self, me_name: &PathName, lost: &HandoverBirth, t: u64) {
+        let view = self.topology.read().await.clone();
+        let Some(node) = view.births().find(|n| n.node_id == lost.node_id && n.incarnation_id.as_ref() == Some(&lost.incarnation)).cloned() else {
+            tracing::info_span!("rdm.node_admin.node.reject.via-takeover-release", node = %me_name, lost = %births(lost), t, reason = "the lost birth is not in this admin's view: its name is released by no row here")
+                .in_scope(|| tracing::info!("the lost birth's name is not released"));
+            return;
+        };
+        let proof = format!("takeover {{ revision: {t} }}");
+        let exit = self.records.put_exit(&node, None, &proof).await;
+        let deleted = match (&exit, self.records.rows.get()) {
+            (Ok(_), Some(rows)) => rows.deleted(&node, &format!("takeover:{t}")).await.map_err(|e| e.to_string()),
+            (Ok(_), None) => Err("this admin holds no node-row writer yet".into()),
+            (Err(e), _) => Err(format!("its exit-proof row is not written, so its row is not deleted: {e}")),
+        };
+        tracing::info_span!(
+            "rdm.node_admin.node.delete.via-takeover-release",
+            node = %me_name,
+            subject = %node.name,
+            lost = %births(lost),
+            t,
+            exit_proof = %proof,
+            exit_proof_row = %exit.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()),
+            row = %deleted.as_ref().map(|_| "deleted".to_string()).unwrap_or_else(|e| e.clone()),
+        )
+        .in_scope(|| tracing::info!("the birth the takeover superseded holds nothing any more: its name is released for its mesh's re-created node-admin"));
+        (self.project_view)().await;
     }
 
     /// A mesh-primary's side of a takeover: `lost`, the fabric seat's record, names a birth this admin
@@ -1819,8 +1862,20 @@ async fn hydrated(storage: &dyn FabricStorage, seats: &SeatBook) -> Result<Vec<S
     let moves = storage.seat_moves().await.map_err(|e| format!("fabric.storage, the fabric's seat moves could not be read: {e}"))?;
     for m in &moves {
         for s in &m.row.seats {
-            let committed = rdm_core::seat::transfer::CommittedSeat { seat: s.seat.clone(), holder: s.holder.clone(), revision: s.revision };
-            seats.take(committed.seat.kind(), &committed.record());
+            match &s.holder {
+                Some(holder) => {
+                    let committed = rdm_core::seat::transfer::CommittedSeat { seat: s.seat.clone(), holder: holder.clone(), revision: s.revision };
+                    seats.take(committed.seat.kind(), &committed.record());
+                }
+                // A move that left the seat vacant (i144 Q51): its record goes until a later one fills it.
+                None => {
+                    let mesh = match &s.seat {
+                        WireSeat::MeshPrimary { mesh } | WireSeat::Cohort { mesh, .. } => mesh.as_str(),
+                        WireSeat::FabricPrimary => "",
+                    };
+                    seats.vacate(s.seat.kind(), mesh, s.revision);
+                }
+            }
         }
     }
     Ok(moves.iter().filter_map(|m| SeatTransferRow::of_move(&m.row)).collect())
@@ -1846,7 +1901,7 @@ pub async fn elect(storage: &dyn FabricStorage, seats: &SeatBook, by: &HandoverB
                 Seat::MeshPrimary => decided.meshes.get(&holder.mesh),
                 Seat::Cohort(kind) => decided.cohorts.get(&(holder.mesh.clone(), *kind)),
             };
-            crate::fabric_storage::MovedSeat { seat: WireSeat::of(*seat, &holder.mesh), from_revision: held.map(|h| h.revision).unwrap_or(0), revision: holder.revision, holder: birth(holder), from: held.map(birth) }
+            crate::fabric_storage::MovedSeat { seat: WireSeat::of(*seat, &holder.mesh), from_revision: held.map(|h| h.revision).or_else(|| (*seat == Seat::MeshPrimary).then(|| decided.vacant.get(&holder.mesh).copied()).flatten()).unwrap_or(0), revision: holder.revision, holder: Some(birth(holder)), from: held.map(birth) }
         })
         .collect::<Vec<_>>();
     let names = moved.iter().map(|m| format!("{} {} -> {}", m.seat.name(), m.from_revision, m.revision)).collect::<Vec<_>>().join(", ");

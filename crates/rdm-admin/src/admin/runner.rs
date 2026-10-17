@@ -4,6 +4,23 @@ use super::*;
 
 use crate::seat_revision::FenceOutcome;
 
+/// The exact id of `mesh` a launch or a hand-off names: what this admin created (`records`), else what
+/// its view holds from the mesh's members, else the mesh's own row, a point read by its name in
+/// `mesh_rows` (a mesh none of whose births the view still holds). `Ok(None)` when none of them holds
+/// one; a Dead row or a row that cannot be read is named. A recovery never mints one.
+pub(crate) async fn mesh_id_of(records: &Records, topology: &RwLock<Topology>, mesh_rows: &dyn crate::storage::MeshStorage, mesh: &str) -> Result<Option<String>, String> {
+    let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
+    if let Some(id) = records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
+        return Ok(Some(id.to_string()));
+    }
+    match mesh_rows.mesh(mesh).await {
+        Ok(Some(row)) if !row.dead => Ok(Some(row.mesh_id.to_string())),
+        Ok(Some(row)) => Err(format!("mesh {mesh}'s row is Dead (mesh id {})", row.mesh_id)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("neither this admin's records nor its view hold a mesh id for {mesh}, and its row could not be read from mesh.storage: {e}")),
+    }
+}
+
 /// Realises Build operations through the deployment and lifecycle pipelines.
 pub struct AdminRunner {
     /// The provider that realises runtimes.
@@ -219,7 +236,7 @@ impl AdminRunner {
 
 
     pub(crate) async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
-        let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
+        let known = mesh_id_of(&self.records, &self.topology, &*self.mesh_storage, mesh).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
         let mut t = self.template.clone();
         t.launcher.name = self.held_name();
         t.executable = match &self.bindings {
@@ -246,8 +263,8 @@ impl AdminRunner {
             t.env.extend(self.admin_env.clone());
         }
         // Every node of a mesh carries its id: it names the mesh's channel.
-        if let Some(id) = self.records.meshes.lock().unwrap().get(mesh).cloned().or(known) {
-            t.env.insert(rdm_core::launch::ENV_MESH_ID.into(), id.to_string());
+        if let Some(id) = known {
+            t.env.insert(rdm_core::launch::ENV_MESH_ID.into(), id);
         }
         if mesh != self.held_name().mesh {
             let peers: Vec<(String, SocketAddr)> = self
@@ -421,6 +438,8 @@ impl AdminRunner {
     }
 
     pub(crate) async fn create(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, before_ready: Option<crate::deployment::pipeline::BeforeReady>) -> Result<(), crate::executor::RunEnd> {
+        let prev = self.topology.read().await.node(node).cloned();
+        let mut claim_for = crate::node_rows::ClaimFor::Create;
         match self.revise_predecessor(node).await {
             // The member is alive (it answers) or held (its exact runtime still runs):
             // nothing to create. Silence never authorizes a replacement.
@@ -429,15 +448,29 @@ impl AdminRunner {
             FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}").into()),
             // A birth the provider proves terminal holds the path's name until it is deleted (only a
             // delete releases a name, R-MN1): its exit proof is recorded, node.delete deletes it as a
-            // crashed target (NodeDeleted, its Deleted row), then the create runs (node-recovery.md
-            // "Steps": node.delete of the exited instance, then node.create at the same path.name).
+            // crashed target (NodeDeleted, its Deleted row), then the create runs over its data dir
+            // with its endpoint key (node-recovery.md "Steps" and "Retained": node.delete of the exited
+            // instance, then node.create at the same path.name over the inherited data dir; elections
+            // §4.3: a lost mesh's node-admin over the inherited data dir only with exit proof).
             FenceOutcome::Clear { gone: Some(prev) } => {
                 if let Some(incarnation) = prev.incarnation_id.clone() {
                     let exit = self.records.put_exit(&prev, None, "provider").await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is not deleted and nothing is created over it: {e}", prev.node_id, incarnation.as_str()))?;
-                    self.delete_crashed(&*self.builds, build_id, attempt, node, &crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation }, exit).await?;
+                    let from = crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation };
+                    self.delete_crashed(&*self.builds, build_id, attempt, node, &from, exit).await?;
+                    return self.create_over(&*self.builds, build_id, attempt, node, &from).await;
                 }
             }
-            FenceOutcome::Clear { gone: None } => {}
+            // A predecessor no inspection proves gone, superseded by a committed takeover (i144 Q51): its
+            // exit-proof row is the takeover's and its row is Deleted, so the name is free, and its data
+            // dir is not this birth's to take. The create is node recovery's over a newly allocated
+            // data dir with a newly minted key, `inherited = false` (node-recovery.md `R-FM2`).
+            FenceOutcome::Clear { gone: None } => {
+                if let Some(p) = &prev {
+                    if self.records.exit_row_of(p).await.ok().flatten().is_some_and(|e| e.proof.starts_with("takeover")) {
+                        claim_for = crate::node_rows::ClaimFor::Recovery;
+                    }
+                }
+            }
         }
         let mut template = self.template_for(node.kind, &node.mesh).await?;
         if node.kind == NodeKind::NodeAdmin && before_ready.is_some() {
@@ -445,7 +478,11 @@ impl AdminRunner {
         }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: None, held_runtimes };
-        let created = self.pipeline(&template).create_with(&req, before_ready, None).await.map_err(crate::executor::RunEnd::from)?;
+        let created = match claim_for {
+            crate::node_rows::ClaimFor::Recovery => self.pipeline(&template).create_recovery_with(&req, before_ready, None).await,
+            _ => self.pipeline(&template).create_with(&req, before_ready, None).await,
+        }
+        .map_err(crate::executor::RunEnd::from)?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -461,16 +498,16 @@ impl AdminRunner {
     /// `Build(shape)` never starts under an assumed state.
     pub(crate) fn mesh_state_hook(&self, admin: &PathName, state: rdm_core::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
         let node_rpc = &self.node_rpc;
-        let (client, resolver, me, book, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.book.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
+        let (client, resolver, me, book, me_id, topology, mesh, records, mesh_rows) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.book.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone(), self.mesh_storage.clone());
         Ok(Arc::new(move |target: Node| {
-            let (client, resolver, me, book, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), book.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
+            let (client, resolver, me, book, me_id, topology, mesh, records, mesh_rows) = (client.clone(), resolver.clone(), me.clone(), book.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone(), mesh_rows.clone());
             Box::pin(async move {
                 let me = book.held_path_name().unwrap_or_else(|| me.clone());
-                // The mesh's exact identity, as the launch took it: what this admin created, or else
-                // what its view holds from the mesh's members (a recovery never mints one).
-                let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
-                let Some(mesh_id) = records.meshes.lock().unwrap().get(&mesh).cloned().or(known).map(|m| m.to_string()) else {
-                    return Err(format!("{}: neither this admin's records nor its view hold a mesh id for {mesh}, so no {state:?} can be applied", target.name));
+                // The mesh's exact identity, as the launch took it ([`mesh_id_of`]; a recovery never mints one).
+                let mesh_id = match mesh_id_of(&records, &topology, &*mesh_rows, &mesh).await {
+                    Ok(Some(id)) => id,
+                    Ok(None) => return Err(format!("{}: neither this admin's records, its view nor mesh.storage hold a mesh id for {mesh}, so no {state:?} can be applied", target.name)),
+                    Err(e) => return Err(format!("{}: {e}, so no {state:?} can be applied", target.name)),
                 };
                 apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, &target).await.map(|()| state)
             })

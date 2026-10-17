@@ -408,7 +408,7 @@ impl Estate {
         let me: PathName = self.fabric_primary().await.parse().ok()?;
         let t = self.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.book, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &self.book, &self.provider, &*self.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await
     }
 
     /// The fabric-primary drives the accepted Build until no Build is active: the claim on its own
@@ -986,7 +986,7 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
     let current = e.builds.current().await.unwrap().unwrap();
     let action = current.action;
@@ -1015,7 +1015,7 @@ async fn a_durable_runtime_row_of_a_runtime_that_runs_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await;
     assert_eq!(opened, None, "a silent member whose runtime runs is held, never replaced");
 }
 
@@ -1059,7 +1059,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
     // The fabric-primary's drift folds the row and leaves the birth to that mesh-primary.
     let me: PathName = fp.parse().unwrap();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut HashSet::new(), &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await;
     assert_eq!(opened, None, "the fabric-primary opens nothing for a node-admin its mesh-primary recovers");
 
     // The mesh-primary's tick: what it watches, from its view and its durable rows.
@@ -1269,7 +1269,7 @@ mod one_attempt_number {
         let me: PathName = e.fabric_primary().await.parse().unwrap();
         let t = e.view.read().await.clone();
         let mut started = HashSet::new();
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), admission, &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await
     }
 
     /// CONTRACT: the proven-drift pass has read the settled Build and computed attempt k+1 for a lost
@@ -1438,7 +1438,7 @@ mod one_attempt_number {
         let refused = {
             let exits = exit_records();
             let verdicts = rdm_admin::admin::ExitVerdicts::default();
-            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &verdicts, &hold, &defers, &recovery, &|_| false, &exits));
+            let mut pass = Box::pin(rdm_admin::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &verdicts, &hold, &defers, &recovery, &|_| false, &exits, None));
             // One poll while the restart holds the admission inside its write.
             let early = tokio::select! {
                 biased;
@@ -1456,7 +1456,7 @@ mod one_attempt_number {
         let settled = e.builds.current().await.unwrap().unwrap();
         assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
         let t = e.view.read().await.clone();
-        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &Default::default(), &hold, &defers, &recovery, &|_| false, &exit_records()).await;
+        let opened = rdm_admin::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &Default::default(), &hold, &defers, &recovery, &|_| false, &exit_records(), None).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
         assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
@@ -1484,9 +1484,9 @@ async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_
     assert!(t.cohort(lost, NodeKind::NodeAdmin).all(|a| a.status.is_live()), "the view still holds the dead admins ready");
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await;
+    let undecided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
-    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false, &exit_records()).await;
+    let decided = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|m| m == lost, &|_| false, &exit_records(), None).await;
     assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the next attempt of the same Build");
     let opened = e.builds.current().await.unwrap().unwrap();
     assert_eq!(one_step_create_of(&opened.action).as_deref(), Some(format!("{lost}.admin.1").as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", opened.action);
@@ -1517,7 +1517,7 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     let me: PathName = t.fabric_primary().unwrap().name.clone();
     let mut started = HashSet::new();
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
-    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records()).await;
+    let opened = rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &Default::default(), &|_| None, &|_| false, &|_| false, &|_| false, &exit_records(), None).await;
     assert_eq!(opened, None, "a proven departure is held: its runtime row is not drift");
 }
 
@@ -2004,7 +2004,7 @@ mod unheard_mesh_hold {
         let t = e.view.read().await.clone();
         // The provider's probe of what is recorded at a path, as the running admin's runner is (set once).
         records.set_path_probe(Arc::new(Probe(e.world.clone())));
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &Default::default(), &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), records).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rdm_admin::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &Default::default(), &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), records, None).await
     }
 
     const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), recovery_decided: false, unreachable_decided: false });
@@ -2276,7 +2276,7 @@ async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it()
     let contexts = rdm_admin::build_claim::AttemptContexts::in_memory();
     #[allow(clippy::too_many_arguments)]
     async fn pass(e: &Estate, t: &Topology, me: &PathName, _lost: &str, contexts: &rdm_admin::build_claim::AttemptContexts, exits: &rdm_admin::admin::Records, started: &mut HashSet<(BuildId, u32, Vec<String>)>, verdicts: &rdm_admin::admin::ExitVerdicts) -> Option<(BuildId, u32)> {
-        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), me, &own_id(t, me), t, &e.book, &e.provider, &*e.builds, contexts, &tokio::sync::Mutex::new(()), &[], started, &mut Default::default(), verdicts, &|_| None, &|_| false, &|_| false, &|_| false, exits).await
+        rdm_admin::admin::reconcile_drift(&crate::adopted_time(), me, &own_id(t, me), t, &e.book, &e.provider, &*e.builds, contexts, &tokio::sync::Mutex::new(()), &[], started, &mut Default::default(), verdicts, &|_| None, &|_| false, &|_| false, &|_| false, exits, None).await
     }
     let verdicts = rdm_admin::admin::ExitVerdicts::default();
     let opened = pass(&e, &t, &me, lost, &contexts, &exits, &mut started, &verdicts).await;

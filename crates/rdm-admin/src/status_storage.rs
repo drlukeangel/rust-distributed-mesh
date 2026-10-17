@@ -171,7 +171,8 @@ pub struct NodeExitRow {
     /// The runtime's exit code, when the provider holds one.
     pub exit_code: Option<i32>,
     /// Where the proof came from: `provider` (the provider's own terminal status), `exit-record`
-    /// (the runtime's exit record in its data dir) or `none` (exited with no code).
+    /// (the runtime's exit record in its data dir), `none` (exited with no code), or `takeover { revision }`
+    /// (the committed takeover at seat move `revision` superseded the birth, i144 Q51).
     pub proof: String,
     /// When the mesh primary observed it, ms since the Unix epoch.
     pub observed_at_ms: u64,

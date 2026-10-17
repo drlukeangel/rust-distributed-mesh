@@ -80,6 +80,10 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
     // The Build may complete on another admin: this view hears every birth first.
     estate.settles_to(&[("mesh1", 2, 3), ("mesh2", 2, 3)], Duration::from_secs(30)).await;
+    // The fabric is born before its primary's mesh is lost: its seat moves are held per admin until
+    // the fabric's first state-commit publishes them, and a mesh lost before that leaves its fabric's
+    // birth incomplete (i144 e6.1), so no other admin's election could fold the seat it would take.
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
 
     // The advertised topology: one fabric primary, every mesh's control API.
     let fabric = estate.fabric_view().await;

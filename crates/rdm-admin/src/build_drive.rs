@@ -196,6 +196,23 @@ pub fn crash_proof_span(me: &PathName, build_id: &BuildId, mesh: &str, nodes: us
     .in_scope(|| tracing::info!("the provider's exit proof of every node of a mesh the investigation found unreachable was read"));
 }
 
+/// The admission of the create of `mesh`'s first node-admin with no exit proof, the fabric seat having
+/// been taken from `lost` of that mesh at seat move `t` (elections §4.3, node-recovery.md `R-FM2`),
+/// named on its own span. The one emitter of the span: the fabric authority's pass and the drive each
+/// name it once per takeover.
+pub fn takeover_recreate_span(me: &PathName, build_id: &BuildId, mesh: &str, t: u64, lost: &rdm_core::handover::HandoverBirth) {
+    tracing::info_span!(
+        "rdm.node_admin.mesh.update.via-takeover-recreate",
+        node = %me,
+        build_id = %build_id.log(),
+        mesh = %mesh,
+        seat_move = t,
+        lost_node_id = %lost.node_id,
+        lost_incarnation = %lost.incarnation.as_str(),
+    )
+    .in_scope(|| tracing::info!("the fabric seat was taken from this mesh past the hold: its first node-admin is re-created from the fabric lane with no exit proof"));
+}
+
 /// Proof that an executor's birth departed: the exact runtime inspected and found exited. Silence
 /// is not proof.
 #[async_trait::async_trait]
@@ -222,6 +239,14 @@ pub trait DepartureProof: Send + Sync {
     /// mesh a new node-admin and authors the fabric `degraded` (step 6, R-DG1), until the mesh's new
     /// primary reports (step 7). A proof that holds no health records nothing.
     async fn mesh_given_node_admin(&self, _mesh: &str, _build_id: &BuildId, _attempt: u32, _from: std::time::Instant) {}
+    /// The birth the fabric seat was taken from and the seat move's `t`, when its latest move is a
+    /// takeover ([`crate::fabric_storage::fabric_seat_taken_from`]): an expired hold with no inspection
+    /// possible moved the seat, so the lost mesh's first node-admin is re-created from the fabric lane
+    /// with no exit proof (elections §4.3, node-recovery.md `R-FM2`). A proof that holds no seat moves
+    /// reads none.
+    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+        None
+    }
 }
 
 /// Where the verdict an executor reported is recorded on the fabric-primary's own log, so the
@@ -910,10 +935,23 @@ impl DriveEnv {
     /// distinct result.
     async fn crash_proven(&self, me: &PathName, drive: &Drive, p: &BuildProjection) -> HashSet<String> {
         let mut crashed = HashSet::new();
+        let taken = self.departure.taken_from().await;
         for m in p.topology.meshes.values().filter(|m| m.name != self.me.mesh && self.gate.peer_mesh(&m.name).is_some_and(|pm| pm.unreachable_decided)) {
             let nodes: Vec<PathName> = m.nodes.iter().cloned().collect();
             if nodes.is_empty() {
                 continue;
+            }
+            // The mesh the fabric seat was taken from (elections §4.3): an expired hold with no
+            // inspection possible moved the seat, so its first node-admin is re-created with no exit
+            // proof; the create's own fence decides its data dir (node-recovery.md `R-FM2`).
+            if let Some((t, lost)) = taken.as_ref().filter(|(_, lost)| lost.mesh == m.name) {
+                if self.topology.read().await.cohort(&m.name, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+                    if drive.first_time(format!("takeover-recreate|{}|{}|{t}", m.name, lost.node_id)) {
+                        takeover_recreate_span(me, &drive.build_id, &m.name, *t, lost);
+                    }
+                    crashed.insert(m.name.clone());
+                    continue;
+                }
             }
             let proofs = self.departure.exits_of(&nodes).await;
             if drive.first_time(format!("crash-proof|{}|{}|{}", m.name, proofs.proven.join(","), proofs.unproven.join("; "))) {

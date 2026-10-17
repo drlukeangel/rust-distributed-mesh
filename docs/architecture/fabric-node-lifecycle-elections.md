@@ -22,7 +22,7 @@ held seat record + current candidate facts
     -> resolved primary
 ~~~
 
-Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §5's unreachable-and-uninspectable rule and the store's authority fence; every other seat moves only on yield, a committed transfer or a proven loss.
+Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §5's unreachable-and-uninspectable rule and the store's authority fence; every other seat moves only on yield, a committed transfer or a proven loss, or with the fabric seat, when both are held by the lost mesh's node-admin and one takeover row moves both.
 
 A published is_primary or is_fabric_primary bit is a projection of this result. It never creates authority by advertisement.
 
@@ -149,7 +149,7 @@ execution authority ends at the row's revision.
 Day 0 ([fabric.create](lifecycles/fabric-create.md)) is not a special primary assignment. The first Ready node-admin is simply the only eligible node-admin, so the ordinary rule yields the initial mesh-primary and fabric-primary seats.
 
 For every seat:
-- a living holder keeps its seat; a lower-NodeId candidate that later becomes Ready never displaces it;
+- a living holder keeps its seat unless a committed takeover has superseded it; a lower-NodeId candidate that later becomes Ready never displaces it;
 - silence, an observer-inferred Dead, a `held-running` hold or an unheard route is not proof: the holder keeps the seat. For the fabric seat only, the unreachable-and-uninspectable rule below applies;
 - for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step proves the exit; the seat moves only once that exit proof is recorded, never before the proof;
 - for a hung fabric-primary (`R-FM1`), no node below it commands its termination; watching admins record `held-running { since, verdicts }` on the holder's status row (surfaced on `node.get` and `fabric.get`). For a fabric-primary that is unreached by the tickle ladder and whose exact runtime no surviving admin can inspect (its mesh or provider domain gone), the hold (`RDM_HUNG_HOLD_FLOORS`) runs, and when it expires the seat moves by §4.3's backbone rule. The takeover commits only through the store's authority fence: every fabric write and Build claim carries the writer's seat revision, the store validates it against the current committed seat revision, rejects every stale one, and serializes the takeover with writes and claims so no old-authority operation commits afterwards; the winner begins recovery only after that fence has committed, and if the store cannot provide the fence the takeover stays held. A held takeover is surfaced on `fabric.get` as `takeover { lost, expected_revision, winner, proposer, since, reason }` until it commits or the holder is proven gone and the ordinary rule fills the seat. Every mesh-primary that notices tells the winner (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row;

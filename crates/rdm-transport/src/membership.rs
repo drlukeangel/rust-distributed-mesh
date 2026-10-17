@@ -1040,6 +1040,19 @@ struct HeldSeats {
     /// The last update held together: replayed as one `PrimaryUpdated` while its seats are the records held.
     together: Option<(LifecycleOp, Vec<CommittedSeat>)>,
     receipts: crate::receive_order::SeatReceipts,
+    /// Seats a committed seat move left with no holder, by seat and mesh: the move's revision (i144 Q51:
+    /// a takeover vacates the lost mesh's primary seat). Only a record of a later revision fills one.
+    vacant: HashMap<(Seat, String), u64>,
+}
+
+/// The slot `seat` of `mesh` is held under: a mesh's node-admin cohort is its primary seat, and the
+/// fabric seat is one per fabric.
+fn slot(seat: Seat, mesh: &str) -> (Seat, String) {
+    match seat {
+        Seat::FabricPrimary => (Seat::FabricPrimary, String::new()),
+        Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => (Seat::MeshPrimary, mesh.to_string()),
+        Seat::Cohort(kind) => (Seat::Cohort(kind), mesh.to_string()),
+    }
 }
 
 impl HeldSeats {
@@ -1052,8 +1065,14 @@ impl HeldSeats {
         }
     }
 
+    /// The revision `seat` of `mesh` was left vacant at, while no later record fills it.
+    fn vacancy(&self, seat: Seat, mesh: &str) -> Option<u64> {
+        self.vacant.get(&slot(seat, mesh)).copied()
+    }
+
     /// Hold `record` for `seat` of `mesh`.
     fn put(&mut self, seat: Seat, mesh: &str, record: SeatHolder) {
+        self.vacant.remove(&slot(seat, mesh));
         match seat {
             Seat::FabricPrimary => self.fabric = Some(record),
             Seat::MeshPrimary | Seat::Cohort(rdm_core::NodeKind::NodeAdmin) => {
@@ -1086,12 +1105,20 @@ pub enum SeatTaken {
         /// The record held, which this one does not supersede.
         held: SeatHolder,
     },
+    /// The seat was left vacant at `revision` by a committed move, and the record is not later.
+    RefusedVacant {
+        /// The revision the seat was left vacant at.
+        revision: u64,
+    },
 }
 
 impl SeatBook {
     /// Hold `holder` for `seat` if it supersedes what is held.
     pub fn take(&self, seat: Seat, holder: &SeatHolder) -> SeatTaken {
         let mut held = self.inner.lock().unwrap();
+        if let Some(revision) = held.vacancy(seat, &holder.mesh).filter(|v| holder.revision <= *v) {
+            return SeatTaken::RefusedVacant { revision };
+        }
         match held.get(seat, &holder.mesh) {
             Some(c) if &c == holder => SeatTaken::Same,
             Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
@@ -1113,16 +1140,27 @@ impl SeatBook {
             let (seat, mesh) = committed_key(c);
             held.get(seat, &mesh)
         };
+        let vacancy = |held: &HeldSeats, c: &CommittedSeat| {
+            let (seat, mesh) = committed_key(c);
+            held.vacancy(seat, &mesh).filter(|v| c.revision <= *v)
+        };
         let decided: Vec<SeatTaken> = seats
             .iter()
             .map(|c| match current(&held, c) {
+                _ if vacancy(&held, c).is_some() => SeatTaken::RefusedVacant { revision: vacancy(&held, c).unwrap_or_default() },
                 Some(h) if h == c.record() => SeatTaken::Same,
                 Some(h) if !c.record().supersedes(&h) => SeatTaken::Refused { held: h },
                 previous => SeatTaken::Held { previous },
             })
             .collect();
-        if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
-            return seats.iter().map(|c| SeatTaken::Refused { held: current(&held, c).unwrap_or_else(|| c.record()) }).collect();
+        if decided.iter().any(|t| matches!(t, SeatTaken::Refused { .. } | SeatTaken::RefusedVacant { .. })) {
+            return seats
+                .iter()
+                .map(|c| match (vacancy(&held, c), current(&held, c)) {
+                    (Some(revision), _) => SeatTaken::RefusedVacant { revision },
+                    (None, held) => SeatTaken::Refused { held: held.unwrap_or_else(|| c.record()) },
+                })
+                .collect();
         }
         for c in seats {
             let (seat, mesh) = committed_key(c);
@@ -1150,6 +1188,8 @@ impl SeatBook {
             _ => unreachable!("only seat publications use the seat book receive door"),
         };
         let current: Vec<_> = seats.iter().map(|c| { let (seat, mesh) = committed_key(c); (c.clone(), held.get(seat, &mesh)) }).collect();
+        // A seat a committed move left vacant takes no record of its revision or older (i144 Q51).
+        if seats.iter().any(|c| { let (seat, mesh) = committed_key(c); held.vacancy(seat, &mesh).is_some_and(|v| c.revision <= v) }) { return None; }
         if !held.receipts.admit(frame, &current) { return None; }
         if !matches!(frame.data(), Frame::PrimaryUpdating { .. }) {
             for c in &seats {
@@ -1166,6 +1206,33 @@ impl SeatBook {
     /// The fabric seat's held record.
     pub fn fabric(&self) -> Option<SeatHolder> {
         self.inner.lock().unwrap().fabric.clone()
+    }
+
+    /// Leave `seat` of `mesh` vacant at `revision`, as a committed seat move with no holder did (i144
+    /// Q51: a takeover vacates the lost mesh's primary seat): its record goes, and only a record of a later
+    /// revision fills it. `false` when the record held, or a vacancy, is already at `revision` or later.
+    pub fn vacate(&self, seat: Seat, mesh: &str, revision: u64) -> bool {
+        let mut held = self.inner.lock().unwrap();
+        if held.get(seat, mesh).is_some_and(|h| h.revision >= revision) || held.vacancy(seat, mesh).is_some_and(|v| v >= revision) {
+            return false;
+        }
+        match slot(seat, mesh) {
+            (Seat::FabricPrimary, _) => held.fabric = None,
+            (Seat::Cohort(kind), m) if kind != rdm_core::NodeKind::NodeAdmin => {
+                held.cohorts.remove(&(m, kind));
+            }
+            (_, m) => {
+                held.meshes.remove(&m);
+            }
+        }
+        held.vacant.insert(slot(seat, mesh), revision);
+        self.changed.send_modify(|v| *v += 1);
+        true
+    }
+
+    /// Every mesh primary seat a committed move left vacant, with the revision it was left at.
+    pub fn vacant_meshes(&self) -> std::collections::BTreeMap<String, u64> {
+        self.inner.lock().unwrap().vacant.iter().filter(|((seat, _), _)| *seat == Seat::MeshPrimary).map(|((_, m), v)| (m.clone(), *v)).collect()
     }
 
 

@@ -54,7 +54,7 @@ node.deleted is the caller event. The caller waits on the stream and durable rec
 
 Stop's node.stopped is pre-exit (stopped) and insufficient. Retain the exact accepted RuntimeFact
 and require the provider's matching Exited observation before node.deleted or identity
-release. An unreachable provider leaves delete incomplete. A crashed node also needs
+release, or the committed takeover that superseded it. An unreachable provider leaves delete incomplete. A crashed node also needs
 that proof; lack of a reply never licenses deletion. The runtime-exit responsibility
 is owned here and is composed by [node recovery](node-recovery.md), the mesh-primary's
 drift reconciliation.

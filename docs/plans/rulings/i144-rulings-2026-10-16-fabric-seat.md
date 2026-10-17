@@ -101,3 +101,17 @@ A packet with a §5 delta on each; arms only after.
   the row. A seat's revision never advances except by a row.
 - e6.1 carries the election-fill row and its cell: a vacancy filled by the rule writes
   `seat-moves/<T>`; a move computed against the pre-fill revision is refused by the fold.
+
+## Q51 — the lost mesh's seat, row writer and node-admin name after a takeover with no exit proof (Luke 2026-10-17): A, with the lost birth's row carrying its proof
+
+- One takeover row moves both seats the lost birth holds: the fabric seat to the winner, and the lost
+  mesh's primary seat, when its record names the same birth, to no holder (`seat-move/1`'s holder
+  optional; durable format moved). The fabric-primary writes the lost mesh's rows until the re-born
+  admin takes the vacant seat by the ordinary rule (an `election` row from the vacated revision).
+- The lost birth's row is written `Deleted` with its exit proof `takeover { revision }`, never a
+  Deleted that claims nothing: one meaning for Deleted, a birth that holds nothing any more, the reason
+  readable. Its data dir is untouched until its return proves exit through the fence (Q28).
+- Page lines with the code: elections §1 ("or with the fabric seat, when both are held by the lost
+  mesh's node-admin and one takeover row moves both"), §5 ("a living holder keeps its seat unless a
+  committed takeover has superseded it"), node-delete.md ("or the committed takeover that superseded
+  it"), fabric-recovery.md (the vacating and the name release).

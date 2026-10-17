@@ -108,6 +108,8 @@ pub(crate) struct ProviderDeparture {
     pub(crate) provider: Arc<dyn DeploymentProvider>,
     pub(crate) nodes: Arc<dyn crate::storage::NodesStorage>,
     pub(crate) records: Arc<Records>,
+    /// The fabric's seat moves, read for the takeover that moved the fabric seat.
+    pub(crate) fabric: Arc<dyn crate::fabric_storage::FabricStorage>,
 }
 
 impl ProviderDeparture {
@@ -165,6 +167,19 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     /// the node-admin births of the mesh its view holds.
     async fn mesh_given_node_admin(&self, mesh: &str, _build_id: &crate::build::BuildId, _attempt: u32, from: std::time::Instant) {
         give_mesh_node_admin(&self.records, &self.held_name(), &self.topology, mesh, from).await;
+    }
+
+    /// The fabric seat's latest move read from the fabric's seat moves, when it is a takeover. Moves
+    /// that cannot be read are named and answer none: nothing is re-created without the takeover read.
+    async fn taken_from(&self) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+        match self.fabric.seat_moves().await {
+            Ok(moves) => crate::fabric_storage::fabric_seat_taken_from(&moves),
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.seat.reject.via-seat-moves-unreadable", node = %self.held_name(), store = "fabric.storage", error = %e)
+                    .in_scope(|| tracing::info!("the fabric's seat moves could not be read: no lost mesh's node-admin is re-created from the fabric lane this pass"));
+                None
+            }
+        }
     }
 
     /// Whether the exit of the exact birth the view names for `executor` is recorded: a point read
@@ -292,9 +307,21 @@ pub(crate) async fn crashed_peer_mesh(
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     unreachable: &(dyn Fn(&str) -> bool + Sync),
+    taken: Option<&(u64, rdm_core::handover::HandoverBirth)>,
 ) -> Option<(String, PathName, Option<crate::drift::ExitedBirth>)> {
     for m in current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)) {
         let Some(first) = m.cohort(NodeKind::NodeAdmin).min() else { continue };
+        // The mesh the fabric seat was taken from (elections §4.3): its first node-admin is re-created
+        // with no exit proof, and the create's own fence decides its data dir (node-recovery.md `R-FM2`).
+        if let Some((seat_move, lost)) = taken.filter(|(_, lost)| lost.mesh == m.name) {
+            if t.cohort(&m.name, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) {
+                let Some(owed) = crate::build_drive::first_admin_owed(current, &m.name, first) else { continue };
+                if started.insert((current.build_id.clone(), 0u32, vec!["takeover-recreate".to_string(), m.name.clone(), lost.node_id.to_string(), seat_move.to_string()])) {
+                    crate::build_drive::takeover_recreate_span(me, &current.build_id, &m.name, *seat_move, lost);
+                }
+                return Some((m.name.clone(), owed, None));
+            }
+        }
         let nodes: Vec<PathName> = m.nodes.iter().cloned().collect();
         let (proofs, proven) = read_node_exits(&nodes, t, book, durable, probe, provider).await;
         if started.insert((current.build_id.clone(), 0u32, vec!["crash-proof".to_string(), m.name.clone(), proofs.proven.join(","), proofs.unproven.join("; ")])) {
@@ -315,11 +342,12 @@ pub(crate) async fn crashed_peer_mesh(
 /// completed receipts of the create; for the
 /// mesh that lost its mesh-primary, the exited birth and the completed receipts of its create and delete
 /// (`node.delete:`, `node.create:`, `node.update:<path>`); for surplus, each live birth by
-/// incarnation.
+/// incarnation. A completed receipt is an operation's own `Complete` step: the steps a failed attempt
+/// completed before its failure are no progress, so they move nothing and open no next attempt.
 pub(crate) fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], repair: Option<(&PathName, &IncarnationId)>, verdict: Option<(&str, &PathName)>, surplus: &[String]) -> String {
     let complete = |op: &str| {
         let member = format!("{op}/");
-        steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count()
+        steps.iter().filter(|s| s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count()
     };
     let birth = |n: &Node| format!("{}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("-"));
     if let Some((label, admin)) = verdict {
@@ -381,6 +409,7 @@ pub async fn reconcile_drift(
     decided: &(dyn Fn(&str) -> bool + Sync),
     unreachable: &(dyn Fn(&str) -> bool + Sync),
     exits: &Records,
+    taken: Option<&(u64, rdm_core::handover::HandoverBirth)>,
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
     let me = &authority.name;
@@ -416,7 +445,7 @@ pub async fn reconcile_drift(
     });
     // The fully crashed mesh (mesh-investigation.md step 5): a peer mesh the investigation found
     // unreachable, every node of which the provider proves exited, is owed the same create.
-    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, exits.path_probe().as_deref(), provider, started, unreachable).await } else { None };
+    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, exits.path_probe().as_deref(), provider, started, unreachable, taken).await } else { None };
     // The births this authority may have to prove: the ones it no longer hears.
     let candidates = crate::drift::unheard(t);
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();

@@ -11,7 +11,7 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     lost.extend(book.departed().into_iter().map(|op| op.incarnation));
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
-    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost }
+    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost, vacant: book.seats.vacant_meshes() }
 }
 
 /// Where this birth's Build log reads its authority: the committed fabric seat record held in
@@ -61,7 +61,9 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
         if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
             continue;
         }
-        said.push((seat, rdm_core::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
+        // A seat a committed move left vacant is filled at the revision after the vacancy (i144 Q51).
+        let vacant = (seat == rdm_core::Seat::MeshPrimary).then(|| decided.vacant.get(mesh).copied()).flatten();
+        said.push((seat, rdm_core::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).or(vacant.map(|v| v + 1)).unwrap_or(1) }));
     }
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
     // says each other cohort's seat the election filled with a birth the record does not name.

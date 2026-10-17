@@ -108,7 +108,7 @@ impl SeatTransferRow {
     pub fn seat_move(&self) -> SeatMoveRow {
         let from = |seat: &rdm_core::seat::transfer::Seat| self.expected.iter().find(|e| &e.seat == seat).map(|e| e.expected_revision);
         SeatMoveRow {
-            seats: self.seats.iter().map(|c| MovedSeat { seat: c.seat.clone(), from_revision: from(&c.seat).unwrap_or(c.revision.saturating_sub(1)), revision: c.revision, holder: c.holder.clone(), from: Some(self.holder.clone()) }).collect(),
+            seats: self.seats.iter().map(|c| MovedSeat { seat: c.seat.clone(), from_revision: from(&c.seat).unwrap_or(c.revision.saturating_sub(1)), revision: c.revision, holder: Some(c.holder.clone()), from: Some(self.holder.clone()) }).collect(),
             cause: MoveCause::Handover { operation: self.operation.clone(), build_id: self.build_id.clone(), attempt: self.attempt },
             by: self.by.clone(),
         }
@@ -123,9 +123,9 @@ impl SeatTransferRow {
             build_id: build_id.clone(),
             attempt: *attempt,
             holder: first.from.clone()?,
-            successor: first.holder.clone(),
+            successor: first.holder.clone()?,
             expected: row.seats.iter().map(|m| rdm_core::handover::SeatRevision { seat: m.seat.clone(), expected_revision: m.from_revision }).collect(),
-            seats: row.seats.iter().map(|m| rdm_core::seat::transfer::CommittedSeat { seat: m.seat.clone(), holder: m.holder.clone(), revision: m.revision }).collect(),
+            seats: row.seats.iter().map(|m| Some(rdm_core::seat::transfer::CommittedSeat { seat: m.seat.clone(), holder: m.holder.clone()?, revision: m.revision })).collect::<Option<Vec<_>>>()?,
             by: row.by.clone(),
         })
     }
@@ -140,8 +140,9 @@ pub struct MovedSeat {
     pub from_revision: u64,
     /// Its revision from this move: its own counter, stepped by one.
     pub revision: u64,
-    /// Its holder from this move.
-    pub holder: rdm_core::handover::HandoverBirth,
+    /// Its holder from this move; `None` when the move leaves the seat vacant (i144 Q51: a takeover
+    /// vacates the lost mesh's primary seat, which its mesh's next admin fills by the ordinary rule).
+    pub holder: Option<rdm_core::handover::HandoverBirth>,
     /// Its holder before this move; `None` for a seat's first seating.
     pub from: Option<rdm_core::handover::HandoverBirth>,
 }
@@ -164,6 +165,18 @@ pub enum MoveCause {
     },
     /// The takeover of the fabric seat past the hold (elections §5).
     Takeover,
+}
+
+/// The birth the fabric seat was taken from, with the move's `t`, when the fabric seat's latest move
+/// in `moves` is a takeover (elections §5): the lost fabric-primary, whose mesh's node-admin the new
+/// fabric-primary re-creates from the fabric lane (elections §4.3, node-recovery.md `R-FM2`). `None`
+/// when that move is an election or a handover, or no move seated the fabric seat.
+pub fn fabric_seat_taken_from(moves: &[SeatMove]) -> Option<(u64, rdm_core::handover::HandoverBirth)> {
+    let (t, cause, moved) = moves.iter().rev().find_map(|m| m.row.seats.iter().find(|s| s.seat == rdm_core::seat::transfer::Seat::FabricPrimary).map(|s| (m.t, &m.row.cause, s)))?;
+    if *cause != MoveCause::Takeover {
+        return None;
+    }
+    moved.from.clone().map(|from| (t, from))
 }
 
 /// One row of the fabric's seat-move sequence (`seat-move/1`, Q35 x): the seats it moves, what moved

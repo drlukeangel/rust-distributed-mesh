@@ -133,7 +133,7 @@ impl MemberDoor {
         let holder_name = self.membership.book.all().into_iter().find(|d| d.node.node_id == first.holder.node_id).map(|d| d.node.name.clone()).unwrap_or_else(|| me.clone());
         let op = LifecycleOp { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: first.holder.node_id.clone(), incarnation: first.holder.incarnation.clone(), name: holder_name, event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
         let taken = self.membership.seats().take_together(&op, &committed);
-        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
+        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. } | SeatTaken::RefusedVacant { .. })) {
             "refused-not-newer"
         } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
             "same"

@@ -351,7 +351,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
                 let mut view = topology.write().await;
                 let mut lost = seats.gone();
                 lost.extend(view.nodes.iter().filter_map(|n| n.incarnation_id.clone().filter(|i| records.is_exited(&n.node_id, i))));
-                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: seats.cohorts(), lost };
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: seats.cohorts(), lost, vacant: seats.vacant_meshes() };
                 resolve_with(&mut view.nodes, &inc);
             })
         })
@@ -802,7 +802,7 @@ async fn seat_at(a: &Admin, seat: Seat, holder: &rdm_core::SeatHolder) {
     let logged = a.door.storage.seat_moves().await.unwrap().iter().flat_map(|m| m.row.seats.clone()).filter(|s| s.seat == wire).map(|s| s.revision).max().unwrap_or(0);
     let b = HandoverBirth { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation.clone() };
     for r in logged..holder.revision {
-        let row = SeatMoveRow { seats: vec![MovedSeat { seat: wire.clone(), from_revision: r, revision: r + 1, holder: b.clone(), from: (r > 0).then(|| b.clone()) }], cause: MoveCause::Election, by: b.clone() };
+        let row = SeatMoveRow { seats: vec![MovedSeat { seat: wire.clone(), from_revision: r, revision: r + 1, holder: Some(b.clone()), from: (r > 0).then(|| b.clone()) }], cause: MoveCause::Election, by: b.clone() };
         assert!(matches!(a.door.storage.commit_seat_move(&row).await.unwrap(), MoveCommit::Committed(_)), "seeding {} at revision {}", wire.name(), r + 1);
     }
     a.door.membership.seats().take(seat, holder);
@@ -1044,7 +1044,8 @@ async fn the_holder_cuts_off(op: &'static str) {
 /// `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row";
 /// Q48: every seat change is a row): P holds the fabric seat at revision 7 and its mesh is lost. A
 /// takeover proposed to X, the backbone rule's winner with mesh1 excluded, commits ONE seat move of
-/// kind `takeover`: the fabric seat from P at 7 to X at 8, written by X, and X holds the record at 8.
+/// kind `takeover`: the fabric seat from P at 7 to X at 8, and mesh1's primary seat, which P holds too,
+/// from P to no holder (Q51 A), written by X; X holds the fabric record at 8 and mesh1's seat vacant.
 /// The same proposal again answers `AlreadyApplied` and writes nothing. A proposal naming another
 /// winner is refused not-authority, one from the revision the takeover moved is refused stale, and
 /// N, which the rule does not seat, refuses a proposal naming it. Must NOT happen: two takeover rows,
@@ -1062,7 +1063,10 @@ async fn a_takeover_proposed_to_the_winner_is_committed_once_and_a_repeat_answer
     let takeovers: Vec<_> = moves.iter().filter(|m| m.row.cause == MoveCause::Takeover).collect();
     assert_eq!(takeovers.len(), 1, "one takeover row: {moves:?}");
     let row = &takeovers[0].row;
-    assert_eq!((row.seats.len(), row.seats[0].seat.clone(), row.seats[0].from_revision, row.seats[0].revision, row.seats[0].holder.clone(), row.seats[0].from.clone(), row.by.clone()), (1, WireSeat::FabricPrimary, 7, 8, birth(&f.x), Some(birth(&f.p)), birth(&f.x)));
+    assert_eq!((row.seats.len(), row.seats[0].seat.clone(), row.seats[0].from_revision, row.seats[0].revision, row.seats[0].holder.clone(), row.seats[0].from.clone(), row.by.clone()), (2, WireSeat::FabricPrimary, 7, 8, Some(birth(&f.x)), Some(birth(&f.p)), birth(&f.x)));
+    let vacated = row.seats.iter().find(|m| m.seat == WireSeat::MeshPrimary { mesh: "mesh1".into() }).unwrap_or_else(|| panic!("the takeover row moves mesh1's primary seat too: {row:?}"));
+    assert_eq!((vacated.holder.clone(), vacated.from.clone()), (None, Some(birth(&f.p))), "mesh1's seat moved from P to no holder: {vacated:?}");
+    assert_eq!(f.x.door.membership.seats().vacant_meshes().get("mesh1").copied(), Some(vacated.revision), "X holds mesh1's seat vacant at the row's revision");
     assert_eq!(f.x.door.membership.seats().fabric(), Some(holder_of(&f.x, 8)), "the winner holds the record");
     assert_eq!(send(&f.m, &f.x, take(&f.x, 7)).await, Reply::AlreadyApplied { revisions: taken.clone() }, "the same takeover again");
     assert_eq!(f.x.door.propose_take_over(&holder_of(&f.p, 7)).await, Some(Reply::AlreadyApplied { revisions: taken }), "the winner noticing it itself");

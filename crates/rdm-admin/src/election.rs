@@ -88,6 +88,10 @@ pub struct Incumbency {
     /// provider found their runtime exited, a departure was heard, or a later birth announced it
     /// replaced them. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
     pub lost: HashSet<IncarnationId>,
+    /// Each mesh primary seat a committed seat move left vacant, by mesh name, with the revision it
+    /// was left at (i144 Q51: a takeover vacates the lost mesh's primary seat): the ordinary rule
+    /// fills it at the next revision.
+    pub vacant: BTreeMap<String, u64>,
 }
 
 impl Incumbency {
@@ -200,7 +204,7 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
 /// mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh primary.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != mesh).cloned().collect();
-    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone() };
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone(), vacant: inc.vacant.clone() };
     resolve_with(&mut hypothetical, &vacated);
     hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
@@ -636,7 +640,7 @@ mod tests {
     }
 
     fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {
-        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), cohorts: BTreeMap::new(), lost: HashSet::new() }
+        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), cohorts: BTreeMap::new(), lost: HashSet::new(), vacant: BTreeMap::new() }
     }
 
     fn lose(inc: &mut Incumbency, _node_id: &str, incarnation: &str) {
