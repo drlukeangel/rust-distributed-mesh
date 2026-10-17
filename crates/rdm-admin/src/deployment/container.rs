@@ -206,6 +206,8 @@ struct LaunchDisk {
     binding_dirs: Vec<PathBuf>,
     /// The span evidence directory (`RDM_EVIDENCE_DIR`), when it is a directory.
     evidence_dir: Option<String>,
+    /// The fabric namespace, mounted writable at its supplied absolute path for every node.
+    store_dir: Option<PathBuf>,
 }
 
 /// Prepare a launch's disk: make the data dir, look at what is mounted, and remove a runtime
@@ -214,6 +216,18 @@ struct LaunchDisk {
 fn launch_disk(data_dir: &Path, admin: bool, env: &std::collections::BTreeMap<String, String>) -> Result<LaunchDisk, String> {
     std::fs::create_dir_all(data_dir).map_err(|e| format!("data dir {}: {e}", data_dir.display()))?;
     let mut disk = LaunchDisk::default();
+    if let Some(dir) = env.get(rdm_core::launch::ENV_STORE_DIR) {
+        let path = Path::new(dir);
+        if !path.is_absolute() {
+            return Err(format!("RDM_STORE_DIR {dir:?}: the mounted store root must be an absolute directory"));
+        }
+        if !dir_present(path).map_err(|e| format!("RDM_STORE_DIR {e}"))? {
+            return Err(format!("RDM_STORE_DIR {dir}: the supplied store root is missing or is not a directory"));
+        }
+        std::fs::read_dir(path).map_err(|e| format!("RDM_STORE_DIR {dir}: the supplied store root cannot be listed: {e}"))?;
+        disk.store_dir = Some(path.to_path_buf());
+    }
+
     for m in RUNTIME_MOUNTS {
         match std::fs::metadata(m) {
             Ok(_) => disk.runtime_mounts.push(m),
@@ -531,6 +545,13 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             "-v".into(),
             format!("{data}:{data}"),
         ];
+        // --mount refuses a missing source instead of creating a fresh namespace. The
+        // environment below retains this exact path for ordinary nodes and node-admins.
+        if let Some(store) = &disk.store_dir {
+            if store != &spec.data_dir && disk.data_root.as_ref() != Some(store) {
+                args.extend(["--mount".into(), format!("type=bind,src={},dst={}", store.display(), store.display())]);
+            }
+        }
         for m in &disk.runtime_mounts {
             args.extend(["-v".into(), format!("{m}:{m}:ro")]);
         }

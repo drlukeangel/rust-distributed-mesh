@@ -299,17 +299,14 @@ per_exe mesh-transport rafka-mesh-transport
 per_exe rdm-transport rdm-transport
 echo "i143-2777-process sh:scripts/i143-acceptance-gate.sh i143-2777-process" >> $D/jobs
 echo "i143-2780-process sh:scripts/i143-acceptance-gate.sh i143-2780-process" >> $D/jobs
-# The container estate cells (`i143-2777-container`, `i143-2784-chaos-container`, `container_kill`) refuse at
-# boot until the container provider's store root is qualified (`store_root::qualify`, R14 item 6; tied to
-# PRD row `e12.s88` and `e11.s12`). `rdm-admin`'s provider cells (`container_proof`) run in `container-proof`.
-if [ "${RDM_CONTAINER_STORE_QUALIFIED:-0}" = 1 ]; then
-    echo "i143-2777-container sh:scripts/i143-acceptance-gate.sh i143-2777-container" >> $D/jobs
-    echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-chaos-container" >> $D/jobs
-fi
+# R14 item 6: the provider mounts one qualified store namespace in every container.
+export RDM_CONTAINER_STORE_QUALIFIED=1
+echo "i143-2777-container sh:scripts/i143-acceptance-gate.sh i143-2777-container" >> $D/jobs
+echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-chaos-container" >> $D/jobs
 echo "doctests cargo:--doc $PKGS" >> $D/jobs
 echo "workspace-check sh:cargo check --workspace --tests --no-default-features" >> $D/jobs
-# The container proof (PRD §12.2): the provider cells, the smoke and the kill cell (kill cell tied to e12.s88 / R14 item 6), a container runtime required. Release gate only: processes first, containers last.
-echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: && if [ \"\${RDM_CONTAINER_STORE_QUALIFIED:-0}\" = 1 ]; then $(exe $SCENARIO_PKG main) -q container_kill::; fi" >> $D/jobs
+# Container jobs require the Docker host; absence is a refusal, never a skip.
+echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: && $(exe $SCENARIO_PKG main) -q container_kill::" >> $D/jobs
 # The Rafka-shaped (R-shape) canonical process jobs: each >1 min, so release gate only (run between epics).
 for j in i143-rshape-composition-process i143-rshape-authority-chaos-process i143-rshape-lifecycle-chaos-process i143-rshape-routing-chaos-process i143-rshape-partition-chaos-process; do
     grep -q "\"$j\"" tools/mesh-audit/i143-acceptance-jobs.json && echo "rshape-${j#i143-rshape-} sh:scripts/i143-acceptance-gate.sh $j" >> $D/jobs
@@ -357,14 +354,10 @@ export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_ST
 # during the stem phase they take cargo's package-cache lock that audit-tests' `cargo tree` waits on.
 RELEASE_ONLY='^(mesh_delete_resume|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2784-chaos-container|cohort_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|cohort_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|owed_check_ins|fabric_takeover) '
 if [ "$GATE" = fast ]; then grep -vE "$RELEASE_ONLY" $D/jobs > $D/jobs.fast && mv $D/jobs.fast $D/jobs; fi
-# Heavy release jobs (the R-shape chaos/composition processes and the container jobs) run real
-# chaos phases at production windows: measured alone 195-602 s (lead, 2026-10-10, s24). Started
-# beside 40 other jobs they starve and hit the 300 s cap. They run after the parallel batch,
-# one at a time, each with a cap above its measured solo wall; every other job keeps 300 s.
-HEAVY='^(rshape-[a-z-]+|i143-2784-chaos-container|i143-2777-container|container-proof) '
-grep -E "$HEAVY" $D/jobs > $D/jobs.heavy || true; grep -vE "$HEAVY" $D/jobs > $D/jobs.light || true
+# Every suite job starts in the same concurrent batch. Long release jobs retain their
+# existing 900 s cap; other jobs retain 300 s. GATE_JOBS controls the batch concurrency.
 # Prioritize known heavy/longer jobs so they start at T=0 and don't stall in the queue tail
-python3 - "$D/jobs.light" <<'PY'
+python3 - "$D/jobs" <<'PY'
 import sys
 path = sys.argv[1]
 lines = open(path).readlines()
@@ -397,8 +390,12 @@ def score(line):
 lines.sort(key=score)
 open(path, "w").writelines(lines)
 PY
-xargs -P "$JOBS" -L1 bash -c 'one "$@"' _ < $D/jobs.light
-[ -s $D/jobs.heavy ] && GATE_JOB_SECS=${GATE_HEAVY_JOB_SECS:-900} xargs -P 1 -L1 bash -c 'one "$@"' _ < $D/jobs.heavy
+xargs -P "$JOBS" -L1 bash -c '
+    case "$1" in rshape-*|i143-2784-chaos-container|i143-2777-container|container-proof)
+        export GATE_JOB_SECS=${GATE_HEAVY_JOB_SECS:-900} ;;
+    esac
+    one "$@"
+' _ < $D/jobs
 cat $D/*.log >> $O.detail
 # Nothing an estate launched may outlive the gate: a node process of this lane's build that the
 # init/user manager has adopted is a leak, named and failed (then killed so the next gate is clean).

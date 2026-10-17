@@ -306,6 +306,7 @@ while not (root / 'done').exists():
     value = (root / 'atomic').read_bytes()
     assert value in (b'A' * 131072, b'B' * 131072), f'torn replacement: {len(value)} bytes'
     reads += 1
+assert reads > 0, 'the reader observed no replacements'
 assert (root / 'atomic').read_bytes() == b'B' * 131072
 assert 'replace.tmp' not in {p.name for p in root.iterdir()}
 with (root / 'reader-created').open('xb') as f:
@@ -325,6 +326,7 @@ print('reverse write visible in read and listing on the writer container')
 "#).await;
     assert_eq!(std::fs::read(store.join("created")).unwrap(), b"first");
     assert_eq!(std::fs::read(store.join("atomic")).unwrap(), vec![b'B'; 131072]);
+    assert!(rdm_admin::store_root::qualify(rdm_admin::model::ProviderKind::Container).is_ok(), "the proven container provider is admitted at boot");
     println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));
 }
 

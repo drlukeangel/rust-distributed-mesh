@@ -160,17 +160,13 @@ impl StoreRoot {
     }
 }
 
-/// Whether `provider` may back the store root: the process provider hands every node of an estate
-/// one directory on the host's own filesystem. Any other provider qualifies only by a functional
-/// cell proving hard-link insertion, atomic rename, file and directory fsync, and coherent reads
-/// and listings on its actual backing store, cross-host included (R14 item 6); none exists, so it is
-/// refused by name.
+/// Providers qualified for the shared store namespace (R14 item 6): the process provider
+/// supplies a host directory; the container provider bind-mounts that directory at the same
+/// absolute path in every runtime. `container_proof` proves hard-link insertion, atomic
+/// replacement, file and directory fsync, and coherent cross-container reads and listings.
 pub fn qualify(provider: crate::model::ProviderKind) -> Result<(), String> {
     match provider {
-        crate::model::ProviderKind::Process => Ok(()),
-        other => Err(format!(
-            "the {other:?} provider is not qualified to back the fabric's store root ({ENV_STORE_DIR}): no cell proves hard-link insertion, atomic rename, file and directory fsync, and coherent reads and listings on its backing store (R14 item 6)"
-        )),
+        crate::model::ProviderKind::Process | crate::model::ProviderKind::Container => Ok(()),
     }
 }
 
