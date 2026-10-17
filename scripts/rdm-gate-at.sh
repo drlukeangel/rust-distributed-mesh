@@ -204,6 +204,12 @@ if errors:
 PY
 }
 step discovery "discover_check" || { echo DONE | tee -a $O; exit 1; }
+# Consumer binaries and their import manifest are prerequisites, built before any tests.
+# Their immutable copied binaries are what every concurrent R-shape job runs.
+if [ "$GATE" = release ] && [ -f demo/Cargo.toml ] && [ -x scripts/i143-rshape-build-consumer.sh ]; then
+    step consumer-build "scripts/i143-rshape-build-consumer.sh --candidate-sha $(git rev-parse HEAD) --workspace target/i143-rshape/consumer-workspace --bin-dir target/i143-rshape/consumer-bin --output target/i143-rshape/consumer-build --skip-ui-tests" || { echo DONE | tee -a $O; exit 1; }
+fi
+
 
 # 2. Every check and every scenario, in parallel, each a prebuilt test binary.
 exe(){ python3 - "$D/artifacts.json" "$@" <<'PY'
@@ -314,9 +320,9 @@ done
 # The demo workspace (demo/: the R-shape consumer and the admin UI, RDM by pinned git rev) builds
 # on its own: its UI tests are a release job.
 # The R-shape consumer is built AT THE CANDIDATE (its manifest is what the rshape jobs check, i143-acceptance-gate.sh:117-128);
-# the build script also runs the admin-ui tests at the candidate. Light jobs finish before the heavy rshape jobs start.
+# UI tests run in the same concurrent batch as the R-shape and container jobs.
 if [ -f demo/Cargo.toml ] && [ -x scripts/i143-rshape-build-consumer.sh ]; then
-    echo "demo-admin-ui sh:scripts/i143-rshape-build-consumer.sh --candidate-sha $(git rev-parse HEAD) --workspace target/i143-rshape/consumer-workspace --bin-dir target/i143-rshape/consumer-bin --output target/i143-rshape/consumer-build" >> $D/jobs
+    echo "demo-admin-ui sh:cargo test --locked --manifest-path target/i143-rshape/consumer-workspace/Cargo.toml -q -p rafka-admin-ui" >> $D/jobs
 elif [ -f demo/Cargo.toml ]; then
     echo "demo-admin-ui sh:cd demo && cargo test -q -p rafka-admin-ui" >> $D/jobs
 fi
