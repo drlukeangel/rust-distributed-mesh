@@ -254,3 +254,6 @@ mod publication_receive;
 
 #[path = "gossip/reserved_receive.rs"]
 mod reserved_receive;
+
+#[path = "gossip/recovery_receive.rs"]
+mod recovery_receive;
