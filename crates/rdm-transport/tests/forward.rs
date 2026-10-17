@@ -307,7 +307,7 @@ async fn the_forward_frame_carries_the_budget_that_remains_never_the_default() {
 /// CONTRACT: a forward naming Forward is refused `NotForwardable` and a connections-deleting carrier refuses
 /// a forward `ConnectionsDeleting`, each before any inner call.
 #[tokio::test]
-async fn a_nested_forward_and_a_draining_carrier_are_still_refused_by_name() {
+async fn a_nested_forward_and_a_carrier_deleting_connections_are_still_refused_by_name() {
     let r = rig().await;
     let nested = ForwardRequest::Forward { target: r.target.resolved.node_id.clone(), inner_op: Forward::OP, inner: Vec::new(), remaining_ms: 5_000 };
     let (out, _) = r.origin.call::<Forward>(&carrier_of(&r), &nested, &CallOptions::default()).await;
