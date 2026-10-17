@@ -611,3 +611,32 @@ impl<P: StreamingProtocol> Drop for ReplyStream<P> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply};
+    use rdm_core::protocol::NodeProtocol;
+
+    #[tokio::test]
+    async fn a_frame_handed_without_its_position_ends_the_stream_by_name() {
+        let birth = rdm_core::framing::Birth { node_id: rdm_core::NodeId::mint(), incarnation: rdm_core::IncarnationId::mint() };
+        let delivery = crate::Delivery::new(birth.clone());
+        let id = delivery.mint(&[]);
+        let (guard, _, _) = delivery.open_call(id, NodeCommand::MAX_REPLY_FRAME_BYTES, false);
+        let (tx, frames) = tokio::sync::mpsc::unbounded_channel();
+        let (_attempts_tx, attempted) = tokio::sync::mpsc::unbounded_channel();
+        let owed = OwedCall {
+            guard, frames, attempted,
+            evidence: Arc::new(std::sync::Mutex::new(CallEvidence { node_id: None, addr: "127.0.0.1:0".parse().unwrap(), committed: true, connection: None, reused: false, dial_failure: None })),
+            attempts: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+            _task: crate::client::AbortOnDrop(None),
+        };
+        let mut stream = ReplyStream::<NodeCommand> { span: tracing::Span::none(), started: Instant::now(), owed, order: FrameOrder::new(), deadline: None, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData };
+        let frame = NodeCommandReply::CommandAccepted { node_id: birth.node_id, incarnation: birth.incarnation };
+        tx.send(SlotEvent::Frame(NodeCommand::encode_reply(&frame).unwrap(), None)).unwrap();
+        assert!(matches!(stream.next().await, Some(StreamItem::Failed(StreamFailure::Violation(reason))) if reason == "a response frame carries no transport position"));
+        assert!(stream.next().await.is_none(), "nothing follows the named violation");
+        assert!(stream.position().is_none());
+    }
+}
