@@ -687,7 +687,7 @@ impl NodeRpcClient {
                 receivers.push(n.endpoint_id);
             }
         }
-        let (id, retire_floor) = match &opts.carried {
+        let (id, carried_floor) = match &opts.carried {
             Some(c) => (c.id.clone(), Some(c.retire_below)),
             None => (self.delivery.mint(&receivers), None),
         };
@@ -710,7 +710,7 @@ impl NodeRpcClient {
             op,
             id: id.clone(),
             receivers,
-            retire_floor,
+            carried_floor,
             payload,
             opts: opts.clone(),
             deadlines,
@@ -1012,7 +1012,7 @@ struct Attempts {
     op: u8,
     id: DeliveryId,
     receivers: Vec<iroh::PublicKey>,
-    retire_floor: Option<u64>,
+    carried_floor: Option<u64>,
     payload: Payload,
     opts: CallOptions,
     deadlines: (Instant, Option<Instant>),
@@ -1035,9 +1035,9 @@ impl Attempts {
         }
     }
 
-    fn retire_below(&self) -> u64 {
-        let own = self.client.delivery.retire_below(&self.receivers);
-        match self.retire_floor {
+    fn lowest_unacked(&self) -> u64 {
+        let own = self.client.delivery.lowest_unacked(&self.receivers);
+        match self.carried_floor {
             Some(r) => r,
             None => own,
         }
@@ -1123,7 +1123,7 @@ impl Attempts {
                     continue;
                 }
             };
-            let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, retire_below: self.retire_below() };
+            let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, retire_below: self.lowest_unacked() };
             let phase = self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await;
             match phase {
                 Phase::Done(out) => {

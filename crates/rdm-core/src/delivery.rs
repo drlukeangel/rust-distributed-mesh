@@ -63,7 +63,7 @@ impl<R: Eq + Hash + Clone> SendWindow<R> {
 
     /// The `retire_below` a frame toward `receiver` carries: the lowest `delivery_seq` still held
     /// unacked toward it, or the next to be minted. Nothing below it is ever resent to `receiver`.
-    pub fn retire_below(&self, receiver: &R) -> u64 {
+    pub fn lowest_unacked(&self, receiver: &R) -> u64 {
         self.unacked.get(receiver).and_then(|s| s.first().copied()).unwrap_or(self.next)
     }
 
@@ -87,11 +87,11 @@ pub enum Arrival<'a, S> {
     Held(&'a mut S),
     /// Below the sender's watermark: seen, finished and forgotten. The sender promised never to resend
     /// it, so this is a repeat of something long acknowledged.
-    Retired,
+    BelowWatermark,
 }
 
 /// One sending birth's duplicate window at a receiver: the state of every frame it sent that the
-/// receiver still holds, retired only below the sender's `retire_below`, never by time.
+/// receiver still holds, forgotten only below the sender's `retire_below`, never by time.
 #[derive(Debug)]
 pub struct RecvWindow<S> {
     below: u64,
@@ -110,7 +110,7 @@ impl<S> RecvWindow<S> {
         Self::default()
     }
 
-    /// A frame `seq` arrived carrying the sender's `retire_below`: retire everything below the
+    /// A frame `seq` arrived carrying the sender's `retire_below`: forget everything below the
     /// watermark, then say what the frame is.
     pub fn arrive(&mut self, seq: u64, retire_below: u64) -> Arrival<'_, S> {
         if retire_below > self.below {
@@ -118,7 +118,7 @@ impl<S> RecvWindow<S> {
             self.held = self.held.split_off(&retire_below);
         }
         if seq < self.below {
-            return Arrival::Retired;
+            return Arrival::BelowWatermark;
         }
         match self.held.get_mut(&seq) {
             Some(s) => Arrival::Held(s),
@@ -142,7 +142,7 @@ impl<S> RecvWindow<S> {
         self.held.get_mut(&seq)
     }
 
-    /// The watermark: everything below it is retired.
+    /// The watermark: everything below it is forgotten.
     pub fn below(&self) -> u64 {
         self.below
     }
@@ -279,23 +279,23 @@ mod tests {
 
     /// Cell 21 (the sender's half): a new birth's counter starts at 1; one counter for every receiver.
     #[test]
-    fn a_new_birth_mints_from_one_and_retires_below_its_lowest_unacked() {
+    fn a_new_birth_mints_from_one_and_carries_its_lowest_unacked() {
         let mut w: SendWindow<&str> = SendWindow::new();
-        assert_eq!(w.retire_below(&"b"), 1, "nothing minted: the watermark is the first sequence");
+        assert_eq!(w.lowest_unacked(&"b"), 1, "nothing minted: the watermark is the first sequence");
         assert_eq!(w.mint(&["b"]), 1);
         assert_eq!(w.mint(&["c"]), 2);
         assert_eq!(w.mint(&["p", "b"]), 3, "a carried call is held toward its carrier and its final target");
-        assert_eq!((w.retire_below(&"b"), w.retire_below(&"c"), w.retire_below(&"p")), (1, 2, 3));
+        assert_eq!((w.lowest_unacked(&"b"), w.lowest_unacked(&"c"), w.lowest_unacked(&"p")), (1, 2, 3));
         assert!(w.settle(1));
-        assert_eq!(w.retire_below(&"b"), 3, "the carried frame still holds the final target's watermark");
+        assert_eq!(w.lowest_unacked(&"b"), 3, "the carried frame still holds the final target's watermark");
         assert!(w.settle(3));
-        assert_eq!((w.retire_below(&"b"), w.retire_below(&"p")), (4, 4), "nothing unacked: the next to be minted");
+        assert_eq!((w.lowest_unacked(&"b"), w.lowest_unacked(&"p")), (4, 4), "nothing unacked: the next to be minted");
         assert!(!w.settle(3), "settling twice holds nothing");
     }
 
-    /// Cell 16 (the receiver's half): duplicate state is retired only below the sender's watermark.
+    /// Cell 16 (the receiver's half): duplicate state is forgotten only below the sender's watermark.
     #[test]
-    fn duplicate_state_is_retired_only_below_the_senders_watermark() {
+    fn duplicate_state_is_forgotten_only_below_the_senders_watermark() {
         let mut w: RecvWindow<&str> = RecvWindow::new();
         assert_eq!(w.arrive(5, 5), Arrival::New);
         w.insert(5, "accepted");
@@ -303,8 +303,8 @@ mod tests {
         assert_eq!(w.arrive(6, 5), Arrival::New);
         w.insert(6, "pending");
         assert_eq!(w.arrive(7, 6), Arrival::New, "the watermark passed 5");
-        assert_eq!(w.len(), 1, "5 retired, 6 held");
-        assert_eq!(w.arrive(5, 6), Arrival::Retired, "below the watermark: long acknowledged");
+        assert_eq!(w.len(), 1, "5 forgotten, 6 held");
+        assert_eq!(w.arrive(5, 6), Arrival::BelowWatermark, "below the watermark: long acknowledged");
         assert_eq!(w.arrive(6, 3), Arrival::Held(&mut "pending"), "a lower watermark never brings anything back");
         assert_eq!(w.below(), 6);
     }

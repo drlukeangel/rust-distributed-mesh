@@ -780,7 +780,7 @@ async fn a_response_of_a_completed_invocation_is_acked_and_one_never_held_is_not
     assert_eq!(get(&client.delivery().stats().responses_unheld), 1);
 }
 
-/// Cell 16. CONTRACT: a request's duplicate state outlives the staleness floor, retired only when
+/// Cell 16. CONTRACT: a request's duplicate state outlives the staleness floor, forgotten only when
 /// the sender's `retire_below` passes it.
 #[tokio::test]
 async fn duplicate_state_outlives_the_floor_until_the_senders_watermark_passes_it() {
@@ -827,7 +827,7 @@ async fn duplicate_state_outlives_the_floor_until_the_senders_watermark_passes_i
     assert_eq!(s.runs.load(Ordering::SeqCst), 1);
     assert_eq!(s.delivery.window_of(&me), (1, 1));
     assert_eq!(send_once(request(2, 2)).await, vec!["response"], "a new request, whose watermark passes 1");
-    assert_eq!(s.delivery.window_of(&me), (1, 2), "1 retired, 2 held");
+    assert_eq!(s.delivery.window_of(&me), (1, 2), "1 forgotten, 2 held");
     assert_eq!(send_once(request(1, 2)).await, vec!["ack"], "below the watermark: long acknowledged");
     assert_eq!(s.runs.load(Ordering::SeqCst), 2);
 }

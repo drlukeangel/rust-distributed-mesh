@@ -353,13 +353,13 @@ impl Delivery {
         rt.spawn(async move {
             while changes.changed().await.is_ok() {
                 let Some(inner) = weak.upgrade() else { return };
-                Delivery { inner }.retire_ended_senders();
+                Delivery { inner }.forget_ended_senders();
             }
         });
     }
 
     /// Forget the duplicate window of every sender birth whose exit or removal the view proves.
-    fn retire_ended_senders(&self) {
+    fn forget_ended_senders(&self) {
         let senders: Vec<Birth> = self.inner.st.lock().unwrap().recv.keys().cloned().collect();
         for b in senders {
             if let Some(why) = self.birth_ended(&b) {
@@ -425,9 +425,9 @@ impl Delivery {
     }
 
     /// The `retire_below` a frame toward `receivers` carries: the lowest over them.
-    pub(crate) fn retire_below(&self, receivers: &[iroh::PublicKey]) -> u64 {
+    pub(crate) fn lowest_unacked(&self, receivers: &[iroh::PublicKey]) -> u64 {
         let st = self.inner.st.lock().unwrap();
-        receivers.iter().map(|r| st.send.retire_below(r)).min().unwrap_or(1)
+        receivers.iter().map(|r| st.send.lowest_unacked(r)).min().unwrap_or(1)
     }
 
     fn settle_own(&self, st: &mut St, id: &DeliveryId) {
@@ -551,7 +551,7 @@ impl Delivery {
     }
 
     /// Has the invocation `id`, which this process does not hold open, completed? Its own: minted and
-    /// no longer open. A carried one: completed here and not yet retired. Another birth of this
+    /// no longer open. A carried one: completed here and not yet forgotten. Another birth of this
     /// node: that receiving birth has ended. Anything else was never held.
     fn completed(&self, st: &St, id: &DeliveryId) -> bool {
         let me = &self.inner.me;
@@ -634,7 +634,7 @@ impl Delivery {
                 waiters.push(tx);
                 RequestArrival::Pending(rx)
             }
-            Arrival::Held(Seen::Accepted) | Arrival::Retired => RequestArrival::Accepted,
+            Arrival::Held(Seen::Accepted) | Arrival::BelowWatermark => RequestArrival::Accepted,
             Arrival::Held(Seen::Ended(code)) => RequestArrival::Ended(*code),
         };
         let below = st.recv.get(sender).map(|w| w.below()).unwrap_or(0);
@@ -710,7 +710,7 @@ impl Delivery {
         let delivery_seq = st.send.mint(&[reply_to]);
         let mine = DeliveryId { sender: self.inner.me.clone(), delivery_seq };
         st.sent.insert(mine, Sent::Response { invocation: id.clone(), seq });
-        let retire_below = st.send.retire_below(&reply_to);
+        let retire_below = st.send.lowest_unacked(&reply_to);
         let o = st.owed.get_mut(id).expect("checked above");
         let h = TransportHeader::Response { sender: self.inner.me.clone(), delivery_seq, retire_below, invocation_id: id.clone(), seq };
         let frame = encode_response_frame(&h, &body);
@@ -847,7 +847,7 @@ impl Delivery {
         let out = FrameOut::new(send);
         let sent: Vec<u32> = frames.iter().map(|(s, _, _)| *s).collect();
         for (seq, delivery_seq, body) in frames {
-            let retire_below = self.retire_below(&[conn.remote_id()]);
+            let retire_below = self.lowest_unacked(&[conn.remote_id()]);
             let h = TransportHeader::Response { sender: self.inner.me.clone(), delivery_seq, retire_below, invocation_id: id.clone(), seq };
             if !out.write(&encode_response_frame(&h, &body)).await {
                 return;
