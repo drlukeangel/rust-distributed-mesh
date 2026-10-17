@@ -127,6 +127,14 @@ consumer_candidate_reason() {
     return 0
 }
 
+# Registry commands retain their cargo-test spelling, but the concurrent suite executes
+# the exact test binary its one build produced. No compiler or package lock runs in a cell.
+if [ -n "${I143_ACCEPTANCE_SKIP_BUILD:-}" ]; then
+    export I143_PREBUILT_ROOT="$ROOT"
+    cargo(){ python3 "$I143_PREBUILT_ROOT/scripts/prebuilt-test.py" "$@"; }
+    export -f cargo
+fi
+
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
 CELLS_JSON="[]"

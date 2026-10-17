@@ -244,7 +244,7 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
     }
     let a = p.spawn(&a).await.expect("writer container");
     let b = p.spawn(&b).await.expect("reader container");
-    store_command(&a, r#"
+    store_command(&a, "hard-link insert and sync", r#"
 import os, pathlib
 root = pathlib.Path(os.environ['RDM_STORE_DIR'])
 assert root.is_dir(), f'RDM_STORE_DIR {root} is not mounted'
@@ -260,7 +260,7 @@ with (root / 'atomic').open('xb') as f:
 os.fsync(fd); os.close(fd)
 print('hard-link insertion; file and directory fsync')
 "#).await;
-    store_command(&b, r#"
+    store_command(&b, "collision and shared listing", r#"
 import os, pathlib
 root = pathlib.Path(os.environ['RDM_STORE_DIR'])
 assert (root / 'created').read_bytes() == b'first'
@@ -278,7 +278,7 @@ assert (root / 'created').read_bytes() == b'first'
 fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY); os.fsync(fd); os.close(fd)
 print('create_new refuses existing key; coherent read and listing')
 "#).await;
-    let writer = store_command(&a, r#"
+    let writer = store_command(&a, "atomic replacement writer", r#"
 import os, pathlib, time
 root = pathlib.Path(os.environ['RDM_STORE_DIR'])
 end = time.monotonic() + 10
@@ -294,7 +294,7 @@ for n in range(64):
 (root / 'done').write_bytes(b'done'); os.fsync(fd); os.close(fd)
 print('64 atomic replacements, each file and directory synced')
 "#);
-    let reader = store_command(&b, r#"
+    let reader = store_command(&b, "concurrent whole-file reader", r#"
 import os, pathlib, time
 root = pathlib.Path(os.environ['RDM_STORE_DIR'])
 assert (root / 'atomic').read_bytes() == b'A' * 131072
@@ -316,7 +316,7 @@ print(f'whole-file reads across concurrent replacements: {reads}')
 "#);
     let (w, r) = tokio::join!(writer, reader);
     println!("{w}\n{r}");
-    store_command(&a, r#"
+    store_command(&a, "reverse read and listing", r#"
 import os, pathlib
 root = pathlib.Path(os.environ['RDM_STORE_DIR'])
 assert (root / 'reader-created').read_bytes() == b'reader'
@@ -330,12 +330,15 @@ print('reverse write visible in read and listing on the writer container')
     println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));
 }
 
-async fn store_command(handle: &DeploymentHandle, script: &str) -> String {
+async fn store_command(handle: &DeploymentHandle, phase: &str, script: &str) -> String {
     let id = container_id(handle);
+    let started = std::time::Instant::now();
+    eprintln!("container {id}, store-root {phase}: started");
     let out = tokio::time::timeout(std::time::Duration::from_secs(15), tokio::process::Command::new("docker").args(["exec", &id, "/usr/bin/python3", "-c", script]).output())
-        .await.unwrap_or_else(|e| panic!("container {id} store-root observation exceeded 15 s: {e}"))
-        .unwrap_or_else(|e| panic!("container {id} store-root observation could not execute: {e}"));
-    assert!(out.status.success(), "container {id}, status {}, stdout {}, stderr {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        .await.unwrap_or_else(|e| panic!("container {id} store-root {phase} exceeded 15 s: {e}"))
+        .unwrap_or_else(|e| panic!("container {id} store-root {phase} could not execute: {e}"));
+    assert!(out.status.success(), "container {id}, store-root {phase}, status {}, stdout {}, stderr {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    eprintln!("container {id}, store-root {phase}: complete in {:?}", started.elapsed());
     String::from_utf8(out.stdout).unwrap()
 }
 

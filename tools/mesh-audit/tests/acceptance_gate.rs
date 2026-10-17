@@ -253,4 +253,11 @@ echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
     let (ok, text, receipt) = run_env(&f, &[("I143_ACCEPTANCE_SKIP_BUILD", Path::new("1")), ("I143_PREBUILT_ARTIFACTS", &artifacts), ("PATH", &path)]);
     assert!(ok, "the registered cell must execute the built artifact, preserving its environment, cwd and arguments: {text}\n{receipt}");
     assert_eq!(receipt["outcome"], "ok");
+    let mut registry: Value = serde_json::from_slice(&std::fs::read(&f.registry).unwrap()).unwrap();
+    registry["jobs"][&f.job]["cells"][0]["command"] = "cargo test -p rdm-test --test missing fixture_cell -- --exact".into();
+    std::fs::write(&f.registry, serde_json::to_vec(&registry).unwrap()).unwrap();
+    let (ok, _, _) = run_env(&f, &[("I143_ACCEPTANCE_SKIP_BUILD", Path::new("1")), ("I143_PREBUILT_ARTIFACTS", &artifacts), ("PATH", &path)]);
+    assert!(!ok, "a target the gate did not build must be refused without fallback compilation");
+    let refused = std::fs::read_to_string(f.dir.join("cell/gate.log")).unwrap();
+    assert!(refused.contains("prebuilt-test: REFUSED") && refused.contains("rdm-test:missing"), "{refused}");
 }

@@ -43,6 +43,7 @@ export I143_ACCEPTANCE_SKIP_BUILD=1
 SHA=$(git rev-parse --short HEAD)
 O=$DEPLOY/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
 D=$O.d; rm -rf $D; mkdir -p $D
+export I143_PREBUILT_ARTIFACTS="$D/artifacts.json"
 SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority sticky_seat mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary fabric_takeover rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance rounds owed_check_ins node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence"
 t0=$(date +%s)
 
