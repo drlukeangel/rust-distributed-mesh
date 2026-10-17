@@ -670,7 +670,14 @@ suppression.
 A declared app type (§8, `rafka.entity.<kind>`) rides this same envelope on its own topic (§4).
 Its receiver is the app: RDM authors `id`, `source`, `time` and the trace context, carries
 `subject`, `sequence` and `data` opaque, and decides nothing on the frame. The receive rules above
-apply to the `rdm.*` types only.
+apply to the `rdm.*` types only. An event whose `data` exceeds `MAX_MESSAGE_BYTES` goes as
+`rdm.gossip.chunk` frames, each with its own `id` (`<event id>/<i>`), `subject` the event's `id`
+and `data { i, n, bytes }`, `n` at most 16; the receiver assembles by `(source, event id)`, takes
+a duplicate chunk as nothing and a reordered one in its place, decodes the whole event once under
+its own `id`, and evicts an assembly still incomplete after `RDM_STALENESS_MS` by name
+(`rdm.mesh.membership.reject.via-chunk-incomplete`). Each topic's receive queue is bounded (1024
+events): a full queue drops the newest event by name (`rdm.mesh.topic.reject.via-queue-full`, with
+the count) and never holds the carrier, so a slow app stalls nothing but itself.
 
 Until the envelope lands ([i147 e3](../plans/i147-gossip-conformance-prd.md)) the frames carry the
 same values under the catalog's field names; the receive rules are the same either way.
@@ -834,11 +841,17 @@ Message ordering/version rules remain owned by the entity/projection framework, 
 
 **Only projected kinds gossip, and each goes only to the nodes that project it.** A kind is a
 declared type, `rafka.entity.<kind>`: the role declares its types once at boot, beside its
-hydration hook, and they ride the node's own digest as `types` (bounded like `config`: at most 64
-types and 2048 bytes, refused by name as `TypesOverCap`). A node joins the topic of every type it
-declared through `Membership::join_topic` (`rdm_transport::gossip`); the topic id is
-`f(fabric_id, type)` (§4), so two fabrics on one network never share a kind; its bootstrap peers
-are the members whose digest names the type, its own mesh's node-admin first. A write is one
+hydration hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
+(`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
+declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
+than a gossip message. Its mesh's node-admin records the list beside the row, joins every type it
+did not already hold before it answers the join, and writes the row's `types_hash` (blake3 of the
+sorted list); the list itself is answered by `node.get`. Another node-admin that sees a new
+`types_hash` on the backbone reads that admin's `node.get` and joins what it learns, so every
+projected kind reaches every node-admin (§10: gossip says changed, the call is the certainty). A
+node joins the topic of every type it declared through `Membership::join_topic`
+(`rdm_transport::gossip`); the topic id is `f(fabric_id, type)` (§4), so two fabrics on one
+network never share a kind; its first neighbour is its own mesh's node-admin, already joined. A write is one
 `Event { subject, sequence, data }` published once on its kind's topic. So a compute node never
 receives a gateway-only kind (`principal`, `service_account`, `path_config` and the rest).
 

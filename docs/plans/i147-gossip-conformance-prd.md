@@ -396,14 +396,17 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   enum of 22 `rdm.*` types, every publisher internal). After absorption that is two gossips and
   two wire formats on one endpoint. Luke, 2026-10-17: RDM exposes the publish, Rafka drops
   iroh-gossip.
-- **The API** (`rdm_transport::gossip`, re-exported by rdm-node; names approved):
+- **The API** (`rdm_transport::gossip`, re-exported by rdm-node; names approved; receiver shape
+  per the arch review below):
 
   ```rust
   impl Membership { pub async fn join_topic(&self, r#type: &str) -> Result<Topic, TopicError>; }
-  pub struct Topic;                                     // one joined topic, one declared type
+  pub struct Topic;                                     // one joined topic, one declared type; not Clone
   impl Topic {
       pub async fn publish(&self, event: Event) -> Result<(), TopicError>;
-      pub fn received(&self) -> tokio::sync::mpsc::Receiver<Received>;
+      pub async fn recv(&mut self) -> Option<Received>; // None once left
+      pub fn split(self) -> (Publisher, Subscriber);    // the same two methods, each owned once
+      pub fn dropped(&self) -> u64;                     // events the full queue dropped, by name
       pub async fn leave(self);
   }
   pub struct Event    { pub subject: String, pub sequence: Option<u64>, pub data: bytes::Bytes }
@@ -413,10 +416,12 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   ```
 
   The role's `run` takes its declared types once, `types: &[&str]`, beside its hydration hook.
-- **The rules.** (1) Declared at boot: an undeclared type is refused by name on publish and
-  dropped by name on receive; no free-form `type` on the wire. (2) The carrier decides nothing:
-  RDM encodes, decodes, chunks `data` over `MAX_MESSAGE_BYTES` under one `id`, reassembles, and
-  hands the whole event over; §3.1 stale/duplicate/gap stay on the 22 `rdm.*` types; for an app
+- **The rules.** (1) Declared once per birth: the types ride the birth's `JoinNode` request
+  (`types: Vec<String>`, at most 256 and 8 KiB encoded, over the bound `Malformed { kind:
+  TypesOverCap }` and the birth is never a member); a different declaration is a restart; an
+  undeclared type is refused by name on publish and dropped by name on receive; no free-form
+  `type` on the wire. (2) The carrier decides nothing: RDM encodes, decodes, chunks, reassembles,
+  and hands the whole event over; §3.1 stale/duplicate/gap stay on the `rdm.*` types; for an app
   type, ordering is the app's (gossip.md §8: the entity framework's comparator over `sequence`
   and `order_key`, across authors; its `OrderKey` lets a foreign-WAL offset displace a higher
   version, so "higher sequence installs" would be wrong). (3) `sequence` is the app's: the row's
@@ -428,36 +433,64 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   is dropped by name and the event continues (§3.4). No explicit context argument: a different
   parent is a span the app enters first. (5) Topic id `f(fabric_id, type)` per §4 (Rafka's
   `blake3("rafka.entity.<kind>")` has no fabric in it, so two fabrics on one network share entity
-  gossip today). (6) Nobody creates a topic: it is an id every subscriber derives; bootstrap peers
-  are the members whose digest names the type, own mesh's node-admin first; node-admin joins the
-  union of its members' declared types, as Rafka's node-admin does today; the fabric-primary has
-  no part.
-- **The digest delta (a gossip change; Luke's yes 2026-10-17 by "update gossip.md").**
-  `MeshDigest.types: Vec<String>`, the node's declared types, bounded like `config` (at most 64
-  types, 2048 bytes, refused by name as `TypesOverCap`). Wire format moved; the digest goldens
-  reseal; the frames page regenerates.
+  gossip today). (6) Nobody creates a topic: it is an id every subscriber derives. node-admin
+  learns a member's types at its JoinNode, joins every type it does not already hold before it
+  answers, and writes the row's `types_hash` (blake3 of the sorted list; the list is answered by
+  `node.get`); so a joining node's first neighbour is its own node-admin, already there. Across
+  meshes a node-admin that sees a new `types_hash` on the backbone reads that admin's `node.get`
+  and joins what it learns (gossip.md §10). No type list rides a digest. The fabric-primary has no
+  part. (7) Receiver: one owner; `recv(&mut self)`, or `split` once into an owned `Publisher` and
+  `Subscriber`; the queue is bounded at 1024 events per topic, a full queue drops the newest by
+  name (`rdm.mesh.topic.reject.via-queue-full`, count in `dropped()`) and never holds the
+  carrier's receive task, so a slow app stalls nothing but itself. (8) Chunking: an event whose
+  `data` exceeds `MAX_MESSAGE_BYTES` goes as `rdm.gossip.chunk` frames (a 23rd `rdm.*` type), each
+  with its own delivery `id` (`<event id>/<i>`) so `id` duplicate suppression never discards a
+  later chunk, `subject` the event's `id`, `data { i, n, bytes }`, `n` at most 16 (an event is at
+  most 16 × the measured per-chunk payload, the complete chunk frame measured against
+  MAX_MESSAGE_BYTES as e3 measures Members); assembly keyed `(source, event id)`; a duplicate chunk
+  is nothing, a reordered one sits in its place, the whole event decodes once under its own `id`
+  and only then meets duplicate suppression; an assembly incomplete after `RDM_STALENESS_MS` is
+  evicted by name (`rdm.mesh.membership.reject.via-chunk-incomplete`).
+- **Arch review, 2026-10-17 (four gaps, each closed above).** P1 boot-only declaration vs
+  node-admin's dynamic union → rule (1)+(6): the declaration is on the join, node-admin joins
+  before it answers, cross-mesh by `types_hash` + `node.get`; no digest discovery, no race.
+  P2 the 64/2048 bound → withdrawn: the measured set is 158 kinds, 4.4 KB of names, more than one
+  gossip message, so no list rides a digest; the bound is on the JoinNode request (256 / 8 KiB
+  encoded postcard bytes, under its 64 KiB ceiling) and the union has no bound of its own (it is
+  held by node-admin and answered by `node.get` under the 4 MiB reply ceiling). P2 receiver
+  ownership → rule (7). P2 chunk identity → rule (8).
+- **The directed-path delta (wire format moved; node-rpc-envelope.md old → new awaits Luke's
+  yes).** Join op `0x1D`: `JoinNode { digest: MeshDigest }` → `JoinNode { digest: MeshDigest,
+  types: Vec<String> }` with the bound sentence; node properties table: new row
+  `types` / `types_hash`, set by the birth's JoinNode, changed by nothing (a different declaration
+  is a restart), answered whole by `node.get`; Members rows carry `types_hash`. Digest unchanged.
 - **Page text (applied 2026-10-17 on Luke's instruction, this landing carries it).** gossip.md
-  §3.4: one paragraph after the best-effort sentence, "A declared app type (§8) rides this same
-  envelope on its own topic; its receiver is the app ... the receive rules above apply to the
-  `rdm.*` types only." §8: the "Only projected kinds gossip" paragraph now says a kind is a
-  declared type riding the digest as `types`, joined through `Membership::join_topic`, topic id
-  `f(fabric_id, type)`, one `Event` per write; the "projection frame names its org" paragraph is
-  now "The event rides the envelope (§3.4) and RDM decides nothing on it" with subject, sequence,
-  data, the trace rule and the framework's comparator; "kind sets" → "declared types" in the
-  node-admin paragraph.
+  §3.4: one paragraph after the best-effort sentence (a declared app type rides this envelope, the
+  receiver is the app, the carrier decides nothing, the chunk and queue rules). §8: the "Only
+  projected kinds gossip" paragraph (declared type, JoinNode carries the list, `types_hash`, join
+  before answer, cross-mesh `node.get`, topic id `f(fabric_id, type)`, one `Event` per write) and
+  "The event rides the envelope (§3.4) and RDM decides nothing on it" (subject, sequence, data,
+  the trace rule, the framework's comparator); "kind sets" → "declared types" in the node-admin
+  paragraph.
 - **Acceptance cells (RED first).** `an_undeclared_type_is_refused_by_name_on_publish_and_dropped_by_name_on_receive`;
-  `a_published_event_arrives_whole_with_its_subject_sequence_and_data_untouched` (over the chunk
-  bound, two chunks, one `id`); `a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped`
-  (the carrier decides nothing); `the_receive_span_parents_to_the_publishers_span_and_carries_no_data`;
-  `a_digest_over_the_types_bound_is_refused_by_name`; `the_topic_id_differs_across_fabrics_for_one_type`;
-  `node_admin_joins_the_union_of_its_members_declared_types`. The envelope ratchet gains the app
-  branch; the digest golden reseals.
+  `a_join_over_the_types_bound_is_malformed_by_name_and_never_a_member`;
+  `a_node_joining_after_its_admin_started_with_a_type_it_never_saw_has_that_admin_as_its_first_neighbour`
+  (P1); `a_node_admin_that_sees_a_new_types_hash_on_the_backbone_reads_node_get_and_joins`;
+  `a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped` (the carrier decides
+  nothing); `the_receive_span_parents_to_the_publishers_span_and_carries_no_data`;
+  `the_topic_id_differs_across_fabrics_for_one_type`;
+  `a_chunked_event_arrives_whole_when_its_chunks_are_reordered_and_one_is_duplicated`;
+  `a_chunked_event_with_a_missing_chunk_is_evicted_by_name_after_the_staleness_floor`;
+  `a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once` (compile-fail cell);
+  `a_full_topic_queue_drops_the_newest_by_name_and_the_carrier_keeps_receiving`. The envelope
+  ratchet gains the app and chunk branches; the join and node.get goldens reseal.
 - **The Rafka side** is rafka-v2 i141 e11: `kind_topics`, `entity_gossip`'s broadcast and frame
   encoding, the `ChunkAssembler`, the membership digest loop and the six direct iroh-gossip
   dependencies go; the entity frame becomes an `Event` with the row's version as `sequence`.
   Not here.
 - **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144).
-- **State.** Recorded 2026-10-17; page text on main with this record; not started.
+- **State.** Recorded 2026-10-17; gossip.md text on main; node-rpc-envelope.md delta awaits
+  Luke's yes; not started.
 
 ## Verification
 
