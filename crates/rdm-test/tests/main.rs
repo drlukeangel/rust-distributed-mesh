@@ -248,3 +248,6 @@ mod digest_replacement;
 
 #[path = "gossip/seat_replacement.rs"]
 mod seat_replacement;
+
+#[path = "gossip/publication_receive.rs"]
+mod publication_receive;
