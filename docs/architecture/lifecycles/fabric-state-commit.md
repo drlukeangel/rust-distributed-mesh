@@ -21,7 +21,8 @@ checked in as a round.
    - a mesh primary writes its members' Node rows and its Mesh row;
    - the fabric-primary writes the Fabric row.
 3. Each member checks in with its primary, node → mesh-primary → fabric-primary, under the
-   [round checklist](states.md#the-round-checklist).
+   [round checklist](states.md#the-round-checklist): each check-in an owed message, delivered
+   until answered ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes)).
 4. After all meshes check in, proceed to [Fabric ready-for-traffic](fabric-ready-for-traffic.md).
 
 A broker's re-sync is not part of this round; [broker re-sync](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md) states

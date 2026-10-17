@@ -171,7 +171,11 @@ on `node-key` inside an existing directory, `EIO`, `EACCES`, or decode failure) 
   never as a gossip `MemberStatus`), and the recovery Build creates the node at the same
   `path.name` over a newly allocated `data_dir` beside the old path with a newly minted
   endpoint key (the old key is never re-minted) and `hydrate_before_ready` with
-  `inherited = false`.
+  `inherited = false`. For a lost mesh's node-admin, the fabric-primary runs this arm from the
+  fabric lane ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): with no
+  inspection possible there is no exit proof and no gone-floors wait; the node-admin is created at
+  its path.name over a newly allocated `data_dir` with a newly minted endpoint key,
+  `inherited = false`, and the old birth's data dir is reused only once its exit is proven.
 - **Broken (arm B).** On the first `PrepareStorage` failure over an existing but unreadable
   `data_dir`, the executor records `data-dir-unreadable { path, cause }` durably on the
   exited birth (`rdm.node_admin.node.reject.via-data-dir-unreadable`, surfaced on `node.get`

@@ -163,6 +163,11 @@ are separate facts.
   Members already done check in again, and the checklist rebuilds itself.
 - A member leaves the checklist only through the accepted removal and a proven exit,
   never by a timer.
+- A check-in is a message the member owes its primary ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes),
+  under `Budget::Owed`): delivered until the primary answers it, ended only by that answer, the
+  primary's proven exit or accepted removal, or the member dropping it; re-owed to the new holder
+  when the primary's seat moves; never ended by a timer. The primary counts a check-in once per
+  (round, birth) and answers a repeat `AlreadyApplied`.
 - A primary counts only check-ins that arrive after it receives this round.
 - State-commit is a FABRIC state. A node's or mesh's state-committed reply is a check-in,
   not a node or mesh state.

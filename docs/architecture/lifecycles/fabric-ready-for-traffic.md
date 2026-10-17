@@ -22,8 +22,7 @@ fabric-primary                    FabricStatus ready-for-traffic; one ready-for-
 ```
 
 Each line is its own directed call with its own target and caller span
-([target and context](../node-rpc-envelope.md#target-and-context)); when a check-in is owed is the
-[round checklist](states.md#the-round-checklist)'s. The hook frames' authors and channels are
+([target and context](../node-rpc-envelope.md#target-and-context)); when a check-in is owed is the [round checklist](states.md#the-round-checklist)'s, and its delivery is [Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes)'s. The hook frames' authors and channels are
 [Fabric round gossip hooks](../gossip.md#fabric-round-gossip-hooks).
 
 FabricStatus ready-for-traffic travels under the [frame catalog](../gossip.md#31-frame-catalog);

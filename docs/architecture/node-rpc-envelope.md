@@ -1290,7 +1290,10 @@ run in process at the fabric-primary and feed the same outer stream
 ### Frames, durable receipts and reattachment
 
 Every progress frame (Step, Blocked) carries the receipt key
-`(build_id, attempt, operation, step)` and receivers drop duplicates by that key.
+`(build_id, attempt, operation, step)` and receivers drop duplicates by that key. A caller
+watching a Build whose connection closes (`Budget::Stream`'s one end) reattaches by `build_id`:
+`build.get` for the receipts, then the outer stream again, resuming from the receipts; the break is
+never a defect and never a new execution (Node RPC §34, §43).
 
 | Frame / outcome | Meaning |
 |---|---|
