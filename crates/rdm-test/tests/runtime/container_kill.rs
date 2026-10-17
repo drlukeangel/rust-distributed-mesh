@@ -31,9 +31,9 @@ fn docker_state(id: &str) -> String {
 }
 
 /// CONTRACT: a killed container is proven terminal by the provider inspecting its exact immutable
-/// id, and that proof alone opens the next attempt of the accepted Build, which re-creates the node
-/// at the same path in a new container under a new incarnation; the node id is kept by path, the
-/// container id never is.
+/// id, and that proof alone opens the recovery attempt of the accepted Build, which re-creates the node
+/// at the same path in a new container under a new node id and incarnation; the
+/// container id never stands for the new runtime.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it() {
     if std::env::var("RDM_CONTAINER_PROOF").as_deref() != Ok("1") && std::env::var("RDM_REQUIRE_CONTAINER").as_deref() != Ok("1") {
@@ -76,6 +76,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
         .await;
     let recreated = estate.container_of(NODE).expect("the re-created node runs in a container");
     assert_ne!(recreated, killed, "a new container, never the killed one restarted");
+    assert_ne!(after["node_id"], before["node_id"], "node-recovery.md: recovery creates a new node id at the retained path");
     // The provider's inspection of the killed container's exact id is the proof (exit 137, SIGKILL); the
     // replace that follows stops the exited container, keeps its logs beside the node's data and removes it,
     // so the proof is read from the drift attempt's span, never from a container the replace has removed.
@@ -85,26 +86,28 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
 
     // Evidence: the proof opened the next attempt of the same Build, and that attempt re-created
     // the node through every create step.
-    const SCOPE: &str = "mesh1.rpc_node: 1 present of 2 accepted (exited: mesh1.rpc.1)";
-    let is_drift = |sp: &&Value| s(&sp["attributes"]["build_id"]) == build_id && s(&sp["attributes"]["scope"]) == SCOPE;
+    let is_recovery = |sp: &&Value| s(&sp["attributes"]["build_id"]) == build_id
+        && sp["attributes"]["node"] == NODE && sp["attributes"]["node_id"] == before["node_id"]
+        && sp["attributes"]["incarnation_id"] == before["incarnation_id"]
+        && s(&sp["attributes"]["outcome"]).starts_with("complete");
     // Ending a span only queues it: each process's own export thread appends it to the evidence a
-    // batch later, so the read waits for both the admin's drift span and the re-created container's
+    // batch later, so the read waits for both the admin's recovery span and the re-created container's
     // own boot span.
     let is_born = |sp: &&Value| sp["attributes"]["incarnation_id"] == after["incarnation_id"];
-    let spans = wait_for("the drift attempt's spans and the re-created container's own boot span are exported", Duration::from_secs(30), || async {
+    let spans = wait_for("the recovery attempt's spans and the re-created container's own boot span are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
-        (named(&spans, "rdm.node_admin.build.update.via-proven-drift").iter().any(is_drift) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)
+        (named(&spans, "rdm.node_admin.build.update.via-node-recovery").iter().any(is_recovery) && named(&spans, "rdm.mesh.node.create.via-deployment").iter().any(is_born)).then_some(spans)
     })
     .await;
-    let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().find(|sp| is_drift(sp)).unwrap();
-    assert_eq!((s(&drift["attributes"]["exit_code"]).as_str(), s(&drift["attributes"]["exit_proof"]).as_str()), ("137", "provider"), "the killed container is proven terminal by SIGKILL, by the provider's inspection of its exact id: {drift}");
-    let attempt = s(&drift["attributes"]["attempt"]);
+    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().find(|sp| is_recovery(sp)).unwrap();
+    assert_eq!((s(&recovery["attributes"]["exit_code"]).as_str(), s(&recovery["attributes"]["exit_proof"]).as_str()), ("137", "provider"), "the killed container is proven terminal by SIGKILL, by the provider's inspection of its exact id: {recovery}");
+    let attempt = s(&recovery["attributes"]["attempt"]);
     let deployed = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| {
         let at = &sp["attributes"];
         s(&at["build_id"]) == build_id && s(&at["attempt"]) == attempt && at["node"] == NODE && at["step"] == "DeployRuntime" && at["outcome"] == "complete"
     });
     assert!(deployed, "attempt {attempt} of {build_id} deployed {NODE} anew");
-    estate.record_trace_url(drift["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
 
     estate.stop().await;
     assert_eq!(estate.live_containers(), Vec::<(String, String)>::new(), "no container of the fabric is left running");
