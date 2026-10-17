@@ -79,19 +79,16 @@ async fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
     ];
     let probe = estate.probe_handle();
     let birth = estate.entry_birth();
-    let tasks: Vec<_> = calls.into_iter().map(|(leg, args)| {
-        let (probe, birth) = (probe.clone(), birth.clone());
-        tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
+        // A sample retains its Direct → ViaPeer → NoActiveRoute sequence.
+        // The three complete samples are independent and run concurrently below.
+        let mut replies = serde_json::Map::new();
+        for (leg, args) in calls {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            (leg, probe.run(&birth, &args).expect("the route probe answers by name"))
-        })
-    }).collect();
-    let mut replies = serde_json::Map::new();
-    for task in tasks {
-        let (leg, reply) = task.await.expect("the route probe completed");
-        replies.insert(leg.to_string(), reply);
-    }
-    Value::Object(replies)
+            replies.insert(leg.to_string(), probe.run(&birth, &args).expect("the route probe answers by name"));
+        }
+        Value::Object(replies)
+    }).await.expect("the route sample completed")
 }
 
 /// A leg reduced to what must be stable while the silence holds: the typed outcome and the leg.
