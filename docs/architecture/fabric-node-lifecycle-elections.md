@@ -22,7 +22,7 @@ held seat record + current candidate facts
     -> resolved primary
 ~~~
 
-Equal candidate facts and equal seat records produce equal winners.
+Equal candidate facts and equal seat records produce equal winners. The fabric seat alone may move without exit proof, under §5's unreachable-and-uninspectable rule and the store's authority fence; every other seat moves only on yield, a committed transfer or a proven loss.
 
 A published is_primary or is_fabric_primary bit is a projection of this result. It never creates authority by advertisement.
 
@@ -89,8 +89,7 @@ For every (mesh, node_type) cohort, the one imported resolver applies the same e
 Ordinary nodes publish current facts. They do not author election outcomes.
 
 A node-admin investigating a silent seat holder runs node recovery's
-[tickle ladder](lifecycles/node-recovery.md#numbered-end-to-end-sequence). Only the provider's
-exit proof vacates a seat; no probe outcome does.
+[tickle ladder](lifecycles/node-recovery.md#numbered-end-to-end-sequence). Only the provider's exit proof vacates a seat; no probe outcome does. The one exception is the fabric seat (§4.3, §5).
 
 ### 4.2 Mesh primary
 
@@ -102,20 +101,28 @@ There is no second mesh-primary election.
 
 ### 4.3 Fabric primary
 
-The fabric-primary candidate set is the set of current mesh-primary node-admins.
+The fabric-primary candidate set is every ReadyForTraffic node-admin on the backbone, the
+`(backbone, node-admin)` cohort, under the same rule: lowest complete NodeId, a living holder kept.
 
 ~~~text
-current mesh primaries
+ReadyForTraffic node-admins on the backbone
     -> same election rule
     -> fabric primary
 ~~~
 
 There is no MeshId/name/age scoring and no separate fabric-election algorithm. The fabric seat
-stays in its holder's mesh: when its holder yields or its exact birth is proven gone, the
-lowest ReadyForTraffic node-admin NodeId of the same mesh fills it, and if only Pending admins
-survive the seat waits. It leaves that mesh only when every node-admin birth of the mesh is
-proven gone or has left; then the lowest NodeId among the remaining mesh primaries wins and its
-mesh holds the seat. Nothing reclaims the seat for the mesh that lost it.
+stays in its holder's mesh while that mesh has a Ready node-admin: when the holder yields or its
+exact birth is proven gone, the lowest ReadyForTraffic node-admin NodeId of the same mesh fills it,
+and if only Pending admins survive the seat waits. It leaves the mesh when every node-admin birth of
+the mesh is proven gone, has left, or is unreachable past the hold with no inspection possible (§5):
+then the lowest NodeId on the backbone wins, writes the seat row at the next revision and publishes
+it, and its mesh holds the seat. The new fabric-primary re-creates the lost mesh's node-admin
+([mesh investigation](lifecycles/mesh-investigation.md)'s fully-crashed arm, run by it): over the
+inherited data dir only with exit proof of the old birth; otherwise over a newly allocated data dir
+with a new endpoint key, `inherited = false` ([node recovery](lifecycles/node-recovery.md), R-FM2),
+since an expired hold and no inspection establish no ownership of the old dir. Once that admin is
+Ready, the fabric-primary hands the seat back to it by the committed handover of §4.4, naming it as
+the successor. The seat returns to the mesh that lost it only that way.
 
 Only the resolved fabric-primary may accept a Fabric topology change. The election chooses **who may write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) defines **what topology is accepted**.
 
@@ -126,8 +133,7 @@ Only the resolved fabric-primary may accept a Fabric topology change. The electi
 ### 4.4 Explicit committed fabric handover
 
 [node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) commits a transfer of the fabric
-seat to an outside mesh-primary while the incumbent mesh's node-admins remain alive; its
-selection is this page's leadership calculation with the departing mesh excluded. The committed
+seat to an outside mesh-primary while the incumbent mesh's node-admins remain alive; its selection is this page's leadership calculation with the departing mesh excluded, or the successor the holder names (the re-created node-admin of the mesh that lost the seat, §4.3). The committed
 next-revision seat record is authoritative input to the resolver: the incumbent keeps its
 mesh-primary seat and yields fabric authority. The transfer needs no incumbent-mesh death,
 infers no death from silence and turns no announcement into authority.
@@ -144,9 +150,9 @@ Day 0 ([fabric.create](lifecycles/fabric-create.md)) is not a special primary as
 
 For every seat:
 - a living holder keeps its seat; a lower-NodeId candidate that later becomes Ready never displaces it;
-- silence, an observer-inferred Dead, a `held-running` hold or an unheard route is not proof: the holder keeps the seat;
+- silence, an observer-inferred Dead, a `held-running` hold or an unheard route is not proof: the holder keeps the seat. For the fabric seat only, the unreachable-and-uninspectable rule below applies;
 - for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step proves the exit; the seat moves only once that exit proof is recorded, never before the proof;
-- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; watching admins record `held-running { since, verdicts }` on the holder's status row (surfaced on `node.get` and `fabric.get`), and the fabric seat never moves on silence;
+- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; watching admins record `held-running { since, verdicts }` on the holder's status row (surfaced on `node.get` and `fabric.get`). For a fabric-primary that is unreached by the tickle ladder and whose exact runtime no surviving admin can inspect (its mesh or provider domain gone), the hold (`RDM_HUNG_HOLD_FLOORS`) runs, and when it expires the seat moves by §4.3's backbone rule. The takeover commits only through the store's authority fence: every fabric write and Build claim carries the writer's seat revision, the store validates it against the current committed seat revision, rejects every stale one, and serializes the takeover with writes and claims so no old-authority operation commits afterwards; the winner begins recovery only after that fence has committed, and if the store cannot provide the fence the takeover stays held. Every mesh-primary that notices tells the winner (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row;
 - a holder that yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh;
 - restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the holder;
 - replacement mints a new NodeId and may or may not win.
@@ -159,8 +165,7 @@ Election movement never changes the current Build, never changes accepted topolo
 
 ## 6. fabric.delete moves no seat
 
-A seat moves only by its holder's yield, a committed transfer (§4.4) or a proven loss, never by a
-status (§5), so [fabric.delete](lifecycles/fabric-delete.md) moves no seat: each mesh-primary keeps
+A seat moves only by its holder's yield, a committed transfer (§4.4), a proven loss, or, for the fabric seat alone, §5's unreachable-and-uninspectable rule under the store's fence, never by a status (§5), so [fabric.delete](lifecycles/fabric-delete.md) moves no seat: each mesh-primary keeps
 its seat until it is itself deleted, and the fabric-primary keeps the fabric seat to the end.
 
 ---

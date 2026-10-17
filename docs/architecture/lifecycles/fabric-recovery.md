@@ -3,7 +3,9 @@
 [Lifecycle index](../fabric-mesh-node-lifecycles.md) · [States](states.md) · [Op contracts](../node-rpc-envelope.md#the-op-ledger)
 
 Fabric recovery restores the fabric from the fabric-primary's durable topology after every
-node-admin is lost, whether or not any node is still alive. It starts when a person or a script
+node-admin of every mesh is lost, whether or not any node is still alive; while any node-admin lives,
+the seat moves and the lost mesh is re-created without a person
+([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)). It starts when a person or a script
 launches one node-admin on the fabric-primary's
 data dir ([who starts recovery](../node-admin-lifecycle.md#44-fabric-primary-relaunch-and-who-starts-recovery));
 durable topology selects recovery, never Day 0. No surviving maker exists, so there are no

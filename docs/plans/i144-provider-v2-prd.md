@@ -390,6 +390,27 @@ seat each. Independent of i146 and i147.
 - node-rpc.md §25, §40; node-rpc-envelope.md typed-object contract; `crates/rdm-core/src/outcome.rs`
 - R24 (`docs/plans/rulings/i144-rulings-2026-10-16-delivery.md` Q11), R-MSG1, i147 (the same defect, three other places)
 - Luke, 2026-10-16, Q25 (the two answer shapes, scalar put and set edit) and Q26 (the code set)
+#### e6 — the fabric seat moves without a person when its mesh is lost (Luke Q24, 2026-10-16)
+
+- **Goal → gap.** elections §4.3 and §5 as rewritten 2026-10-16 (ruling
+  `docs/plans/rulings/i144-rulings-2026-10-16-fabric-seat.md`): the backbone cohort, the
+  unreachable-and-uninspectable rule for the fabric seat, the store's authority fence, re-creation
+  in place (inherited dir only with exit proof, else R-FM2), the named-successor handover back. The
+  tree moves the fabric seat only on exit proof and needs a person when the FP's mesh is lost.
+- **First packet, before code.** (1) the lost mesh's attempt rows writable from another mesh;
+  (2) the store fence: seat revision on every fabric write and Build claim, validated against the
+  committed revision, stale refused, takeover serialized with writes and claims; (3) R-FM2's
+  new-data-dir path for a node-admin. §5 delta on each; arms after.
+- **Acceptance cells.** the FP and its whole mesh SIGKILLed with other meshes live: the seat moves
+  after the hold to the backbone's lowest admin, the fence commits, the lost mesh's admin is
+  re-created over a new data dir, and the seat is handed back once it is Ready, with no person
+  (the flame); a partitioned FP that still writes after the takeover: every write and claim refused
+  stale; two mesh-primaries noticing together: one row, repeats `AlreadyApplied`; a lost mesh
+  whose domain can be inspected: exit proof, inherited dir reused; only Pending admins surviving:
+  the seat waits; the fence unavailable: the takeover held and surfaced on `fabric.get`.
+- **Order.** After R24 and e5; one seat; the packet first.
+- **State.** not started.
+
 ### Files likely to touch
 
 `crates/rdm-admin/src/deployment/{provider,process,container,pipeline}.rs`, `crates/rdm-admin/src/{offline,control_plane}.rs`, `crates/rdm-admin/src/admin/recovery.rs`, the inspect caller in `crates/rdm-admin/src/admin.rs`, `planned:crates/rdm-admin/tests/provider_state.rs`, `docs/architecture/deployment-provider.md`, `docs/architecture/lifecycles/{node-runtime-inspect,node-recovery,node-tickle,node-restart}.md`, `docs/reference/rdm/*.md` (regenerated), `CLAUDE.md` env table (no new variable expected).

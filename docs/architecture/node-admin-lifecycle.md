@@ -108,7 +108,8 @@ The sequence a relaunched fabric-primary runs from its durable map is
 |---|---|---|
 | a live peer mesh loses every node-admin | fabric-primary, same accepted Build, the mesh's own MeshId | node.create into the live mesh, maker admission/read, local topology read, own-mesh sweep, node recovery, restore own admins |
 | fabric-primary is relaunched into its own mesh | authorized relaunch on its durable data dir; the relaunched node-admin is a new node over the inherited data dir (new node.id, incarnation and port; same path.name and endpoint key) | no maker; durable-map topology read, own mesh first, same entry flow |
-| every node-admin is lost, nothing alive included ([fabric recovery](lifecycles/fabric-recovery.md#nothing-alive)) | person or script with mesh, seed and both primary flags, on fabric-primary's data dir | no Day 0; no maker; durable-map reads while a node is alive, own mesh first, then [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation) of the other meshes |
+| the fabric-primary's mesh loses every node-admin while other meshes live | the backbone's lowest ReadyForTraffic node-admin, seated by [elections §4.3](fabric-node-lifecycle-elections.md#43-fabric-primary) after the hold and the store's fence; same accepted Build, the mesh's own MeshId | seat row at the next revision; node.create of a node-admin into the lost mesh (inherited data dir only with exit proof, else a new one, R-FM2); committed handover back once it is Ready |
+| every node-admin of every mesh is lost, nothing alive included ([fabric recovery](lifecycles/fabric-recovery.md#nothing-alive)) | person or script with mesh, seed and both primary flags, on fabric-primary's data dir | no Day 0; no maker; durable-map reads while a node is alive, own mesh first, then [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation) of the other meshes |
 
 ## 5. Join admission and topology reads
 
