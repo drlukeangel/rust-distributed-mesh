@@ -531,6 +531,66 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   declaration applied), not held restarting. The cell now dispatches the attempt only once the
   mesh-primary marks the held member unheard (the faulted fabric-primary's claimed-attempt cut), so
   its stop-node is never sent, and waits out the member's unheard marks before reading its status.
+- **Owner (2), the member check-in (2026-10-17).** How it is lost: the mesh-primary marks a member's
+  command `Answered` on its `Applied` (`fabric_rounds.rs` `spawn_command`, :716-719) and `take_due`
+  never sends an `Answered` command again (`fabric_state.rs:274`), so the member's check-in
+  (`node_self.rs` `check_in`, one call with `CallOptions::default()`, `Budget::Overall(10 s)`,
+  `client.rs:95`) is the only path to the checklist; a call whose budget lapses ends
+  `delivery=cancelled` and nothing sends it again. Lost-result cell
+  `rounds::a_members_check_in_owed_while_its_mesh_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready`
+  (two meshes; a resize of mesh2; the fault door's new `round-action` cut holds mesh2's other admin in
+  its commit-state action; mesh2's primary suspended past the transport's idle timeout, the action
+  released, the primary held past 10 s, continued): RED on `0d398dc6`, the check-in's call
+  `NotSent`/`Deadline` at 10000 ms after 4 attempts, `delivery=cancelled`, its completion `NotSent`, the
+  fabric in StateCommit 60 s later (flame `4944908eb4d8dea7ab16feb1ad947140`). With the primary
+  suspended while a pooled connection was still live, the request committed into the suspended
+  primary's receive buffer, the call ended `Indeterminate` at 10 s, and the primary applied it on
+  continue: the loss is a request never written. Reconstruction after a restart of the same birth
+  owes nothing here: a restart while the round is open is refused `build-in-progress`
+  (`control_plane.rs:199-201`), and a later attempt supersedes the round (`fabric_rounds.rs:41-44`),
+  whose check-in the primary answers `NotReady` naming the round it holds (`fabric_state.rs:428-436`);
+  the member's round record (`rounds_seen`) lives with its birth across a stop and start, and a
+  re-command is checked in from it without running the action again (`serve_round`'s `CheckIn`).
+  Already-applied by operation identity: `fabric_state::tests::a_check_in_counts_only_as_the_planned_birth_of_the_open_round`
+  (a repeat check-in of the round key and birth is `AlreadyApplied`) and
+  `command_natural_key::a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_runs_once`.
+  Every budget shape ended its call at a finite deadline (`client.rs:803-805`, `:1150`), so no call
+  could be owed until its §43 ends alone. **Q44 (Luke 2026-10-17, A).** `Budget::Owed`: a fourth
+  budget shape with no send or reply deadline. A call under it ends only on its reply, on the
+  runtime's proof that the receiver is gone (exited, removed or superseded, `client.rs:1096`), or when
+  the owner drops it; the resend schedule runs unchanged underneath it. Local to the client; no wire
+  change. Its users are the reports and completions an owner owes with no bound of its own: the
+  member's round check-in, the mesh-primary's check-in, the owed declaration; their loops are deleted.
+  A command with an owner's bound keeps its finite budget; Owed is never a default. Page text applied
+  to node-rpc.md §34 the same day (the budget list gains `Owed` and its paragraph; "an Owed call has
+  no bound and lapses never; it ends as §43 says"). Cells: the failing cell above, green; a check-in
+  to a primary proven exited ends receiver-gone, `UNAVAILABLE`, and the member owes it again to the
+  new holder on the seat move (Q39's rule); an owner dropping its Owed call ends the resend; the
+  control that a Split or Overall call still lapses as before.
+  Built: `Budget::Owed` (`client.rs`: no send or reply deadline; each attempt is bounded by the floor,
+  and an Owed attempt carried by a peer stamps what remains of it; `investigate.rs`'s carried budget
+  keeps Owed). The member's check-in (`node_self.rs` `check_in`) is one Owed call; it is retargeted
+  when the seat of its mesh names another node after the call began (the call dropped), or after a
+  call that ended with no answer (`rdm.node_admin.status.update.via-completion-retargeted`, `why`
+  `seat-moved` or the end); the hook runs once. The exit arm: the Q44 packet said `client.rs:1096`
+  ended a call on its receiver's proven exit; it did not. The live resolver answers `Unavailable` for
+  a birth whose exit is proven (`live.rs:273`) and `receiver_gone` ended only on `Gone` (the
+  removal), so a call in flight was resent to a birth proven exited until its bound. Both checks
+  (`client.rs` `receiver_gone`, `delivery.rs` `birth_ended`) now end on it, as node-rpc.md's outcome
+  table states ("receiving birth proven exited or removed ... `UNAVAILABLE`"). Cells: `delivery` 24-28
+  (`an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_comes`; the Overall and
+  Split control; the owner's drop; the removal and the proven exit, each `UNAVAILABLE`, 28 RED
+  without the exit arm); `rounds::a_members_check_in_owed_while_its_mesh_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready`
+  GREEN (the Owed call 13046 ms, 6 attempts, the backoff capped at the 3 s floor, applied; flame
+  `5bd8ac58e3cb08a31432292058c8de23`);
+  `command_natural_key::a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder`
+  (in process: the removal ends the owed call `UNAVAILABLE`, the seat's move retargets it, the next
+  holder takes it, the action once); `rounds::a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holder`
+  (live: the primary killed while the check-in is owed to it; the seat's move and the exit's proof
+  reach the member a few milliseconds apart, the exit row first in one run (20826 against 20833) and
+  the seat first in the next, so the live cell takes either end: retargeted, answered by the new
+  holder, the fabric ready; flame `45f6e0eea6a17d42ecb3b81c9a767560`). Control: one completion call
+  per owed check-in, its resends the layer's `via-resend`; the member had no loop of its own.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its

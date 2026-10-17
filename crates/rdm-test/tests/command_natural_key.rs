@@ -290,6 +290,31 @@ impl Birth {
     }
 }
 
+impl Birth {
+    /// Another node-admin of mesh1, `name`, on the same gossip mesh, resolving the birth; resolves once
+    /// the birth hears its digest.
+    async fn other_admin(&self, name: &str) -> crate::common::AdminSide {
+        let admin = admin_side_serving_as("127.0.0.1".parse().unwrap(), &self.launch.fabric_id, name, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin1_addr = iroh::EndpointAddr::new(self.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(self.admin.seed.1);
+        admin.observer.membership.join_peers(vec![admin1_addr]).await.expect("the admin joins admin1's mesh channel");
+        let (d, _) = self.admin.observer.membership.book.get(self.launch.node_id.as_str()).unwrap();
+        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let book = &self.running.membership.book;
+        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while book.get(admin.launcher.node_id.as_str()).is_none() {
+                tokio::select! {
+                    r = heard.changed() => r.unwrap(),
+                    r = digests.changed() => r.unwrap(),
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the birth hears {name}'s digest"));
+        admin
+    }
+}
+
 /// Resolves once `admin` has taken a check-in named `completion` of `attempt` from the birth.
 async fn checked_in(admin: &crate::common::AdminSide, completion: &str, attempt: u32) {
     let mut held = admin.observer.check_ins.subscribe();
@@ -571,5 +596,71 @@ fn the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both
         bounded.pull.release();
         held.await.unwrap();
         let _ = std::fs::remove_dir_all(&bounded.dir);
+    })
+}
+
+/// CONTRACT (i146 Q44, Q39; node-rpc.md §43 and its outcome table, "receiving birth proven exited or
+/// removed ... UNAVAILABLE"): a member's check-in owed to a primary that is removed ends receiver-gone,
+/// `UNAVAILABLE`, and is owed again to the holder the seat names next; the action runs once. The birth
+/// takes admin2's commit-state command, its action held; admin2 goes away (its endpoint closed), the
+/// action is released and the check-in is owed to admin2 and resent; admin2's removal reaches the
+/// birth's resolver and ends the call `UNAVAILABLE`; the seat then moves to admin3, and the check-in is
+/// made there. Must NOT happen: the call ending while admin2 was only unreachable, the check-in sent to
+/// admin3 before the seat names it, the action run twice.
+#[test]
+fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder() {
+    let cell = "a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        use rdm_admin::fabric_state::RoundKind;
+        let birth = Birth::up("round-removed-commander").await;
+        let actions = HeldActions::new();
+        birth.running.own.set_round_actions(actions.clone());
+        let admin2 = birth.other_admin("mesh1.admin.2").await;
+        let admin3 = birth.other_admin("mesh1.admin.3").await;
+        let (gone_id, gone_inc, gone_name) = (admin2.launcher.node_id.clone(), admin2.launcher.incarnation.clone(), admin2.launcher.name.clone());
+        let next_id = admin3.launcher.node_id.to_string();
+
+        // admin1 holds the seat at revision 1 from its boot.
+        birth.seat(&admin2, 2).await;
+        assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's command is admitted");
+        actions.entered.notified().await;
+        // admin2 goes away; the check-in is owed to it and resent.
+        drop(admin2);
+        let delivery = birth.running.node_rpc.client.delivery().clone();
+        let resent_before = rdm_transport::DeliveryStats::get(&delivery.stats().resends);
+        actions.gate.send_replace(true);
+        let completion = |commander: &str| spans_named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|c| c.get("commander").map(String::as_str) == Some(commander)).collect::<Vec<_>>();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while rdm_transport::DeliveryStats::get(&delivery.stats().resends) < resent_before + 3 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the check-in owed to the unreachable admin2 is resent");
+        assert!(completion(gone_id.as_str()).is_empty(), "silence ends nothing: the check-in is still owed");
+        // admin2's removal reaches the birth's resolver: the owed call ends UNAVAILABLE.
+        birth.running.node_rpc.resolver.depart(&gone_id, &gone_inc, &gone_name);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while completion(gone_id.as_str()).is_empty() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the removal ended the owed call");
+        let ended = completion(gone_id.as_str());
+        assert!(ended[0].get("answer").is_some_and(|a| a.ends_with(": UNAVAILABLE")), "ended receiver-gone, UNAVAILABLE: {ended:?}");
+        assert!(admin3.observer.check_ins.borrow().is_empty(), "nothing is sent to admin3 before the seat names it");
+        // The seat names admin3: the check-in is owed to it and made there.
+        birth.seat(&admin3, 3).await;
+        checked_in(&admin3, "state-committed", 1).await;
+        let retargeted = spans_named(&spans, "rdm.node_admin.status.update.via-completion-retargeted");
+        assert!(
+            retargeted.iter().any(|r| r.get("from").map(String::as_str) == Some(gone_id.as_str()) && r.get("to") == Some(&next_id) && r.get("why").is_some_and(|w| w.ends_with(": UNAVAILABLE"))),
+            "the completion was owed again to admin3 because admin2 is gone: {retargeted:?}"
+        );
+        assert_eq!(actions.runs(), 1, "the action ran once");
+        let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }

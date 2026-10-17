@@ -865,7 +865,7 @@ Admission is capacity control, never deduplication.
 
 ## 34. Deadlines and cancellation
 
-The generic API supports two budget shapes:
+The generic API supports three budget shapes:
 
 ```text
 Overall { deadline }
@@ -873,15 +873,18 @@ Split {
     request_send_deadline
     reply_budget_after_commit
 }
+Owed
 ```
 
 Overall is the default: one absolute deadline covers resolve -> route/pool -> dial/open -> complete request frame sent, and resent until acked -> reply/stream. Node RPC does not quietly reset it between phases.
 
 Split exists for domains such as writer ingress that already have a stronger request-send certainty bound followed by a separate post-commit reply budget. The reply budget begins only after the complete-send certainty cut.
 
+Owed has no send or reply deadline. An Owed call ends only on its reply, on the runtime's proof that the receiver is gone (exited, removed or superseded), or when its owner drops it; the resend schedule of §43 runs unchanged underneath it. It is for a report or completion its owner owes with no bound of its own: a member's round check-in, the mesh-primary's check-in, a node's owed declaration. A command with an owner's bound keeps a finite budget; Owed is never a default.
+
 The [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) runs its outer and inner streams with no overall deadline, bounded by the transport idle timeout and keepalive. A carried call's inner budget is the `remaining_ms` the source stamps ([Forward](node-rpc-envelope.md#forward-op-0x1a-core)).
 
-Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's budget is its owner's bound: when it lapses the request is owed no longer (§43). For Budget::Stream, closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: the owner of such a call (the Build carrier, build.get's watch, the handover) declared the connection its bound and reattaches by its own rule, above this layer. For other budgets, connection loss alone does not cancel the invocation; owed delivery continues within the owner's bound.
+Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's budget is its owner's bound: when it lapses the request is owed no longer (§43); an Owed call has no bound and lapses never; it ends as §43 says. For Budget::Stream, closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: the owner of such a call (the Build carrier, build.get's watch, the handover) declared the connection its bound and reattaches by its own rule, above this layer. For other budgets, connection loss alone does not cancel the invocation; owed delivery continues within the owner's bound.
 
 The caller budget is not a generic remote execution deadline. After dispatch, a streaming handler's sink answers `CallerGone` when the caller ends the invocation or the runtime disappears; a lost connection is no cancellation: the response is owed (§43). The owning protocol decides whether to stop, finish or detach durable work.
 

@@ -327,6 +327,8 @@ pub(crate) fn carried_budget(round: Duration) -> Budget {
         Budget::Overall(inner) => Budget::Overall(inner + round * 2),
         Budget::Split { send, reply } => Budget::Split { send: send + round * 2, reply },
         Budget::Stream { send } => Budget::Stream { send: send + round * 2 },
+        // Owed is never a default (node-rpc.md §34): it has no bound to outlast.
+        Budget::Owed => Budget::Owed,
     }
 }
 

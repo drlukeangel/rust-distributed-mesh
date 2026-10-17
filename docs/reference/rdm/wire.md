@@ -2031,7 +2031,7 @@ The durable `held-running` fact on a birth's status row (R-FM1): the provider re
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 13 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 14 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2083,6 +2083,9 @@ The call a cut held first, as the decorator offered it.
 | 12 | **`Declaration`** |  |  | A node's declaration at the status door, about to be decided. |
 | 12.0 | `node` | `String` |  | The declaring node. |
 | 12.1 | `state` | `String` |  | The state it declares. |
+| 13 | **`RoundAction`** |  |  | A node-admin's round action, about to run. |
+| 13.0 | `node` | `String` |  | The acting admin. |
+| 13.1 | `round` | `String` |  | The round, as its command names it. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 

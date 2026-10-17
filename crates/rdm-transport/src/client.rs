@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout_at, Instant};
 
-/// The two budget shapes (ownership amendment §6.1).
+/// The budget shapes (node-rpc.md §34).
 #[derive(Debug, Clone, Copy)]
 pub enum Budget {
     /// One deadline over resolve, dial, send and reply; never reset between phases.
@@ -48,6 +48,11 @@ pub enum Budget {
         /// The bound on connecting and sending the complete request.
         send: Duration,
     },
+    /// No send or reply deadline (i146 Q44): the call ends only on its reply, on the runtime's proof
+    /// that the receiver is gone (exited, removed or superseded), or when its owner drops it; the
+    /// resend schedule runs unchanged underneath it. For a report or completion its owner owes with
+    /// no bound of its own; never a default.
+    Owed,
 }
 
 /// How one call is made: its budget, its scope, its observability context and its failpoints.
@@ -584,7 +589,8 @@ impl NodeRpcClient {
             // The remaining budget is measured here, after resolve, dial and stream open,
             // immediately before the request is first written; a resend carries the same bytes.
             let remaining = match opts.budget {
-                Budget::Overall(_) => send_deadline.saturating_duration_since(Instant::now()),
+                // An Owed call's attempt is bounded by the floor: it stamps what remains of that.
+                Budget::Overall(_) | Budget::Owed => send_deadline.saturating_duration_since(Instant::now()),
                 Budget::Split { reply, .. } => reply,
                 Budget::Stream { send } => send,
             };
@@ -727,7 +733,7 @@ impl NodeRpcClient {
         max_reply: usize,
         opts: &CallOptions,
         unary: bool,
-        deadlines: (Instant, Option<Instant>),
+        deadlines: (Option<Instant>, Option<Instant>),
         span: &tracing::Span,
     ) -> Result<OwedCall, (RpcOutcome<()>, Option<CallEvidence>)> {
         let node = match self.reach(target) {
@@ -799,14 +805,11 @@ impl NodeRpcClient {
         D: FnOnce(Decode<'_>) -> RpcOutcome<R>,
     {
         let start = Instant::now();
-        let (send_deadline, overall) = match opts.budget {
-            Budget::Overall(d) => (start + d, Some(start + d)),
-            Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
-        };
+        let (send_deadline, overall) = deadlines_of(opts.budget, start);
         let after_commit = |at: Instant| match (opts.budget, overall) {
             (_, Some(d)) => Some(d),
             (Budget::Split { reply, .. }, None) => Some(at + reply),
-            (Budget::Stream { .. }, None) => None,
+            (Budget::Stream { .. } | Budget::Owed, None) => None,
             (Budget::Overall(_), None) => unreachable!(),
         };
         let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, true, (send_deadline, overall), span) {
@@ -942,6 +945,16 @@ impl NodeRpcClient {
         let evidence = owed.evidence.lock().unwrap().clone();
         owed.close(out.reply().is_none()).await;
         (out, Some(evidence))
+    }
+}
+
+/// The send deadline (`None` for an Owed call) and the overall deadline of a call made at `start`
+/// under `budget`.
+pub(crate) fn deadlines_of(budget: Budget, start: Instant) -> (Option<Instant>, Option<Instant>) {
+    match budget {
+        Budget::Overall(d) => (Some(start + d), Some(start + d)),
+        Budget::Split { send, .. } | Budget::Stream { send } => (Some(start + send), None),
+        Budget::Owed => (None, None),
     }
 }
 
@@ -1083,7 +1096,8 @@ struct Attempts {
     carried_floor: Option<u64>,
     payload: Payload,
     opts: CallOptions,
-    deadlines: (Instant, Option<Instant>),
+    /// The send deadline (`None`: an Owed call has none) and the overall one.
+    deadlines: (Option<Instant>, Option<Instant>),
     evidence: Arc<Mutex<CallEvidence>>,
     tx: mpsc::UnboundedSender<Attempted>,
     state: watch::Receiver<SlotState>,
@@ -1098,7 +1112,9 @@ impl Attempts {
         match self.client.resolver.resolve(&self.target) {
             Ok(n) if &n.incarnation == held => None,
             Ok(n) => Some(format!("incarnation {} superseded by {}", held.as_str(), n.incarnation.as_str())),
-            Err(ResolveFailure::Gone) => Some(format!("incarnation {} exited or removed", held.as_str())),
+            Err(ResolveFailure::Gone) => Some(format!("incarnation {} removed", held.as_str())),
+            // The live resolver answers `Unavailable` for exactly a birth whose exit is proven.
+            Err(ResolveFailure::Unavailable) => Some(format!("incarnation {} exited: its exit is proven", held.as_str())),
             Err(_) => None,
         }
     }
@@ -1147,7 +1163,7 @@ impl Attempts {
             if self.state.borrow().complete {
                 return AttemptEnd::CompleteAtTurn;
             }
-            if !committed && Instant::now() >= self.deadlines.0 {
+            if !committed && self.deadlines.0.is_some_and(|d| Instant::now() >= d) {
                 let _ = self.tx.send(Attempted::SendDeadline(last));
                 return AttemptEnd::SendDeadline;
             }
@@ -1177,7 +1193,10 @@ impl Attempts {
             let started = Instant::now();
             let next_at = started + pacing.after(attempt);
             // Before the commit no pause outlasts the send budget.
-            let resume_at = if committed { next_at } else { next_at.min(self.deadlines.0) };
+            let resume_at = match self.deadlines.0 {
+                Some(d) if !committed => next_at.min(d),
+                _ => next_at,
+            };
             if attempt > 1 {
                 self.client.delivery.stats().resends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 tracing::info_span!("rdm.node_rpc.delivery.update.via-resend", delivery_id = %self.id, attempt, backoff_ms = pacing.after(attempt - 1).as_millis() as u64)
@@ -1187,7 +1206,12 @@ impl Attempts {
                 Budget::Stream { send } => Some(send),
                 _ => None,
             };
-            let deadline = if committed { self.deadlines.1.unwrap_or(started + pacing.floor) } else { self.deadlines.0 };
+            // One attempt of an Owed call, as one after the commit, is bounded by the floor.
+            let deadline = match (committed, self.deadlines) {
+                (false, (Some(send), _)) => send,
+                (true, (_, Some(overall))) => overall,
+                _ => started + pacing.floor,
+            };
             let node = match self.client.reach(&self.target) {
                 Ok(n) => n,
                 Err(r) if self.opts.unsent_is_final && !committed => {

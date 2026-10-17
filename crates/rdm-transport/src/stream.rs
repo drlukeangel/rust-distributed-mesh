@@ -480,10 +480,7 @@ impl NodeRpcClient {
         );
         let started = Instant::now();
         let start = started;
-        let (send_deadline, overall) = match opts.budget {
-            Budget::Overall(d) => (start + d, Some(start + d)),
-            Budget::Split { send, .. } | Budget::Stream { send } => (start + send, None),
-        };
+        let (send_deadline, overall) = crate::client::deadlines_of(opts.budget, start);
         let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, false, (send_deadline, overall), &span);
         let finish = |outcome: &str| {
             span.record("outcome", outcome);
@@ -521,8 +518,12 @@ impl NodeRpcClient {
                     Some(Attempted::StoppedBeforeComplete) => {
                         // Refused before the request was complete: the refusal is the stream's one frame.
                         let early = pre.take().expect("stopped once").stopped_before_finish();
-                        let bytes = match tokio::time::timeout_at(send_deadline, owed.frames.recv()).await {
-                            Ok(Some(SlotEvent::Frame(b, ack))) => {
+                        let frame = match send_deadline {
+                            Some(d) => tokio::time::timeout_at(d, owed.frames.recv()).await.ok().flatten(),
+                            None => owed.frames.recv().await,
+                        };
+                        let bytes = match frame {
+                            Some(SlotEvent::Frame(b, ack)) => {
                                 if let Some(ack) = ack {
                                     ack.write().await;
                                 }

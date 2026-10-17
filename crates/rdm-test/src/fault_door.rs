@@ -43,6 +43,7 @@ enum CutWire {
     Announcement { announcement: String, channel: String },
     ProviderTerminate { pid: Option<u32> },
     Declaration { node: Option<String>, state: Option<String> },
+    RoundAction { node: Option<String>, round: Option<String> },
 }
 
 /// A fault door call.
@@ -187,6 +188,13 @@ pub enum Hit {
         /// The state it declares.
         state: String,
     },
+    /// A node-admin's round action, about to run.
+    RoundAction {
+        /// The acting admin.
+        node: String,
+        /// The round, as its command names it.
+        round: String,
+    },
 }
 
 impl Hit {
@@ -207,6 +215,7 @@ impl Hit {
             Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Hit::ProviderTerminate { pid, deployment_id } => json!({"pid": pid, "deployment_id": deployment_id}),
             Hit::Declaration { node, state } => json!({"node": node, "state": state}),
+            Hit::RoundAction { node, round } => json!({"node": node, "round": round}),
         }
     }
 }

@@ -228,7 +228,11 @@ impl Served {
 }
 
 async fn served_with(build: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Served {
-    let me = birth();
+    served_at(birth(), SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), build).await
+}
+
+/// The responder as birth `me`, with endpoint key `key`, bound at `at`.
+async fn served_at(me: Birth, key: SecretKey, at: std::net::SocketAddr, build: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Served {
     let delivery = Delivery::with_pacing(me.clone(), pacing());
     let runs = Arc::new(AtomicU64::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -265,8 +269,7 @@ async fn served_with(build: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Serv
         }
     });
     let server = build(builder).with_delivery(delivery.clone()).seal(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
-    let key = SecretKey::generate();
-    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = rdm_transport::endpoint::bind(key.clone(), at).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
@@ -1109,4 +1112,123 @@ fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
         assert_eq!(of_call[0]["parent_span_id"], call["span_id"], "the end is spanned under its own call: {} ({})", of_call[0], flame(&trace));
     }
     println!("delivery flame (every attempt task's end, named by its path): {}", flame(&trace));
+}
+
+fn owed() -> CallOptions {
+    CallOptions { budget: Budget::Owed, ..CallOptions::default() }
+}
+
+/// A birth, its endpoint key and an address nothing listens on: the endpoint that held it is closed.
+async fn unreachable() -> (Birth, SecretKey, ResolvedNode) {
+    let (me, key) = (birth(), SecretKey::generate());
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    ep.close().await;
+    let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
+    (me, key, node)
+}
+
+/// Cell 24. CONTRACT (i146 Q44; node-rpc.md §34): an Owed call has no send or reply deadline. To a
+/// receiver that cannot be reached it is resent past the bound at which an Overall call to the same
+/// receiver ends `NotSent`/`Deadline`, and it is delivered, its handler run once, when the receiver
+/// comes up. Must NOT happen: the Owed call ending while nothing ended it.
+#[tokio::test]
+async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_comes() {
+    let (me, key, node) = unreachable().await;
+    let (client, _) = client_of(&[&node]).await;
+    let cd = client.delivery().clone();
+    let target = NodeTarget::ExactNode(node.node_id.clone());
+    let (c, t) = (client.clone(), target.clone());
+    let owed_call = tokio::spawn(async move { c.call::<Command>(&t, &run(24, Mode::Apply), &owed()).await.0 });
+    let (bounded, _) = client.call::<Command>(&target, &run(240, Mode::Apply), &budget(FLOOR * 2)).await;
+    assert!(matches!(&bounded, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Deadline)), "the Overall call ends at its bound: {bounded:?}");
+    tokio::time::sleep(FLOOR * 2).await;
+    assert!(!owed_call.is_finished(), "the Owed call outlives the bound the Overall call ended at");
+    let resent = get(&cd.stats().resends);
+    assert!(resent >= 3, "the Owed call is resent on the schedule: {resent}");
+    let s = served_at(me, key, node.transport_addr, |b| b).await;
+    let out = tokio::time::timeout(FLOOR * 4, owed_call).await.expect("delivered once the receiver came").unwrap();
+    assert_eq!(ran(&out), Some((24, 1)), "{out:?}");
+    assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
+}
+
+/// Cell 25 (control, i146 Q44). CONTRACT: an Overall call and a Split call still lapse as before: to a
+/// receiver that cannot be reached, each ends `NotSent`/`Deadline` at its send bound; to a receiver
+/// that holds the request unanswered, each ends `Indeterminate`/`ReplyDeadline` at its bound.
+#[tokio::test]
+async fn an_overall_and_a_split_call_still_lapse_at_their_bounds() {
+    let split = || CallOptions { budget: Budget::Split { send: FLOOR, reply: FLOOR }, ..CallOptions::default() };
+    let (_, _, node) = unreachable().await;
+    let (client, _) = client_of(&[&node]).await;
+    let target = NodeTarget::ExactNode(node.node_id.clone());
+    for (what, opts) in [("overall", budget(FLOOR)), ("split", split())] {
+        let started = Instant::now();
+        let (out, _) = client.call::<Command>(&target, &run(25, Mode::Apply), &opts).await;
+        assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Deadline)), "{what}: {out:?}");
+        assert!(started.elapsed() < FLOOR * 3, "{what}: ended at its send bound, {:?}", started.elapsed());
+    }
+    let s = served().await;
+    let (client, _) = client_of(&[&s.node]).await;
+    for (what, opts) in [("overall", budget(FLOOR)), ("split", split())] {
+        let (out, _) = client.call::<Command>(&s.target(), &run(26, Mode::Hold), &opts).await;
+        assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReplyDeadline)), "{what}: {out:?}");
+        s.release();
+    }
+}
+
+/// Cell 26 (i146 Q44). CONTRACT: an owner dropping its Owed call ends the resend: no further resend
+/// reaches the receiver once the call is dropped.
+#[tokio::test]
+async fn an_owner_dropping_its_owed_call_ends_the_resend() {
+    let s = served().await;
+    let (client, _) = client_of(&[&s.node]).await;
+    let target = s.target();
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(27, Mode::Hold), &owed()).await });
+    eventually("the unacked request is being resent", Duration::from_secs(3), || get(&s.delivery.stats().duplicates_pending) >= 2).await;
+    call.abort();
+    let _ = call.await;
+    tokio::time::sleep(CADENCE).await;
+    let after = get(&s.delivery.stats().duplicates_pending);
+    tokio::time::sleep(FLOOR * 2).await;
+    assert_eq!(get(&s.delivery.stats().duplicates_pending), after, "nothing is resent after the owner dropped it");
+    s.release();
+}
+
+/// Cell 27 (i146 Q44). CONTRACT: an Owed call to a silent receiver ends on the receiver's proven exit
+/// (the view's removal), `ReceiverGone`, code `UNAVAILABLE`: the proof ends it, never silence.
+#[tokio::test]
+async fn an_owed_call_ends_on_its_receivers_proven_exit_unavailable() {
+    let r = raw().await;
+    let (client, resolver) = client_of(&[&r.node]).await;
+    let cd = client.delivery().clone();
+    let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(28, Mode::Apply), &owed()).await.0 });
+    eventually("silence keeps the request owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 3).await;
+    assert!(!call.is_finished(), "silence ends nothing");
+    resolver.remove_gone(&r.node.node_id);
+    let out = call.await.unwrap();
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))), "{out:?}");
+    assert_eq!(out.code(), rdm_core::outcome::Code::Unavailable, "{out:?}");
+}
+
+/// Cell 28 (i146 Q44; node-rpc.md §43, the outcome table "receiving birth proven exited or removed"):
+/// an Owed call in flight ends when its receiver's exit is proven (the live resolver retires the birth),
+/// `ReceiverGone`, code `UNAVAILABLE`: the proof of the exit ends it, as the removal does, never
+/// silence. Must NOT happen: the call resent to a birth proven exited.
+#[tokio::test]
+async fn an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable() {
+    let r = raw().await;
+    let resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
+    resolver.apply(r.node.clone(), None);
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = NodeRpcClient::new(ep, resolver.clone()).with_delivery(Delivery::with_pacing(birth(), pacing()));
+    let cd = client.delivery().clone();
+    let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let call = tokio::spawn(async move { client.call::<Command>(&target, &run(29, Mode::Apply), &owed()).await.0 });
+    eventually("silence keeps the request owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 3).await;
+    assert!(!call.is_finished(), "silence ends nothing");
+    resolver.retire_birth(&r.node.node_id, &r.node.incarnation);
+    let out = tokio::time::timeout(FLOOR * 2, call).await.expect("the proof of the exit ended the call").unwrap();
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(why) if why.contains("exit is proven"))), "{out:?}");
+    assert_eq!(out.code(), rdm_core::outcome::Code::Unavailable, "{out:?}");
 }

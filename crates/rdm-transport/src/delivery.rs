@@ -794,7 +794,9 @@ impl Delivery {
         match resolver.resolve(&NodeTarget::ExactNode(birth.node_id.clone())) {
             Ok(n) if n.incarnation == birth.incarnation => None,
             Ok(n) => Some(format!("birth {} superseded by incarnation {}", birth, n.incarnation.as_str())),
-            Err(rdm_core::outcome::ResolveFailure::Gone) => Some(format!("birth {birth} exited or removed")),
+            Err(rdm_core::outcome::ResolveFailure::Gone) => Some(format!("birth {birth} removed")),
+            // The live resolver answers `Unavailable` for exactly a birth whose exit is proven.
+            Err(rdm_core::outcome::ResolveFailure::Unavailable) => Some(format!("birth {birth} exited: its exit is proven")),
             Err(_) => None,
         }
     }

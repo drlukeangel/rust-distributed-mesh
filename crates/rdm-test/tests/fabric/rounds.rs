@@ -708,3 +708,137 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     }
     eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.tags.create mesh2.rpc.1 status=state-sync", s(&node_rejects[0]["trace_id"]));
 }
+
+fn signal(pid: u64, sig: &str) {
+    let ok = std::process::Command::new("kill").args([sig, &pid.to_string()]).status().unwrap().success();
+    assert!(ok, "kill {sig} {pid}");
+}
+
+/// The budget a member's check-in call had when it rode `CallOptions::default()`: one 10 s overall
+/// bound, after which the call ended and its request was owed no longer.
+const DEFAULT_CALL_BUDGET: Duration = Duration::from_secs(10);
+
+/// CONTRACT (i146 e3; node-rpc.md §43; fabric-state-commit.md step 3, "Each member checks in with its
+/// primary"): a member's check-in is owed to the mesh primary that commanded it until that primary
+/// answers, however long the primary cannot be reached. In a fabric of two meshes, a resize of mesh2
+/// puts the fabric back through its climb; mesh2's other admin takes the commit-state command and is
+/// held in its action (the fault door's round-action cut). mesh2's primary, not the fabric-primary,
+/// is suspended until every connection to it has idled out, the action released, and the primary
+/// stays suspended past the 10 s a check-in call had; continued, it applies the check-in and the
+/// fabric reaches ready-for-traffic under the resize.
+/// The mesh primary marks a member's command answered on its `Applied` and never sends it again
+/// (`fabric_rounds.rs` `spawn_command`, `fabric_state.rs` `take_due`), so the check-in is the only
+/// path to its checklist. Must NOT happen: the check-in ending unanswered, the fabric held in
+/// state-commit, the member's action run twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_check_in_owed_while_its_mesh_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready() {
+    let test = "a_members_check_in_owed_while_its_mesh_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready";
+    let mut estate = estate_with(test, "answer:0").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary == primary).cloned().expect("mesh2 has two admins");
+    let (holder, member) = (admin_of(true), admin_of(false));
+    assert!(!holder.is_fabric_primary, "mesh2's primary is not the fabric-primary: the climb goes on around it");
+    let (holder_s, member_s) = (holder.name.to_string(), member.name.to_string());
+
+    // The member takes the resize's commit-state command and is held in its action.
+    let door = Door::at(&estate, &member_s).await;
+    door.arm("round-action", json!({"kind": "round-action", "node": member_s, "round": "commit-state"})).await;
+    let resize = estate.submit(&rdm_client::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] })).await;
+    let resize_id = resize.build_id().to_string();
+    let hit = door.wait_held("round-action").await;
+    assert_eq!(hit["hit"]["node"], member_s.as_str(), "{hit}");
+
+    // Its primary is suspended before the check-in is owed, until every connection to it has idled out
+    // (the QUIC idle timeout is the staleness floor: `rdm_transport::endpoint::transport_config`), so
+    // the check-in has no live connection to be written on; then past the call budget.
+    let pid = estate.pid_of(&holder_s).await;
+    signal(pid, "-STOP");
+    tokio::time::sleep(rdm_transport::membership::staleness_floor() + Duration::from_secs(2)).await;
+    door.release("round-action").await;
+    tokio::time::sleep(DEFAULT_CALL_BUDGET + Duration::from_secs(3)).await;
+    signal(pid, "-CONT");
+    estate.follow(resize).await;
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(resize_id.as_str()), Duration::from_secs(60)).await;
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let calls: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call")
+        .into_iter()
+        .filter(|sp| s(&sp["attributes"]["node"]) == member_s && sp["attributes"]["completion"] == "state-committed" && s(&sp["attributes"]["build_id"]) == resize_id)
+        .collect();
+    assert_eq!(calls.len(), 1, "the member owed one check-in of the resize's commit-state: {calls:#?}");
+    assert_eq!(calls[0]["attributes"]["commander"], json!(holder.node_id.to_string()), "to the primary that commanded it: {:#?}", calls[0]);
+    assert_eq!(calls[0]["attributes"]["answer"], "applied", "the suspended primary applied it once it was continued: {:#?}", calls[0]);
+    let holds: Vec<&Value> = named(&spans, "rdm.testkit.fault.update.via-hold").into_iter().filter(|sp| sp["attributes"]["cut"] == "round-action").collect();
+    assert_eq!(holds.len(), 1, "the member's action ran once: {holds:#?}");
+    println!("member check-in across its primary's suspension: {}; flame http://192.168.68.99:16687/trace/{}", s(&calls[0]["attributes"]["answer"]), s(&calls[0]["trace_id"]));
+    estate.record_trace_url(&s(&calls[0]["trace_id"]));
+}
+
+/// CONTRACT (i146 Q44, Q39; node-rpc.md §43, §34; fabric-node-lifecycle-elections.md: "a holder that
+/// yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of
+/// its own mesh"): a member's check-in owed to a mesh primary that dies is owed to the holder the seat
+/// names next. mesh2 holds three admins; the member is the non-primary admin the election will not
+/// pick. It is held in the resize's commit-state action, its primary suspended until every connection
+/// to it idles out, the action released (the check-in owed to the suspended primary), then the
+/// primary killed. Whichever reaches the member first, the seat's move (the call to the old holder is
+/// dropped) or the proof of the exit (the call ends `UNAVAILABLE`), the completion is retargeted to the
+/// new holder and answered there, and the fabric reaches ready-for-traffic under the resize. Must NOT
+/// happen: the call ending before the primary was killed, the completion sent to an admin the seat
+/// never named, the fabric held in state-commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holder() {
+    let test = "a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holder";
+    let mut estate = estate_with(test, "answer:0").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    let holder = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 has a primary");
+    assert!(!holder.is_fabric_primary, "mesh2's primary is not the fabric-primary: the climb goes on around it");
+    let mut others: Vec<NodeView> = views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).cloned().collect();
+    others.sort_by_key(|n| n.node_id.to_string());
+    let (successor, member) = (others[0].clone(), others[1].clone());
+    let (holder_s, member_s) = (holder.name.to_string(), member.name.to_string());
+    let (holder_id, successor_id) = (holder.node_id.to_string(), successor.node_id.to_string());
+
+    let door = Door::at(&estate, &member_s).await;
+    door.arm("round-action", json!({"kind": "round-action", "node": member_s, "round": "commit-state"})).await;
+    let resize = estate.submit(&rdm_client::BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 3), (NodeKind::RpcNode, 2)])] })).await;
+    let resize_id = resize.build_id().to_string();
+    door.wait_held("round-action").await;
+
+    // The check-in is owed to a suspended primary, then the primary is killed.
+    let pid = estate.pid_of(&holder_s).await;
+    signal(pid, "-STOP");
+    tokio::time::sleep(rdm_transport::membership::staleness_floor() + Duration::from_secs(2)).await;
+    door.release("round-action").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let killed_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    signal(pid, "-KILL");
+    estate.follow(resize).await;
+    until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(resize_id.as_str()), Duration::from_secs(120)).await;
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let mine = |name: &str| -> Vec<Value> {
+        let mut v: Vec<Value> = named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == member_s && sp["attributes"]["completion"] == "state-committed" && s(&sp["attributes"]["build_id"]) == resize_id).cloned().collect();
+        v.sort_by_key(start);
+        v
+    };
+    let calls = mine("rdm.node_admin.status.update.via-completion-call");
+    let retargeted = mine("rdm.node_admin.status.update.via-completion-retargeted");
+    let moved = retargeted.iter().find(|r| s(&r["attributes"]["from"]) == holder_id && s(&r["attributes"]["to"]) == successor_id).unwrap_or_else(|| panic!("the completion was owed again to the new holder {successor_id}: {retargeted:#?}"));
+    let why = s(&moved["attributes"]["why"]);
+    assert!(why == "seat-moved" || why.ends_with(": UNAVAILABLE"), "retargeted on the seat's move or on the proof of the exit: {moved:#?}");
+    assert!(start(moved) >= killed_at, "nothing ended the owed check-in before the primary was killed: {moved:#?}");
+    for c in calls.iter().filter(|c| s(&c["attributes"]["commander"]) == holder_id) {
+        assert!(s(&c["attributes"]["answer"]).ends_with(": UNAVAILABLE") && start(c) >= killed_at, "a call to the primary ends only on the proof of its exit: {c:#?}");
+    }
+    assert!(calls.iter().all(|c| [holder_id.as_str(), successor_id.as_str()].contains(&s(&c["attributes"]["commander"]).as_str())), "owed only to the seat's holders: {calls:#?}");
+    let answered: Vec<&Value> = calls.iter().filter(|c| s(&c["attributes"]["commander"]) == successor_id && !s(&c["attributes"]["answer"]).contains(": ")).collect();
+    assert!(!answered.is_empty(), "the new holder answered the completion: {calls:#?}");
+    println!("check-in across its primary's death: retargeted ({why}), {} at the new holder; flame http://192.168.68.99:16687/trace/{}", s(&answered[0]["attributes"]["answer"]), s(&moved["trace_id"]));
+    estate.record_trace_url(&s(&moved["trace_id"]));
+}

@@ -135,6 +135,15 @@ pub enum CutSpec {
         /// The state declared, as `NodeState` names it.
         #[serde(default)] state: Option<String>,
     },
+    /// A node-admin's round action (`commit-state` or `open-traffic`) is about to run, after RDM's
+    /// own publication: held until the release, so the round's command is answered and its check-in
+    /// not yet owed (i146 e3). `node` narrows the cut to one admin, `round` to one round.
+    RoundAction {
+        /// The acting admin's `path.name`.
+        #[serde(default)] node: Option<String>,
+        /// The round, as its command names it: `commit-state` or `open-traffic`.
+        #[serde(default)] round: Option<String>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -238,6 +247,13 @@ pub enum Probe {
         /// The state declared.
         state: String,
     },
+    /// A node-admin's round action about to run.
+    RoundAction {
+        /// The acting admin.
+        node: String,
+        /// The round, as its command names it.
+        round: &'static str,
+    },
 }
 
 impl CutSpec {
@@ -259,6 +275,7 @@ impl CutSpec {
             (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             (CutSpec::ProviderTerminate { pid }, Probe::ProviderTerminate { pid: p, .. }) => pid.is_none_or(|w| *p == Some(w)),
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
+            (CutSpec::RoundAction { node, round }, Probe::RoundAction { node: n, round: r }) => node_is(node, n) && round.as_deref().is_none_or(|w| w == *r),
             _ => false,
         }
     }
@@ -281,6 +298,7 @@ impl Probe {
             Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
             Probe::ProviderTerminate { pid, deployment_id } => Hit::ProviderTerminate { pid: *pid, deployment_id: deployment_id.clone() },
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
+            Probe::RoundAction { node, round } => Hit::RoundAction { node: node.clone(), round: round.to_string() },
         }
     }
 }
@@ -659,6 +677,23 @@ impl rdm_admin::wiring::DeclarationSeam for FaultedDeclaration {
     }
 }
 
+/// The embedding's round action: an armed [`CutSpec::RoundAction`] holds the admin's action before it
+/// runs, until the release. The testkit binds no action of its own, so open-traffic names that, as
+/// RDM's does with none bound.
+struct FaultedRoundActions(Arc<AdminFaults>);
+
+#[async_trait]
+impl rdm_admin::fabric_rounds::RoundActions for FaultedRoundActions {
+    async fn commit_state(&self, node: &rdm_core::PathName) -> Result<(), String> {
+        self.0.hold(Probe::RoundAction { node: node.to_string(), round: "commit-state" }).await;
+        Ok(())
+    }
+    async fn open_traffic(&self, node: &rdm_core::PathName) -> Result<(), String> {
+        self.0.hold(Probe::RoundAction { node: node.to_string(), round: "open-traffic" }).await;
+        rdm_admin::fabric_rounds::RoundActions::open_traffic(&rdm_admin::fabric_rounds::NoScratchpad, node).await
+    }
+}
+
 /// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`); the
 /// drain phases belong to a transition into `Draining`, which no admin path runs.
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
@@ -681,7 +716,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         certs: CertChoice::NoCerts,
         serve_app: None,
         fabric_hooks: FabricHooks::no_app_work(),
-        round_actions: None,
+        round_actions: Some(Arc::new(FaultedRoundActions(faults.clone()))),
         hooks: NODE_READY_PHASES
             .iter()
             .map(|&phase| {

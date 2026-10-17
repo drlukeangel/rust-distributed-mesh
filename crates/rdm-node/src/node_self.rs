@@ -683,7 +683,12 @@ impl NodeSelf {
         self.check_in(&commander, &key).instrument(span).await
     }
 
-    /// The check-in hook, then the completion call at `commander`, naming `key`'s round.
+    /// The check-in hook, then the completion owed at `commander`, naming `key`'s round (node-rpc.md
+    /// §43, i146 Q44): one Owed call, ended by its answer, by the runtime's proof that its receiver is
+    /// gone, or by the primary seat of this birth's mesh moving to another node, which is its one
+    /// retargeting (Q39): the call to the old holder is dropped and the completion is owed to the new
+    /// one. A completion whose receiver was proven gone is owed to the next node the seat names. The
+    /// hook runs once, however often the completion is sent.
     async fn check_in(&self, commander: &NodeId, key: &crate::rounds::RoundKey) {
         let req = key.kind.up(key, self.node_id.clone(), self.incarnation.clone());
         // The check-in hook runs in the path of the completion call, before it goes out.
@@ -700,13 +705,62 @@ impl NodeSelf {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };
-        let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rdm_transport::CallOptions::default()).await;
-        let answer = match &out {
-            rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
-            other => other.name().to_string(),
-        };
-        tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, hook = %hook, answer = %answer, "otel.kind" = "internal")
-            .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
+        let owed = rdm_transport::CallOptions { budget: rdm_transport::Budget::Owed, ..rdm_transport::CallOptions::default() };
+        let holder = || self.membership.seats().mesh(&self.name.mesh).map(|h| (h.node_id, h.incarnation));
+        let mut seats = self.membership.seats().subscribe();
+        let mut to = commander.clone();
+        loop {
+            seats.borrow_and_update();
+            let from = holder();
+            let called = to.clone();
+            // The seat moving to a node other than the one called: the call is dropped and retargeted.
+            let moved = async {
+                loop {
+                    if seats.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                    if let Some((next, _)) = holder().filter(|h| Some(h) != from.as_ref() && h.0 != called) {
+                        return next;
+                    }
+                }
+            };
+            let target = NodeTarget::ExactNode(to.clone());
+            let out = tokio::select! {
+                (out, _) = self.client.call::<Status>(&target, &req, &owed) => out,
+                next = moved => {
+                    self.retargeted(key, &to, &next, "seat-moved");
+                    to = next;
+                    continue;
+                }
+            };
+            let answer = match &out {
+                rdm_core::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
+                other => format!("{}: {}", other.name(), other.code().name()),
+            };
+            tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %to, hook = %hook, answer = %answer, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
+            if out.reply().is_some() {
+                return;
+            }
+            // No answer, and nothing but the receiver's end or its owner ends an Owed call: the
+            // completion is owed to the next node the seat names.
+            let next = loop {
+                if let Some((next, _)) = holder().filter(|h| h.0 != to) {
+                    break next;
+                }
+                if seats.changed().await.is_err() {
+                    return;
+                }
+            };
+            self.retargeted(key, &to, &next, &answer);
+            to = next;
+        }
+    }
+
+    /// `key`'s completion, owed at `from`, is owed at `to` from now on, because of `why`.
+    fn retargeted(&self, key: &crate::rounds::RoundKey, from: &NodeId, to: &NodeId, why: &str) {
+        tracing::info_span!("rdm.node_admin.status.update.via-completion-retargeted", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, from = %from, to = %to, why, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the completion is owed to the holder of this birth's mesh's primary seat"));
     }
 
     /// Serve `StopNode` or `StartNode` on the exact birth it names (`node.connections.delete` reaches a
