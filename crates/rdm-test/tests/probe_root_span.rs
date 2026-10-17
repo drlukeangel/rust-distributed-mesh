@@ -125,7 +125,8 @@ fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let reason = v["reason"].as_str().unwrap().to_string();
     assert!(reason.contains("--no-such-flag"), "the refusal names the argument: {reason}");
     let spans: String = std::fs::read_dir(&evidence).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
-    assert!(spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments"), "the refusal left no span: {spans:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments"), "the refusal left no span: {spans:?}; the probe's stderr: {stderr}");
     assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}");
     let _ = std::fs::remove_dir_all(&evidence);
 }

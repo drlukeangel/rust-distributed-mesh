@@ -30,10 +30,10 @@ use std::time::Duration;
 /// before it: the evidence processor's queue written to a local file.
 const EVIDENCE_FLUSH_BOUND: Duration = Duration::from_secs(10);
 
-/// The evidence processor, shared between the provider and the capture, so the capture flushes
-/// the evidence file alone and never waits on the collector to read it.
+/// The evidence processor, shared between the provider and its owner (a capture, a process's exit
+/// drain), so the owner flushes the evidence file alone and never waits on the collector for it.
 #[derive(Debug, Clone)]
-struct SharedEvidence(Arc<CountingBatchProcessor>);
+pub(crate) struct SharedEvidence(pub(crate) Arc<CountingBatchProcessor>);
 
 impl SpanProcessor for SharedEvidence {
     fn on_start(&self, span: &mut Span, cx: &opentelemetry::Context) {

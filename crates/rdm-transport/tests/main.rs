@@ -77,6 +77,7 @@ mod streaming;
 // telemetry cells
 mod collector_outage;
 mod telemetry_init;
+mod telemetry_exit;
 mod evidence_capture;
 mod otlp_http_export;
 mod runtime_watchdog;

@@ -30,12 +30,14 @@ struct Exporters {
     provider: TracerProvider,
     /// The OTLP log provider the log adapter emits through, when a collector is configured.
     logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
+    /// The evidence file's processor, when the process writes one: flushed on its own at the drain.
+    evidence: Option<crate::evidence_capture::SharedEvidence>,
     drained: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Exporters {
-    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> Self {
-        Self { provider, logs, drained: Default::default() }
+    fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> Self {
+        Self { provider, logs, evidence, drained: Default::default() }
     }
 
     /// Shut the providers down (the shutdown drains what is queued for the collector), each
@@ -44,6 +46,25 @@ impl Exporters {
     fn drain(&self, what: &'static str) {
         if self.drained.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
+        }
+        // One deadline for the whole drain. The evidence file first, whatever the collector's state:
+        // its spans are this process's own record, and no collector outage may cost them (i146 Q42).
+        // Its first export opens the file.
+        let deadline = std::time::Instant::now() + export::DRAIN_BOUND;
+        if let Some(evidence) = self.evidence.clone() {
+            if !export::ExportRuntime::running() {
+                eprintln!("telemetry: {what}: the export thread has not begun running; the evidence flush waits for it within {} ms", export::DRAIN_BOUND.as_millis());
+            }
+            export::bounded_until(
+                "the evidence flush",
+                vec![Box::new(move || {
+                    if let Err(e) = opentelemetry_sdk::trace::SpanProcessor::force_flush(&evidence) {
+                        eprintln!("telemetry: the evidence flush failed: {e}");
+                    }
+                })],
+                false,
+                deadline,
+            );
         }
         let provider = self.provider.clone();
         let mut jobs: Vec<Box<dyn FnOnce() + Send>> = vec![Box::new(move || {
@@ -58,7 +79,7 @@ impl Exporters {
                 }
             }));
         }
-        export::bounded(what, jobs);
+        export::bounded_until(what, jobs, true, deadline);
         flush_log_sinks();
     }
 }
@@ -102,8 +123,8 @@ impl Drop for TelemetryGuard {
     }
 }
 
-fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>) -> TelemetryGuard {
-    let exporters = Exporters::new(provider, logs);
+fn guard(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> TelemetryGuard {
+    let exporters = Exporters::new(provider, logs, evidence);
     let _ = EXIT_FLUSH.set(exporters.clone());
     TelemetryGuard { exporters }
 }
@@ -121,7 +142,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    guard(provider, None)
+    guard(provider, None, None)
 }
 
 /// Initialize OTLP tracing for short-lived CLI processes.
@@ -136,7 +157,7 @@ pub fn init_telemetry_for_cli(service_name: &str) -> TelemetryGuard {
     install_propagator();
     let (provider, tracer) = build_batch_provider(service_name);
     install_subscriber(tracer);
-    guard(provider, None)
+    guard(provider, None, None)
 }
 
 fn install_propagator() {
@@ -536,9 +557,12 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         let _ = ExportRuntime::get();
     }
     steps.timed("export-runtime", step);
+    let mut evidence = None;
     if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
         let step = std::time::Instant::now();
-        builder = builder.with_span_processor(span_processor("evidence", JsonlSpanExporter::on_first_export(std::path::Path::new(&dir), &service)));
+        let shared = crate::evidence_capture::SharedEvidence(std::sync::Arc::new(span_processor("evidence", JsonlSpanExporter::on_first_export(std::path::Path::new(&dir), &service))));
+        builder = builder.with_span_processor(shared.clone());
+        evidence = Some(shared);
         any = true;
         steps.timed("evidence-processor", step);
     }
@@ -616,7 +640,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let _ = watchdog::spawn();
     steps.timed("watchdog", step);
     report_init_steps(steps);
-    Some(guard(provider, logs))
+    Some(guard(provider, logs, evidence))
 }
 
 /// A line of the transport diagnostic file's own target goes to that file only, never to stderr

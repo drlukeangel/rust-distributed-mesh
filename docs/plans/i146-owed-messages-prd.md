@@ -323,7 +323,21 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   evidence file and diagnostic file are FIFOs with no reader, an open for writing that blocks until
   one comes; init returned in 0 ms, every step 0 ms, and the evidence file, opened on the export
   thread once a reader came, carried the child's span. RED against main's source: the child never
-  left init (killed at the cell's 20 s bound, nothing printed). The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
+  left init (killed at the cell's 20 s bound, nothing printed). Q42 (Luke 2026-10-17), a regression of that fix:
+  `probe_root_span.rs:128` red on Codex's `0dcb4495`; the refusing probe's evidence directory
+  (`/tmp/rdm-probe-refusal-1777274`) held a 0-byte `spans.jsonl` beside its transport-diag header, so
+  its first export opened the file and the process ended before the write landed. The exit drain
+  (`Exporters::drain`) shut the whole provider down under `export::bounded`, which returns at once when
+  the collector is down and otherwise waits `DRAIN_BOUND` (2 s): the evidence file's first export rode
+  a wait made for the collector. The drain flushes the evidence processor first and on its own
+  (`SharedEvidence`, as the test capture already does), waited whatever the collector's state, then the
+  collector's shutdown, both within one deadline (`export::bounded_until`); an export thread not yet
+  running at the drain is named. The probe's red kept no stderr, so whether it met the collector-down
+  return or the bound is not known; 60 refusing probes under disk-write load lost nothing; the probe
+  cell now carries the probe's stderr. Cells: `telemetry_exit::a_process_whose_collector_is_down_keeps_every_span_it_emits_before_it_exits_at_once`
+  (RED against main: the burst incomplete after the named outage),
+  `telemetry_exit::an_evidence_file_whose_open_blocks_at_the_exit_ends_the_exit_flush_at_its_bound_named`
+  (RED against main: the blocked flush unnamed); the FIFO init cell and `probe_root_span` green. The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
   cell's own thread, named after its module, and its leak check matched the bare word
   `transport_diag`; the check now matches the diagnostic target (`"target":"transport_diag"`). The gate
   after (`882abfe9`) red at `fabric_primary_handover.rs:516`: mesh3's only admin other than the holder
@@ -419,12 +433,25 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   published its NodeStopped and its holder-stopped announcement on a parked channel, and its commander
   published NodeStopped again. node-stop.md step 4: after its cut it publishes nothing. An admin that
   is its own mesh's primary declares no stop (`rdm.node_admin.status.reject.via-own-mesh-primary`); the
-  cell asserts that span and the last admin's NodeStopped once. Tied to Q39 (open):
+  cell asserts that span and the last admin's NodeStopped once. Q39's occurrence:
   `node_stop::a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth`
   red once in three local runs at :573: the resumed birth's `declare_once` addressed only
   `mesh1.admin.2` (`RejectedNotAuthority`, the book not yet hearing `mesh1.admin.1`), so NodeStopped
   came from the stop stream (trace `2f1267dca2a797afb6fd18ae6325ac29`); the declaration's addressee is
-  the admins the digest book hears, not the mesh's primary. The gate on `44488b29` red at
+  the admins the digest book hears, not the mesh's primary.
+- **Q39 (Luke 2026-10-17, A).** "A node's declaration is owed to the holder of its mesh's primary seat,
+  resolved from the seat (the LeadershipView), never to an admin its book happens to hear. Unreachable
+  holder: the message stays owed under §43 and is delivered when the holder is reached, direct or
+  carried through a live peer on Forward (the tickle ladder's route rule), never redirected to a
+  non-primary. The seat moving is the one retargeting: the owner (the node) re-owes the declaration to
+  the new holder when the seat row names it, and the old holder's copy is cancelled; a late delivery
+  to the old holder is refused by its store fence (Q28) and recorded nothing." Cells: a suspended node
+  that can reach only a non-primary admin on release still delivers its stopped declaration to the
+  primary (direct when reachable, carried otherwise); a seat move while the declaration is owed
+  delivers it once, to the new holder. State: not started.
+- **Q37's note withdrawn (Luke 2026-10-17).** The re-sent Leaving across a seat move does not occur: the
+  holder already holds the row through its seat fold and a stopped birth re-declares nothing
+  (`551d3f63`, the seat-move cell). The gate on `44488b29` red at
   `node_connections_delete.rs:204` (a mesh-primary's own All: its record at +7.88 ms before its
   report's span at +8.40 ms, trace `bc35a360fc2a6ac900320ea6250e2170`): the report's span opened
   after the report was sent, and the in-process recorder took it first. The span opens before the

@@ -43,6 +43,9 @@ pub(crate) fn dropped_by_outage() -> u64 {
     DROPPED_BY_OUTAGE.load(Ordering::Relaxed)
 }
 
+/// Set by the export thread as it begins running the export runtime.
+static EXPORT_THREAD_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The dedicated export runtime: a current-thread tokio runtime parked on its own OS thread.
 #[derive(Debug, Clone)]
 pub(crate) struct ExportRuntime {
@@ -60,10 +63,19 @@ impl ExportRuntime {
             let handle = rt.handle().clone();
             std::thread::Builder::new()
                 .name("rdm-telemetry-export".into())
-                .spawn(move || rt.block_on(std::future::pending::<()>()))
+                .spawn(move || {
+                    EXPORT_THREAD_RUNNING.store(true, Ordering::SeqCst);
+                    rt.block_on(std::future::pending::<()>())
+                })
                 .expect("the telemetry export thread");
             ExportRuntime { handle }
         })
+    }
+
+    /// Whether the export thread has begun running the export runtime: an exit drain that finds it
+    /// not yet running names it, since every export waits on it.
+    pub(crate) fn running() -> bool {
+        EXPORT_THREAD_RUNNING.load(Ordering::SeqCst)
     }
 
     /// Enter the export runtime's context: exporters built inside it run their requests and the
@@ -210,6 +222,13 @@ impl<E: LogExporter> LogExporter for WatchedLogs<E> {
 /// collector is known to be down they are not waited for at all. Past the bound the threads are
 /// left behind (the process goes on, or exits and takes them) and the wait is named on stderr.
 pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
+    bounded_until(what, jobs, true, std::time::Instant::now() + DRAIN_BOUND)
+}
+
+/// [`bounded`] up to `deadline`, one deadline for every wait of a drain, so a drain ends within one
+/// [`DRAIN_BOUND`]. A job that never waits on the collector (the evidence file's flush) passes
+/// `skip_when_collector_down = false` and is waited for whatever the collector's state (i146 Q42).
+pub(crate) fn bounded_until(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>, skip_when_collector_down: bool, deadline: std::time::Instant) {
     let (done, finished) = std::sync::mpsc::channel::<()>();
     let mut started = 0;
     for job in jobs {
@@ -223,10 +242,9 @@ pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
             Err(e) => eprintln!("telemetry: {what} could not start a thread: {e}"),
         }
     }
-    if collector_is_down() {
+    if skip_when_collector_down && collector_is_down() {
         return;
     }
-    let deadline = std::time::Instant::now() + DRAIN_BOUND;
     for _ in 0..started {
         if finished.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_err() {
             eprintln!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", DRAIN_BOUND.as_millis(), dropped_by_outage());
