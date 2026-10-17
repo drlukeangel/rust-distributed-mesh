@@ -638,6 +638,34 @@ was re-fed to the backbone resynchronizes from.
 
 ---
 
+### 3.4 The envelope
+
+Every frame on either channel is a [CloudEvents 1.0](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md)
+event with the [Sequence extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/sequence.md)
+(Luke, 2026-10-16: industry standards, CloudEvents). No RDM-named attribute is on the wire; the
+catalog's per-frame fields (§3.1) are the values these attributes carry.
+
+| attribute | carries |
+|---|---|
+| `specversion` | `1.0` |
+| `id` | the delivery identity: one per frame, the same on a resend |
+| `source` | the author's exact birth, `rdm://<fabric_id>/<node_id>/<incarnation>`; a new incarnation is a new source |
+| `type` | the frame kind (`rdm.mesh.digest`, `rdm.mesh.members`, `rdm.node.deleted`, …); a reserved kind is a `type` the receiver refuses by name |
+| `subject` | the key the fact is about: a birth, a `(mesh, publisher)` projection, a cohort, a fabric |
+| `sequence` | the per-`(source, subject)` version: a birth's `digest_seq`, a projection's `topology_version`, a seat's `revision` |
+| `time` | rafka-time of the fact; never an ordering |
+| `data` | the body, the frame's own fields |
+
+The receive rules (§3.1) in these terms: for one `(source, subject)`, a higher `sequence` installs,
+an equal one with identical content is a duplicate, a lower one is stale, a gap is repair; a new
+incarnation in `source` supersedes the earlier incarnation's facts for that subject. An operation
+fact is a subject whose latest value is its completion, so a late or repeated one changes nothing.
+Gossip stays best-effort (§7): no acknowledgement and no delivery identity beyond `id`'s duplicate
+suppression.
+
+Until the envelope lands ([i147 e3](../plans/i147-gossip-conformance-prd.md)) the frames carry the
+same values under the catalog's field names; the receive rules are the same either way.
+
 ## 4. Topic identity
 
 Topic derivation uses logical Fabric/Mesh identity, not transport identity.
