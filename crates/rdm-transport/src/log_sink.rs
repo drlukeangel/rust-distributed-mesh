@@ -19,9 +19,24 @@ pub(crate) struct LogSink {
 }
 
 impl LogSink {
-    pub(crate) fn start<W: Write + Send + 'static>(mut sink: W) -> Self {
+    pub(crate) fn start<W: Write + Send + 'static>(sink: W) -> Self {
+        Self::start_opening(move || Some(sink))
+    }
+
+    /// [`LogSink::start`] over the writer `open` makes on the sink's own thread, so the caller never
+    /// waits on a disk to open it (i146 Q33). `None` (its reason named by `open`): lines are dropped
+    /// and every flush still returns.
+    pub(crate) fn start_opening<W: Write + Send + 'static>(open: impl FnOnce() -> Option<W> + Send + 'static) -> Self {
         let (tx, rx) = channel::<Msg>();
         let spawned = std::thread::Builder::new().name("rdm-log".into()).spawn(move || {
+            let Some(mut sink) = open() else {
+                for msg in rx {
+                    if let Msg::Flush(ack) = msg {
+                        let _ = ack.send(());
+                    }
+                }
+                return;
+            };
             for msg in rx {
                 match msg {
                     Msg::Line(bytes) => {

@@ -50,20 +50,19 @@ pub(crate) struct ExportRuntime {
 }
 
 impl ExportRuntime {
-    /// The process's one export runtime, started on first use.
+    /// The process's one export runtime, started on first use. It is built on the caller's thread
+    /// and handed to its own thread to run: the caller never waits for that thread to start (i146
+    /// Q33); what is spawned on it before then runs once it does.
     pub fn get() -> &'static ExportRuntime {
         static RT: OnceLock<ExportRuntime> = OnceLock::new();
         RT.get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the telemetry export runtime");
+            let handle = rt.handle().clone();
             std::thread::Builder::new()
                 .name("rdm-telemetry-export".into())
-                .spawn(move || {
-                    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the telemetry export runtime");
-                    let _ = tx.send(rt.handle().clone());
-                    rt.block_on(std::future::pending::<()>());
-                })
+                .spawn(move || rt.block_on(std::future::pending::<()>()))
                 .expect("the telemetry export thread");
-            ExportRuntime { handle: rx.recv().expect("the telemetry export runtime handle") }
+            ExportRuntime { handle }
         })
     }
 

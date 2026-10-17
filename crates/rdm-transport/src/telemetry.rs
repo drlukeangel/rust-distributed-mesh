@@ -358,10 +358,27 @@ pub(crate) fn process_tag() -> String {
 #[derive(Debug)]
 pub(crate) struct JsonlSpanExporter {
     service: String,
-    file: std::fs::File,
+    file: EvidenceFile,
+}
+
+/// Where an exporter's evidence file stands.
+#[derive(Debug)]
+enum EvidenceFile {
+    Open(std::fs::File),
+    /// Created and opened by the first export, on the export thread (i146 Q33).
+    OnFirstExport(std::path::PathBuf),
+    /// The create or the open failed, as named on stderr: every export fails with this.
+    Unusable(String),
 }
 
 impl JsonlSpanExporter {
+    /// The exporter appending to `<dir>/<service>.<pid>-<pid namespace inode>.spans.jsonl`, the file
+    /// created and opened by its first export on the export thread: the caller (telemetry init, inside
+    /// every node's start) never waits on a disk (i146 Q33).
+    pub fn on_first_export(dir: &std::path::Path, service: &str) -> Self {
+        Self { service: service.to_string(), file: EvidenceFile::OnFirstExport(dir.join(format!("{service}.{}.spans.jsonl", process_tag()))) }
+    }
+
     pub fn create(dir: &std::path::Path, service: &str) -> std::io::Result<Self> {
         Self::create_at(&dir.join(format!("{service}.{}.spans.jsonl", process_tag())), service)
     }
@@ -373,7 +390,28 @@ impl JsonlSpanExporter {
             std::fs::create_dir_all(dir)?;
         }
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self { service: service.to_string(), file })
+        Ok(Self { service: service.to_string(), file: EvidenceFile::Open(file) })
+    }
+
+    /// The open file, opening it now when its first export is this one; an open that fails is named
+    /// once on stderr and every export after fails with it.
+    fn file(&mut self) -> Result<&mut std::fs::File, String> {
+        if let EvidenceFile::OnFirstExport(path) = &self.file {
+            let opened = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(path));
+            self.file = match opened {
+                Ok(f) => EvidenceFile::Open(f),
+                Err(e) => {
+                    let why = format!("the evidence file {} could not be opened: {e}", path.display());
+                    eprintln!("telemetry: {why}; spans are not written to it");
+                    EvidenceFile::Unusable(why)
+                }
+            };
+        }
+        match &mut self.file {
+            EvidenceFile::Open(f) => Ok(f),
+            EvidenceFile::Unusable(why) => Err(why.clone()),
+            EvidenceFile::OnFirstExport(_) => unreachable!("opened above"),
+        }
     }
 
     fn line(&self, s: &opentelemetry_sdk::export::trace::SpanData) -> String {
@@ -415,12 +453,15 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
             out.push('\n');
         }
         let started = std::time::Instant::now();
-        let r = self.file.write_all(out.as_bytes());
+        let r = match self.file() {
+            Ok(f) => f.write_all(out.as_bytes()).map_err(|e| format!("evidence write failed: {e}")),
+            Err(why) => Err(why),
+        };
         let took = started.elapsed();
         if took >= EVIDENCE_WRITE_STALL {
             eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread", took.as_millis(), out.len());
         }
-        Box::pin(async move { r.map_err(|e| opentelemetry::trace::TraceError::Other(format!("evidence write failed: {e}").into())) })
+        Box::pin(async move { r.map_err(|why| opentelemetry::trace::TraceError::Other(why.into())) })
     }
 }
 
@@ -432,8 +473,10 @@ pub fn jsonl_span_exporter(dir: &std::path::Path, service: &str) -> std::io::Res
 }
 
 /// How long each synchronous step of [`init_evidence_telemetry`] took, in the order it ran: the
-/// export runtime's first start, the evidence file's create and open, its processor, the exporters,
-/// the stderr sink, the transport diagnostic file, the subscriber and the watchdog (i144 Q33).
+/// export runtime's first start, the evidence processor, the exporters, the stderr sink, the
+/// transport diagnostic sink, the subscriber and the watchdog (i144 Q33). No step opens a file or
+/// waits for a thread: the evidence file and the transport diagnostic file are opened on their own
+/// threads.
 /// `Display`: `step=<ms>ms`, space-separated.
 #[derive(Debug, Clone, Default)]
 pub struct InitSteps(pub Vec<(&'static str, std::time::Duration)>);
@@ -495,16 +538,8 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     steps.timed("export-runtime", step);
     if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
         let step = std::time::Instant::now();
-        let file = JsonlSpanExporter::create(std::path::Path::new(&dir), &service);
-        steps.timed("evidence-file", step);
-        let step = std::time::Instant::now();
-        match file {
-            Ok(e) => {
-                builder = builder.with_span_processor(span_processor("evidence", e));
-                any = true;
-            }
-            Err(e) => eprintln!("telemetry: RDM_EVIDENCE_DIR={dir} is unusable: {e}"),
-        }
+        builder = builder.with_span_processor(span_processor("evidence", JsonlSpanExporter::on_first_export(std::path::Path::new(&dir), &service)));
+        any = true;
         steps.timed("evidence-processor", step);
     }
     let step = std::time::Instant::now();

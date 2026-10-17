@@ -102,8 +102,9 @@ fn header(service: &str) -> String {
     )
 }
 
-/// Open the diagnostic file (append) and return the sink's layers and its writer, or `None` when
-/// the process has no directory for it or the file cannot be opened (named on stderr).
+/// The sink's layers and its writer over the diagnostic file (append), or `None` when the process
+/// has no directory for it. The file is created, opened and headed on the sink's own thread, never
+/// the caller's (i146 Q33); one that cannot be opened is named on stderr there and its lines dropped.
 pub(crate) fn start<S>(service: &str) -> Option<(impl Layer<S> + Send + Sync + 'static, LogSink)>
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
@@ -111,16 +112,20 @@ where
     let env = |k: &str| std::env::var(k).ok();
     let path = file_path(env("RDM_DATA_DIR").as_deref(), env("RDM_EVIDENCE_DIR").as_deref(), service, &crate::process_tag())?;
     let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-    let opened = std::fs::create_dir_all(&dir).and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&path));
-    let mut file = match opened {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("telemetry: the transport diagnostic file {} could not be opened: {e}; transport diagnostics are off", path.display());
-            return None;
+    let head = header(service);
+    let sink = LogSink::start_opening(move || {
+        let opened = std::fs::create_dir_all(&dir).and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&path));
+        match opened {
+            Ok(mut file) => {
+                let _ = file.write_all(head.as_bytes());
+                Some(file)
+            }
+            Err(e) => {
+                eprintln!("telemetry: the transport diagnostic file {} could not be opened: {e}; transport diagnostics are off", path.display());
+                None
+            }
         }
-    };
-    let _ = file.write_all(header(service).as_bytes());
-    let sink = LogSink::start(file);
+    });
     let lines = tracing_subscriber::fmt::layer().with_ansi(false).with_target(true).with_thread_names(true).with_writer(sink.clone()).with_filter(filter());
     let packets = PacketLayer { sink: sink.clone() }.with_filter(tracing_subscriber::filter::filter_fn(PacketLayer::admits));
     Some((lines.and_then(packets), sink))

@@ -26,8 +26,7 @@ async fn outage_child() {
     // telemetry was initialised, the exit began.
     println!("ENTERED_AT_MS={}", unix_ms());
     // What the host's disk did around this child: its IO pressure at the start and the exit, and the
-    // child's own block-IO delay (i146 Q33, a stall named `evidence-file` is a disk wait only if these
-    // cover it).
+    // child's own block-IO delay (i146 Q33).
     println!("IO_PRESSURE_START={}", io_pressure());
     println!("DELAYACCT={}", std::fs::read_to_string("/proc/sys/kernel/task_delayacct").map(|s| s.trim().to_string()).unwrap_or_else(|e| format!("unreadable: {e}")));
     println!("BLKIO_START={}", blkio_ticks());

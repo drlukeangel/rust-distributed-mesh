@@ -313,7 +313,17 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   stall, it is a disk wait on the gate's write load and the fix is R25's: the open moves off the init
   path to the export thread. If it names `export-runtime`, the thread-start wait is the defect. Either
   way nothing waits at init: production calls it inside `run_with`, so a wait there delays every
-  node's start. The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
+  node's start. Fixed at the root (Luke 2026-10-17, "nothing waits at init"): init opens no file and waits for
+  no thread. The evidence file is created and opened by its exporter's first export, on the export
+  thread (`EvidenceFile::OnFirstExport`; an open that fails is named once on stderr and every export
+  after fails with it); the export runtime is built on the caller's thread and handed to its own
+  thread to run, so nothing waits for that thread to start (`ExportRuntime::get`); the transport
+  diagnostic file is created, opened and headed on its log sink's thread (`LogSink::start_opening`).
+  Cell `telemetry_init::telemetry_init_returns_while_its_files_cannot_be_opened`: the child's
+  evidence file and diagnostic file are FIFOs with no reader, an open for writing that blocks until
+  one comes; init returned in 0 ms, every step 0 ms, and the evidence file, opened on the export
+  thread once a reader came, carried the child's span. RED against main's source: the child never
+  left init (killed at the cell's 20 s bound, nothing printed). The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
   cell's own thread, named after its module, and its leak check matched the bare word
   `transport_diag`; the check now matches the diagnostic target (`"target":"transport_diag"`). The gate
   after (`882abfe9`) red at `fabric_primary_handover.rs:516`: mesh3's only admin other than the holder
