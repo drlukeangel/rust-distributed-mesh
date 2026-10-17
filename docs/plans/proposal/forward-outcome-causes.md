@@ -1,6 +1,6 @@
 # Q40 B — Forward typed causes: exact page replacement for Luke
 
-Ruling: Luke, 2026-10-17, Q40 B. The code and this page replacement land together. Approval of this exact text is pending. `Code`’s standard definitions and the local cause-to-code accessors are additive prerequisites for the ruled cells; the shared ReplyKind view and other protocol classifications remain e5.1’s next landing.
+Ruling: Luke, 2026-10-17, Q40 B. The code and this page replacement land together. Luke approved this exact text on 2026-10-17. `Code`’s standard definitions and the local cause-to-code accessors are additive prerequisites for the ruled cells; the shared ReplyKind view and other protocol classifications remain e5.1’s next landing.
 
 File: `docs/architecture/node-rpc-envelope.md`, Forward section. Replace exactly:
 

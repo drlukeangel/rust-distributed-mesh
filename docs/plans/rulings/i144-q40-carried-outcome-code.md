@@ -1,4 +1,4 @@
-**Ruled B — Luke, 2026-10-17. Typed cause beside explanation; Forward-only wire change, own landing and reseal. Exact page replacement awaits Luke.**
+**Ruled B — Luke, 2026-10-17. Typed cause beside explanation; Forward-only wire change, own landing and reseal. Exact page replacement approved by Luke, 2026-10-17.**
 
 # Q40 — the carried outcome loses its typed cause before code classification
 
@@ -63,4 +63,4 @@ Verification: 68 core functional cells (including all existing byte goldens), 11
 
 The additive 17-code definition and local reason-to-code accessors are needed for these ruled cells. The shared ReplyKind view, all protocol code classifiers, runtime auth-code name check and the three outcome page replacements remain the separate e5.1 landing. Its prepared branch is `codex/i144-e5-outcome-codes` at `05659fe2`.
 
-Exact page old → new: [forward-outcome-causes.md](../proposal/forward-outcome-causes.md). Still awaiting Luke's yes; no architecture page has been edited and no landing gate run before that approval.
+Exact page old → new: [forward-outcome-causes.md](../proposal/forward-outcome-causes.md). Luke approved that exact replacement on 2026-10-17; it is applied with this code, before the landing gate.
