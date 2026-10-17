@@ -196,7 +196,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         channel.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
         let base_s = gap_base.to_string();
         let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
-        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.membership.reject.via-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
+        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.membership.update.via-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
 
         // The top-up: mesh1.admin.2 reads mesh1 from its own Mesh's primary and resumes the source.
         let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));

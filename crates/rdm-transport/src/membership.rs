@@ -2299,7 +2299,7 @@ impl View {
                             _ => (-1, String::new()),
                         };
                         tracing::info_span!(
-                            "rdm.mesh.membership.reject.via-gap",
+                            "rdm.mesh.membership.update.via-gap",
                             frame = "members-delta", repair_requested = true,
                             node = %self.current_name(),
                             mesh = %mesh,

@@ -48,7 +48,6 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.membership.reject.via-departed-birth` | `crates/rdm-transport/src/membership.rs` | 4111 |
 | `rdm.mesh.membership.reject.via-departed-birth` | `crates/rdm-transport/src/membership.rs` | 4127 |
 | `rdm.mesh.membership.reject.via-forwarder-role-dropped` | `crates/rdm-transport/src/forward_path.rs` | 257 |
-| `rdm.mesh.membership.reject.via-gap` | `crates/rdm-transport/src/membership.rs` | 2302 |
 | `rdm.mesh.membership.reject.via-inconsistent` | `crates/rdm-transport/src/receive_order.rs` | 104 |
 | `rdm.mesh.membership.reject.via-inconsistent` | `crates/rdm-transport/src/receive_order.rs` | 150 |
 | `rdm.mesh.membership.reject.via-inconsistent` | `crates/rdm-transport/src/receive_order.rs` | 239 |
@@ -94,6 +93,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.membership.update.via-forwarded-delta` | `crates/rdm-transport/src/forward_path.rs` | 300 |
 | `rdm.mesh.membership.update.via-forwarded-full` | `crates/rdm-transport/src/forward_path.rs` | 116 |
 | `rdm.mesh.membership.update.via-forwarded-full` | `crates/rdm-transport/src/forward_path.rs` | 292 |
+| `rdm.mesh.membership.update.via-gap` | `crates/rdm-transport/src/membership.rs` | 2302 |
 | `rdm.mesh.membership.update.via-lifecycle-receipt` | `crates/rdm-transport/src/membership.rs` | 1510 |
 | `rdm.mesh.membership.update.via-lifecycle-reconciled` | `crates/rdm-transport/src/receive_order.rs` | 358 |
 | `rdm.mesh.membership.update.via-member-stale` | `crates/rdm-transport/src/membership.rs` | 2722 |

@@ -134,7 +134,7 @@ fn story(story: Story) {
     });
     let spans=capture.spans().unwrap();
     for s in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership."))) { println!("{}",serde_json::to_string(s).unwrap()); }
-    let outcome=match story { Story::Stale | Story::ReadFloor | Story::DeltaStale => "rdm.mesh.membership.reject.via-stale", Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent | Story::DeltaInconsistent | Story::PendingConflict | Story::CrossReadConflict => "rdm.mesh.membership.reject.via-inconsistent", Story::Gap | Story::ReadRepair => "rdm.mesh.membership.reject.via-gap", _=>"" };
+    let outcome=match story { Story::Stale | Story::ReadFloor | Story::DeltaStale => "rdm.mesh.membership.reject.via-stale", Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent | Story::DeltaInconsistent | Story::PendingConflict | Story::CrossReadConflict => "rdm.mesh.membership.reject.via-inconsistent", Story::Gap | Story::ReadRepair => "rdm.mesh.membership.update.via-gap", _=>"" };
     if !outcome.is_empty() {
         let named=spans.iter().find(|s| s["name"]==outcome).expect("the framework names the publication outcome");
         if matches!(story, Story::Gap | Story::ReadRepair) { assert_eq!(named["attributes"]["repair_requested"], "true"); }
