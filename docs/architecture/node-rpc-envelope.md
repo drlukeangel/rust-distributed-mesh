@@ -211,7 +211,7 @@ sees only the catalog.
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete; build.create refuses `fabric-not-ready` until the initial fabric has first reached ready-for-traffic ([Build refusals](#fabric-not-ready-refusal)) |
-| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
+| `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`; the takeover's `TakeOverFabricSeat`, `AlreadyApplied`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
 | `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
@@ -1534,6 +1534,8 @@ holder the same way. The holder runs the sequence and answers `PrimaryUpdated { 
 or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when it ends failed; `Incomplete` is never
 used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
+
+The takeover rides the same op ([elections §5](fabric-node-lifecycle-elections.md)): a mesh-primary that found the fabric-primary unreached and its exact runtime uninspectable past the hold calls the winner the backbone rule names, with `lost`'s mesh excluded, with `TakeOverFabricSeat { fabric, lost: { mesh, node_id, incarnation }, expected_revision, successor, proposer }`. The winner, when its own view names it, commits the takeover's seat move once (`seat-moves/<T>`, kind `takeover`: the fabric seat from `lost` at `expected_revision` to itself at the next revision), seals the fabric lane at `expected_revision`, and answers `PrimaryUpdated { revisions }`. A repeat for the same takeover and successor answers `AlreadyApplied { revisions }` (`ALREADY_EXISTS`); a proposal naming another winner is `RejectedNotAuthority`, one at a revision its record no longer holds `RejectedStaleSeat`, one the fold refuses `RejectedConflict`; a store that cannot commit answers `RejectedSourceFailed`, and the takeover stays held.
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry
 answers the same PrimaryUpdated before any revision check. A different payload for the same operation is

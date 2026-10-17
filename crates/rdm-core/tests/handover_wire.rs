@@ -48,16 +48,18 @@ const HOLDER: &str = "01 6d  0c 303132333435363738396162  0c 79727a34396a3330337
 /// `m`, `0123456789cd`, `j`.
 const SUCCESSOR: &str = "01 6d  0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
-/// CONTRACT: the family's three requests. `PrimaryUpdate` (variant 0) is the holder's call on its
+/// CONTRACT: the family's four requests. `PrimaryUpdate` (variant 0) is the holder's call on its
 /// successor carrying the committed row's content: every seat with its cohort, both exact births and
 /// the committed revision, then the Build, its attempt and the operation. `UpdatePrimary` (variant 1) is
 /// the commander's command to the holder of a node-admin seat, or to the mesh-primary of any other
 /// cohort. `UpdatePrimaryFromRow` (variant 2) is a mesh-primary's command to the holder of a cohort
 /// that is not node-admin, after its row and carrying the row's content (proposal Part C1: "its
-/// command to the holder B1 comes after the row and carries it"). What must NOT happen: a name in
+/// command to the holder B1 comes after the row and carries it"). `TakeOverFabricSeat` (variant 3) is
+/// a mesh-primary's proposal of a takeover to the winner (elections §5): the lost fabric-primary's
+/// birth, the revision it is held at, the winner and the proposer. What must NOT happen: a name in
 /// place of a birth, a field moved, a variant inserted before the end.
 #[test]
-fn requests_match_the_frozen_three_variant_wire_schema() {
+fn requests_match_the_frozen_four_variant_wire_schema() {
     let fixtures = [
         // variant 0 | seats (len 2: MeshPrimary=1 { mesh "m" } holder successor revision 4, FabricPrimary=0
         // holder successor revision 8) | build_id | attempt | operation
@@ -78,22 +80,28 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
             },
             format!("02 0166 01 02 016d 01 {HOLDER} {SUCCESSOR} 03 0162 02 016f"),
         ),
+        // variant 3 | fabric | lost | expected_revision 7 | successor | proposer
+        (
+            NodePrimaryUpdateRequest::TakeOverFabricSeat { fabric: "f".into(), lost: holder(), expected_revision: 7, successor: successor(), proposer: holder() },
+            format!("03 0166 {HOLDER} 07 {SUCCESSOR} {HOLDER}"),
+        ),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
         assert_eq!(NodePrimaryUpdate::decode_request(&bytes(&hex)).unwrap(), q);
     }
-    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 3);
-    assert_eq!(NodePrimaryUpdate::decode_request(&[3]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 4);
+    assert_eq!(NodePrimaryUpdate::decode_request(&[4]), Err(DecodeFailure::UnknownVariant));
 }
 
-/// CONTRACT: the family's seventeen replies. `PrimaryUpdated` (node.primary.updated) first, then the
+/// CONTRACT: the family's eighteen replies. `PrimaryUpdated` (node.primary.updated) first, then the
 /// successor's two refusals (a conflicting payload, the initial fabric not ready), the holder's
 /// refusals before the row, the runtime facts, `Incomplete` (the call after the row did not answer),
-/// the framework's outcomes, and `Failed` (the step ended failed after the committed row). There is no
-/// wrong-birth refusal (R-UC1a, R-RX5).
+/// the framework's outcomes, `Failed` (the step ended failed after the committed row), and
+/// `AlreadyApplied` (a takeover committed already to the successor named). There is no wrong-birth
+/// refusal (R-UC1a, R-RX5).
 #[test]
-fn replies_match_the_frozen_seventeen_variant_wire_schema() {
+fn replies_match_the_frozen_eighteen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use NodePrimaryUpdateReply::*;
     let fixtures = [
@@ -120,6 +128,8 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         (Unauthorized { reason: "u".into() }, "0f 01 75".to_string()),
         // step "s" | reason "r"
         (Failed { step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition }, "10 0173 0172 09".to_string()),
+        // revisions (len 1) | seat FabricPrimary=0 | holder birth | revision 8
+        (AlreadyApplied { revisions: vec![committed()] }, format!("11 01 00 {SUCCESSOR} 08")),
     ];
     for (r, hex) in fixtures {
         variants.insert(NodePrimaryUpdate::encode_reply(&r).unwrap()[0]);
@@ -127,8 +137,8 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         assert_eq!(NodePrimaryUpdate::encode_reply(&r).unwrap(), bytes(&hex), "{r:?}");
         assert_eq!(NodePrimaryUpdate::decode_reply(&bytes(&hex)).unwrap(), r);
     }
-    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 17);
-    assert_eq!(NodePrimaryUpdate::decode_reply(&[17]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 18);
+    assert_eq!(NodePrimaryUpdate::decode_reply(&[18]), Err(DecodeFailure::UnknownVariant));
     assert_eq!(variants.len(), NodePrimaryUpdate::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<NodePrimaryUpdate>();
 }
@@ -189,7 +199,7 @@ fn the_largest_request_fits_the_frame_ceiling() {
 
 #[test]
 fn every_reply_variant_of_node_primary_update_classifies_to_one_code() {
-    replies_match_the_frozen_seventeen_variant_wire_schema();
+    replies_match_the_frozen_eighteen_variant_wire_schema();
 }
 
 #[test]

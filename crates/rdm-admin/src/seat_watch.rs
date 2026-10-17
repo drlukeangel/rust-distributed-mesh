@@ -36,6 +36,10 @@ pub struct Plan {
 #[derive(Debug, Default)]
 pub struct Said {
     investigated: HashSet<Birth>,
+    /// Each node-admin birth of the fabric-primary's mesh this admin found unreached and
+    /// uninspectable (`Unproven`), from the first such look: the hold of elections §5's takeover. Any
+    /// other finding ends it.
+    unreachable: std::collections::HashMap<Birth, std::time::Instant>,
 }
 
 fn birth(n: &Node) -> Option<Birth> {
@@ -343,6 +347,9 @@ pub struct Watch {
     pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
     /// The recovery submitter, used when the fabric-primary's hold on a hung peer-mesh primary expires (R-FM1).
     pub recovery: Option<crate::admin::RecoverySubmitter>,
+    /// The node.primary.update door, set once it is built: a mesh-primary proposes the takeover of a
+    /// fabric seat whose holder's mesh is unreached and uninspectable past the hold through it.
+    pub handover: crate::fabric_handover::HandoverSlot,
 }
 
 /// Run the watch on seat changes and the gossip cadence, from the admin's own silence evidence.
@@ -372,9 +379,14 @@ pub async fn run(w: Watch) {
         // Held here while the admin is parked: its own wait, outside every lock.
         turn = Some(w.gate.turn("seat-watch").await);
         let view = w.topology.read().await.clone();
+        // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
+        let fabric_mesh = w.membership.seats().fabric().map(|h| h.mesh.clone());
         // Any node-admin in the view whose digest has returned (`ReadyForTraffic`) ends its hold (R-FM1).
         for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
             w.records.clear_held_running(n).await;
+            if let Some(b) = birth(n) {
+                said.unreachable.remove(&b);
+            }
         }
         let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
         let plan = plan(&view, &me, &me_birth, &mut said);
@@ -402,6 +414,15 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
+            // The takeover's hold (elections §5): a node-admin of the fabric-primary's mesh unreached
+            // and uninspectable is held from its first such look; any other finding ends the hold.
+            if let Some(b) = birth(&node) {
+                if matches!(finding, Finding::Unproven { .. }) && fabric_mesh.as_deref() == Some(node.mesh.as_str()) {
+                    said.unreachable.entry(b).or_insert_with(std::time::Instant::now);
+                } else {
+                    said.unreachable.remove(&b);
+                }
+            }
             match &finding {
                 Finding::Answered | Finding::AnsweredViaPeer { .. } => {
                     w.records.clear_held_running(&node).await;
@@ -463,7 +484,43 @@ pub async fn run(w: Watch) {
             }
             span.in_scope(|| tracing::info!("a silent seat holder was looked at"));
         }
+        // A held takeover ends once the seat's record moved or its lost birth is proven gone.
+        if let Some(door) = w.handover.get() {
+            door.release_held_takeover();
+        }
+        // A mesh-primary whose hold on the fabric-primary's whole mesh expired proposes the takeover.
+        if let Some(lost) = takeover_due(&view, &me_birth, w.membership.seats().fabric(), &said.unreachable, std::time::Duration::from_millis(crate::admin::hung_hold_ms())) {
+            if let Some(door) = w.handover.get().cloned() {
+                drop(turn.take());
+                let _ = door.propose_take_over(&lost).await;
+                turn = Some(w.gate.turn("seat-watch").await);
+            }
+        }
     }
+}
+
+/// The fabric seat's record `record` when this admin, its own mesh's primary and not the fabric
+/// seat's holder, holds every node-admin of the record's mesh in its view unreached and
+/// uninspectable past `hold` (`unreachable`, from each birth's first such look), the record's own
+/// birth among them (elections §5: "For a fabric-primary that is unreached by the tickle ladder and
+/// whose exact runtime no surviving admin can inspect ... the hold runs, and when it expires the seat
+/// moves"). `None` otherwise: a mesh with any node-admin answering, running, stopped or proven gone
+/// keeps the seat by the ordinary rule.
+pub fn takeover_due(view: &Topology, me: &Birth, record: Option<rdm_core::SeatHolder>, unreachable: &std::collections::HashMap<Birth, std::time::Instant>, hold: std::time::Duration) -> Option<rdm_core::SeatHolder> {
+    let record = record?;
+    if record.is_birth(&me.0, &me.1) {
+        return None;
+    }
+    let mine = view.members().find(|n| n.node_id == me.0)?;
+    if !view.holds_mesh_seat(&mine.mesh, &me.0) || mine.mesh == record.mesh {
+        return None;
+    }
+    let expired = |b: &Birth| unreachable.get(b).is_some_and(|since| since.elapsed() >= hold);
+    if !expired(&(record.node_id.clone(), record.incarnation.clone())) {
+        return None;
+    }
+    let admins: Vec<&Node> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.mesh == record.mesh).collect();
+    admins.iter().all(|n| birth(n).is_some_and(|b| expired(&b))).then_some(record)
 }
 
 #[cfg(test)]
@@ -511,6 +568,32 @@ mod tests {
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), None, "once per move");
         let mut never = false;
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
+    }
+
+    /// CONTRACT (elections §5: "For a fabric-primary that is unreached by the tickle ladder and whose
+    /// exact runtime no surviving admin can inspect ... the hold runs, and when it expires the seat
+    /// moves by §4.3's backbone rule"; "Every mesh-primary that notices tells the winner"): mesh2's
+    /// primary proposes the takeover of mesh1's fabric seat only once every node-admin of mesh1 it
+    /// holds, the record's birth among them, was found unreached and uninspectable at least the hold
+    /// ago. Not while one of them is held for less than the hold or not held at all (it answered, runs,
+    /// is stopped or proven gone: the ordinary rule), not at mesh1's own standby (the seat stays in its
+    /// mesh), and not at the record's holder.
+    #[test]
+    fn a_mesh_primary_proposes_the_takeover_only_once_the_fabric_primarys_whole_mesh_is_held_past_the_hold() {
+        let (mut t, holder, mut standby, outsider) = world();
+        standby.status = NodeStatus::PendingReconnect;
+        t.nodes[1].status = NodeStatus::PendingReconnect;
+        let record = SeatHolder { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation_id.clone().unwrap(), revision: 7 };
+        let hold = std::time::Duration::from_millis(50);
+        let past = std::time::Instant::now() - std::time::Duration::from_millis(100);
+        let held = |entries: &[(&Node, std::time::Instant)]| entries.iter().map(|(n, at)| (me_of(n), *at)).collect::<std::collections::HashMap<_, _>>();
+        let now = std::time::Instant::now();
+        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone()), &held(&[(&holder, past), (&standby, past)]), hold), Some(record.clone()), "every node-admin of mesh1 held past the hold");
+        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone()), &held(&[(&holder, past), (&standby, now)]), hold), None, "the standby is held for less than the hold");
+        assert_eq!(takeover_due(&t, &me_of(&outsider), Some(record.clone()), &held(&[(&holder, past)]), hold), None, "the standby is not held: it answered, runs, is stopped or proven gone");
+        assert_eq!(takeover_due(&t, &me_of(&standby), Some(record.clone()), &held(&[(&holder, past), (&standby, past)]), hold), None, "mesh1's own admin never proposes moving the seat out of its mesh");
+        assert_eq!(takeover_due(&t, &me_of(&holder), Some(record.clone()), &held(&[(&holder, past), (&standby, past)]), hold), None, "the holder never proposes its own takeover");
+        assert_eq!(takeover_due(&t, &me_of(&outsider), None, &held(&[(&holder, past), (&standby, past)]), hold), None, "no record, no takeover");
     }
 
     /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,

@@ -269,6 +269,8 @@ use crate::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 /// Construct the typed rejected-conflict outcome.
 pub fn rejected_conflict(operation: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedConflict { operation } }
+/// Construct the typed already-applied outcome of a takeover committed already.
+pub fn already_applied(revisions: Vec<CommittedSeat>) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::AlreadyApplied { revisions } }
 /// Construct the typed rejected-fabric-not-ready outcome.
 pub fn rejected_fabric_not_ready(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::RejectedFabricNotReady { reason } }
 /// Construct the typed rejected-no-successor outcome.

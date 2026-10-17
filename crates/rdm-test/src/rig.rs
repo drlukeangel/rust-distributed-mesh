@@ -106,6 +106,7 @@ impl NodeObserver for LiveMesh {
             me.is_primary = true;
             let fabric_id = self.membership.book.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
             let authority = rdm_admin::status_rpc::StatusAuthority {
+                held_takeover: Default::default(),
                 me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
                 declaration_seam: None, command_frame_seam: None, operation_effects: Default::default(), stopped: Default::default(),
                 topology: Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {

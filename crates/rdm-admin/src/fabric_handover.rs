@@ -376,6 +376,9 @@ pub struct HandoverDoor {
     /// step 2, ruling R-SW1): run on the row's successor after a call that did not answer
     /// node.primary.updated ([`HandoverDoor::call_successor`]).
     pub looker: crate::seat_watch::Looker,
+    /// The takeover this admin holds because the store could not commit it, shared with its
+    /// `fabric.get`.
+    pub held_takeover: HeldTakeovers,
 }
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
@@ -1413,6 +1416,162 @@ impl HandoverDoor {
                 refused("holder", "not-authority", &reason, &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None }, None);
                 rdm_core::reply::handover::bounded_not_authority(&reason)
             }
+            Request::TakeOverFabricSeat { lost, expected_revision, successor, proposer, .. } => self.take_over(lost, expected_revision, successor, Some(proposer)).await,
+        }
+    }
+
+    // ---- the takeover of the fabric seat past the hold (elections §5, Q24, Q28, Q35, Q48) ----
+
+    /// The winner's side of a takeover: a mesh-primary that found the fabric-primary `lost` unreached
+    /// and its exact runtime uninspectable past the hold proposes it (`proposer`; `None`: this admin
+    /// found it itself). This admin writes the takeover's seat move once, when its own view names it
+    /// the winner the backbone rule seats with `lost`'s mesh excluded (§4.3): the fabric seat from
+    /// `lost` at `expected` to itself at the next revision, kind `takeover`. Then it seals the fabric
+    /// lane at `expected`, takes the record and announces it. A repeat for the same takeover and
+    /// successor answers `AlreadyApplied`; a proposal its view or the fold refuses is refused, naming
+    /// why; a store that cannot commit holds the takeover, named.
+    pub async fn take_over(self: &Arc<Self>, lost: HandoverBirth, expected: u64, successor: HandoverBirth, proposer: Option<HandoverBirth>) -> Reply {
+        let _one_at_a_time = self.locks.updating.lock().await;
+        let me_name = self.held_name();
+        let me = self.me_birth();
+        let span = tracing::info_span!(
+            "rdm.node_admin.seat.update.via-takeover",
+            node = %me_name,
+            lost = %births(&lost),
+            expected_revision = expected,
+            successor = %births(&successor),
+            proposer = %proposer.as_ref().map(births).unwrap_or_else(|| "itself".into()),
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            t = tracing::field::Empty,
+        );
+        let reply = self.take_over_decided(&me_name, &me, &lost, expected, &successor, proposer.as_ref()).instrument(span.clone()).await;
+        let (outcome, detail) = match &reply {
+            Reply::PrimaryUpdated { revisions } => ("committed", format!("{revisions:?}")),
+            Reply::AlreadyApplied { revisions } => ("already-applied", format!("{revisions:?}")),
+            other => (other.name(), format!("{other:?}")),
+        };
+        span.record("outcome", outcome).record("detail", detail.as_str());
+        span.in_scope(|| tracing::info!("a takeover of the fabric seat was decided by the winner"));
+        reply
+    }
+
+    async fn take_over_decided(self: &Arc<Self>, me_name: &PathName, me: &HandoverBirth, lost: &HandoverBirth, expected: u64, successor: &HandoverBirth, proposer: Option<&HandoverBirth>) -> Reply {
+        let wire = WireSeat::FabricPrimary;
+        let taken = |revision: u64| vec![CommittedSeat { seat: wire.clone(), holder: me.clone(), revision }];
+        if successor != me {
+            return rdm_core::reply::handover::bounded_not_authority(&format!("{me_name} is not the winner the proposal names ({})", births(successor)));
+        }
+        // A takeover of this exact loss committed already: to this admin, the same takeover again.
+        let moves = match self.storage.seat_moves().await {
+            Ok(m) => m,
+            Err(e) => return SourceFailure { source: format!("fabric.storage of {me_name}, the fabric's seat moves"), op: "read the seat moves before a takeover".into(), cause: e.to_string() }.reply(),
+        };
+        let committed = moves.iter().find(|m| m.row.cause == crate::fabric_storage::MoveCause::Takeover && m.row.seats.iter().any(|s| s.seat == wire && s.from_revision == expected && s.from.as_ref() == Some(lost)));
+        if let Some(m) = committed {
+            let s = m.row.seats.iter().find(|s| s.seat == wire).expect("the takeover moves the fabric seat");
+            if &s.holder == me {
+                return rdm_core::reply::handover::already_applied(taken(s.revision));
+            }
+            return rdm_core::reply::handover::rejected_conflict(format!("takeover of {} at revision {expected}, committed to {}", births(lost), births(&s.holder)));
+        }
+        // The seat as this admin holds it: the lost birth at the revision the proposal names.
+        let book = self.membership.seats();
+        match book.fabric() {
+            Some(h) if h.is_birth(&lost.node_id, &lost.incarnation) && h.revision == expected => {}
+            Some(h) => return rdm_core::reply::handover::rejected_stale_seat(wire, expected, h.revision),
+            None => return rdm_core::reply::handover::bounded_not_authority(&format!("{me_name} holds no fabric seat record: no takeover of {} is decided against it", births(lost))),
+        }
+        if expected.checked_add(1).is_none() {
+            return rdm_core::reply::handover::rejected_revision_overflow(wire, expected);
+        }
+        // The winner, from this admin's own view: the backbone rule with the lost mesh excluded.
+        let view = self.topology.read().await.clone();
+        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
+        match crate::election::fabric_successor_excluding(&nodes, &self.incumbency(), &lost.mesh) {
+            Some(w) if w.node_id == self.node_id => {}
+            other => return rdm_core::reply::handover::bounded_not_authority(&format!("in {me_name}'s view the backbone rule with mesh {} excluded seats {}", lost.mesh, other.map(|n| n.name.to_string()).unwrap_or_else(|| "no admin".into()))),
+        }
+        let row = crate::fabric_storage::SeatMoveRow {
+            seats: vec![crate::fabric_storage::MovedSeat { seat: wire.clone(), from_revision: expected, revision: expected + 1, holder: me.clone(), from: Some(lost.clone()) }],
+            cause: crate::fabric_storage::MoveCause::Takeover,
+            by: me.clone(),
+        };
+        // The fence: the takeover's row, then the seal of the lost authority's revision. Nothing of
+        // the lost authority commits past either, and recovery begins only once both stand.
+        let moved = {
+            let _decisions = self.decisions.clone().lock_owned().await;
+            match self.storage.commit_seat_move(&row).await {
+                Ok(crate::fabric_storage::MoveCommit::Committed(m)) => m,
+                Ok(crate::fabric_storage::MoveCommit::Refused(why)) => {
+                    let _ = hydrated(&*self.storage, book).await;
+                    return rdm_core::reply::handover::rejected_conflict(format!("takeover of {} at revision {expected}: {why}", births(lost)));
+                }
+                Err(e) => {
+                    let failed = SourceFailure { source: format!("fabric.storage of {me_name}, the fabric's seat moves"), op: format!("commit the takeover of {} at revision {expected}", births(lost)), cause: e.to_string() };
+                    self.hold_takeover(lost, expected, me, proposer.unwrap_or(me), &failed.to_string());
+                    return failed.reply();
+                }
+            }
+        };
+        *self.held_takeover.lock().unwrap() = None;
+        tracing::Span::current().record("t", moved.t);
+        if let Err(e) = self.builds.seal_moved(&moved, me).await {
+            tracing::info_span!("rdm.node_admin.build.reject.via-lane-unsealed", node = %me_name, operation = "takeover", t = moved.t, error = %e)
+                .in_scope(|| tracing::info!("the lost authority's Build lane could not be sealed here: this admin's next append seals it first"));
+        }
+        let record = rdm_core::SeatHolder { mesh: me.mesh.clone(), node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), revision: expected + 1 };
+        book.take(Seat::FabricPrimary, &record);
+        (self.project_view)().await;
+        self.backbone.announce_seat(Seat::FabricPrimary, record).await;
+        Reply::PrimaryUpdated { revisions: taken(expected + 1) }
+    }
+
+    /// A mesh-primary's side of a takeover: `lost`, the fabric seat's record, names a birth this admin
+    /// found unreached and uninspectable past the hold, as every node-admin of its mesh. The winner is
+    /// the backbone rule's with that mesh excluded, in this admin's view: this admin itself takes the
+    /// seat; any other is told (`TakeOverFabricSeat`). `None` when the rule seats no admin.
+    pub async fn propose_take_over(self: &Arc<Self>, lost: &rdm_core::SeatHolder) -> Option<Reply> {
+        let view = self.topology.read().await.clone();
+        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
+        let winner = crate::election::fabric_successor_excluding(&nodes, &self.incumbency(), &lost.mesh)?;
+        let lost_birth = HandoverBirth { mesh: lost.mesh.clone(), node_id: lost.node_id.clone(), incarnation: lost.incarnation.clone() };
+        let to = birth_of(&winner)?;
+        if winner.node_id == self.node_id {
+            return Some(self.take_over(lost_birth, lost.revision, to, None).await);
+        }
+        let req = Request::TakeOverFabricSeat { fabric: self.fabric.clone(), lost: lost_birth.clone(), expected_revision: lost.revision, successor: to.clone(), proposer: self.me_birth() };
+        let reply = match self.call_once(&winner.node_id, &req, &CallOptions::default()).await {
+            Called::Reply(r) => r,
+            Called::Indeterminate(why) | Called::NotDispatched(why) => rdm_core::reply::handover::bounded_incomplete(&why),
+        };
+        tracing::info_span!("rdm.node_admin.seat.update.via-takeover-proposed", node = %self.held_name(), lost = %births(&lost_birth), expected_revision = lost.revision, winner = %births(&to), outcome = reply.name())
+            .in_scope(|| tracing::info!("the fabric-primary is lost past the hold: the winner is told"));
+        if let Reply::RejectedSourceFailed { source, op, cause } = &reply {
+            self.hold_takeover(&lost_birth, lost.revision, &to, &self.me_birth(), &format!("{source}: {op}: {cause}"));
+        }
+        Some(reply)
+    }
+
+    /// Hold the takeover of `lost` at `expected` the store could not commit, surfaced on `fabric.get`
+    /// (elections §5), from its first hold.
+    fn hold_takeover(&self, lost: &HandoverBirth, expected: u64, winner: &HandoverBirth, proposer: &HandoverBirth, reason: &str) {
+        let mut held = self.held_takeover.lock().unwrap();
+        let since = held.as_ref().filter(|h| &h.lost == lost && h.expected_revision == expected).map(|h| h.since).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0));
+        *held = Some(rdm_core::views::HeldTakeover { lost: lost.clone(), expected_revision: expected, winner: winner.clone(), proposer: proposer.clone(), since, reason: reason.to_string() });
+        tracing::info_span!("rdm.node_admin.seat.reject.via-takeover-held", node = %self.held_name(), lost = %births(lost), expected_revision = expected, winner = %births(winner), proposer = %births(proposer), since, reason)
+            .in_scope(|| tracing::info!("the store cannot commit the takeover's seat move: the takeover stays held, surfaced on fabric.get"));
+    }
+
+    /// End a held takeover once the fabric seat's record no longer names its lost birth at its
+    /// revision (it committed, or the ordinary rule filled the seat), or its lost birth is proven gone.
+    pub fn release_held_takeover(&self) {
+        let mut held = self.held_takeover.lock().unwrap();
+        let Some(h) = held.as_ref() else { return };
+        let record = self.membership.seats().fabric();
+        let still = record.as_ref().is_some_and(|r| r.is_birth(&h.lost.node_id, &h.lost.incarnation) && r.revision == h.expected_revision) && !self.incumbency().lost.contains(&h.lost.incarnation);
+        if !still {
+            *held = None;
         }
     }
 }
@@ -1792,11 +1951,16 @@ fn refusal_reason(r: &Reply) -> (&'static str, String) {
         Reply::ConnectionsDeleting { reason } => ("connections-deleting", reason.clone()),
         Reply::Malformed { kind } => ("malformed", format!("{kind:?}")),
         Reply::PrimaryUpdated { .. } => ("primary-updated", String::new()),
+        Reply::AlreadyApplied { revisions } => ("already-applied", format!("{revisions:?}")),
     }
 }
 
 /// The door a running admin fills once it holds a view.
 pub type HandoverSlot = Arc<OnceLock<Arc<HandoverDoor>>>;
+
+/// The fabric-seat takeover this admin holds because the store could not commit it (elections §5),
+/// surfaced on `fabric.get` until it commits or the seat's record moves.
+pub type HeldTakeovers = Arc<std::sync::Mutex<Option<rdm_core::views::HeldTakeover>>>;
 
 /// The new seat reads a re-submitted Build it has not heard yet from the incumbent its installed
 /// update names, which keeps serving after the row: one `FetchBuildFacts` to that exact node.

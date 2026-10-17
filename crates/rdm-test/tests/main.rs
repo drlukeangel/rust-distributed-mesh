@@ -116,6 +116,8 @@ mod topology_get;
 mod cohort_election;
 #[path = "elections/fabric_primary.rs"]
 mod fabric_primary;
+#[path = "elections/fabric_takeover.rs"]
+mod fabric_takeover;
 #[path = "elections/late_authority.rs"]
 mod late_authority;
 #[path = "elections/role_cohort.rs"]

@@ -2916,6 +2916,7 @@ mod tests {
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
         let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric seat").clone();
         let authority = StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

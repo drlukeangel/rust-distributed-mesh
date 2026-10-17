@@ -290,6 +290,9 @@ pub use rdm_core::status::{declared_of_member, member_of_declared};
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusAuthority {
+    /// The fabric-seat takeover this admin holds because the store could not commit it, shared with
+    /// its handover door; `fabric.get` surfaces it (elections §5).
+    pub held_takeover: crate::fabric_handover::HeldTakeovers,
     /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
@@ -660,7 +663,10 @@ impl StatusAuthority {
                     // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
                     // a read that fails is named, never answered as no Build.
                     return match self.builds.current_build().await {
-                        Ok(current) => crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage).await,
+                        Ok(current) => {
+                            let takeover = self.held_takeover.lock().unwrap().clone();
+                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage, takeover).await
+                        }
                         Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
                 }
@@ -1605,6 +1611,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -1668,6 +1675,7 @@ mod tests {
             nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone(), restarted.clone()],
         }));
         let authority = StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -1830,6 +1838,7 @@ mod tests {
         }));
         let status: Arc<RacingPuts> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -1895,6 +1904,7 @@ mod tests {
     /// The status authority of the admin born as `me`, deciding over `view`.
     fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2219,6 +2229,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),
@@ -2315,6 +2326,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
             operation_effects: Default::default(),

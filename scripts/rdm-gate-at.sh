@@ -43,7 +43,7 @@ export I143_ACCEPTANCE_SKIP_BUILD=1
 SHA=$(git rev-parse --short HEAD)
 O=$DEPLOY/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
 D=$O.d; rm -rf $D; mkdir -p $D
-SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority sticky_seat mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance rounds owed_check_ins node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence"
+SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority sticky_seat mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary fabric_takeover rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance rounds owed_check_ins node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence"
 t0=$(date +%s)
 
 # 1. Build once: check, every bin, every test binary. Nothing compiles after this.
@@ -355,7 +355,7 @@ export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_ST
 # every job over a minute on its own (Luke 10-08: stems > 1 min run in the release suite between
 # epics). The cargo-invoking jobs (doctests, the no-default-features check) are release-only too:
 # during the stem phase they take cargo's package-cache lock that audit-tests' `cargo tree` waits on.
-RELEASE_ONLY='^(mesh_delete_resume|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2784-chaos-container|cohort_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|cohort_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|owed_check_ins) '
+RELEASE_ONLY='^(mesh_delete_resume|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2784-chaos-container|cohort_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|cohort_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|owed_check_ins|fabric_takeover) '
 if [ "$GATE" = fast ]; then grep -vE "$RELEASE_ONLY" $D/jobs > $D/jobs.fast && mv $D/jobs.fast $D/jobs; fi
 # Heavy release jobs (the R-shape chaos/composition processes and the container jobs) run real
 # chaos phases at production windows: measured alone 195-602 s (lead, 2026-10-10, s24). Started

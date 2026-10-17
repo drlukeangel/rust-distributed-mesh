@@ -347,6 +347,7 @@ pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
         meshes: f.meshes.into_iter().map(mesh_view).collect(),
         build_id,
         held_running: None,
+        takeover: None,
     }
 }
 
@@ -406,13 +407,19 @@ pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>) -
     fabric_answer_with_held(me, view, build_id, None)
 }
 
-/// [`fabric_answer`] with `status_storage` supplying the fabric-primary's durable `held-running` fact (R-FM1).
-pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, status_storage: &dyn StatusStorage) -> StatusReply {
+/// [`fabric_answer`] with `status_storage` supplying the fabric-primary's durable `held-running` fact
+/// (R-FM1), and `takeover` the fabric-seat takeover this admin holds because the store could not
+/// commit it (elections §5).
+pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, status_storage: &dyn StatusStorage, takeover: Option<rdm_core::views::HeldTakeover>) -> StatusReply {
     let held = match view.fabric_primary() {
         Some(fp) => held_running_of(Some(status_storage), fp).await,
         None => None,
     };
-    fabric_answer_with_held(me, view, build_id, held)
+    let mut reply = fabric_answer_with_held(me, view, build_id, held);
+    if let (StatusReply::Fabric { fabric }, Some(t)) = (&mut reply, takeover) {
+        fabric.takeover = Some(t);
+    }
+    reply
 }
 
 fn fabric_answer_with_held(me: &PathName, view: &Topology, build_id: Option<String>, held_running: Option<HeldRunning>) -> StatusReply {

@@ -476,7 +476,7 @@ fn store_layout_reseal_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
 #[test]
 fn handover_reseal_refuses_a_moved_position_or_a_lost_golden() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/handover.rs", "const REPLY_VARIANTS: u32 = 17;", "const REPLY_VARIANTS: u32 = 18;");
+    t.edit("crates/rdm-core/src/handover.rs", "const REPLY_VARIANTS: u32 = 18;", "const REPLY_VARIANTS: u32 = 19;");
     only(check(t.root()), Ratchet::PrimaryUpdateResealIsAtomic);
     let f = Planted::of_tree();
     f.edit("crates/rdm-core/tests/handover_wire.rs", "fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "fn changed_failed_primary_update_cell");

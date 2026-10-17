@@ -111,6 +111,22 @@ pub enum NodePrimaryUpdateRequest {
         /// The update's operation identity: the row's key.
         operation: String,
     },
+    /// node.fabric-primary.update of a takeover (fabric-node-lifecycle-elections.md §5, Q24): a
+    /// mesh-primary that found the fabric-primary unreached and its exact runtime uninspectable past
+    /// the hold tells the winner the backbone rule names. The winner writes the takeover's seat move
+    /// once; a repeat for the same takeover and successor answers `AlreadyApplied`.
+    TakeOverFabricSeat {
+        /// The fabric.
+        fabric: String,
+        /// The fabric-primary's exact birth the proposer holds as lost.
+        lost: HandoverBirth,
+        /// The fabric seat's revision the proposer holds the lost birth at.
+        expected_revision: u64,
+        /// The winner the backbone rule names in the proposer's view: the receiver.
+        successor: HandoverBirth,
+        /// The mesh-primary that found the hold expired.
+        proposer: HandoverBirth,
+    },
 }
 
 impl NodePrimaryUpdateRequest {
@@ -120,6 +136,7 @@ impl NodePrimaryUpdateRequest {
             Self::PrimaryUpdate { .. } => "primary-update",
             Self::UpdatePrimary { .. } => "update-primary",
             Self::UpdatePrimaryFromRow { .. } => "update-primary-from-row",
+            Self::TakeOverFabricSeat { .. } => "take-over-fabric-seat",
         }
     }
 }
@@ -241,6 +258,13 @@ pub enum NodePrimaryUpdateReply {
         /// The standard code captured where the failure occurred.
         code: crate::outcome::Code,
     },
+    /// The takeover a `TakeOverFabricSeat` names is committed already, to the successor it names:
+    /// nothing is written again (elections §5: "repeated calls for the same takeover and committed
+    /// successor answer `AlreadyApplied`").
+    AlreadyApplied {
+        /// The committed seat: the fabric seat, its committed holder's exact birth and its revision.
+        revisions: Vec<CommittedSeat>,
+    },
 }
 
 /// The most bytes of the `holder` a `RejectedRecordAbsent` names: a path.name, as a refusal names a
@@ -323,6 +347,7 @@ impl NodePrimaryUpdateReply {
             Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Failed { .. } => "failed",
+            Self::AlreadyApplied { .. } => "already-applied",
         }
     }
 }
@@ -344,8 +369,8 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// UpdatePrimaryFromRow, while it refuses new calls (node.connections.delete): a lost reply's
     /// identical retry is answered from the row.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 3;
-    const REPLY_VARIANTS: u32 = 17;
+    const REQUEST_VARIANTS: u32 = 4;
+    const REPLY_VARIANTS: u32 = 18;
 
     type Request = NodePrimaryUpdateRequest;
     type Reply = NodePrimaryUpdateReply;
@@ -369,6 +394,7 @@ impl NodeProtocol for NodePrimaryUpdate {
             NodePrimaryUpdateReply::ConnectionsDeleting { .. } => "connections-deleting",
             NodePrimaryUpdateReply::Unauthorized { .. } => "unauthorized",
             NodePrimaryUpdateReply::Failed { .. } => "failed",
+            NodePrimaryUpdateReply::AlreadyApplied { .. } => "already-applied",
         }
     }
 
@@ -391,6 +417,7 @@ impl NodeProtocol for NodePrimaryUpdate {
             NodePrimaryUpdateReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             NodePrimaryUpdateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             NodePrimaryUpdateReply::Failed { code, .. } => ReplyKind::new(*code),
+            NodePrimaryUpdateReply::AlreadyApplied { .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),
         }
     }
 

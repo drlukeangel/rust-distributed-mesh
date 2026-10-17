@@ -74,6 +74,25 @@ pub struct HeldRunning {
     pub verdicts: u64,
 }
 
+/// A fabric-seat takeover held because the store could not commit it (fabric-node-lifecycle-elections.md
+/// §5): surfaced on `fabric.get` until it commits or the holder is proven gone and the ordinary rule
+/// fills the seat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldTakeover {
+    /// The fabric-primary's exact birth held lost.
+    pub lost: crate::handover::HandoverBirth,
+    /// The fabric seat's revision the lost birth is held at.
+    pub expected_revision: u64,
+    /// The winner the backbone rule names.
+    pub winner: crate::handover::HandoverBirth,
+    /// The mesh-primary that proposed it (the winner itself when it noticed).
+    pub proposer: crate::handover::HandoverBirth,
+    /// When the takeover was first held, ms since the Unix epoch.
+    pub since: u64,
+    /// Why the store could not commit it.
+    pub reason: String,
+}
+
 /// The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provider.md §2.5): the
 /// provider inspected the exact runtime and the operating system holds it suspended. An observation,
 /// never a hold: it proves neither a hung nor a gone runtime.
@@ -238,6 +257,9 @@ pub struct FabricView {
     /// admins observed its exact runtime `Running` while silent.
     #[serde(default)]
     pub held_running: Option<HeldRunning>,
+    /// A fabric-seat takeover the store could not commit, while it is held (elections §5).
+    #[serde(default)]
+    pub takeover: Option<HeldTakeover>,
 }
 
 /// One connection fact a node holds (`node.connections.get`).

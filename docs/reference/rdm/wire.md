@@ -901,8 +901,8 @@ One frame of a Build stream.
 | `NAME` | `"node-primary-update"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `3` |
-| `REPLY_VARIANTS` | `17` |
+| `REQUEST_VARIANTS` | `4` |
+| `REPLY_VARIANTS` | `18` |
 | `MAX_REQUEST_FRAME_BYTES` | `2048` |
 | `MAX_REPLY_FRAME_BYTES` | `1024` |
 
@@ -910,7 +910,7 @@ One frame of a Build stream.
 
 ### `NodePrimaryUpdateRequest`
 
-`crates/rdm-core/src/handover.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/handover.rs` · enum · 4 variants · rdm-core
 
 The directed calls of node.primary.update.
 
@@ -934,12 +934,18 @@ The directed calls of node.primary.update.
 | 2.2 | `build_id` | `String` |  |  | The Build whose stop, delete, restart, replace or node.connections.delete the update precedes. |
 | 2.3 | `attempt` | `u32` |  |  | That Build's attempt. |
 | 2.4 | `operation` | `String` |  |  | The update's operation identity: the row's key. |
+| 3 | **`TakeOverFabricSeat`** |  |  | `op() = "take-over-fabric-seat"` | node.fabric-primary.update of a takeover (fabric-node-lifecycle-elections.md §5, Q24): a |
+| 3.0 | `fabric` | `String` |  |  | The fabric. |
+| 3.1 | `lost` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The fabric-primary's exact birth the proposer holds as lost. |
+| 3.2 | `expected_revision` | `u64` |  |  | The fabric seat's revision the proposer holds the lost birth at. |
+| 3.3 | `successor` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The winner the backbone rule names in the proposer's view: the receiver. |
+| 3.4 | `proposer` | `HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  |  | The mesh-primary that found the hold expired. |
 
 <a id="t-rdm_core-handover-NodePrimaryUpdateReply"></a>
 
 ### `NodePrimaryUpdateReply`
 
-`crates/rdm-core/src/handover.rs` · enum · 17 variants · rdm-core
+`crates/rdm-core/src/handover.rs` · enum · 18 variants · rdm-core
 
 The answer to a node.primary.update call.
 
@@ -987,6 +993,8 @@ The answer to a node.primary.update call.
 | 16.0 | `step` | `String` |  |  | The step that failed (`primary-update`). Within `MAX_FAILED_STEP_BYTES`. |
 | 16.1 | `reason` | `String` |  |  | Why the step failed. Within `MAX_FAILED_REASON_BYTES`. |
 | 16.2 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The standard code captured where the failure occurred. |
+| 17 | **`AlreadyApplied`** |  |  | `name() = "already-applied"` | The takeover a `TakeOverFabricSeat` names is committed already, to the successor it names: |
+| 17.0 | `revisions` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rdm_core-seat-transfer-CommittedSeat) |  |  | The committed seat: the fabric seat, its committed holder's exact birth and its revision. |
 
 ## 0x22 `node-command`
 
@@ -2010,7 +2018,7 @@ The logical Fabric's identity, kept for the Fabric's lifetime.
 
 ### `FabricView`
 
-`crates/rdm-core/src/views.rs` · struct · 9 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 10 fields · rdm-core
 
 The fabric as the answering node-admin's view holds it (`fabric.get`).
 
@@ -2025,6 +2033,7 @@ The fabric as the answering node-admin's view holds it (`fabric.get`).
 | 6 | `meshes` | `Vec<MeshView>` → [`MeshView`](#t-rdm_core-views-MeshView) |  | The fabric's meshes. |
 | 7 | `build_id` | `Option<String>` |  | `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the |
 | 8 | `held_running` | `Option<HeldRunning>` → [`HeldRunning`](#t-rdm_core-views-HeldRunning) | `default` | The durable `held-running` fact on the fabric-primary's status row (R-FM1), when watching |
+| 9 | `takeover` | `Option<HeldTakeover>` → [`HeldTakeover`](#t-rdm_core-views-HeldTakeover) | `default` | A fabric-seat takeover the store could not commit, while it is held (elections §5). |
 
 <a id="t-rdm_test-fault_door-FaultState"></a>
 
@@ -2081,6 +2090,23 @@ The durable `held-running` fact on a birth's status row (R-FM1): the provider re
 |---|---|---|---|---|
 | 0 | `since` | `u64` |  | When the first `Running` verdict was observed, ms since the Unix epoch. |
 | 1 | `verdicts` | `u64` |  | How many `Running` verdicts have been observed for this birth during the hold. |
+
+<a id="t-rdm_core-views-HeldTakeover"></a>
+
+### `HeldTakeover`
+
+`crates/rdm-core/src/views.rs` · struct · 6 fields · rdm-core
+
+A fabric-seat takeover held because the store could not commit it (fabric-node-lifecycle-elections.md
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `lost` | `crate::handover::HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The fabric-primary's exact birth held lost. |
+| 1 | `expected_revision` | `u64` |  | The fabric seat's revision the lost birth is held at. |
+| 2 | `winner` | `crate::handover::HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The winner the backbone rule names. |
+| 3 | `proposer` | `crate::handover::HandoverBirth` → [`HandoverBirth`](#t-rdm_core-seat-transfer-HandoverBirth) |  | The mesh-primary that proposed it (the winner itself when it noticed). |
+| 4 | `since` | `u64` |  | When the takeover was first held, ms since the Unix epoch. |
+| 5 | `reason` | `String` |  | Why the store could not commit it. |
 
 <a id="t-rdm_test-fault_door-Hit"></a>
 

@@ -87,7 +87,7 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
             None => meshes.push(MeshView { id: None, name: n.mesh.clone(), status: ScopeStatus::ReadyForTraffic, primary_admin: Some(ADMIN.parse().unwrap()), admin_api_base: None, nodes: vec![n.name.clone()] }),
         }
     }
-    let fabric = FabricView { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process, fabric_primary: Some(ADMIN.parse().unwrap()), admin_api_base: None, meshes, build_id: None, held_running: None };
+    let fabric = FabricView { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process, fabric_primary: Some(ADMIN.parse().unwrap()), admin_api_base: None, meshes, build_id: None, held_running: None, takeover: None };
     let seen: Arc<Mutex<Vec<StatusRequest>>> = Arc::default();
     let s = seen.clone();
     let server = ServerBuilder::new()

@@ -678,7 +678,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, "crates/rdm-admin/src/mesh_claims.rs", &["const FORMAT: &str = \"mesh-in-flight/2\";"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateResealIsAtomic => {
-            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 3;", "const REPLY_VARIANTS: u32 = 17;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 18;", "code: crate::outcome::Code"], ratchet, &mut out);
             require(root, "crates/rdm-core/tests/handover_wire.rs", &["fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::ForwardResealIsAtomic => {
@@ -770,7 +770,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
             require(root, HANDOVER_SOURCE, &["rdm.node_admin.seat.update.via-seat-row-written", "rdm.node_admin.seat.update.via-primary-updated", "rdm.node_admin.seat.reject.via-primary-update", "commit_seat_move"], ratchet, &mut out);
-            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_seventeen_variant_wire_schema"], ratchet, &mut out);
+            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_four_variant_wire_schema", "fn replies_match_the_frozen_eighteen_variant_wire_schema"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema", "fn primary_updated_matches_the_frozen_wire_schema", "fn primary_updating_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }

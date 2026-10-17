@@ -518,6 +518,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
     let build_slot: crate::build_op::BuildSlot = Arc::new(std::sync::OnceLock::new());
     let handover_slot: crate::fabric_handover::HandoverSlot = Arc::new(std::sync::OnceLock::new());
+    // The takeover this admin holds because the store could not commit it: written by its handover
+    // door, read by its fabric.get.
+    let held_takeover: crate::fabric_handover::HeldTakeovers = Default::default();
     // The process's one Node RPC client is made before the server: core Forward is one direct inner
     // call through it, and every other caller in the process takes it by clone.
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
@@ -1016,6 +1019,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             {
                                 let records_for_ids = records.clone();
                                 let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
+                                    held_takeover: held_takeover.clone(),
                                     declaration_seam: wiring.declaration_seam.clone(),
                                     command_frame_seam: wiring.command_frame_seam.clone(),
                                     operation_effects: Default::default(),
@@ -1152,6 +1156,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
                                 looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()) },
+                                held_takeover: held_takeover.clone(),
                             });
                             let _ = handover_slot.set(handover.clone());
                             let runner = Arc::new(AdminRunner {
@@ -2165,6 +2170,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
                                             builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
+                                            handover: handover_slot.clone(),
                                         };
                                         // Not behind the gate: it reads the view; it is held at its own wait (`Watch::gate`).
                                         tasks.push(tokio::spawn(crate::seat_watch::run(watch)));

@@ -108,6 +108,12 @@ impl MemberDoor {
                 refused("holder", "not-authority", &reason, &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None });
                 rdm_core::reply::handover::bounded_not_authority(&reason)
             }
+            Request::TakeOverFabricSeat { lost, .. } => {
+                let me = self.held_name();
+                let reason = format!("{me} is no node-admin: it never takes the fabric seat over from {}", lost.node_id);
+                refused("winner", "not-authority", &reason, &Refusing { operation: "take-over-fabric-seat", build_id: "", attempt: 0, holder: None, successor: None });
+                rdm_core::reply::handover::bounded_not_authority(&reason)
+            }
         }
     }
 

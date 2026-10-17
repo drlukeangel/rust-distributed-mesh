@@ -722,6 +722,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   reply's result; the already-applied answer by operation identity on a resend that outlived the
   duplicate table. Then the loop deleted and the message handed to the layer. Then the control: the
   owner's old retry span is gone.
+- **Read for the rpc node's declaration owner (2026-10-17).** `fabric_primary::losing_the_fabric_primary_mesh_moves_control:164` red on main `ba3c7124` (docs-only gate `98a739db`): the estate's stop named "still running when the stop bound passed, killed: pids [413887, 441609]"; 441609 is the recovered `mesh1.rpc.1` (`fkxjbtgdfa93`), whose leave kept declaring `Leaving` to its primary `ka72skxtmtm0` while that primary was going down too, every carried route `NotSent: Deadline`, past the 30 s bound; the live-runtimes check ran right after the bound's `kill -9`. A node's local stop that waits on a declaration to a primary that is leaving is this owner's (the rpc node's declaration loop in `node.rs`).
 - **The Build watcher's reattach (Luke 2026-10-16).** Q22 made reattach by `build_id` the owner's
   job after a `Budget::Stream` connection closes; neither `rdm-client`'s `BuildStream` nor the cells'
   `until_complete` does it, both treat a break as a defect (build.md: "a live run is reattached, never

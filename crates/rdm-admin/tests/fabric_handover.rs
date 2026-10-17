@@ -386,6 +386,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
             })
         },
         looker,
+        held_takeover: Default::default(),
     });
     if fill_slot {
         let _ = slot.set(door.clone());
@@ -1038,6 +1039,37 @@ async fn the_holder_cuts_off(op: &'static str) {
 /// identical command to P, its own command door, and P's identical node.primary.update to N each
 /// replay the row. The same operation with a conflicting payload (another revision) is RejectedConflict
 /// at N. Nothing commits twice.
+/// CONTRACT (elections §5, Q24: "Every mesh-primary that notices tells the winner
+/// (`node.fabric-primary.update`); repeated calls for the same takeover and committed successor answer
+/// `AlreadyApplied`; a conflicting proposal is rejected or re-resolved against the committed row";
+/// Q48: every seat change is a row): P holds the fabric seat at revision 7 and its mesh is lost. A
+/// takeover proposed to X, the backbone rule's winner with mesh1 excluded, commits ONE seat move of
+/// kind `takeover`: the fabric seat from P at 7 to X at 8, written by X, and X holds the record at 8.
+/// The same proposal again answers `AlreadyApplied` and writes nothing. A proposal naming another
+/// winner is refused not-authority, one from the revision the takeover moved is refused stale, and
+/// N, which the rule does not seat, refuses a proposal naming it. Must NOT happen: two takeover rows,
+/// a takeover written by an admin the rule does not seat, or the seat moving from a revision the log
+/// no longer holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_takeover_proposed_to_the_winner_is_committed_once_and_a_repeat_answers_already_applied() {
+    let f = seats_fabric().await;
+    let take = |successor: &Admin, expected: u64| Request::TakeOverFabricSeat { fabric: "fabric1".into(), lost: birth(&f.p), expected_revision: expected, successor: birth(successor), proposer: birth(&f.m) };
+    let taken = vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(&f.x, 8))];
+    assert!(matches!(send(&f.m, &f.n, take(&f.n, 7)).await, Reply::RejectedNotAuthority { reason } if reason.contains("mesh1") && reason.contains("mesh2.admin.1")), "N, which the rule does not seat, refuses naming the winner");
+    assert!(matches!(send(&f.m, &f.x, take(&f.n, 7)).await, Reply::RejectedNotAuthority { .. }), "X refuses a proposal naming another winner");
+    assert_eq!(send(&f.m, &f.x, take(&f.x, 7)).await, updated(taken.clone()), "the winner commits the takeover");
+    let moves = f.x.door.storage.seat_moves().await.unwrap();
+    let takeovers: Vec<_> = moves.iter().filter(|m| m.row.cause == MoveCause::Takeover).collect();
+    assert_eq!(takeovers.len(), 1, "one takeover row: {moves:?}");
+    let row = &takeovers[0].row;
+    assert_eq!((row.seats.len(), row.seats[0].seat.clone(), row.seats[0].from_revision, row.seats[0].revision, row.seats[0].holder.clone(), row.seats[0].from.clone(), row.by.clone()), (1, WireSeat::FabricPrimary, 7, 8, birth(&f.x), Some(birth(&f.p)), birth(&f.x)));
+    assert_eq!(f.x.door.membership.seats().fabric(), Some(holder_of(&f.x, 8)), "the winner holds the record");
+    assert_eq!(send(&f.m, &f.x, take(&f.x, 7)).await, Reply::AlreadyApplied { revisions: taken.clone() }, "the same takeover again");
+    assert_eq!(f.x.door.propose_take_over(&holder_of(&f.p, 7)).await, Some(Reply::AlreadyApplied { revisions: taken }), "the winner noticing it itself");
+    assert!(matches!(send(&f.m, &f.x, take(&f.x, 8)).await, Reply::RejectedStaleSeat { expected: 8, current: 8, .. } | Reply::RejectedNotAuthority { .. }), "a proposal from the revision the takeover moved names no lost birth at it");
+    assert_eq!(f.x.door.storage.seat_moves().await.unwrap().iter().filter(|m| m.row.cause == MoveCause::Takeover).count(), 1, "nothing written again");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_identical_retry_answers_the_same_seat_and_another_payload_is_refused() {
     let f = commanded_fabric().await;

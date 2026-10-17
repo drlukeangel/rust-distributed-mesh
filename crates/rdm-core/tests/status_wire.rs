@@ -89,6 +89,13 @@ fn requests_match_the_frozen_thirty_variant_wire_schema() {
     }
 }
 
+/// A fabric-seat takeover held because the store could not commit it (elections §5): mesh `m`'s
+/// `0123456789ab` (incarnation `i`) lost at revision 7, the winner `0123456789cd` (incarnation `j`).
+fn held_takeover() -> rdm_core::views::HeldTakeover {
+    let birth = |node: &str, inc: &str| rdm_core::handover::HandoverBirth { mesh: "m".into(), node_id: rdm_core::NodeId::parse(node).unwrap(), incarnation: rdm_core::IncarnationId::parse(&rdm_core::fixture_crockford60(inc)).unwrap() };
+    rdm_core::views::HeldTakeover { lost: birth("0123456789ab", "i"), expected_revision: 7, winner: birth("0123456789cd", "j"), proposer: birth("0123456789ab", "i"), since: 5, reason: "r".into() }
+}
+
 #[test]
 fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
@@ -140,9 +147,9 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
         (
-            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | held_running None
-            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None } },
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00"),
+            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | held_running None | takeover None
+            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None, takeover: None } },
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00", "00"),
         ),
         (
             Connections {
@@ -192,6 +199,24 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
     }
     assert_eq!(variants.len(), Status::REPLY_VARIANTS as usize);
     crate::outcome_codes::check_malformed::<Status>();
+}
+
+/// CONTRACT: a `Fabric` reply carries the held takeover in frozen bytes after `held_running`: the lost
+/// birth, the expected revision, the winner, the proposer, since and the reason (elections §5).
+#[test]
+fn a_fabric_reply_carries_its_held_takeover_in_frozen_bytes() {
+    use StatusReply::Fabric;
+    let (reply, hex) = (
+        // ... | takeover Some: lost (m, 0123456789ab, i) | expected_revision 7 | winner (m, 0123456789cd, j) | proposer = lost | since 5 | reason "r"
+        Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None, takeover: Some(held_takeover()) } },
+        concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00", "01",
+            "016d", "0c303132333435363738396162", "0c79727a34396a333033796834", "07",
+            "016d", "0c303132333435363738396364", "0c79727a37396a3330337a7378",
+            "016d", "0c303132333435363738396162", "0c79727a34396a333033796834", "05", "0172"),
+    );
+    let expected = bytes(hex);
+    assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
+    assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
 }
 
 /// CONTRACT: a `ConnectionsDeleted` carries its `ConnectionsReceipt` in frozen bytes after the ids it
