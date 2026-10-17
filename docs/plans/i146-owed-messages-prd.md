@@ -42,7 +42,7 @@ semantics and implement no delivery-retry loops.
 | R2 | the receiver suppresses duplicate delivery ids: pending and unacked before recoverable acceptance, acked without dispatch after it; at most one dispatch per id | BUILD | `node-rpc.md §33` said no deduplication; every invocation dispatched | e1 |
 | R3 | the ack is a tiny control frame carrying the id, sent by the runtime once the handler reports recoverable acceptance; a read-only request's acceptance is immediate; acks are never owed | BUILD | no ack frame | e1 |
 | R4 | a named refusal ends the request's retry; the refusal response is itself delivered until acked | BUILD | refusals are single replies | e1 |
-| R5 | every frame of a streaming op carries stream identity and sequence; a reconnect never delivers an old admission after the terminal frame | BUILD | `node-rpc.md §11` order only; 0x22 frames carry no sequence | e2 |
+| R5 | every frame of a streaming op carries stream identity and sequence; a reconnect never delivers an old admission after the terminal frame | DONE | e1 header/order; e2 `d64f6ae2`: production 0x22 positions, completed-invocation replay, one progress write, live uncertain reissue and completed-step reuse; 1,851/0 gate | e2 |
 | R6 | an owed message ends on ack, the receiver's proven exit or accepted removal (the view's removal row, never silence), or the owner's explicit cancellation or retargeting | BUILD | nothing ends | e1 |
 | R7 | each owner demonstrates reconstruction of its pending commands, check-ins and responses from durable evidence with operation identity, and regeneration of a lost reply's result, with cells, before its loop moves onto the mechanism | BUILD | the declaration loop and the round checklist are in memory | e3, per owner |
 | R8 | the owed declaration, `node_self::check_in` and the mesh-primary's check-in ride the mechanism; their loops are deleted | BUILD | three loops (one missing) | e3 |
@@ -283,7 +283,9 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   invocation's response frames by `seq` after that layer has deduplicated and ordered them") and §31
   the ack after the owner's recovery (Q22): nothing left to ask.
 - **Sizing.** One seat; `rdm-transport/src/stream.rs`, `rdm-core/src/node_command.rs`.
-- **State (2026-10-17).** Implemented in e7s3, pending the concurrent landing gate. The transport
+- **State (2026-10-17).** LANDED `d64f6ae2` through the land script on `c3860ff7`;
+  remote main verified. Concurrent gate: 1,851 passed, zero failed or ignored, 137 s (`GATE_JOBS=256`),
+  logs `gates-e7s3-d64f6ae2.log` and `.log.d/`. The transport
   hands its authoritative `(invocation_id, seq)` through `ReplyStream::position` to the mesh-primary's
   progress record, before `accepted()` acknowledges recovery. The existing e1 classifier remains the
   sole delivery dedupe; no owner retry, node receipt, body field, wire or durable format change.
