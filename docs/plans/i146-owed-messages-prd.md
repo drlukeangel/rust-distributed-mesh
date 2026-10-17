@@ -261,14 +261,27 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 
 #### e2 — the ordered stream: identity and sequence on every frame
 
-- **Goal → gap.** §43's stream sentence; node-rpc.md §11, §31. 0x22 frames carry order but no
-  identity or sequence; a reconnect could replay an old admission.
+- **Goal → gap.** §43's stream sentence; node-rpc.md §11, §31. Since e1 (`ca27478f`) every frame of
+  every stream, 0x22's included, carries its stream's identity and position in the transport header
+  (`invocation_id`, `seq`): the receiver orders by `seq`, refuses a conflict or a frame after the
+  terminal, never delivers a frame of a completed invocation, and hands a frame its owner holds
+  unrecovered over once (e1 cells 13-15 and 22; node-rpc.md §11 states the rule). The runtime is
+  proven once (§47), so the first two cells below are e1's. The gap left is the 0x22 owners': a
+  `ConnectionsDeleting` the mesh-primary receives twice must be recorded once. A
+  `node.connections.delete` that a later attempt re-issues is a new invocation the node runs again,
+  with no receipt on the node: the attempt resumes from the Build's recorded step receipts and never
+  runs a completed step again, and the one uncertain step it re-issues settles because
+  `connections.delete` is naturally idempotent (node-rpc-envelope.md "Caller execution and
+  certainty"; node-connections-delete.md step 5, a new attempt leaves connections-deleting).
 - **Requirements.** R5, R9 (0x22).
 - **Acceptance cells.** `every_frame_of_a_stream_carries_its_stream_id_and_sequence`;
   `a_reconnect_after_the_terminal_frame_delivers_no_old_admission`;
   `a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once`;
-  `an_interrupted_stream_is_replayed_from_its_receipts_not_re_executed` (e2b's connections.delete). RED first.
-- **Page text.** node-rpc.md §11 and §31 gain the sequence rule: exact old → new to Luke.
+  `an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it`
+  (e2b's connections.delete). RED first.
+- **Page text.** node-rpc.md §11 states the sequence rule ("the orders above are the sequence of an
+  invocation's response frames by `seq` after that layer has deduplicated and ordered them") and §31
+  the ack after the owner's recovery (Q22): nothing left to ask.
 - **Sizing.** One seat; `rdm-transport/src/stream.rs`, `rdm-core/src/node_command.rs`.
 - **State.** not started.
 
