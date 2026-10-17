@@ -132,14 +132,18 @@ mod tests {
             .collect()
     }
 
-    /// The variant idents of `enum name` in `file`, parsed straight from the source: the oracle.
+    /// The serialized variant idents of `enum name` in `file`, parsed straight from the source: the oracle.
     fn declared_variants(root: &Path, file: &str, name: &str) -> Vec<String> {
         let syntax = syn::parse_file(&std::fs::read_to_string(root.join(file)).unwrap()).unwrap();
         syntax
             .items
             .iter()
             .find_map(|i| match i {
-                syn::Item::Enum(e) if e.ident == name => Some(e.variants.iter().map(|v| v.ident.to_string()).collect()),
+                syn::Item::Enum(e) if e.ident == name => Some(e.variants.iter().filter(|v| {
+                    // A skipped in-process carrier has no serialized variant or wire row.
+                    !v.attrs.iter().any(|a| a.path().is_ident("serde") && matches!(&a.meta,
+                        syn::Meta::List(m) if m.tokens.to_string() == "skip"))
+                }).map(|v| v.ident.to_string()).collect()),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no enum {name} in {file}"))
