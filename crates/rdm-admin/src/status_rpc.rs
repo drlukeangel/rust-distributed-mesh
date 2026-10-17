@@ -1547,6 +1547,13 @@ mod tests {
         let stop2 = stop_of(&stream_first, "node.stop");
         assert_eq!(authority.stop_received(&stream(&stream_first, &stop2)).await, R::Applied);
         assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "the declaration after the stop stream's stopped");
+        // Q49: beginning a new cycle never forgets an operation already applied for the birth.
+        authority.begin_cycle(&stream_first, stream_first.incarnation_id.as_ref().unwrap()).await;
+        let ready = StatusRequest::DeclareNodeState { node_id: stream_first.node_id.clone(), incarnation: stream_first.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
+        assert_eq!(authority.apply(Some(stream_first.clone()), &ready).await, R::Applied);
+        assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "Q49: the old stop declaration after the next cycle began cannot apply again");
+        assert_eq!(authority.stop_received(&stream(&stream_first, &stop2)).await, R::AlreadyApplied, "Q49: the frame names the same applied operation");
+        assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, None)).await, R::Applied, "Q49: without an operation the normal forward transition still applies");
         // A Leaving the birth measured itself, and a restart's stop: applied, and nothing published.
         assert_eq!(authority.apply(Some(measured.clone()), &declare(&measured, None)).await, R::Applied);
         assert_eq!(authority.apply(Some(restarted.clone()), &declare(&restarted, Some(stop_of(&restarted, "node.restart")))).await, R::Applied);
