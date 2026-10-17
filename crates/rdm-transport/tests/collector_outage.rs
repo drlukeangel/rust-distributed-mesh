@@ -25,10 +25,17 @@ async fn outage_child() {
     // Where the child's wall time goes, for the parent's message: the test entered, the
     // telemetry was initialised, the exit began.
     println!("ENTERED_AT_MS={}", unix_ms());
+    // What the host's disk did around this child: its IO pressure at the start and the exit, and the
+    // child's own block-IO delay (i146 Q33, a stall named `evidence-file` is a disk wait only if these
+    // cover it).
+    println!("IO_PRESSURE_START={}", io_pressure());
+    println!("DELAYACCT={}", std::fs::read_to_string("/proc/sys/kernel/task_delayacct").map(|s| s.trim().to_string()).unwrap_or_else(|e| format!("unreadable: {e}")));
+    println!("BLKIO_START={}", blkio_ticks());
     let init = Instant::now();
     let telemetry = rdm_transport::init_evidence_telemetry("rdm-outage-child");
     println!("INIT_MS={}", init.elapsed().as_millis());
     println!("INIT_STEPS={}", rdm_transport::init_steps().map(|s| s.to_string()).unwrap_or_default());
+    println!("BLKIO_AFTER_INIT={}", blkio_ticks());
     let started = Instant::now();
     for i in 0..SPANS {
         let span = tracing::info_span!("rdm.test.outage.update.via-child", i);
@@ -42,7 +49,28 @@ async fn outage_child() {
     rdm_transport::flush_before_exit();
     drop(telemetry);
     println!("DRAINED_MS={}", started.elapsed().as_millis());
+    println!("IO_PRESSURE_EXIT={}", io_pressure());
+    println!("BLKIO_EXIT={}", blkio_ticks());
     std::process::exit(0);
+}
+
+/// The host's IO pressure, both lines of `/proc/pressure/io` joined by ` | `, or why it is unreadable.
+fn io_pressure() -> String {
+    std::fs::read_to_string("/proc/pressure/io").map(|s| s.lines().collect::<Vec<_>>().join(" | ")).unwrap_or_else(|e| format!("unreadable: {e}"))
+}
+
+/// This process's block-IO delay: `/proc/self/stat` field 42, `delayacct_blkio_ticks` (clock ticks;
+/// 0 while the kernel's delay accounting is off), or why it is unreadable.
+fn blkio_ticks() -> String {
+    let stat = match std::fs::read_to_string("/proc/self/stat") {
+        Ok(s) => s,
+        Err(e) => return format!("unreadable: {e}"),
+    };
+    // Fields 3 on follow the parenthesised command name, which may itself hold spaces.
+    match stat.rfind(')').and_then(|at| stat[at + 1..].split_whitespace().nth(42 - 3)) {
+        Some(ticks) => ticks.to_string(),
+        None => format!("field 42 absent: {stat}"),
+    }
 }
 
 fn unix_ms() -> u128 {
@@ -101,6 +129,22 @@ fn run_child(endpoint: &str) -> (Duration, String, String, std::path::PathBuf) {
     (took, out, err, evidence)
 }
 
+/// The host's IO pressure at the child's start and exit and the child's block-IO delay ticks at its
+/// start, after its telemetry init and at its exit, as the child printed them, with the kernel's
+/// delay-accounting state (the ticks read 0 while it is off).
+fn io_evidence(out: &str) -> String {
+    let line = |key: &str| out.lines().find_map(|l| l.strip_prefix(&format!("{key}="))).unwrap_or("not printed").to_string();
+    format!(
+        "io pressure at start [{}], at exit [{}]; block-IO delay ticks at start {}, after init {}, at exit {} (task_delayacct={})",
+        line("IO_PRESSURE_START"),
+        line("IO_PRESSURE_EXIT"),
+        line("BLKIO_START"),
+        line("BLKIO_AFTER_INIT"),
+        line("BLKIO_EXIT"),
+        line("DELAYACCT"),
+    )
+}
+
 /// The slowest step of the child's telemetry init (its `INIT_STEPS` line) and that step's own span
 /// from the child's evidence (`rdm.mesh.telemetry.create.via-init-step`), or why it is not there.
 fn slowest_init_step(out: &str, evidence: &std::path::Path) -> String {
@@ -128,10 +172,11 @@ fn outage_changes_nothing(endpoint: &str) {
     let at = |k: &str| number(&out, k);
     assert!(
         took < EXIT_BOUND + Duration::from_secs(3),
-        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms ({}), test entry to exit begun {} ms, exit begun to process ended {} ms (stdout: {out})",
+        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms ({}; {}), test entry to exit begun {} ms, exit begun to process ended {} ms (stdout: {out})",
         at("ENTERED_AT_MS").saturating_sub(at("SPAWNED_AT_MS")),
         at("INIT_MS"),
         slowest_init_step(&out, &evidence),
+        io_evidence(&out),
         at("EXITING_AT_MS").saturating_sub(at("ENTERED_AT_MS")),
         at("ENDED_AT_MS").saturating_sub(at("EXITING_AT_MS")),
     );

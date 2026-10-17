@@ -303,7 +303,17 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   handle) with the evidence processor's build, so it is split: `export-runtime`, `evidence-file` (the
   create and open alone), `evidence-processor`. Measured on this host, a create and open in `/tmp`
   (ext4) under 64 writers fsyncing took 6.3 ms at worst, under eight 256 MiB buffered writers with
-  fsyncs 5.2 ms: no seconds-long wait reproduced, so the next red's split names the defect. Its next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
+  fsyncs 5.2 ms: no seconds-long wait reproduced, so the next red's split names the defect. Host
+  read on 2026-10-17: no cgroup CPU throttling at any level of the user slice, memory pressure 0, io
+  pressure `some avg300=7.82` at read time, and `kernel.task_delayacct=0`, so a process's
+  `delayacct_blkio_ticks` (`/proc/<pid>/stat` field 42) reads 0 until delay accounting is on. The
+  cell's failure names, beside the slowest step, `/proc/pressure/io` (both lines) at the child's start
+  and at its exit and the child's block-IO delay ticks at its start, after init and at its exit, with
+  the host's `task_delayacct`. If the next red names `evidence-file` with block-IO ticks covering the
+  stall, it is a disk wait on the gate's write load and the fix is R25's: the open moves off the init
+  path to the export thread. If it names `export-runtime`, the thread-start wait is the defect. Either
+  way nothing waits at init: production calls it inside `run_with`, so a wait there delays every
+  node's start. The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
   cell's own thread, named after its module, and its leak check matched the bare word
   `transport_diag`; the check now matches the diagnostic target (`"target":"transport_diag"`). The gate
   after (`882abfe9`) red at `fabric_primary_handover.rs:516`: mesh3's only admin other than the holder
