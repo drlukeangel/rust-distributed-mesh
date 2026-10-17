@@ -615,7 +615,13 @@ impl StatusAuthority {
             // The reads: answered from what this admin holds, changing nothing.
             StatusRequest::GetNodes { select } => {
                 return match self.loads.as_ref() {
-                    Some(loads) => crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), select).await,
+                    Some(loads) => {
+                        let planned = match self.rounds.get() {
+                            Some(rounds) => rounds.planned_paths().await,
+                            None => Err(format!("{me_name} holds no rounds yet: the current Build is not read")),
+                        };
+                        crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), &planned, select).await
+                    }
                     None => StatusReply::NotReady { reason: format!("{me_name} reads no digest book; {} is refused", req.op()) },
                 };
             }

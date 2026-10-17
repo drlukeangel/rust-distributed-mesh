@@ -231,7 +231,7 @@ impl RecoverySubmitter {
                         if let Some(unreadable) = self.status_storage.node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await.ok().flatten() {
                             match crate::deployment::pipeline::inspect_transport_key(&dir) {
                                 Ok(_) => {
-                                    let _ = self.status_storage.remove_node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc).await;
+                                    let _ = self.status_storage.remove_node_data_dir_unreadable_of(&n.mesh, &n.node_id, &inc, &n.name).await;
                                     tracing::info_span!(
                                         "rdm.node_admin.node.resolve.via-data-dir-repaired",
                                         node = %n.name,
@@ -599,7 +599,7 @@ impl RecoverySubmitter {
             if let Some(held) = self.status_storage.node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation).await.ok().flatten() {
                 match crate::deployment::pipeline::inspect_transport_key(std::path::Path::new(&held.path)) {
                     Ok(_) => {
-                        let _ = self.status_storage.remove_node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation).await;
+                        let _ = self.status_storage.remove_node_data_dir_unreadable_of(mesh, &o.node_id, &o.incarnation, &held.name).await;
                         tracing::info_span!(
                             "rdm.node_admin.node.resolve.via-data-dir-repaired",
                             node = %o.path,
@@ -925,8 +925,8 @@ mod os_stopped_clear_tests {
         async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
             self.0.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
         }
-        async fn node_data_dir_lost_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
-            self.0.node_data_dir_lost_in_mesh(mesh).await
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+            self.0.node_data_dir_lost_at(mesh, name).await
         }
         async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
             self.0.put_node_data_dir_lost_of(mesh, row).await
@@ -934,14 +934,14 @@ mod os_stopped_clear_tests {
         async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
             self.0.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
         }
-        async fn node_data_dir_unreadable_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
-            self.0.node_data_dir_unreadable_in_mesh(mesh).await
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+            self.0.node_data_dir_unreadable_at(mesh, name).await
         }
         async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
             self.0.put_node_data_dir_unreadable_of(mesh, row).await
         }
-        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-            self.0.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &crate::model::PathName) -> Result<(), StorageError> {
+            self.0.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
         }
         async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
             let row = self.0.node_os_stopped_of(mesh, node_id, incarnation_id).await;

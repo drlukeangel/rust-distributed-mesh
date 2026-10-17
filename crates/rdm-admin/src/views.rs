@@ -97,6 +97,11 @@ fn mesh_view(m: crate::topology::MeshView) -> MeshView {
     MeshView { id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
 }
 
+/// The paths the current Build plans in each mesh, by mesh: where `node.get` names a birth its view
+/// no longer holds (deleted by its recovery and held unrecovered, its data dir unreadable), one point
+/// read per path no birth of the view holds. `Err` names why they could not be read.
+pub type Planned = Result<BTreeMap<String, Vec<PathName>>, String>;
+
 /// Which births a `node.get` selects, once a tag filter's index reads are made.
 enum Chosen<'a> {
     /// The node with this minted id.
@@ -130,11 +135,19 @@ async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -
     Ok(picked.unwrap_or_default())
 }
 
-/// The tags of the birth `n`: those of the row it holds, a point read through the node row's id
-/// index and then the row's own key; none when it holds no row.
+/// The tags of the birth `n`: those of its row, a point read of the row at its `path.name`; when the
+/// row there is another birth's, a point read of the row the node row's id index names. None when it
+/// holds no row.
 async fn tags_of(storage: &dyn NodesStorage, n: &Node) -> Result<BTreeSet<String>, ReadFailed> {
     let failed = |op: String, e: crate::record_store::StorageError| ReadFailed { source: format!("the nodes store's rows of {}", n.mesh), op, cause: e.to_string() };
+    let at = storage.node_row_at(&n.name).await.map_err(|e| failed(format!("read of the row at {}", n.name), e))?;
+    if let Some(row) = at.filter(|r| r.node_id == n.node_id) {
+        return Ok(row.tags);
+    }
     let Some(name) = storage.node_row_name(&n.mesh, &n.node_id).await.map_err(|e| failed(format!("read of the id index entry of {} ({})", n.name, n.node_id), e))? else { return Ok(BTreeSet::new()) };
+    if name == n.name {
+        return Ok(BTreeSet::new());
+    }
     let row = storage.node_row_at(&name).await.map_err(|e| failed(format!("read of the row at {name}"), e))?;
     Ok(row.filter(|r| r.node_id == n.node_id).map(|r| r.tags).unwrap_or_default())
 }
@@ -148,15 +161,10 @@ async fn held_running_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -
     Some(HeldRunning { since: row.since, verdicts: row.verdicts })
 }
 
+/// The data-dir-lost fact at the birth `n`'s `path.name`: a point read of the path.name index, which
+/// holds the latest loss there (the exited birth's own, or the one the birth was recovered over).
 async fn data_dir_lost_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<DataDirLost> {
-    let s = status_storage?;
-    if let Some(inc) = n.incarnation_id.as_ref() {
-        if let Some(row) = s.node_data_dir_lost_of(&n.mesh, &n.node_id, inc).await.ok().flatten() {
-            return Some(DataDirLost { path: row.path, since: row.since });
-        }
-    }
-    let rows = s.node_data_dir_lost_in_mesh(&n.mesh).await.ok()?;
-    let row = rows.into_iter().filter(|r| r.name == n.name).max_by_key(|r| r.since)?;
+    let row = status_storage?.node_data_dir_lost_at(&n.mesh, &n.name).await.ok().flatten()?;
     Some(DataDirLost { path: row.path, since: row.since })
 }
 
@@ -171,8 +179,10 @@ async fn data_dir_unreadable_of(status_storage: Option<&dyn StatusStorage>, n: &
 
 /// The births `view` holds that `chosen` selects, sorted by `path.name`, each with what `loads`
 /// carries for it and the tags its row carries: every birth the view holds, replaced predecessors
-/// included.
-async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, chosen: &Chosen<'_>) -> Result<Vec<NodeView>, ReadFailed> {
+/// included, its reads point reads made at once. A birth the view no longer holds is answered at a
+/// path `planned` names and no birth holds, from the data-dir-unreadable row at that path. No read
+/// lists a store.
+async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)>, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, chosen: &Chosen<'_>, planned: &BTreeMap<String, Vec<PathName>>) -> Result<Vec<NodeView>, ReadFailed> {
     let births: Vec<&Node> = view
         .births()
         .filter(|n| match chosen {
@@ -181,46 +191,47 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Ids(ids) => ids.contains(&n.node_id),
         })
         .collect();
-    let mut out = Vec::with_capacity(births.len());
-    for n in births {
+    let read = births.iter().map(|n| async move {
+        let (tags, held_running, data_dir_lost, data_dir_unreadable) =
+            futures_util::join!(tags_of(storage, n), held_running_of(status_storage, n), data_dir_lost_of(status_storage, n), data_dir_unreadable_of(status_storage, n));
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        let mut v = node_view(n, load, gossip, tags_of(storage, n).await?);
-        v.held_running = held_running_of(status_storage, n).await;
-        v.data_dir_lost = data_dir_lost_of(status_storage, n).await;
-        v.data_dir_unreadable = data_dir_unreadable_of(status_storage, n).await;
-        out.push(v);
-    }
+        let mut v = node_view(n, load, gossip, tags?);
+        v.held_running = held_running;
+        v.data_dir_lost = data_dir_lost;
+        v.data_dir_unreadable = data_dir_unreadable;
+        Ok::<_, ReadFailed>(v)
+    });
+    let mut out = futures_util::future::try_join_all(read).await?;
     if let Some(s) = status_storage {
-        let meshes: Vec<String> = match chosen {
-            Chosen::Mesh(m) => vec![m.to_string()],
-            _ => view.fabric_view().meshes.into_iter().map(|m| m.name).collect(),
+        let meshes: Vec<&String> = match chosen {
+            Chosen::Mesh(m) => planned.keys().filter(|k| k.as_str() == *m).collect(),
+            _ => planned.keys().collect(),
         };
-        for mesh in meshes {
-            let Ok(unreadable) = s.node_data_dir_unreadable_in_mesh(&mesh).await else { continue };
-            for r in unreadable {
-                let matches_chosen = match chosen {
-                    Chosen::Id(id) => &r.node_id == *id,
-                    Chosen::Mesh(m) => r.name.mesh == *m,
-                    Chosen::Ids(ids) => ids.contains(&r.node_id),
-                };
-                if !matches_chosen || out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
-                    continue;
-                }
-                let row = storage.node_row_at(&r.name).await.ok().flatten();
-                let mut n = Node::allocated(r.name.clone());
-                n.node_id = r.node_id.clone();
-                n.incarnation_id = Some(r.incarnation_id.clone());
-                n.provider = Some(view.fabric.provider);
-                n.data_dir = Some(r.path.clone());
-                n.status = crate::model::NodeStatus::Dead;
-                if let Some(ref nr) = row {
-                    n.config = nr.config.clone();
-                }
-                let tags = row.map(|nr| nr.tags).unwrap_or_default();
-                let mut v = node_view(&n, None, None, tags);
-                v.data_dir_unreadable = Some(DataDirUnreadable { path: r.path, cause: r.cause });
-                out.push(v);
+        let unheld: Vec<(&String, &PathName)> = meshes.into_iter().flat_map(|m| planned[m].iter().map(move |p| (m, p))).filter(|(_, p)| !view.births().any(|n| &n.name == *p)).collect();
+        let found = futures_util::future::join_all(unheld.iter().map(|(m, p)| s.node_data_dir_unreadable_at(m, p))).await;
+        for r in found.into_iter().filter_map(|r| r.ok().flatten()) {
+            let matches_chosen = match chosen {
+                Chosen::Id(id) => &r.node_id == *id,
+                Chosen::Mesh(m) => r.name.mesh == *m,
+                Chosen::Ids(ids) => ids.contains(&r.node_id),
+            };
+            if !matches_chosen || out.iter().any(|v| v.node_id == r.node_id || v.name == r.name) {
+                continue;
             }
+            let row = storage.node_row_at(&r.name).await.ok().flatten();
+            let mut n = Node::allocated(r.name.clone());
+            n.node_id = r.node_id.clone();
+            n.incarnation_id = Some(r.incarnation_id.clone());
+            n.provider = Some(view.fabric.provider);
+            n.data_dir = Some(r.path.clone());
+            n.status = crate::model::NodeStatus::Dead;
+            if let Some(ref nr) = row {
+                n.config = nr.config.clone();
+            }
+            let tags = row.map(|nr| nr.tags).unwrap_or_default();
+            let mut v = node_view(&n, None, None, tags);
+            v.data_dir_unreadable = Some(DataDirUnreadable { path: r.path, cause: r.cause });
+            out.push(v);
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -233,11 +244,13 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
 /// that fails is `RejectedSourceFailed` naming the read. Its span names what was asked, the filter,
 /// its labels, how many index reads were made and how many nodes were answered.
 pub async fn nodes_answer(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, select: &NodeSelect) -> StatusReply {
-    nodes_answer_with_status(me, view, loads, storage, None, select).await
+    nodes_answer_with_status(me, view, loads, storage, None, &Ok(BTreeMap::new()), select).await
 }
 
-/// [`nodes_answer`] with `status_storage` supplying each birth's durable `held-running` fact (R-FM1).
-pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, select: &NodeSelect) -> StatusReply {
+/// [`nodes_answer`] with `status_storage` supplying each birth's durable status-row facts (R-FM1,
+/// R-FM2), and `planned`, the current Build's paths, naming where a birth the view no longer holds is
+/// read.
+pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Loads, storage: &dyn NodesStorage, status_storage: Option<&dyn StatusStorage>, planned: &Planned, select: &NodeSelect) -> StatusReply {
     let span = tracing::info_span!(
         "rdm.node_admin.node.serve.via-get",
         node = %me,
@@ -246,10 +259,23 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         labels = tracing::field::Empty,
         index_reads = tracing::field::Empty,
         nodes = tracing::field::Empty,
+        io_calls = tracing::field::Empty,
+        io_queued_ms = tracing::field::Empty,
+        io_ms = tracing::field::Empty,
+        planned = tracing::field::Empty,
         outcome = tracing::field::Empty,
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
+    // A Build that cannot be read names no path: the births the view holds are answered, and the
+    // span says why no birth it no longer holds could be.
+    let planned = match planned {
+        Ok(p) => p.clone(),
+        Err(why) => {
+            span.record("planned", format!("unreadable: {why}").as_str());
+            BTreeMap::new()
+        }
+    };
     let read = async {
         let chosen = match select {
             NodeSelect::Id(id) => Chosen::Id(id),
@@ -266,7 +292,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
             }
         };
-        match nodes(view, &loads(), storage, status_storage, &chosen).await {
+        match nodes(view, &loads(), storage, status_storage, &chosen, &planned).await {
             Ok(nodes) => {
                 let count = nodes.len();
                 span.record("nodes", count as u64);
@@ -280,7 +306,10 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             Err(f) => StatusReply::source_failed(&f.source, &f.op, &f.cause),
         }
     };
-    let reply = tracing::Instrument::instrument(read, span.clone()).await;
+    // What the read's store calls took (the blocking pool's queue and run).
+    let io = crate::record_store::IoTime::default();
+    let reply = crate::record_store::io_time_with(io.clone(), tracing::Instrument::instrument(read, span.clone())).await;
+    span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
     span.record("outcome", reply.name());
     match &reply {
         StatusReply::ReadOverBound { bytes, max, .. } => {

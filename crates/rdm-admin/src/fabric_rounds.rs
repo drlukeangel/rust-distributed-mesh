@@ -209,6 +209,16 @@ impl FabricRounds {
         Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
     }
 
+    /// The paths the current Build plans in each mesh (`node.get` names a birth its view no longer
+    /// holds at one of them); `Err` names why the Build could not be read.
+    pub(crate) async fn planned_paths(&self) -> crate::views::Planned {
+        match self.env.builds.current().await {
+            Ok(Some(b)) => Ok(b.topology.meshes.iter().map(|(m, t)| (m.clone(), t.nodes.iter().cloned().collect())).collect()),
+            Ok(None) => Ok(BTreeMap::new()),
+            Err(e) => Err(format!("the current Build could not be read: {e}")),
+        }
+    }
+
     fn held_name_in(&self, view: &Topology) -> PathName {
         self.env
             .builds

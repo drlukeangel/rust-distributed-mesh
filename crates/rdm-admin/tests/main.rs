@@ -66,6 +66,7 @@ mod join_admission;
 mod join_wire;
 mod node_objects;
 mod node_rows;
+mod node_get_reads;
 mod node_rpc_objects;
 mod stop_gate_quiesce;
 mod stop_gate_view_lock;

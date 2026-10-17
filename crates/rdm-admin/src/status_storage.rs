@@ -355,11 +355,14 @@ pub trait StatusStorage: Send + Sync {
     async fn node_data_dir_lost_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
         Ok(None)
     }
-    /// Every `data-dir-lost` row held among the status rows of the mesh named `mesh` (R-FM2).
-    async fn node_data_dir_lost_in_mesh(&self, _mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
-        Ok(Vec::new())
+    /// The latest `data-dir-lost` row at the `path.name` `name` among the status rows of the mesh named
+    /// `mesh`: a point read of the `path.name` index its put writes beside the birth's row, which a
+    /// later birth at the same path.name (the one recovered over a fresh data dir) is answered from.
+    async fn node_data_dir_lost_at(&self, _mesh: &str, _name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        Ok(None)
     }
-    /// A blind put of the `data-dir-lost` row `row` among the status rows of the mesh named `mesh` (R-FM2).
+    /// A blind put of the `data-dir-lost` row `row` among the status rows of the mesh named `mesh`
+    /// (R-FM2), and of its `path.name` index entry.
     async fn put_node_data_dir_lost_of(&self, _mesh: &str, _row: &NodeDataDirLostRow) -> Result<(), StorageError> {
         Ok(())
     }
@@ -368,17 +371,20 @@ pub trait StatusStorage: Send + Sync {
     async fn node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
         Ok(None)
     }
-    /// Every `data-dir-unreadable` row held among the status rows of the mesh named `mesh` (R-FM2).
-    async fn node_data_dir_unreadable_in_mesh(&self, _mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
-        Ok(Vec::new())
+    /// The `data-dir-unreadable` row at the `path.name` `name` among the status rows of the mesh named
+    /// `mesh`: a point read of the `path.name` index its put writes beside the birth's row, which a
+    /// birth the view no longer holds (deleted by its recovery, held unrecovered) is answered from.
+    async fn node_data_dir_unreadable_at(&self, _mesh: &str, _name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(None)
     }
-    /// A blind put of the `data-dir-unreadable` row `row` among the status rows of the mesh named `mesh` (R-FM2).
+    /// A blind put of the `data-dir-unreadable` row `row` among the status rows of the mesh named
+    /// `mesh` (R-FM2), and of its `path.name` index entry.
     async fn put_node_data_dir_unreadable_of(&self, _mesh: &str, _row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
         Ok(())
     }
     /// Remove the `data-dir-unreadable` row of the birth `(node_id, incarnation_id)` among the
     /// status rows of the mesh named `mesh` (R-FM2).
-    async fn remove_node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+    async fn remove_node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId, _name: &PathName) -> Result<(), StorageError> {
         Ok(())
     }
 }
@@ -416,6 +422,10 @@ pub struct MemoryStatusStorage {
     data_dir_lost_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
     /// The data-dir-unreadable rows of each mesh named through the `_of` reads and puts, by row key.
     data_dir_unreadable_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirUnreadableRow>>>,
+    /// The `path.name` index of each mesh's data-dir-lost rows: the latest row at each path.name.
+    data_dir_lost_at: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
+    /// The `path.name` index of each mesh's data-dir-unreadable rows.
+    data_dir_unreadable_at: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirUnreadableRow>>>,
     /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
     /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
     events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
@@ -545,28 +555,33 @@ impl StatusStorage for MemoryStatusStorage {
         let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);
         Ok(self.data_dir_lost_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
     }
-    async fn node_data_dir_lost_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
-        Ok(self.data_dir_lost_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
+        Ok(self.data_dir_lost_at.lock().unwrap().get(mesh).and_then(|rows| rows.get(&name.to_string()).cloned()))
     }
     async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
         self.data_dir_lost_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        self.data_dir_lost_at.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.name.to_string(), row.clone());
         Ok(())
     }
     async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
         Ok(self.data_dir_unreadable_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
     }
-    async fn node_data_dir_unreadable_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
-        Ok(self.data_dir_unreadable_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
+        Ok(self.data_dir_unreadable_at.lock().unwrap().get(mesh).and_then(|rows| rows.get(&name.to_string()).cloned()))
     }
     async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
         self.data_dir_unreadable_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        self.data_dir_unreadable_at.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.name.to_string(), row.clone());
         Ok(())
     }
-    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError> {
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
         if let Some(rows) = self.data_dir_unreadable_named.lock().unwrap().get_mut(mesh) {
             rows.remove(&key);
+        }
+        if let Some(rows) = self.data_dir_unreadable_at.lock().unwrap().get_mut(mesh) {
+            rows.remove(&name.to_string());
         }
         Ok(())
     }
@@ -601,6 +616,10 @@ pub struct FileStatusStorage {
     os_stopped: FileRecords,
     data_dir_lost: FileRecords,
     data_dir_unreadable: FileRecords,
+    /// The `path.name` index of the data-dir-lost rows: the latest row at each path.name.
+    data_dir_lost_at: FileRecords,
+    /// The `path.name` index of the data-dir-unreadable rows.
+    data_dir_unreadable_at: FileRecords,
     /// This store's own mesh: its rows are the fields above.
     mesh: String,
     root: crate::store_root::StoreRoot,
@@ -628,6 +647,8 @@ impl FileStatusStorage {
             os_stopped: root.records(&base, "os-stopped", writer).await?,
             data_dir_lost: root.records(&base, "data-dir-lost", writer).await?,
             data_dir_unreadable: root.records(&base, "data-dir-unreadable", writer).await?,
+            data_dir_lost_at: root.records(&base, "data-dir-lost-at", writer).await?,
+            data_dir_unreadable_at: root.records(&base, "data-dir-unreadable-at", writer).await?,
             mesh: mesh.to_string(),
             root: root.clone(),
             writer: writer.clone(),
@@ -638,7 +659,7 @@ impl FileStatusStorage {
 
     /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
     /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 9] {
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 11] {
         [
             &self.meshes,
             &self.fabric,
@@ -649,6 +670,8 @@ impl FileStatusStorage {
             &self.os_stopped,
             &self.data_dir_lost,
             &self.data_dir_unreadable,
+            &self.data_dir_lost_at,
+            &self.data_dir_unreadable_at,
         ]
     }
 
@@ -828,17 +851,20 @@ impl StatusStorage for FileStatusStorage {
         }
         self.other(mesh, "data-dir-lost").await?.read(&key, NODE_DATA_DIR_LOST_FORMAT).await
     }
-    async fn node_data_dir_lost_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirLostRow>, StorageError> {
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
         if mesh == self.mesh {
-            return self.data_dir_lost.list(NODE_DATA_DIR_LOST_FORMAT).await;
+            return self.data_dir_lost_at.read(&name.to_string(), NODE_DATA_DIR_LOST_FORMAT).await;
         }
-        self.other(mesh, "data-dir-lost").await?.list(NODE_DATA_DIR_LOST_FORMAT).await
+        self.other(mesh, "data-dir-lost-at").await?.read(&name.to_string(), NODE_DATA_DIR_LOST_FORMAT).await
     }
     async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
+        // The birth's row, then its path.name index entry: two keys, each a blind put of its own.
         if mesh == self.mesh {
-            return self.data_dir_lost.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await;
+            self.data_dir_lost.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await?;
+            return self.data_dir_lost_at.write(&row.name.to_string(), NODE_DATA_DIR_LOST_FORMAT, row).await;
         }
-        self.other(mesh, "data-dir-lost").await?.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await
+        self.other(mesh, "data-dir-lost").await?.write(&row.key(), NODE_DATA_DIR_LOST_FORMAT, row).await?;
+        self.other(mesh, "data-dir-lost-at").await?.write(&row.name.to_string(), NODE_DATA_DIR_LOST_FORMAT, row).await
     }
     async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
@@ -847,24 +873,30 @@ impl StatusStorage for FileStatusStorage {
         }
         self.other(mesh, "data-dir-unreadable").await?.read(&key, NODE_DATA_DIR_UNREADABLE_FORMAT).await
     }
-    async fn node_data_dir_unreadable_in_mesh(&self, mesh: &str) -> Result<Vec<NodeDataDirUnreadableRow>, StorageError> {
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
         if mesh == self.mesh {
-            return self.data_dir_unreadable.list(NODE_DATA_DIR_UNREADABLE_FORMAT).await;
+            return self.data_dir_unreadable_at.read(&name.to_string(), NODE_DATA_DIR_UNREADABLE_FORMAT).await;
         }
-        self.other(mesh, "data-dir-unreadable").await?.list(NODE_DATA_DIR_UNREADABLE_FORMAT).await
+        self.other(mesh, "data-dir-unreadable-at").await?.read(&name.to_string(), NODE_DATA_DIR_UNREADABLE_FORMAT).await
     }
     async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
+        // The birth's row, then its path.name index entry: two keys, each a blind put of its own.
         if mesh == self.mesh {
-            return self.data_dir_unreadable.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await;
+            self.data_dir_unreadable.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await?;
+            return self.data_dir_unreadable_at.write(&row.name.to_string(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await;
         }
-        self.other(mesh, "data-dir-unreadable").await?.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await
+        self.other(mesh, "data-dir-unreadable").await?.write(&row.key(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await?;
+        self.other(mesh, "data-dir-unreadable-at").await?.write(&row.name.to_string(), NODE_DATA_DIR_UNREADABLE_FORMAT, row).await
     }
-    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
+    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError> {
+        // Tombstones of the birth's key and of its path.name index entry, each blind.
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
         if mesh == self.mesh {
-            return self.data_dir_unreadable.remove(&key).await.map(|_| ());
+            self.data_dir_unreadable.remove(&key).await?;
+            return self.data_dir_unreadable_at.remove(&name.to_string()).await.map(|_| ());
         }
-        self.other(mesh, "data-dir-unreadable").await?.remove(&key).await.map(|_| ())
+        self.other(mesh, "data-dir-unreadable").await?.remove(&key).await?;
+        self.other(mesh, "data-dir-unreadable-at").await?.remove(&name.to_string()).await.map(|_| ())
     }
 }
 
