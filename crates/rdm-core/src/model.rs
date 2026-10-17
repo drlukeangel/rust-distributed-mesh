@@ -19,6 +19,7 @@ pub enum NodeStatus {
     /// Ready: it takes traffic.
     ReadyForTraffic,
     /// Draining: it takes no new work.
+    #[serde(rename = "connections-deleting")]
     Draining,
     /// Leaving: it has announced its departure.
     Leaving,

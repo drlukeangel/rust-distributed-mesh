@@ -35,7 +35,7 @@ fn ready(node: &Value) -> bool {
 
 /// A birth that holds or contends for a seat and serves (`NodeStatus::is_live`).
 fn live(node: &Value) -> bool {
-    matches!(node["status"].as_str(), Some("pending" | "ready-for-traffic" | "draining"))
+    matches!(node["status"].as_str(), Some("pending" | "ready-for-traffic" | "connections-deleting"))
 }
 
 /// Every admin's view at `admins` holds at most one live birth at `path`. An admin that does not answer

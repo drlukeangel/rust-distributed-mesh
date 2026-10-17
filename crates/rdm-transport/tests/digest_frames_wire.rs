@@ -42,7 +42,7 @@ const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
 #[test]
 fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_its_status() {
     let heartbeat = format!("00 {WIRE_DIGEST}");
-    for status in ["draining", "ready-for-traffic"] {
+    for status in ["connections-deleting", "ready-for-traffic"] {
         let frame = Frame::Digest { digest: digest(status) };
         assert_eq!(frame.golden_encode(), golden(&frame, &bytes(&heartbeat)), "a {status} heartbeat");
     }

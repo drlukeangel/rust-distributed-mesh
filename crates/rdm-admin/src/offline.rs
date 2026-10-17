@@ -583,7 +583,7 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
         None => "cleared",
         Some(Pending) => "pending",
         Some(ReadyForTraffic) => "ready-for-traffic",
-        Some(Draining) => "draining",
+        Some(Draining) => "connections-deleting",
         Some(Leaving) => "leaving",
         Some(PendingReconnect) => "pending-reconnect",
         Some(Restarting) => "restarting",
