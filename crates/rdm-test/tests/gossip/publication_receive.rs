@@ -22,9 +22,9 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, fr
 
 
 
-#[derive(Clone, Copy)] enum Story { Stale, ReadFloor, Duplicate, Inconsistent, Chunks, PendingConflict, Gap, DeltaApply, DeltaRepeat, DeltaInconsistent, DeltaStale, LowerStamp, ReadRepair, CrossReadDuplicate, CrossReadConflict, CrossDeltaBase }
+#[derive(Clone, Copy)] enum Story { Stale, ReadFloor, Duplicate, Inconsistent, Chunks, PendingConflict, Gap, DeltaApply, DeltaRepeat, DeltaInconsistent, DeltaStale, LowerStamp, ReadRepair, CrossReadRefresh, CrossReadConflict, CrossDeltaBase, NewPublication, CrossRepeat }
 fn story(story: Story) {
-    let suffix = match story { Story::Stale => "stale", Story::ReadFloor => "read-floor", Story::Duplicate => "duplicate", Story::Inconsistent => "inconsistent", Story::Chunks => "chunks", Story::PendingConflict => "pending-conflict", Story::Gap => "gap", Story::DeltaApply => "delta-apply", Story::DeltaRepeat => "delta-repeat", Story::DeltaInconsistent => "delta-inconsistent", Story::DeltaStale => "delta-stale", Story::LowerStamp => "lower-stamp", Story::ReadRepair => "read-repair", Story::CrossReadDuplicate => "cross-read-duplicate", Story::CrossReadConflict => "cross-read-conflict", Story::CrossDeltaBase => "cross-delta-base" };
+    let suffix = match story { Story::Stale => "stale", Story::ReadFloor => "read-floor", Story::Duplicate => "duplicate", Story::Inconsistent => "inconsistent", Story::Chunks => "chunks", Story::PendingConflict => "pending-conflict", Story::Gap => "gap", Story::DeltaApply => "delta-apply", Story::DeltaRepeat => "delta-repeat", Story::DeltaInconsistent => "delta-inconsistent", Story::DeltaStale => "delta-stale", Story::LowerStamp => "lower-stamp", Story::ReadRepair => "read-repair", Story::CrossReadRefresh => "cross-read-refresh", Story::CrossReadConflict => "cross-read-conflict", Story::CrossDeltaBase => "cross-delta-base", Story::NewPublication => "new-publication", Story::CrossRepeat => "cross-repeat" };
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance"); std::fs::create_dir_all(&dir).unwrap();
     let capture = rdm_transport::EvidenceCapture::start(&dir, &format!("rdm-publication-{suffix}")).unwrap();
     capture.run(2, async {
@@ -43,7 +43,7 @@ fn story(story: Story) {
 
         let mut role = None;
         let mut backbone_sender = None;
-        if matches!(story, Story::CrossReadDuplicate | Story::CrossReadConflict | Story::CrossDeltaBase) {
+        if matches!(story, Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat) {
             let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
             let mut backbone_topic = gossip.subscribe(backbone_topic(&fabric), vec![]).await.unwrap();
             role = Some(Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![address]).await.unwrap());
@@ -57,17 +57,22 @@ fn story(story: Story) {
         let read = |digests| Chunk { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 10, snapshot_id: 3, chunk_index: 0, chunk_count: 1, digests, in_flight: vec![], departed: vec![] };
         let delta = |base, version, changed: Vec<MeshDigest>, stamp| Frame::MembersDelta { mesh: "mesh2".into(), source_publisher: publisher.clone(), base_version: base, topology_version: version, published_at_rafka_ms: stamp, changed, removed: vec![], in_flight: vec![], departed: vec![] };
         let baseline = snapshot(10, 1, 0, 1, vec![digest.clone()], 100);
-        if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadDuplicate | Story::CrossReadConflict | Story::CrossDeltaBase) { assert!(matches!(receiver.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
+        if matches!(story, Story::ReadFloor | Story::DeltaStale | Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication) { assert!(matches!(receiver.take_read_chunk(read(vec![digest.clone()]), "mesh1"), Taken::Installed(_))); }
         else { send(&sender, &receiver, baseline.clone(), 1).await; }
         assert_eq!(receiver.held_source_version("mesh2"), Some((publisher.clone(), 10)));
+        let heard_before = receiver.book.get(id.as_str()).unwrap().1;
         let before = receiver.book.all().into_iter().find(|d| d.node.node_id == id).unwrap();
         let mut changed = digest.clone(); changed.config.insert("version".into(), "eleven".into());
         let mut expected = 10;
         match story {
-            Story::CrossReadDuplicate | Story::CrossReadConflict | Story::CrossDeltaBase => {
-                let mut full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, 2, 0, 1, vec![if matches!(story, Story::CrossReadDuplicate) { digest.clone() } else { changed.clone() }], 101);
+            Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat => {
+                let mut full = snapshot(if matches!(story, Story::CrossDeltaBase) { 11 } else { 10 }, if matches!(story, Story::CrossRepeat) { 1 } else { 2 }, 0, 1, vec![if matches!(story, Story::CrossReadRefresh | Story::NewPublication | Story::CrossRepeat) { let mut current = digest.clone(); if matches!(story, Story::NewPublication) { current.digest_seq += 1; } current } else { changed.clone() }], if matches!(story, Story::CrossRepeat) { 100 } else { 101 });
                 if let Frame::Members { forwarded_by, .. } = &mut full { *forwarded_by = None; }
                 send(backbone_sender.as_ref().unwrap(), &receiver, full, 2).await;
+                if matches!(story, Story::CrossRepeat) { assert_eq!(receiver.book.get(id.as_str()).unwrap().1, heard_before, "a publication already installed on another channel is not heard again"); }
+                if matches!(story, Story::NewPublication) {
+                    assert!(receiver.book.get(id.as_str()).unwrap().1 > heard_before, "a fresh publication at an unchanged material version carries new hearing evidence");
+                }
                 if matches!(story, Story::CrossDeltaBase) {
                     send(&sender, &receiver, delta(11, 12, vec![changed.clone()], 102), 3).await;
                     assert!(receiver.desynced_sources().is_empty(), "a delta whose base is the version already installed on the backbone applies without repair");
@@ -129,13 +134,13 @@ fn story(story: Story) {
     });
     let spans=capture.spans().unwrap();
     for s in spans.iter().filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership."))) { println!("{}",serde_json::to_string(s).unwrap()); }
-    let outcome=match story { Story::Stale | Story::ReadFloor | Story::DeltaStale => "rdm.mesh.membership.reject.via-stale", Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossReadDuplicate => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent | Story::DeltaInconsistent | Story::PendingConflict | Story::CrossReadConflict => "rdm.mesh.membership.reject.via-inconsistent", Story::Gap | Story::ReadRepair => "rdm.mesh.membership.reject.via-gap", _=>"" };
+    let outcome=match story { Story::Stale | Story::ReadFloor | Story::DeltaStale => "rdm.mesh.membership.reject.via-stale", Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent | Story::DeltaInconsistent | Story::PendingConflict | Story::CrossReadConflict => "rdm.mesh.membership.reject.via-inconsistent", Story::Gap | Story::ReadRepair => "rdm.mesh.membership.reject.via-gap", _=>"" };
     if !outcome.is_empty() {
         let named=spans.iter().find(|s| s["name"]==outcome).expect("the framework names the publication outcome");
         if matches!(story, Story::Gap | Story::ReadRepair) { assert_eq!(named["attributes"]["repair_requested"], "true"); }
-        else if matches!(story, Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossReadDuplicate) { assert_eq!(named["attributes"]["outcome"], "ignored"); }
+        else if matches!(story, Story::Duplicate | Story::DeltaRepeat | Story::Chunks | Story::CrossRepeat) { assert_eq!(named["attributes"]["outcome"], "ignored"); }
     }
-    let snapshots=if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase) { 2 } else { 1 };
+    let snapshots=if matches!(story, Story::Chunks | Story::PendingConflict | Story::LowerStamp | Story::ReadRepair | Story::CrossDeltaBase | Story::CrossReadRefresh | Story::NewPublication) { 2 } else { 1 };
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.membership.update.via-snapshot-installed").count(),snapshots);
     let deltas=usize::from(matches!(story, Story::DeltaApply | Story::DeltaRepeat | Story::DeltaInconsistent | Story::ReadRepair | Story::CrossDeltaBase));
     assert_eq!(spans.iter().filter(|s|s["name"]=="rdm.mesh.membership.update.via-delta").count(),deltas);
@@ -180,9 +185,15 @@ fn story(story: Story) {
 /// CONTRACT: ReadRepair obeys the installed source version and publication identity, with no partial install.
 #[test] fn publication_readrepair() { story(Story::ReadRepair); }
 
-/// CONTRACT: the backbone compares equal content against the version installed by a topology read.
-#[test] fn publication_cross_read_duplicate() { story(Story::CrossReadDuplicate); }
+/// CONTRACT: a first new gossip publication at a read-installed version preserves the material image and is heard.
+#[test] fn publication_cross_read_refresh() { story(Story::CrossReadRefresh); }
 /// CONTRACT: equal conflicting content on the backbone cannot override a read-installed projection.
 #[test] fn publication_cross_read_conflict() { story(Story::CrossReadConflict); }
 /// CONTRACT: a delta uses the actual installed version, including an install from the other channel.
 #[test] fn publication_cross_channel_delta_base() { story(Story::CrossDeltaBase); }
+
+/// CONTRACT: a new publication at an unchanged topology version carries fresh hearing evidence.
+#[test] fn publication_fresh_publication_at_unchanged_version_is_heard() { story(Story::NewPublication); }
+
+/// CONTRACT: a publication forwarded onto another channel retains its identity and runs no effect twice.
+#[test] fn publication_repeat_on_another_channel_is_duplicate() { story(Story::CrossRepeat); }

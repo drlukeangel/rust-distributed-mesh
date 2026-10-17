@@ -292,18 +292,18 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!((i.topology_version, i.snapshot_id), (7, 11));
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 7)));
 
-        // A republish with the same normalized projection is a duplicate, even with a new
-        // snapshot id and heartbeat sequence. Only a directed read can complete repair at equality.
+        // A new snapshot publication at the held material version is fresh hearing evidence.
+        // Its heartbeat sequence may advance without a topology change; only its exact repeat is
+        // a duplicate. An equal version with different material content remains inconsistent.
         let again = members_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13, None);
-        let mut duplicate = false;
+        let mut refreshed = None;
         for c in &again {
-            match rx.take_chunk(chunk_of(c)) {
-                Taken::Refused(rdm_transport::snapshot::Refusal::Duplicate) => duplicate = true,
-                Taken::Waiting { .. } => {},
-                other => panic!("a repeated publication installs nothing: {other:?}"),
-            }
+            if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) { refreshed = Some(*i); }
         }
-        assert!(duplicate, "the complete repeated projection is classified duplicate");
+        assert!(refreshed.expect("the new publication completes").refreshed);
+        for c in &again {
+            assert!(matches!(rx.take_chunk(chunk_of(c)), Taken::Refused(rdm_transport::snapshot::Refusal::Duplicate)), "each installed publication chunk is ignored on its exact repeat");
+        }
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 7)));
 
         // Malformed chunks are refused by name.

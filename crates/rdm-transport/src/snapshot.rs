@@ -321,8 +321,8 @@ pub struct Install {
     pub new_revision: bool,
     /// This source was desynchronized and is resumed by this snapshot.
     pub resumed: bool,
-    /// A directed read installed the same publisher/version again, including a repair completion.
-    /// Gossip repeats never install and never return this flag.
+    /// A new snapshot publication or directed read at the held material version was heard.
+    /// A repeated publication's chunks never install and never return this flag.
     pub refreshed: bool,
 }
 
@@ -489,7 +489,7 @@ fn same_delta(a: &Delta, b: &Delta) -> bool {
 
 /// Borrow the complete image under ReceiveOrder's shared installation lock; inspecting a chunk
 /// does not copy the installed publication just to compare its version or completed content.
-pub(crate) type InstalledProjection<'a> = (&'a PublisherId, u64, &'a Full);
+pub(crate) type InstalledProjection<'a> = (&'a PublisherId, u64, &'a Full, Option<u64>);
 
 /// A node's held cross-Mesh projection, one source Mesh at a time.
 ///
@@ -510,9 +510,9 @@ pub struct SnapshotReceiver {
 }
 
 impl SnapshotReceiver {
-    /// A gossip chunk. Only a complete newer source projection installs. Repeated chunks of an
-    /// unfinished publication leave its other chunks admissible; repeated installed content does
-    /// nothing, including no repair completion.
+    /// A gossip chunk. A new complete publication at the held material version carries fresh
+    /// hearing evidence; its exact repeat does nothing, including no repair completion. Repeated
+    /// chunks of an unfinished publication leave its other chunks admissible.
     pub fn take_chunk(&mut self, c: Chunk) -> Taken {
         self.chunk(c, false, None)
     }
@@ -581,11 +581,10 @@ impl SnapshotReceiver {
         let full = Full::new(digests, in_flight, departed);
         if let Some(h) = self.held.get(&c.mesh).filter(|h| h.publisher == c.publisher && h.version == c.topology_version) {
             if !h.full.same_topology(&full) { return conflict(); }
-            if !from_read { return duplicate(); }
         }
-        if let Some((_, _, installed_full)) = installed.filter(|(p, v, _)| *p == &c.publisher && *v == c.topology_version) {
+        if let Some((_, _, installed_full, snapshot_id)) = installed.filter(|(p, v, _, _)| *p == &c.publisher && *v == c.topology_version) {
             if !installed_full.same_topology(&full) { return conflict(); }
-            if !from_read { return duplicate(); }
+            if !from_read && snapshot_id == Some(c.snapshot_id) { return duplicate(); }
         }
         self.install(c.mesh, c.publisher, publication, full, from_read)
     }
@@ -610,7 +609,7 @@ impl SnapshotReceiver {
     /// Use the actual installed source image as the delta base. A channel-local assembly cannot
     /// turn an exact-base delta into a gap after another channel installed that same source.
     pub(crate) fn take_delta_against(&mut self, mesh: &str, source: &PublisherId, base: u64, version: u64, delta: &Delta, installed: Option<InstalledProjection<'_>>) -> Moved {
-        if let Some((publisher, installed_version, full)) = installed.filter(|(p, _, _)| *p == source) {
+        if let Some((publisher, installed_version, full, _)) = installed.filter(|(p, _, _, _)| *p == source) {
             if self.held.get(mesh).is_none_or(|local| &local.publisher != publisher || local.version < installed_version) {
                 self.held.insert(mesh.into(), Held { publisher: publisher.clone(), version: installed_version, full: full.clone(), desynced: None, publication: None, last_delta: None });
             }
@@ -890,10 +889,10 @@ mod tests {
 
     /// CONTRACT: the receiver enforces its installed floor, including for direct callers. An
     /// already-applied delta is a duplicate; lower snapshots/deltas cannot regress or request repair.
-    /// An ahead-base delta requests repair, and only a complete newer snapshot or directed read
-    /// resumes that source. Repeated gossip of its held version does nothing.
+    /// An ahead-base delta requests repair; a new complete publication or directed read resumes
+    /// that source. Repeated gossip of its held version does nothing.
     #[test]
-    fn a_receiver_enforces_the_installed_floor_and_resumes_only_from_repair_or_newer_state() {
+    fn a_receiver_keeps_the_material_floor_and_requires_a_new_publication_or_read_to_resume() {
         let p = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
         let mut rx = SnapshotReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
@@ -903,6 +902,7 @@ mod tests {
         assert!(matches!(rx.take_chunk(chunk(&p, 6)), Taken::Refused(Refusal::OlderThanHeld { held_version: 8, offered_version: 6 })));
         assert_eq!(rx.held_version("mesh1"), Some((p.clone(), 8)));
         assert!(rx.desynced().is_empty());
+        assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Installed(i) if i.refreshed), "a new publication at the held material version is heard");
         assert!(matches!(rx.take_delta("mesh1", &p, 9, 10, &Delta::default()), Moved::Desynced { gap: Gap::Version { held: 8, base: 9 }, .. }));
         assert!(matches!(rx.take_chunk(chunk(&p, 8)), Taken::Refused(Refusal::Duplicate)));
         assert!(!rx.desynced().is_empty(), "gossip repeats do not complete repair");

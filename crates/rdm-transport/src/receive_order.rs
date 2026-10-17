@@ -28,7 +28,8 @@
 //!   SnapshotReceiver compares complete normalized projection content, chunk identity and delta
 //!   content under its installation lock: duplicates install nothing; conflicts are inconsistent.
 //!   Equal-key unfinished chunks remain admissible. An ahead-base delta requests repair via-gap;
-//!   repeated gossip never completes repair. A directed topology read can resume the held version.
+//!   the exact repeated publication never completes repair. A new publication at the same material
+//!   version carries fresh hearing evidence. A directed topology read can resume the held version.
 //! - NodeDeleting, NodeRestarting and NodeStopped: operation identity is recorded before the
 //!   existing topology-version check per publisher and subject mesh. A carried revision refused
 //!   with `via-stale` still leaves that identity seen; a repeat emits `via-duplicate` and runs no
@@ -482,7 +483,8 @@ pub(crate) struct ReceiveOrder {
     /// Operation receipt is independent of projection admission: even a version-refused frame is
     /// seen, so another publisher or a higher carried version cannot replay its operation effect.
     lifecycle_seen: HashSet<LifecycleIdentity>,
-    /// The source version each mesh's last install moved to: its publisher and `topology_version`.
+    /// Each mesh's installed publisher, version, complete image and last gossip publication.
+    /// Read-answer snapshot ordinals never replace an author's retained publication identity.
     installed: HashMap<String, InstalledSource>,
 }
 
@@ -491,6 +493,7 @@ struct InstalledSource {
     publisher: PublisherId,
     version: u64,
     full: Option<crate::snapshot::Full>,
+    snapshot_id: Option<u64>,
 }
 
 /// The publisher a `Members` or `MembersDelta` names and its `topology_version`.
@@ -581,19 +584,22 @@ impl ReceiveOrder {
                 self.newest.insert(source, key);
             }
         }
-        self.installed.insert(mesh.to_string(), InstalledSource { publisher: publisher.clone(), version: topology_version, full: None });
+        self.installed.insert(mesh.to_string(), InstalledSource { publisher: publisher.clone(), version: topology_version, full: None, snapshot_id: None });
     }
     /// The actual installed source image, shared by the backbone, mesh channel and read path.
     pub(crate) fn installed_snapshot(&self, mesh: &str) -> Option<crate::snapshot::InstalledProjection<'_>> {
         let h = self.installed.get(mesh)?;
-        Some((&h.publisher, h.version, h.full.as_ref()?))
+        Some((&h.publisher, h.version, h.full.as_ref()?, h.snapshot_id))
     }
 
     /// The image and its floor move only after the complete projection was installed. Keeping
     /// them in one record prevents another channel from classifying against an older local image.
-    pub(crate) fn installed_projection(&mut self, mesh: &str, publisher: &PublisherId, version: u64, stamp: Option<u64>, full: &crate::snapshot::Full) {
+    pub(crate) fn installed_projection(&mut self, mesh: &str, publisher: &PublisherId, version: u64, stamp: Option<u64>, full: &crate::snapshot::Full, snapshot_id: Option<u64>) {
+        let retained = self.installed.get(mesh).filter(|h| &h.publisher == publisher && h.version == version).and_then(|h| h.snapshot_id);
         self.installed(mesh, publisher, version, stamp);
-        self.installed.get_mut(mesh).expect("just installed").full = Some(full.clone());
+        let h = self.installed.get_mut(mesh).expect("just installed");
+        h.full = Some(full.clone());
+        h.snapshot_id = snapshot_id.or(retained);
     }
 
 }

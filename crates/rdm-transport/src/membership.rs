@@ -2321,7 +2321,7 @@ impl View {
                     Taken::Installed(i) => {
                         let installed = self.installed(&i, fabric, side, *published_at_rafka_ms, prior);
                         drop(rx);
-                        order.installed_projection(&i.mesh, &i.publisher, i.topology_version, Some(*published_at_rafka_ms), &i.full);
+                        order.installed_projection(&i.mesh, &i.publisher, i.topology_version, Some(*published_at_rafka_ms), &i.full, Some(i.snapshot_id));
                         installed
                     }
                 }
@@ -2360,7 +2360,7 @@ impl View {
                         let carried = self.apply_full(mesh, &full, held_full, fabric, side, &fence);
                         let installed_full = held_full.expect("applied delta has a full").clone();
                         drop(rx);
-                        order.installed_projection(mesh, source_publisher, *topology_version, Some(*published_at_rafka_ms), &installed_full);
+                        order.installed_projection(mesh, source_publisher, *topology_version, Some(*published_at_rafka_ms), &installed_full, None);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
                     Moved::Duplicate { .. } | Moved::Inconsistent | Moved::Stale => SnapshotTaken::default(),
@@ -2439,7 +2439,7 @@ impl View {
         if let Taken::Installed(i) = &taken {
             self.installed(i, fabric, side, 0, prior);
             drop(rx);
-            order.installed_projection(&i.mesh, &i.publisher, i.topology_version, None, &i.full);
+            order.installed_projection(&i.mesh, &i.publisher, i.topology_version, None, &i.full, None);
         }
         taken
     }
