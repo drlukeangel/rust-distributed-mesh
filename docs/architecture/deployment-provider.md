@@ -261,6 +261,8 @@ WaitForNodeReady
 Complete
 ```
 
+A launch that runs a bound executable re-hashes it before `DeployRuntime` and launches it only when the hash matches its binding; the hash reads the whole file, so it runs on the blocking pool, off the runtime's workers ([Node RPC §21](node-rpc.md#21-iroh-owns-liveness)).
+
 The externally started Day-0 adoption: `AdoptCurrentRuntime`, `RegisterExactRuntimeHandle`, `ResolveProviderControlDomain`, `PublishRuntimeFactAndCurrentRuntimeMetadata`, then the normal bootstrap.
 
 The successor's management cut: from a current membership birth's RuntimeFact and runtime metadata, resolve the control domain, adopt the published runtime (or route to an executor of its domain), and inspect or terminate as the Build requires.
