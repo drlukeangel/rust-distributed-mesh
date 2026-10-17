@@ -332,13 +332,13 @@ pub(crate) struct WireMeshPending {
 pub(crate) enum WireCommandAdmission {
     Admitted,
     AlreadyAdmitted,
-    NotSent { reason: String },
-    Indeterminate { reason: String },
-    Refused { reply: String },
+    NotSent { reason: String, code: rdm_core::outcome::Code },
+    Indeterminate { reason: String, code: rdm_core::outcome::Code },
+    Refused { reply: String, code: rdm_core::outcome::Code },
     Stopped { receipt: rdm_core::status::ConnectionsReceipt },
     Started,
     ConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt },
-    StartFailed { step: String, reason: String },
+    StartFailed { step: String, reason: String, code: rdm_core::outcome::Code },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -361,13 +361,13 @@ impl From<&CommandAdmission> for WireCommandAdmission {
         match d {
             CommandAdmission::Admitted {} => Self::Admitted,
             CommandAdmission::AlreadyAdmitted {} => Self::AlreadyAdmitted,
-            CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
-            CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
-            CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
+            CommandAdmission::NotSent { reason, code } => Self::NotSent { reason: reason.clone(), code: *code },
+            CommandAdmission::Indeterminate { reason, code } => Self::Indeterminate { reason: reason.clone(), code: *code },
+            CommandAdmission::Refused { reply, code } => Self::Refused { reply: reply.clone(), code: *code },
             CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: receipt.clone() },
             CommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt: receipt.clone() },
             CommandAdmission::Started {} => Self::Started,
-            CommandAdmission::StartFailed { step, reason } => Self::StartFailed { step: step.clone(), reason: reason.clone() },
+            CommandAdmission::StartFailed { step, reason, code } => Self::StartFailed { step: step.clone(), reason: reason.clone(), code: *code },
         }
     }
 }
@@ -376,13 +376,13 @@ impl From<WireCommandAdmission> for CommandAdmission {
         match d {
             WireCommandAdmission::Admitted => Self::Admitted {},
             WireCommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted {},
-            WireCommandAdmission::NotSent { reason } => Self::NotSent { reason },
-            WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
-            WireCommandAdmission::Refused { reply } => Self::Refused { reply },
+            WireCommandAdmission::NotSent { reason, code } => Self::NotSent { reason, code },
+            WireCommandAdmission::Indeterminate { reason, code } => Self::Indeterminate { reason, code },
+            WireCommandAdmission::Refused { reply, code } => Self::Refused { reply, code },
             WireCommandAdmission::Stopped { receipt } => Self::Stopped { receipt },
             WireCommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt },
             WireCommandAdmission::Started => Self::Started {},
-            WireCommandAdmission::StartFailed { step, reason } => Self::StartFailed { step, reason },
+            WireCommandAdmission::StartFailed { step, reason, code } => Self::StartFailed { step, reason, code },
         }
     }
 }

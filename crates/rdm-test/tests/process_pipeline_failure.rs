@@ -83,16 +83,19 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             .await
             .unwrap_err();
         assert_eq!(err.step, "WaitForBind");
+        assert_eq!(err.code, rdm_core::outcome::Code::Unavailable);
         assert!(err.reason.contains("runtime exited"), "{}", err.reason);
         assert!(err.reason.contains("refusing to start"), "the runtime's own reason is carried: {}", err.reason);
         let view = builds.read_build(&build_id).await.unwrap();
         let last = view.steps.last().unwrap();
         assert_eq!(last.step, "WaitForBind");
-        assert!(matches!(&last.outcome, StepOutcome::Failed { reason, .. } if reason.contains("runtime exited")));
+        assert!(matches!(&last.outcome, StepOutcome::Failed { reason, code: rdm_core::outcome::Code::Unavailable, .. } if reason.contains("runtime exited")));
         let ran: Vec<&str> = view.steps.iter().map(|r| r.step.as_str()).collect();
         let upto = CreateStep::ORDER.iter().position(|s| *s == CreateStep::WaitForBind).unwrap();
         let want: Vec<&str> = CreateStep::ORDER[..=upto].iter().map(|s| s.name()).collect();
         assert_eq!(ran, want, "nothing after a failed step runs");
         let _ = std::fs::remove_dir_all(&data_root);
-    })
+    });
+    let held = cap.spans.0.lock().unwrap();
+    assert!(held.values().any(|(name, _, fields)| name == "rdm.node_admin.deployment.update.via-step" && fields.get("step").map(String::as_str) == Some("WaitForBind") && fields.get("code").map(String::as_str) == Some("UNAVAILABLE") && fields.get("detail").map(String::as_str) == Some("failed")));
 }

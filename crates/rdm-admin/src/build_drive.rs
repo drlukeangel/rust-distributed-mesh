@@ -552,6 +552,8 @@ pub enum SeatMoveEnd {
         step: String,
         /// The failure reason recording the five facts.
         reason: String,
+        /// The original failed terminal code.
+        code: rdm_core::outcome::Code,
     },
 }
 
@@ -559,7 +561,7 @@ impl std::fmt::Display for SeatMoveEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(why) | Self::Incomplete(why) => f.write_str(why),
-            Self::Failed { step, reason } => write!(f, "{step}: {reason}"),
+            Self::Failed { step, reason, .. } => write!(f, "{step}: {reason}"),
         }
     }
 }
@@ -1132,9 +1134,9 @@ impl DriveEnv {
                 }
                 Inner::Terminal(t @ BuildReply::Failed { .. }) => {
                     dspan.record("outcome", "failed");
-                    if let BuildReply::Failed { operation, reason, .. } = &t {
+                    if let BuildReply::Failed { operation, reason, code, .. } = &t {
                         if !operation.is_empty() && !reason.contains("(reason cut:") {
-                            self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone() } }).await;
+                            self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone(), code: *code } }).await;
                         }
                     }
                     self.release_mesh(&id, attempt, &executor).await;
@@ -1267,19 +1269,19 @@ impl DriveEnv {
             _ => me.clone(),
         };
         let failed = match &moved {
-            Err(SeatMoveEnd::Refused(why)) => Some(("primary-update".to_string(), format!("{me}: the seats of {} did not move before {}: node.primary.update was refused before its row: {why}", m.holder.name, op.key()))),
-            Err(SeatMoveEnd::Failed { step, reason }) => Some((step.clone(), reason.clone())),
+            Err(SeatMoveEnd::Refused(why)) => Some(("primary-update".to_string(), format!("{me}: the seats of {} did not move before {}: node.primary.update was refused before its row: {why}", m.holder.name, op.key()), rdm_core::outcome::Code::FailedPrecondition)),
+            Err(SeatMoveEnd::Failed { step, reason, code }) => Some((step.clone(), reason.clone(), *code)),
             _ => None,
         };
         let terminal = match &failed {
-            Some((step, why)) => rdm_core::reply::build::failed(id.to_string(), attempt, op.key(), step.clone(), crate::build_run::bounded_reason(why.clone())),
+            Some((step, why, code)) => rdm_core::reply::build::failed(id.to_string(), attempt, op.key(), step.clone(), crate::build_run::bounded_reason(why.clone()), *code),
             None => BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() },
         };
         // The verdict's writer releases the mesh's in-flight row the claim took (R-BI7 caveat 3), at
         // the verdict and before a reader of the held run learns the attempt ended: a successor that
         // reads the verdict claims its next attempt on the same mesh rows.
         let outcome = match &terminal {
-            BuildReply::Failed { reason, .. } => AttemptOutcome::Failed { reason: reason.clone() },
+            BuildReply::Failed { reason, code, .. } => AttemptOutcome::Failed { reason: reason.clone(), code: *code },
             _ => AttemptOutcome::HandedOff { to: to.to_string() },
         };
         match held {
@@ -1291,7 +1293,7 @@ impl DriveEnv {
                 }
             },
         }
-        if let Some((_, why)) = failed {
+        if let Some((_, why, _)) = failed {
             dspan.record("outcome", "failed").record("reason", why.as_str());
             drive.finish(terminal);
             return Err(DriveEnd::Terminal);

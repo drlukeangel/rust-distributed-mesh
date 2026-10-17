@@ -119,7 +119,7 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         (ConnectionsDeleting { reason: "d".into() }, "0e 01 64".to_string()),
         (Unauthorized { reason: "u".into() }, "0f 01 75".to_string()),
         // step "s" | reason "r"
-        (Failed { step: "s".into(), reason: "r".into() }, "10 0173 0172".to_string()),
+        (Failed { step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition }, "10 0173 0172 09".to_string()),
     ];
     for (r, hex) in fixtures {
         variants.insert(NodePrimaryUpdate::encode_reply(&r).unwrap()[0]);
@@ -150,7 +150,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
         RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() },
         RejectedRecordAbsent { record: "r".into(), holder: "h".into() },
         Incomplete { reason: "i".into() },
-        Failed { step: "s".into(), reason: "r".into() },
+        Failed { step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition },
     ] {
         assert_eq!(NodePrimaryUpdate::classify_reply(&r).code(), match r { RejectedStaleSeat { .. } | RejectedConflict { .. } => rdm_core::outcome::Code::Aborted, RejectedRecordAbsent { .. } => rdm_core::outcome::Code::NotFound, _ => rdm_core::outcome::Code::FailedPrecondition }, "{r:?}");
     }
@@ -180,7 +180,7 @@ fn the_largest_request_fits_the_frame_ceiling() {
     let short = NodePrimaryUpdateReply::record_absent("the seat-transfer row o under mesh m", "mesh2.admin.1");
     assert_eq!(short, NodePrimaryUpdateReply::RejectedRecordAbsent { record: "the seat-transfer row o under mesh m".into(), holder: "mesh2.admin.1".into() }, "fields within their budgets are kept whole");
     // A failed step whose step and reason are each longer than the bound is cut to its budgets, never reset.
-    let r = NodePrimaryUpdateReply::failed(&huge, &huge);
+    let r = NodePrimaryUpdateReply::failed(&huge, &huge, rdm_core::outcome::Code::FailedPrecondition);
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
     // Each refusal's reason is cut to the reply's bound, never reset.
     let r = NodePrimaryUpdateReply::no_successor(&huge);
@@ -190,4 +190,17 @@ fn the_largest_request_fits_the_frame_ceiling() {
 #[test]
 fn every_reply_variant_of_node_primary_update_classifies_to_one_code() {
     replies_match_the_frozen_seventeen_variant_wire_schema();
+}
+
+#[test]
+fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position() {
+    use rdm_core::outcome::Code;
+    for (code, n) in [(Code::Unknown, 2), (Code::DeadlineExceeded, 4), (Code::Unavailable, 14)] {
+        let frame = NodePrimaryUpdateReply::failed("s", "r", code);
+        let golden = vec![16, 1, b's', 1, b'r', n];
+        assert_eq!(NodePrimaryUpdate::encode_reply(&frame).unwrap(), golden);
+        assert_eq!(NodePrimaryUpdate::decode_reply(&golden).unwrap(), frame);
+        assert_eq!(NodePrimaryUpdate::classify_reply(&frame).code(), code);
+    }
+    assert_eq!(NodePrimaryUpdate::decode_reply(&[16, 1, b's', 1, b'r']), Err(rdm_core::protocol::DecodeFailure::Corrupt));
 }

@@ -2281,7 +2281,7 @@ async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it()
     let failed = before.attempt + 1;
     let fp = e.fabric_primary().await;
     assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: before.build_id.clone(), attempt: failed, executor: fp }).await.unwrap(), ClaimOutcome::Won);
-    e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: failed, outcome: AttemptOutcome::Failed { reason: format!("node.create:{lost}.admin.1 step PrepareStorage") } }).await.unwrap();
+    e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: failed, outcome: AttemptOutcome::Failed { reason: format!("node.create:{lost}.admin.1 step PrepareStorage") , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
     for later in 1..=2 {
         assert_eq!(pass(&e, &t, &me, lost, &contexts, &exits, &mut started, &verdicts).await, None, "pass {later} after the Failed attempt: nothing moved, no next attempt");
     }

@@ -634,7 +634,7 @@ impl StatusAuthority {
                     // a read that fails is named, never answered as no Build.
                     return match self.builds.current_build().await {
                         Ok(current) => crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage).await,
-                        Err(e) => StatusReply::source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
+                        Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
                 }
                 return crate::views::view_answer(&me_name, &view, req).unwrap_or_else(|| rdm_core::reply::status::not_ready(format!("{me_name} answers no {} from its view", req.op())));
@@ -854,7 +854,7 @@ impl StatusAuthority {
                         let end = match out {
                             rdm_core::outcome::RpcOutcome::NotSent(n) => CarryEnd::NotSent(n.reason().clone()),
                             rdm_core::outcome::RpcOutcome::Reply(r) => CarryEnd::RefusedByNode(r.into_value()),
-                            other => CarryEnd::Lost(format!("{me_name} carried node.connections.delete to {} and the call ended {} before the node accepted it: {other:?}", subject.name, other.name())),
+                            other => CarryEnd::Lost { code: other.code(), reason: format!("{me_name} carried node.connections.delete to {} and the call ended {} before the node accepted it: {other:?}", subject.name, other.name()) },
                         };
                         tracing::Span::current().record("detail", end.detail().as_str());
                         return end;
@@ -895,17 +895,21 @@ impl StatusAuthority {
                         let reason = format!("{} answered {} on its command's stream after {}", subject.name, other.name(), if accepted { "accepting it" } else { "nothing" });
                         tracing::Span::current().record("detail", reason.as_str());
                         frames.accepted().await;
-                        return if accepted { CarryEnd::Incomplete { reported, reason } } else { CarryEnd::RefusedByNode(other) };
+                        return if accepted { CarryEnd::Incomplete { reported, reason, code: <NodeCommand as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code() } } else { CarryEnd::RefusedByNode(other) };
                     }
                     Err(f) => {
-                        let reason = format!("{me_name}'s node.connections.delete stream to {} broke {}: {f}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
+                        let code = match &f {
+                            rdm_transport::stream::StreamFailure::Indeterminate(cause) => cause.code(),
+                            rdm_transport::stream::StreamFailure::Violation(_) => rdm_core::outcome::Code::Internal,
+                        };
+                        let reason = format!("{me_name}'s node.connections.delete stream to {} broke {}: {f:?}", subject.name, if accepted { "after the node accepted it" } else { "before the node accepted it" });
                         tracing::Span::current().record("detail", reason.as_str());
-                        return if accepted { CarryEnd::Incomplete { reported, reason } } else { CarryEnd::Lost(reason) };
+                        return if accepted { CarryEnd::Incomplete { reported, reason, code } } else { CarryEnd::Lost { reason, code } };
                     }
                 }
             }
             let reason = format!("{me_name}'s node.connections.delete stream to {} ended without its completion", subject.name);
-            if accepted { CarryEnd::Incomplete { reported, reason } } else { CarryEnd::Lost(reason) }
+            if accepted { CarryEnd::Incomplete { reported, reason, code: rdm_core::outcome::Code::Unknown } } else { CarryEnd::Lost { reason, code: rdm_core::outcome::Code::Unknown } }
         }
         .instrument(span.clone())
         .await;
@@ -1126,7 +1130,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             // retry event, before any republish, so a polled blocked birth republishes nothing.
             if let Some((reason, retry_on)) = blocker {
                 let on = retry_on.name();
-                let reply = StatusReply::blocked(me.node_id.clone(), held.clone(), &reason, retry_on);
+                let reply = rdm_core::reply::status::bounded_blocked(me.node_id.clone(), held.clone(), &reason, retry_on);
                 tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                 return Some(reply);
@@ -1246,12 +1250,12 @@ impl CarriedFrames {
     }
 
     /// The next frame, or why the frames broke; `None` once they ended.
-    async fn next(&mut self) -> Option<Result<rdm_core::node_command::NodeCommandReply, String>> {
+    async fn next(&mut self) -> Option<Result<rdm_core::node_command::NodeCommandReply, rdm_transport::stream::StreamFailure>> {
         use rdm_transport::stream::StreamItem;
         match self {
             Self::Dialled(stream) => stream.next().await.map(|item| match item {
                 StreamItem::Frame(_, reply) => Ok(reply),
-                StreamItem::Failed(f) => Err(format!("{f:?}")),
+                StreamItem::Failed(f) => Err(f),
             }),
             Self::InProcess(rx) => rx.recv().await.map(Ok),
         }
@@ -1291,7 +1295,12 @@ pub enum CarryEnd {
     /// The node refused it before accepting it (its refusal frame).
     RefusedByNode(rdm_core::node_command::NodeCommandReply),
     /// The call ended before the node accepted it: nothing is known to have run.
-    Lost(String),
+    Lost {
+        /// The delivery explanation.
+        reason: String,
+        /// The typed delivery code.
+        code: rdm_core::outcome::Code,
+    },
     /// The node accepted it and the stream broke before its completion: incomplete. What the node
     /// reported stands (`reported`: it reported connections-deleting); no completion is claimed.
     Incomplete {
@@ -1299,6 +1308,8 @@ pub enum CarryEnd {
         reported: bool,
         /// Why, by name.
         reason: String,
+        /// The typed cause that interrupted the stream.
+        code: rdm_core::outcome::Code,
     },
     /// The node's `node.connections.deleted`.
     Deleted {
@@ -1314,13 +1325,26 @@ pub enum CarryEnd {
 }
 
 impl CarryEnd {
+    /// The typed outcome of the command carried to the birth.
+    pub fn code(&self) -> rdm_core::outcome::Code {
+        use rdm_core::protocol::NodeProtocol;
+        match self {
+            Self::Refused(reply) => rdm_core::status::Status::classify_reply(reply).code(),
+            Self::RefusedByNode(reply) => rdm_core::node_command::NodeCommand::classify_reply(reply).code(),
+            Self::NotSent(cause) => cause.code(),
+            Self::Lost { code, .. } | Self::Incomplete { code, .. } => *code,
+            Self::Deleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Deadline { .. }), .. } => rdm_core::outcome::Code::DeadlineExceeded,
+            Self::Deleted { .. } => rdm_core::outcome::Code::Ok,
+        }
+    }
+
     /// The end's name in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
             Self::Refused(_) => "refused",
             Self::NotSent(_) => "not-sent",
             Self::RefusedByNode(_) => "refused-by-node",
-            Self::Lost(_) => "lost",
+            Self::Lost { .. } => "lost",
             Self::Incomplete { .. } => "incomplete",
             Self::Deleted { .. } => "connections-deleted",
         }
@@ -1332,7 +1356,7 @@ impl CarryEnd {
             Self::Refused(r) => format!("{}: {r:?}", r.name()),
             Self::NotSent(n) => format!("never sent: {n:?}"),
             Self::RefusedByNode(r) => format!("{}: {r:?}", r.name()),
-            Self::Lost(reason) | Self::Incomplete { reason, .. } => reason.clone(),
+            Self::Lost { reason, .. } | Self::Incomplete { reason, .. } => reason.clone(),
             Self::Deleted { receipt, .. } => receipt.as_ref().map(|r| r.name().to_string()).unwrap_or_else(|| "connections".into()),
         }
     }

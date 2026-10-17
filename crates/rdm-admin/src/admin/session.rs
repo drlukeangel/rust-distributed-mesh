@@ -221,7 +221,7 @@ impl NodeObserver for MembershipObserver {
         // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
         if cmd == crate::node_commands::NodeCommand::DeleteConnections {
             let (Some(authority), Some(incarnation)) = (self.authority.get(), node.incarnation_id.clone()) else {
-                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connections.delete to {}", node.name) };
+                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: format!("this admin holds no status authority yet to carry node.connections.delete to {}", node.name), code: rdm_core::outcome::Code::Unavailable };
             };
             // The carrier's end, in-process (i144 R22): a command never sent reaches the never-sent mark
             // as `NotSent` (node-recovery.md step 1); one broken after the node accepted it is
@@ -233,7 +233,7 @@ impl NodeObserver for MembershipObserver {
             return admission;
         }
         let Some(client) = self.client.as_ref() else {
-            return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no Node RPC client".into() };
+            return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no Node RPC client".into(), code: rdm_core::outcome::Code::Unavailable };
         };
         let (admission, unreachable) = crate::node_commands::send_command_reaching(client, &self.commands, &rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node, cmd, ctx).await;
         if let Some(why) = &unreachable {
@@ -255,11 +255,12 @@ impl NodeObserver for MembershipObserver {
 pub(crate) fn carried_admission(end: crate::status_rpc::CarryEnd) -> (crate::deployment::pipeline::CommandAdmission, Option<crate::node_commands::Unreachable>) {
     use crate::deployment::pipeline::CommandAdmission;
     use crate::status_rpc::CarryEnd;
+    let code = end.code();
     match end {
         CarryEnd::Deleted { receipt: Some(receipt), .. } => (CommandAdmission::ConnectionsDeleted { receipt }, None),
-        CarryEnd::NotSent(cause) => (CommandAdmission::NotSent { reason: format!("{cause:?}") }, crate::node_commands::unreachable_of(&cause)),
-        end @ (CarryEnd::Lost(_) | CarryEnd::Incomplete { .. }) => (CommandAdmission::Indeterminate { reason: end.detail() }, None),
-        end => (CommandAdmission::Refused { reply: format!("{}: {}", end.name(), end.detail()) }, None),
+        CarryEnd::NotSent(cause) => (CommandAdmission::NotSent { reason: format!("{cause:?}"), code }, crate::node_commands::unreachable_of(&cause)),
+        end @ (CarryEnd::Lost { .. } | CarryEnd::Incomplete { .. }) => (CommandAdmission::Indeterminate { reason: end.detail(), code }, None),
+        end => (CommandAdmission::Refused { reply: format!("{}: {}", end.name(), end.detail()), code }, None),
     }
 }
 
@@ -863,7 +864,7 @@ mod carried_tests {
         assert!(matches!(a, CommandAdmission::NotSent { .. }) && why.as_ref().map(|w| w.reason) == Some("endpoint-unresolved"), "{a:?} {why:?}");
         let (a, why) = carried_admission(CarryEnd::NotSent(NotSentReason::StreamBudget));
         assert!(matches!(a, CommandAdmission::NotSent { .. }) && why.is_none(), "a local cause marks nothing: {a:?} {why:?}");
-        for end in [CarryEnd::Lost("before acceptance".into()), CarryEnd::Incomplete { reported: true, reason: "broke after acceptance".into() }] {
+        for end in [CarryEnd::Lost { reason: "before acceptance".into(), code: rdm_core::outcome::Code::Unknown }, CarryEnd::Incomplete { reported: true, reason: "broke after acceptance".into(), code: rdm_core::outcome::Code::Unknown }] {
             let (a, why) = carried_admission(end.clone());
             assert!(matches!(a, CommandAdmission::Indeterminate { .. }) && why.is_none(), "{end:?}: {a:?}");
         }
@@ -871,6 +872,6 @@ mod carried_tests {
         let (a, why) = carried_admission(CarryEnd::Deleted { closed: vec![], not_open: vec![], held: vec![], receipt: Some(receipt.clone()) });
         assert_eq!((a, why.is_none()), (CommandAdmission::ConnectionsDeleted { receipt }, true));
         let (a, _) = carried_admission(CarryEnd::RefusedByNode(rdm_core::node_command::NodeCommandReply::RejectedConnectionScope { reason: "empty".into() }));
-        assert!(matches!(&a, CommandAdmission::Refused { reply } if reply.contains("refused-by-node")), "{a:?}");
+        assert!(matches!(&a, CommandAdmission::Refused { reply , .. } if reply.contains("refused-by-node")), "{a:?}");
     }
 }

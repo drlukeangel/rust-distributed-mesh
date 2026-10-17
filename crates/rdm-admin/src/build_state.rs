@@ -180,13 +180,16 @@ pub enum StepOutcome {
         /// none.
         #[serde(default)]
         stage: Option<TerminateStage>,
+        /// The standard code captured where the failure occurred.
+        #[serde(default = "rdm_core::outcome::legacy_failed_code")]
+        code: rdm_core::outcome::Code,
     },
 }
 
 impl StepOutcome {
     /// A Failed outcome with no stage.
     pub fn failed(reason: impl Into<String>) -> Self {
-        Self::Failed { reason: reason.into(), stage: None }
+        Self::Failed { reason: reason.into(), stage: None, code: rdm_core::outcome::Code::FailedPrecondition }
     }
 }
 
@@ -278,6 +281,9 @@ pub enum AttemptOutcome {
     Failed {
         /// Why the attempt stopped.
         reason: String,
+        /// The standard code captured where the failure occurred.
+        #[serde(default = "rdm_core::outcome::legacy_failed_code")]
+        code: rdm_core::outcome::Code,
     },
     /// This attempt ran what its executor was eligible for and stopped at an
     /// operation another admin executes (`to`); that admin claims the next
@@ -860,7 +866,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         }
                         match &a.outcome {
                             AttemptOutcome::Converged => lane.state = BuildState::Complete,
-                            AttemptOutcome::Failed { reason } => {
+                            AttemptOutcome::Failed { reason , .. } => {
                                 lane.state = BuildState::Failed;
                                 lane.last_failure = Some(reason.clone());
                             }
@@ -879,7 +885,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                             p.state = BuildState::Complete;
                             p.completed_at.get_or_insert(a.attempt);
                         }
-                        AttemptOutcome::Failed { reason } => {
+                        AttemptOutcome::Failed { reason , .. } => {
                             p.state = BuildState::Failed;
                             p.last_failure = Some(reason.clone());
                             p.failed_at = Some(a.attempt);
@@ -1418,7 +1424,7 @@ impl FactLog {
             .filter_map(|((node_id, incarnation), (from, path))| {
                 let until = self.opens.get(lane).and_then(|o| o.range(from + 1..).next().copied()).unwrap_or(u32::MAX);
                 let (attempt, verdict) = self.verdicts.get(lane)?.range(from..until).next_back()?;
-                let Some(AttemptOutcome::Failed { reason }) = verdict else { return None };
+                let Some(AttemptOutcome::Failed { reason , .. }) = verdict else { return None };
                 if self.recovery_of(&path, &node_id, &incarnation).is_some() {
                     return None;
                 }
@@ -2335,7 +2341,7 @@ mod tests {
             BuildFact::Accepted(intent("b1")),
             BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")),
             BuildFact::Step(step("b1", 1, "node.restart:mesh1.rpc.2")),
-            BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Failed { reason: "executor lost".into() })),
+            BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Failed { reason: "executor lost".into() , code: rdm_core::outcome::Code::FailedPrecondition })),
             BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")),
             BuildFact::Claim(claim("b1", 2, "mesh1.admin.1")), // loses: attempt 2 already claimed
             BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::Converged)), // stale attempt: ignored
@@ -2457,7 +2463,7 @@ mod tests {
         let (failed, converged, later) = (restart("mesh1.rpc.1", 2), restart("mesh1.rpc.2", 3), restart("mesh1.rpc.3", 4));
         let mut facts = vec![BuildFact::Accepted(intent("b1")), pre_event(&failed), pre_event(&converged), pre_event(&later)];
         assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![failed.clone(), converged.clone(), later.clone()]);
-        facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "lost".into() })));
+        facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "lost".into() , code: rdm_core::outcome::Code::FailedPrecondition })));
         facts.push(BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Converged)));
         facts.push(BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::Converged)));
         let read = in_flight_ops(&facts, &fold(&facts));
@@ -2705,7 +2711,7 @@ mod tests {
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")));
             s.publish_accepted(&accepted_at("b1", 20)).await.unwrap();
             s.claim_attempt(&claim("b1", 1, "a")).await.unwrap();
-            s.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Failed { reason: "x".into() })).await.unwrap();
+            s.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Failed { reason: "x".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "the failed b1 is skipped: b0 is the known state");
             assert_eq!(s.newest_accepted_at_ms().await.unwrap(), Some(20), "the index's head is the failed b1, whatever its state");
             // A restart of b0 is an attempt of it: in progress while it runs, and b0 stays the known
@@ -2713,7 +2719,7 @@ mod tests {
             s.open_attempt(&opened("b0", 2, AttemptReason::Restart)).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")));
             s.claim_attempt(&claim("b0", 2, "a")).await.unwrap();
-            s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "restart failed".into() })).await.unwrap();
+            s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "restart failed".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
             assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
             // The failed b1 resubmitted: its next attempt makes it the Build in progress.
@@ -2725,7 +2731,7 @@ mod tests {
             // A newer Build that failed and was forgotten leaves the views: b1 stays current.
             s.publish_accepted(&accepted_at("b2", 30)).await.unwrap();
             s.claim_attempt(&claim("b2", 1, "a")).await.unwrap();
-            s.append_attempt_receipt(&attempt("b2", 1, AttemptOutcome::Failed { reason: "y".into() })).await.unwrap();
+            s.append_attempt_receipt(&attempt("b2", 1, AttemptOutcome::Failed { reason: "y".into() , code: rdm_core::outcome::Code::FailedPrecondition })).await.unwrap();
             s.forget(&id("b2")).await.unwrap();
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b1")));
         }
@@ -2766,7 +2772,7 @@ mod tests {
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }))]).await;
         let p = m.read_build(&b1).await.unwrap();
         assert_eq!(p.run_of(p.attempt_to_drive()), 1, "the hand-off's next attempt continues run 1");
-        m.absorb(&[BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")), BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "successor proven exited after committed transfer".into() }))]).await;
+        m.absorb(&[BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")), BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "successor proven exited after committed transfer".into() , code: rdm_core::outcome::Code::FailedPrecondition }))]).await;
         let p = m.read_build(&b1).await.unwrap();
         assert_eq!((p.state, p.attempt_to_drive(), p.run_of(p.attempt_to_drive())), (BuildState::Failed, 3, 3), "the resubmit's attempt opens run 3");
         m.absorb(&[BuildFact::Claim(claim("b1", 3, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::HandedOff { to: "mesh1.admin.3".into() }))]).await;
@@ -2781,7 +2787,7 @@ mod tests {
     async fn a_failed_build_newer_than_the_current_one_is_drivable_and_an_older_one_is_not() {
         let s = MemoryBuildStateAdapter::new();
         let id = |b: &str| BuildId::parse(&rdm_core::fixture_crockford60(b)).unwrap();
-        for (b, at, outcome) in [("b0", 10, AttemptOutcome::Failed { reason: "x".into() }), ("b1", 20, AttemptOutcome::Converged), ("b2", 30, AttemptOutcome::Failed { reason: "y".into() })] {
+        for (b, at, outcome) in [("b0", 10, AttemptOutcome::Failed { reason: "x".into() , code: rdm_core::outcome::Code::FailedPrecondition }), ("b1", 20, AttemptOutcome::Converged), ("b2", 30, AttemptOutcome::Failed { reason: "y".into() , code: rdm_core::outcome::Code::FailedPrecondition })] {
             s.publish_accepted(&accepted_at(b, at)).await.unwrap();
             s.claim_attempt(&claim(b, 1, "a")).await.unwrap();
             s.append_attempt_receipt(&attempt(b, 1, outcome)).await.unwrap();
@@ -2892,7 +2898,7 @@ mod tests {
             attempt,
             operation: format!("node.delete:{path}"),
             step: "TerminateRuntime".into(),
-            outcome: StepOutcome::Failed { reason: "the cell's terminate".into(), stage },
+            outcome: StepOutcome::Failed { reason: "the cell's terminate".into(), stage , code: rdm_core::outcome::Code::FailedPrecondition },
             output: None,
             executor: Some("mesh2.admin.1".into()),
         };
@@ -2967,7 +2973,7 @@ mod tests {
             opened_by: "mesh1.admin.1".into(),
             opened_at_ms: 1,
         };
-        let failed = |n: u32, why: &str| attempt("b1", n, AttemptOutcome::Failed { reason: why.into() });
+        let failed = |n: u32, why: &str| attempt("b1", n, AttemptOutcome::Failed { reason: why.into() , code: rdm_core::outcome::Code::FailedPrecondition });
         let owed = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, reason: &str| OwedExit { path: b.0.clone(), node_id: b.1.clone(), incarnation: b.2.clone(), attempt, reason: reason.into() };
         let b1 = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let mut facts: Vec<BuildFact> = Vec::new();
@@ -3361,6 +3367,27 @@ mod tests {
             "once book.seats records this birth as holder, it syncs the journal from the shared store root"
         );
     }
+
+    #[tokio::test]
+    async fn the_journal_replays_the_original_step_and_attempt_codes() {
+        use rdm_core::outcome::Code;
+        for code in [Code::Unknown, Code::DeadlineExceeded, Code::Unavailable] {
+            let dir = tmp();
+            let receipt = BuildStepReceipt { outcome: StepOutcome::Failed { reason: "same explanation".into(), stage: None, code }, ..step("b1", 1, "node.restart:mesh1.rpc.2") };
+            {
+                let journal = FileJournal::open(&dir).await.unwrap();
+                journal.publish_accepted(&intent("b1")).await.unwrap();
+                journal.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+                journal.append_step_receipt(&receipt).await.unwrap();
+                journal.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Failed { reason: "same explanation".into(), code })).await.unwrap();
+            }
+            let replay = FileJournal::open(&dir).await.unwrap();
+            let facts = replay.facts().await.unwrap();
+            assert!(facts.iter().any(|f| matches!(f, BuildFact::Step(s) if s == &receipt)));
+            assert!(facts.iter().any(|f| matches!(f, BuildFact::Attempt(a) if a.outcome == AttemptOutcome::Failed { reason: "same explanation".into(), code })));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3371,5 +3398,30 @@ mod outcome_code_receipt_cells {
         let value = serde_json::to_value(receipt).unwrap();
         assert_eq!(value["failed"]["code"], serde_json::json!(9), "the failed-state receipt carries FAILED_PRECONDITION, not just explanation text");
         assert_eq!(value["failed"]["reason"], "same explanation");
+    }
+}
+
+#[cfg(test)]
+mod typed_failure_receipt_cells {
+    use super::*;
+    use rdm_core::outcome::Code;
+    #[test]
+    fn failed_receipt_fields_keep_their_positions_before_the_appended_code() {
+        let step = StepOutcome::Failed { reason: "r".into(), stage: None, code: Code::Unavailable };
+        assert_eq!(rdm_transport::wire::encode(&step).unwrap(), vec![1, 1, b'r', 0, 14]);
+        let attempt = AttemptOutcome::Failed { reason: "r".into(), code: Code::DeadlineExceeded };
+        assert_eq!(rdm_transport::wire::encode(&attempt).unwrap(), vec![1, 1, b'r', 4]);
+    }
+    #[test]
+    fn replay_retains_typed_failure_codes_and_defaults_only_legacy_json_failed_state() {
+        for code in [Code::Unknown, Code::DeadlineExceeded, Code::Unavailable] {
+            let outcome = StepOutcome::Failed { reason: "the same explanation".into(), stage: None, code };
+            let json = serde_json::to_vec(&outcome).unwrap();
+            assert_eq!(serde_json::from_slice::<StepOutcome>(&json).unwrap(), outcome);
+            let wire = rdm_transport::wire::encode(&outcome).unwrap();
+            assert_eq!(rdm_transport::wire::decode::<StepOutcome>(&wire).unwrap(), outcome);
+            assert_eq!(wire.last(), Some(&code.number()));
+        }
+        assert_eq!(serde_json::from_str::<StepOutcome>(r#"{"failed":{"reason":"the same explanation","stage":null}}"#).unwrap(), StepOutcome::failed("the same explanation"));
     }
 }

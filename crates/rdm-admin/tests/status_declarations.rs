@@ -2034,7 +2034,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: newer.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
-    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into() } }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into(), code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
     assert_eq!(answer(builds).await.build_id, Some(held.to_string()), "a failed Build is skipped: fabric.get answers the Build before it");
     assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }

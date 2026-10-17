@@ -73,7 +73,7 @@ where
             Err(e) => e.to_string(),
         };
         if started.elapsed() >= within {
-            return Err(CallEnd::Indeterminate { reason: format!("{admin} never reported the {kind} fact {fact} within {within:?}; its last report was: {last}") });
+            return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::DeadlineExceeded, reason: format!("{admin} never reported the {kind} fact {fact} within {within:?}; its last report was: {last}") });
         }
         tokio::time::sleep(every).await;
     }
@@ -172,7 +172,7 @@ fn refused_before_sending(op: NodeOp, reason: &str) -> StatusReply {
     let span = op.span();
     span.record("outcome", "rejected-tags");
     span.in_scope(|| tracing::info!(op = op.name(), reason = %reason, "the labels are not a node's tags; nothing is sent"));
-    StatusReply::rejected_tags(reason)
+    rdm_core::reply::status::bounded_rejected_tags(reason)
 }
 
 /// The `node` objects: workflows through the fabric-primary's Build family, reads as Status calls.
@@ -231,7 +231,7 @@ impl Nodes {
             NodeSelector::Mesh(mesh) => NodeSelect::Mesh(mesh.clone()),
             // A filter no node can match is refused here, by name, and nothing is sent.
             NodeSelector::Tags(filter) => match filter.refusal() {
-                Some(reason) => return Err(refused(&target, NodeOp::Get.name(), StatusReply::rejected_tags(&reason))),
+                Some(reason) => return Err(refused(&target, NodeOp::Get.name(), rdm_core::reply::status::bounded_rejected_tags(&reason))),
                 None => NodeSelect::Tags(filter.clone()),
             },
         };
@@ -251,7 +251,7 @@ impl Nodes {
             let span = NodeOp::NameUpdate.span();
             span.record("outcome", "rejected-name");
             span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), reason = %reason, "the name is outside the name grammar; nothing is sent"));
-            return Ok(StatusReply::rejected_name(&reason));
+            return Ok(rdm_core::reply::status::bounded_rejected_name(&reason));
         }
         crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rdm_transport::CallOptions::default()).await
     }

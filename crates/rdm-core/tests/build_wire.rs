@@ -64,9 +64,9 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         (Step { build_id: b(), attempt: 1, operation: s("o"), step: s("s") }, "01 01 62 01 01 6f 01 73"),
         (Blocked { build_id: b(), attempt: 1, operation: s("o"), step: s("s"), reason: s("r") }, "02 01 62 01 01 6f 01 73 01 72"),
         (Steps { build_id: b(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: s("o"), step: s("s"), result: StepResult::Complete }] }, "03 01 62 00 01 01 01 01 6f 01 73 00"),
-        (Steps { build_id: b(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: s("o"), step: s("s"), result: StepResult::Failed { reason: s("r") } }] }, "03 01 62 00 01 01 01 01 6f 01 73 01 01 72"),
+        (Steps { build_id: b(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: s("o"), step: s("s"), result: StepResult::Failed { reason: s("r") , code: rdm_core::outcome::Code::FailedPrecondition } }] }, "03 01 62 00 01 01 01 01 6f 01 73 01 01 72 09"),
         (Complete { build_id: b(), attempt: 2 }, "04 01 62 02"),
-        (Failed { build_id: b(), attempt: 2, operation: s("o"), step: s("s"), reason: s("r") }, "05 01 62 02 01 6f 01 73 01 72"),
+        (Failed { build_id: b(), attempt: 2, operation: s("o"), step: s("s"), reason: s("r") , code: rdm_core::outcome::Code::FailedPrecondition }, "05 01 62 02 01 6f 01 73 01 72 09"),
         (HandedOff { build_id: b(), attempt: 2, to: s("t") }, "06 01 62 02 01 74"),
         (Got { build_id: b(), phase: BuildPhase::Complete, attempt: 2, executor: Some(s("e")), reason: s("requested"), last_failure: None, steps: 3, chunks: 1 }, "07 01 62 02 02 01 01 65 09 726571756573746564 00 03 01"),
         (Deleted { build_id: b() }, "08 01 62"),
@@ -117,7 +117,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     }
     for terminal in [
         Complete { build_id: "b".into(), attempt: 1 },
-        Failed { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into(), reason: "r".into() },
+        Failed { build_id: "b".into(), attempt: 1, operation: "o".into(), step: "s".into(), reason: "r".into() , code: rdm_core::outcome::Code::FailedPrecondition },
         HandedOff { build_id: "b".into(), attempt: 1, to: "t".into() },
         SeatMoved { build_id: "b".into(), fabric_primary: Some("p".into()) },
         Got { build_id: "b".into(), phase: BuildPhase::Pending, attempt: 0, executor: None, reason: "requested".into(), last_failure: None, steps: 0, chunks: 0 },
@@ -145,7 +145,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 
 #[test]
 fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() {
-    let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) };
+    let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) , code: rdm_core::outcome::Code::FailedPrecondition };
     assert!(Build::encode_reply(&r).unwrap().len() <= Build::MAX_REPLY_FRAME_BYTES);
     let q = BuildRequest::AttemptRun {
         build_id: "cq2tyb03krac".into(),
@@ -162,4 +162,23 @@ fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() 
 #[test]
 fn every_reply_variant_of_build_classifies_to_one_code() {
     replies_match_the_frozen_twenty_six_variant_wire_schema();
+}
+
+/// The failed-state field is appended in place on both receipt and terminal, with no old decoder.
+#[test]
+fn failure_codes_are_appended_and_retained_by_the_build_reseal() {
+    use rdm_core::outcome::Code;
+    for (code, suffix) in [(Code::Unknown, 2), (Code::DeadlineExceeded, 4), (Code::Unavailable, 14)] {
+        let terminal = BuildReply::Failed { build_id: "b".into(), attempt: 2, operation: "o".into(), step: "s".into(), reason: "r".into(), code };
+        let mut golden = bytes("05 01 62 02 01 6f 01 73 01 72"); golden.push(suffix);
+        assert_eq!(Build::encode_reply(&terminal).unwrap(), golden);
+        assert_eq!(Build::decode_reply(&golden).unwrap(), terminal);
+        assert_eq!(Build::classify_reply(&terminal).code(), code);
+        let receipt = BuildReply::Steps { build_id: "b".into(), chunk_index: 0, chunk_count: 1, steps: vec![StepReceipt { attempt: 1, operation: "o".into(), step: "s".into(), result: StepResult::Failed { reason: "r".into(), code } }] };
+        let mut golden = bytes("03 01 62 00 01 01 01 01 6f 01 73 01 01 72"); golden.push(suffix);
+        assert_eq!(Build::encode_reply(&receipt).unwrap(), golden);
+        assert_eq!(Build::decode_reply(&golden).unwrap(), receipt);
+    }
+    assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72")), Err(DecodeFailure::Corrupt));
+    assert_eq!(Build::decode_reply(&bytes("05 01 62 02 01 6f 01 73 01 72 11")), Err(DecodeFailure::Corrupt));
 }

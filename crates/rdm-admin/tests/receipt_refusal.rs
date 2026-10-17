@@ -265,7 +265,7 @@ struct NeverReached;
 #[async_trait::async_trait]
 impl NodeObserver for NeverReached {
     async fn send_command(&self, _: &Node, _: NodeCommand, _: &CommandContext) -> CommandAdmission {
-        CommandAdmission::NotSent { reason: "dial-deadline: no connection to the target within the send budget".into() }
+        CommandAdmission::NotSent { reason: "dial-deadline: no connection to the target within the send budget".into() , code: rdm_core::outcome::Code::FailedPrecondition }
     }
     async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
         panic!("a command that was never sent has no completion to await")

@@ -75,7 +75,7 @@ impl NodeObserver for StopsThenStarts {
         match cmd {
             NodeCommand::Start if self.start_already_applied => CommandAdmission::AlreadyAdmitted {},
             NodeCommand::Start => CommandAdmission::Started {},
-            NodeCommand::Stop if self.refuses_stop => CommandAdmission::Refused { reply: "RejectedStaleIncarnation".into() },
+            NodeCommand::Stop if self.refuses_stop => CommandAdmission::Refused { reply: "RejectedStaleIncarnation".into() , code: rdm_core::outcome::Code::FailedPrecondition },
             NodeCommand::Stop if self.answers_stopped => CommandAdmission::Stopped { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
             _ => CommandAdmission::Admitted {},
         }

@@ -239,7 +239,7 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     builds.absorb(&[
         BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&other)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
-        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
+        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
     ]).await;
     let referenced = cp.collect_stopped(&candidates[1], TTL).await;
     assert!(matches!(&referenced, Err(Refusal::Reject(r)) if r.reason() == "referenced-by-open-build"), "{referenced:?}");
@@ -271,7 +271,7 @@ async fn a_stopped_birth_an_open_replace_recipe_references_is_skipped() {
     builds.absorb(&[
         BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&old)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
-        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
+        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
     ]).await;
 
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;

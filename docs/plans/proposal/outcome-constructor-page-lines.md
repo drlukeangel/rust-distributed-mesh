@@ -1,6 +1,6 @@
 # Q43 — e5.2 outcome constructors, runtime spans and failure receipts
 
-Status: exact page lines proposed for Luke; architecture text not applied.
+Status: approved by Luke (Q43, 2026-10-17); page lines land with e5.2.
 
 All replacements are in `docs/architecture/node-rpc-envelope.md`. The constructor library owns shared outcomes; runtime handlers call the library, enforced by a syntax-based check over every workspace runtime source. The code is selected from typed evidence, never explanation text.
 

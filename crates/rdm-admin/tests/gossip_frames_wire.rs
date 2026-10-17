@@ -269,7 +269,7 @@ fn facts() -> Vec<BuildFact> {
             attempt: 3,
             operation: "node.delete:mesh2.rpc.1".into(),
             step: RetireStep::TerminateRuntime.name().into(),
-            outcome: StepOutcome::Failed { reason: format!("the hold's terminate failed at {}", stage.name()), stage: Some(stage) },
+            outcome: StepOutcome::Failed { reason: format!("the hold's terminate failed at {}", stage.name()), stage: Some(stage) , code: rdm_core::outcome::Code::FailedPrecondition },
             output: None,
             executor: Some("key@127.0.0.1:1".into()),
         }));
@@ -306,9 +306,9 @@ fn facts() -> Vec<BuildFact> {
         for d in [
             CommandAdmission::Admitted {},
             CommandAdmission::AlreadyAdmitted {},
-            CommandAdmission::NotSent { reason: "NoRoute".into() },
-            CommandAdmission::Indeterminate { reason: "no reply".into() },
-            CommandAdmission::Refused { reply: "StaleIncarnation".into() },
+            CommandAdmission::NotSent { reason: "NoRoute".into() , code: rdm_core::outcome::Code::FailedPrecondition },
+            CommandAdmission::Indeterminate { reason: "no reply".into() , code: rdm_core::outcome::Code::FailedPrecondition },
+            CommandAdmission::Refused { reply: "StaleIncarnation".into() , code: rdm_core::outcome::Code::FailedPrecondition },
         ] {
             out.push(step(command.name(), Some(to_json(&d))));
         }
@@ -321,7 +321,7 @@ fn facts() -> Vec<BuildFact> {
         out.push(step(rdm_admin::wire::RELEASE_STORAGE_STEP, Some(to_json(&s))));
     }
     out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Converged }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() } }));
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
     out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 3, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }));
     out.push(BuildFact::Forget { build_id: bid("3qcfk1kq47m9") });
     out

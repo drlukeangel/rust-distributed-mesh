@@ -95,7 +95,7 @@ impl NodeObserver for LiveMesh {
     async fn send_command(&self, node: &Node, cmd: rdm_admin::node_commands::NodeCommand, ctx: &rdm_admin::deployment::pipeline::CommandContext) -> rdm_admin::deployment::pipeline::CommandAdmission {
         let target = match self.echo_target(node) {
             Ok(t) => t,
-            Err(reason) => return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason },
+            Err(reason) => return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason, code: rdm_core::outcome::Code::Unavailable },
         };
         rdm_admin::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
     }

@@ -288,6 +288,8 @@ pub enum StepResult {
     Failed {
         /// Why it failed.
         reason: String,
+        /// The standard code captured where the failure occurred.
+        code: crate::outcome::Code,
     },
 }
 
@@ -384,6 +386,8 @@ pub enum BuildReply {
         step: String,
         /// The step's own reason.
         reason: String,
+        /// The standard code captured where the failure occurred.
+        code: crate::outcome::Code,
     },
     /// Terminal of `AttemptRun`: the run ended at an operation another executor runs. The
     /// fabric-primary claims the next attempt for `to`.
@@ -633,7 +637,7 @@ impl NodeProtocol for Build {
             BuildReply::Blocked { .. } => ReplyKind::Success,
             BuildReply::Steps { .. } => ReplyKind::Success,
             BuildReply::Complete { .. } => ReplyKind::Success,
-            BuildReply::Failed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            BuildReply::Failed { code, .. } => ReplyKind::new(*code),
             BuildReply::HandedOff { .. } => ReplyKind::Success,
             BuildReply::Got { .. } => ReplyKind::Success,
             BuildReply::Deleted { .. } => ReplyKind::Success,

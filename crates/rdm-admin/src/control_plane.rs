@@ -288,7 +288,7 @@ impl ControlPlane {
             row.exit_code.map(|c| format!(", exit code {c}")).unwrap_or_default(),
         );
         let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id.log(), lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, exit_proof = %row.proof, node = %me, outcome = tracing::field::Empty);
-        let verdict = crate::build_state::BuildAttemptReceipt { mesh: Some(mesh.to_string()), build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason } };
+        let verdict = crate::build_state::BuildAttemptReceipt { mesh: Some(mesh.to_string()), build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason , code: rdm_core::outcome::Code::FailedPrecondition } };
         if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
             span.record("outcome", "verdict-unwritten");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt could not be ended: the mesh stays held by it"));
@@ -1181,7 +1181,7 @@ mod tests {
         for (s, outcome) in [("NodeRestarting", StepOutcome::Complete), ("StopNode", StepOutcome::Complete), ("AwaitNodeLeft", StepOutcome::Complete), ("StartNode", StepOutcome::failed("start-node was not answered Started"))] {
             facts.push(step(2, &restart_op, s, outcome));
         }
-        facts.push(ended(2, AttemptOutcome::Failed { reason: "StartNode".into() }));
+        facts.push(ended(2, AttemptOutcome::Failed { reason: "StartNode".into() , code: rdm_core::outcome::Code::FailedPrecondition }));
         let current = |facts: &[BuildFact]| fold(facts).remove(&build_id).expect("the Build folds");
         let mut parked = Node::allocated(path.clone());
         parked.incarnation_id = Some(inc.clone());

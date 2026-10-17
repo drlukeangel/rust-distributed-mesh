@@ -26,7 +26,7 @@ use std::time::Duration;
 fn log_read_ended(failure: FetchFailure) -> CallEnd {
     match failure {
         FetchFailure::Refused(_) => CallEnd::Rejected { reason: failure.reason().into(), detail: failure.to_string() },
-        other => CallEnd::Indeterminate { reason: other.to_string() },
+        other => CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: other.to_string() },
     }
 }
 
@@ -63,7 +63,7 @@ pub async fn build_fact(carrier: &BuildCarrier, id: &str, fact: &str, within: Du
     let at = carrier.fabric_primary().to_string();
     let read = || async {
         let facts = log_read(carrier, id).await?;
-        projection(&facts, id).ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} facts of the Build and no acceptance of it", facts.len()) })
+        projection(&facts, id).ok_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{} facts of the Build and no acceptance of it", facts.len()) })
     };
     let report = |p: &BuildProjection| {
         let last = p.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());

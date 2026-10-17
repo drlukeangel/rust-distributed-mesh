@@ -401,6 +401,8 @@ impl CurrentRuntimeAdoption {
             node = %self.node,
             attempt = 1u32,
             outcome = tracing::field::Empty,
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
         );
         let started = Instant::now();
@@ -421,7 +423,8 @@ impl CurrentRuntimeAdoption {
         }
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
         span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
-        r.map(|(f, _)| f).map_err(|reason| PipelineError { step: step.name(), reason })
+        span.record("code", if r.is_ok() { "OK" } else { "FAILED_PRECONDITION" }).record("detail", if r.is_ok() { "complete" } else { "failed" });
+        r.map(|(f, _)| f).map_err(|reason| PipelineError { step: step.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })
     }
 }
 
@@ -465,7 +468,7 @@ pub trait NodeObserver: Send + Sync {
     /// never a guess: the birth admitted it, or by name why nothing was established. The reply is
     /// admission, not completion.
     async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
-        CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name) }
+        CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name), code: rdm_core::outcome::Code::Unavailable }
     }
     /// Wait up to `within` for the commanded birth's completion at this admin: its `node-drained`
     /// call, or node-left, which is the `Stopped` reply of its `stop-node` call.
@@ -589,25 +592,47 @@ pub enum CommandAdmission {
         step: String,
         /// Why.
         reason: String,
+        /// Standard code of the original typed command outcome.
+        #[serde(default = "rdm_core::outcome::legacy_failed_code")]
+        code: rdm_core::outcome::Code,
     },
     /// The call never reached the birth (no route, dial refused, connection lost before the send).
     NotSent {
         /// Why the call was not sent.
         reason: String,
+        /// Standard code of the original typed command outcome.
+        #[serde(default = "rdm_core::outcome::legacy_failed_code")]
+        code: rdm_core::outcome::Code,
     },
     /// The call may have reached the birth; no reply came back.
     Indeterminate {
         /// Why the outcome is unknown.
         reason: String,
+        /// Standard code of the original typed command outcome.
+        #[serde(default = "rdm_core::outcome::legacy_failed_code")]
+        code: rdm_core::outcome::Code,
     },
     /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).
     Refused {
         /// The refusal's name.
         reply: String,
+        /// Standard code of the original typed command outcome.
+        #[serde(default = "rdm_core::outcome::legacy_failed_code")]
+        code: rdm_core::outcome::Code,
     },
 }
 
 impl CommandAdmission {
+    /// The original command's standard code, retained beside its explanation.
+    pub fn code(&self) -> rdm_core::outcome::Code {
+        use rdm_core::outcome::Code;
+        match self {
+            Self::StartFailed { code, .. } | Self::NotSent { code, .. } | Self::Indeterminate { code, .. } | Self::Refused { code, .. } => *code,
+            Self::AlreadyAdmitted {} => Code::AlreadyExists,
+            Self::Stopped { receipt } | Self::ConnectionsDeleted { receipt } if matches!(receipt, rdm_core::status::ConnectionsReceipt::Deadline { .. }) => Code::DeadlineExceeded,
+            _ => Code::Ok,
+        }
+    }
     /// Whether the birth holds the command.
     pub fn admitted(&self) -> bool {
         matches!(self, Self::Admitted {} | Self::AlreadyAdmitted {} | Self::Stopped { .. } | Self::ConnectionsDeleted { .. } | Self::Started {})
@@ -633,6 +658,7 @@ impl CommandAdmission {
 pub fn command_admission(out: &rdm_core::outcome::RpcOutcome<rdm_core::status::StatusReply>) -> CommandAdmission {
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::status::StatusReply;
+    let code = out.code();
     match out {
         RpcOutcome::Reply(r) => match r.value() {
             StatusReply::Applied => CommandAdmission::Admitted {},
@@ -640,13 +666,13 @@ pub fn command_admission(out: &rdm_core::outcome::RpcOutcome<rdm_core::status::S
             StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: receipt.clone() },
             StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => CommandAdmission::ConnectionsDeleted { receipt: receipt.clone() },
             StatusReply::Started => CommandAdmission::Started {},
-            StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
-            other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
+            StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone(), code },
+            other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()), code },
         },
-        RpcOutcome::NotSent(n) => CommandAdmission::NotSent { reason: format!("{:?}", n.reason()) },
-        RpcOutcome::Indeterminate(i) => CommandAdmission::Indeterminate { reason: format!("{:?}", i.reason()) },
-        RpcOutcome::Unserved(u) => CommandAdmission::Refused { reply: format!("unserved op {:#04x}", u.op()) },
-        RpcOutcome::RejectedStale(r) => CommandAdmission::Refused { reply: format!("stale target {}", r.target_node_id()) },
+        RpcOutcome::NotSent(n) => CommandAdmission::NotSent { reason: format!("{:?}", n.reason()), code },
+        RpcOutcome::Indeterminate(i) => CommandAdmission::Indeterminate { reason: format!("{:?}", i.reason()), code },
+        RpcOutcome::Unserved(u) => CommandAdmission::Refused { reply: format!("unserved op {:#04x}", u.op()), code },
+        RpcOutcome::RejectedStale(r) => CommandAdmission::Refused { reply: format!("stale target {}", r.target_node_id()), code },
     }
 }
 
@@ -939,6 +965,8 @@ pub(crate) enum StopProof {
 /// A step that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineError {
+    /// The standard code captured at failure.
+    pub code: rdm_core::outcome::Code,
     /// The step.
     pub step: &'static str,
     /// Why it failed.
@@ -948,6 +976,7 @@ pub struct PipelineError {
 /// A step's failure as its receipt records it: why, and for a `TerminateRuntime` where it stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StepFailure {
+    pub code: rdm_core::outcome::Code,
     /// Why the step failed.
     pub reason: String,
     /// Where a failed `TerminateRuntime` stopped; none for every other step.
@@ -956,13 +985,14 @@ pub(crate) struct StepFailure {
 
 impl From<String> for StepFailure {
     fn from(reason: String) -> Self {
-        Self { reason, stage: None }
+        Self { reason, stage: None, code: rdm_core::outcome::Code::FailedPrecondition }
     }
 }
 
 impl StepFailure {
+    fn coded(code: rdm_core::outcome::Code, reason: String) -> Self { Self { reason, stage: None, code } }
     fn at(stage: crate::build_state::TerminateStage, reason: String) -> Self {
-        Self { reason, stage: Some(stage) }
+        Self { reason, stage: Some(stage), code: rdm_core::outcome::Code::FailedPrecondition }
     }
 }
 
@@ -1143,7 +1173,7 @@ impl DeploymentPipeline<'_> {
                 };
                 tracing::info_span!("rdm.node_admin.deployment.reject.via-build-unreadable", build_id = %build_id.log(), attempt, operation = %operation, node = %node, detail = %reason)
                     .in_scope(|| tracing::info!("the Build cannot be read: the run stops before its first step"));
-                return Err(PipelineError { step: "ReadBuild", reason });
+                return Err(PipelineError { step: "ReadBuild", reason , code: rdm_core::outcome::Code::FailedPrecondition });
             }
         };
         let earlier: Vec<BuildStepReceipt> = view.steps.into_iter().filter(|r| r.operation == operation && r.attempt < attempt).collect();
@@ -1191,6 +1221,8 @@ impl DeploymentPipeline<'_> {
             node = %run.node,
             attempt = run.attempt,
             outcome = tracing::field::Empty,
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
             stage = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
             io_calls = tracing::field::Empty,
@@ -1205,6 +1237,7 @@ impl DeploymentPipeline<'_> {
             if let Some(Ok(v)) = prior {
                 span.record("elapsed_ms", started.elapsed().as_millis() as u64);
                 span.record("outcome", "reused");
+                span.record("code", "ALREADY_EXISTS").record("detail", "already-applied");
                 return Ok(v);
             }
             run.reusing = false;
@@ -1229,6 +1262,7 @@ impl DeploymentPipeline<'_> {
                             .record("io_ms", self.io.ran_ms());
                     }
                     self.span.record("outcome", "cancelled");
+                    self.span.record("code", "CANCELLED").record("detail", "caller-gone");
                 }
             }
         }
@@ -1241,12 +1275,16 @@ impl DeploymentPipeline<'_> {
             span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
         }
         let (outcome, output) = match &r {
-            Ok(v) => (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null())),
+            Ok(v) => {
+                span.record("code", "OK").record("detail", "complete");
+                (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null()))
+            },
             Err(f) => {
+                span.record("code", f.code.name()).record("detail", "failed");
                 if let Some(stage) = &f.stage {
                     span.record("stage", stage.name());
                 }
-                (StepOutcome::Failed { reason: f.reason.clone(), stage: f.stage.clone() }, None)
+                (StepOutcome::Failed { reason: f.reason.clone(), stage: f.stage.clone(), code: f.code }, None)
             }
         };
         // The receipt is the step's durable commit: a step whose receipt the Build state does not
@@ -1285,10 +1323,11 @@ impl DeploymentPipeline<'_> {
                 // The step failed; its Failed receipt not written is said with it.
                 Err(failed) => format!("{}; and {unwritten}", failed.reason),
             };
-            return Err(PipelineError { step, reason });
+            span.record("code", "FAILED_PRECONDITION").record("detail", "receipt-refused");
+            return Err(PipelineError { step, reason, code: rdm_core::outcome::Code::FailedPrecondition });
         }
         span.record("outcome", if r.is_ok() { "complete" } else { "failed" });
-        r.map_err(|f| PipelineError { step, reason: f.reason })
+        r.map_err(|f| PipelineError { step, reason: f.reason, code: f.code })
     }
 
     /// Create `req.node` through every step.
@@ -1372,7 +1411,7 @@ impl DeploymentPipeline<'_> {
             .terminate(stranded, TerminationMode::Graceful { grace: self.timeouts.stop_grace })
             .instrument(span)
             .await
-            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) })
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: the earlier attempt's runtime was launched by another executor and never joined; stopping it failed: {e}", req.node) , code: rdm_core::outcome::Code::FailedPrecondition })
     }
 
     /// The identity an earlier run of this operation claimed `req.node` with, for a run that holds
@@ -1396,7 +1435,7 @@ impl DeploymentPipeline<'_> {
     async fn claimed_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows, bind_addr: SocketAddr) -> Result<Option<Identity>, PipelineError> {
         use tracing::Instrument;
         let step = CreateStep::AllocateIdentity.name();
-        let Some((node_id, a)) = rows.allocation_at(&req.node, &req.build_id, &run.operation).await.map_err(|reason| PipelineError { step, reason })? else { return Ok(None) };
+        let Some((node_id, a)) = rows.allocation_at(&req.node, &req.build_id, &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })? else { return Ok(None) };
         let identity = Identity { node_id, incarnation: a.incarnation, supersedes: None, deployment_id: a.deployment_id };
         let data_dir = req.data_dir.clone().unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", req.node, identity.node_id)));
         let spec = ResolvedNodeLaunch { node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: bind_addr, listeners: vec![] };
@@ -1431,7 +1470,7 @@ impl DeploymentPipeline<'_> {
                     req.node, run.operation, req.build_id, identity.node_id, identity.deployment_id
                 );
                 span.record("outcome", "launched-and-joined").record("detail", reason.as_str());
-                Err(PipelineError { step, reason })
+                Err(PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })
             }
             Ok(Found::Running(stranded)) => {
                 span.record("outcome", "launched-by-lost-executor");
@@ -1446,7 +1485,7 @@ impl DeploymentPipeline<'_> {
                     req.node, run.operation, req.build_id, identity.node_id, identity.deployment_id
                 );
                 span.record("outcome", "unproven").record("detail", reason.as_str());
-                Err(PipelineError { step, reason })
+                Err(PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })
             }
         }
     }
@@ -1493,7 +1532,7 @@ impl DeploymentPipeline<'_> {
             .provider
             .bind_ip(&req.node)
             .await
-            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) })?;
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let bind_addr = SocketAddr::new(bind_ip, 0);
         // A run holding no AllocateIdentity receipt of this operation continues the birth an earlier
         // run claimed the name for, when the claim row names one ([`Self::claimed_allocation`]); any
@@ -1698,22 +1737,22 @@ impl DeploymentPipeline<'_> {
             }
         })
         .await?;
-        let fact = exact().map_err(|reason| PipelineError { step: CreateStep::MakeRuntimeFactAvailableToBirth.name(), reason })?;
+        let fact = exact().map_err(|reason| PipelineError { step: CreateStep::MakeRuntimeFactAvailableToBirth.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let bound: Bound = self
-            .step(run, CreateStep::WaitForBind.name(), async {
+            .step_with(run, CreateStep::WaitForBind.name(), async {
                 let mut reported = reported.ok_or_else(|| format!("{}: the handle names no exact runtime to verify a join against", req.node))?;
                 let until = Instant::now() + self.timeouts.bind;
                 loop {
                     if let Some(d) = reported.borrow().clone() {
-                        return Bound::of(&d).map_err(|e| format!("{}: {e}", req.node));
+                        return Bound::of(&d).map_err(|e| StepFailure::from(format!("{}: {e}", req.node)));
                     }
                     if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
                         let detail = self.provider.failure_detail(&handle, &data_dir).await;
-                        return Err(format!("runtime exited (code {code:?}) before reporting where it bound: {detail}"));
+                        return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before reporting where it bound: {detail}")));
                     }
                     let left = until.saturating_duration_since(Instant::now());
                     if left.is_zero() {
-                        return Err(format!("{} did not report where it bound (JoinNode) within {:?}", req.node, self.timeouts.bind));
+                        return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("{} did not report where it bound (JoinNode) within {:?}", req.node, self.timeouts.bind)));
                     }
                     let _ = tokio::time::timeout(left.min(Duration::from_millis(100)), reported.changed()).await;
                 }
@@ -1750,7 +1789,7 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         let published = Publication { runtime: Some(fact.clone()), data_dir: node.data_dir.clone() };
-        self.step(run, CreateStep::WaitForMeshJoin.name(), async {
+        self.step_with(run, CreateStep::WaitForMeshJoin.name(), async {
             let until = Instant::now() + self.timeouts.join;
             let (joined, last) = loop {
                 let last = self.observer.joined(&id.node_id, &id.incarnation).await;
@@ -1760,7 +1799,7 @@ impl DeploymentPipeline<'_> {
                 // A runtime that exited will never join: its own last words, now, not a timeout.
                 if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
                     let detail = self.provider.failure_detail(&handle, &data_dir).await;
-                    return Err(format!("runtime exited (code {code:?}) before joining the mesh: {detail}"));
+                    return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before joining the mesh: {detail}")));
                 }
                 if Instant::now() >= until {
                     break (false, last);
@@ -1769,8 +1808,8 @@ impl DeploymentPipeline<'_> {
             };
             match last {
                 _ if joined => Ok(()),
-                None => Err(format!("no membership digest from {} incarnation {} within {:?}", req.node, id.incarnation, self.timeouts.join)),
-                Some(p) => Err(format!(
+                None => Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("no membership digest from {} incarnation {} within {:?}", req.node, id.incarnation, self.timeouts.join))),
+                Some(p) => Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!(
                     "{} incarnation {} publishes runtime {} with data dir {:?}, not the runtime {} made available with data dir {:?}",
                     req.node,
                     id.incarnation,
@@ -1778,28 +1817,28 @@ impl DeploymentPipeline<'_> {
                     p.data_dir,
                     fact.locator_fingerprint(),
                     published.data_dir
-                )),
+                ))),
             }
         })
         .await?;
-        self.step(run, CreateStep::WaitForNodeReady.name(), async {
+        self.step_with(run, CreateStep::WaitForNodeReady.name(), async {
             // Ready only over committed prerequisites: each has a Complete
             // receipt in the Build's state, not merely a step that ran.
             let receipts = self.builds.read_build(run_build).await.map_err(|e| format!("reading {run_build}'s receipts before Ready: {e}"))?.steps;
             let missing = ready_prerequisites_missing(&receipts, &run_operation, run_attempt);
             if !missing.is_empty() {
-                return Err(format!("{} cannot be Ready: no Complete receipt for {}", req.node, missing.join(", ")));
+                return Err(format!("{} cannot be Ready: no Complete receipt for {}", req.node, missing.join(", ")).into());
             }
             let until = Instant::now() + self.timeouts.ready;
             loop {
                 match self.observer.ready(&node).await {
                     Ok(()) => return Ok(()),
-                    Err(e) if Instant::now() >= until => return Err(e),
+                    Err(e) if Instant::now() >= until => return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, e)),
                     Err(not_ready) => {
                         // A runtime that exited will never be Ready: its own last words, now, not a timeout.
                         if let DeploymentStatus::Exited { code } = self.provider.inspect(&handle).await {
                             let detail = self.provider.failure_detail(&handle, &data_dir).await;
-                            return Err(format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}"));
+                            return Err(StepFailure::coded(rdm_core::outcome::Code::Unavailable, format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}")));
                         }
                         if let Some(blocker) = self.observer.ready_blocker(&node).await {
                             self.builds.note_blocked(run_build, None, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
@@ -1828,13 +1867,13 @@ impl DeploymentPipeline<'_> {
             let node = req.node.clone();
             let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
             let _: CommandAdmission = self
-                .step(&mut run, RetireStep::DeleteConnections.name(), async {
+                .step_with(&mut run, RetireStep::DeleteConnections.name(), async {
                     // Nothing is recorded before the command leaves (i144 R22): the node reports
                     // connections-deleting on its command's stream and its mesh-primary records it then.
                     self.command_op(&ctx, &node)?;
                     match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
                         a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
-                        other => Err(format!("{}: node.connections.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name)),
+                        other => Err(StepFailure::coded(other.code(), format!("{}: node.connections.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name))),
                     }
                 })
                 .await?;
@@ -1861,7 +1900,7 @@ impl DeploymentPipeline<'_> {
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
             // garbage collector ages it from (node-identity-and-state.md §6.9 Age).
             let ctx = self.command_context(&run, crate::node_commands::NodeCommand::Stop, &node);
-            let op = self.command_op(&ctx, &node).map_err(|reason| PipelineError { step: RetireStep::Complete.name(), reason })?;
+            let op = self.command_op(&ctx, &node).map_err(|reason| PipelineError { step: RetireStep::Complete.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
             let _: LifecycleOp = self.step(&mut run, RetireStep::Complete.name(), async { Ok(op) }).await?;
             Ok(())
         }
@@ -1906,7 +1945,7 @@ impl DeploymentPipeline<'_> {
                 attempt: req.attempt,
                 operation: run.operation.clone(),
                 node_id: node.node_id.clone(),
-                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") })?,
+                incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeRestarting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?,
                 name: name.clone(),
                 event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
             };
@@ -1972,7 +2011,7 @@ impl DeploymentPipeline<'_> {
             event_at_rafka_ms: 0,
         });
         let admission: CommandAdmission = self
-            .step(run, steps[0], async {
+            .step_with(run, steps[0], async {
                 node.status = NodeStatus::Pending;
                 self.sink.publish(node.clone());
                 // node.joined is taken when the birth's join is admitted, before the birth can report
@@ -2013,19 +2052,19 @@ impl DeploymentPipeline<'_> {
                     // were taken when it ran; taking node.joined again would set the birth back to
                     // Pending with no node.started to follow. Readiness is read next, as for any start.
                     CommandAdmission::AlreadyAdmitted {} => Ok(admission),
-                    CommandAdmission::StartFailed { step, reason } => Err(format!("{}: node.start failed at {step}: {reason}", node.name)),
-                    other => Err(format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name)),
+                    CommandAdmission::StartFailed { step, reason, code } => Err(StepFailure::coded(*code, format!("{}: node.start failed at {step}: {reason}", node.name))),
+                    other => Err(StepFailure::coded(other.code(), format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name))),
                 }
             })
             .await?;
         let _ = admission;
         let until = Instant::now() + self.timeouts.ready;
         let _: () = self
-            .step(run, steps[1], async {
+            .step_with(run, steps[1], async {
                 loop {
                     match self.observer.ready(node).await {
                         Ok(()) => return Ok(()),
-                        Err(e) if Instant::now() >= until => return Err(e),
+                        Err(e) if Instant::now() >= until => return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, e)),
                         Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
                     }
                 }
@@ -2061,7 +2100,7 @@ impl DeploymentPipeline<'_> {
         async {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
-            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
+            let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
             let op = LifecycleOp {
                 build_id: req.build_id.to_string(),
                 attempt: req.attempt,
@@ -2109,12 +2148,12 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
         let mut node = req.node.clone();
         let handle = &req.handle;
-        let incarnation = node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth") })?;
+        let incarnation = node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::TerminateRuntime.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?;
         let terminal = self.terminate_step_when(&mut run, &node, handle, Terminate::OnlyRunning, TerminationMode::Graceful { grace: self.timeouts.stop_grace }).await?;
         let exit = records
             .put_exit(&node, terminal.exit_code, "terminate-runtime")
             .await
-            .map_err(|reason| PipelineError { step: RetireStep::TerminateRuntime.name(), reason })?;
+            .map_err(|reason| PipelineError { step: RetireStep::TerminateRuntime.name(), reason , code: rdm_core::outcome::Code::FailedPrecondition })?;
         records.clear_held_running(&node).await;
         node.exit_proven = true;
         let op = LifecycleOp {
@@ -2174,7 +2213,7 @@ impl DeploymentPipeline<'_> {
                         node.node_id,
                         node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("no known birth")
                     ),
-                });
+                 code: rdm_core::outcome::Code::FailedPrecondition });
             }
         }
         // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
@@ -2185,7 +2224,7 @@ impl DeploymentPipeline<'_> {
             attempt: req.attempt,
             operation: run.operation.clone(),
             node_id: node.node_id.clone(),
-            incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?,
+            incarnation: node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") , code: rdm_core::outcome::Code::FailedPrecondition })?,
             name: name.clone(),
             event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
         };
@@ -2332,12 +2371,12 @@ impl DeploymentPipeline<'_> {
             node.status = NodeStatus::Leaving;
         }
         let _: Completion = self
-            .step(run, steps[1], async {
+            .step_with(run, steps[1], async {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
                     // standalone stop is not complete.
                     if proof == StopProof::Stopped {
-                        return Err(format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.name));
+                        return Err(StepFailure::coded(admission.code(), format!("{}: stop-node was not admitted ({admission:?}); no left reply can follow, the stop is not complete", node.name)));
                     }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
@@ -2364,7 +2403,7 @@ impl DeploymentPipeline<'_> {
                     }
                 }
                 match (proof != StopProof::Lenient, &c) {
-                    (true, c) if *c != Completion::Received {} => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
+                    (true, c) if *c != Completion::Received {} => Err(StepFailure::coded(if matches!(c, Completion::Deadline {}) { rdm_core::outcome::Code::DeadlineExceeded } else { rdm_core::outcome::Code::Unavailable }, format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name))),
                     _ => Ok(c),
                 }
             })
@@ -2464,7 +2503,7 @@ impl DeploymentPipeline<'_> {
                     .await;
                     // Exit is proven: this failure has no terminate stage, so it stops no resubmission and
                     // the next tick's Exited carries the birth (node-recovery.md step 4).
-                    return Err(format!("{name} exited, but the operating system still holds {} after {elapsed:?}", names.join(", ")).into());
+                    return Err(StepFailure::coded(rdm_core::outcome::Code::DeadlineExceeded, format!("{name} exited, but the operating system still holds {} after {elapsed:?}", names.join(", "))));
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -2873,7 +2912,7 @@ mod tests {
             match cmd {
                 crate::node_commands::NodeCommand::Stop => self.stop.clone(),
                 crate::node_commands::NodeCommand::Start => CommandAdmission::Started {},
-                crate::node_commands::NodeCommand::DeleteConnections => CommandAdmission::NotSent { reason: "this cell sends no node.connections.delete".into() },
+                crate::node_commands::NodeCommand::DeleteConnections => CommandAdmission::NotSent { reason: "this cell sends no node.connections.delete".into() , code: rdm_core::outcome::Code::FailedPrecondition },
             }
         }
     }
@@ -2896,7 +2935,7 @@ mod tests {
     #[tokio::test]
     async fn an_explicit_delete_of_an_os_stopped_birth_sends_no_stop_and_terminates_its_exact_runtime() {
         let provider = Suspended { terminated: Default::default() };
-        let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into() }, sent: Default::default() };
+        let observer = Birth { stop: CommandAdmission::NotSent { reason: "a suspended birth answers no call".into() , code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;
         let template = cell_template("os-stopped-delete");
@@ -2931,7 +2970,7 @@ mod tests {
     #[tokio::test]
     async fn a_restart_of_a_birth_its_own_restart_stopped_resumes_at_start() {
         let provider = Answers { status: DeploymentStatus::Running, terminated: Default::default(), refuse: None };
-        let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its parked birth no stop".into() }, sent: Default::default() };
+        let observer = Birth { stop: CommandAdmission::Indeterminate { reason: "a resumed restart sends its parked birth no stop".into() , code: rdm_core::outcome::Code::FailedPrecondition }, sent: Default::default() };
         let builds = crate::build_state::MemoryBuildStateAdapter::new();
         let build_id = accepted_build(&builds).await;
         let template = cell_template("restart-resumed");

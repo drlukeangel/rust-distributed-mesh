@@ -1321,7 +1321,7 @@ fn a_leave_that_ends_with_a_named_failure_fails_the_build_and_the_read_skips_it(
     let (end, p, current, seeded, dispatched) = cap.run(async {
         let root = tracing::info_span!("cell.leave-named-failure-fails-the-build");
         let _in_root = root.enter();
-        let (r, _leaver) = removing_mesh2(Some(rdm_admin::executor::RunEnd::Failed("mesh.delete: mesh2 is refused before it is dismantled: its handover is not confirmed".into()))).await;
+        let (r, _leaver) = removing_mesh2(Some(rdm_admin::executor::RunEnd::failed("mesh.delete: mesh2 is refused before it is dismantled: its handover is not confirmed".into()))).await;
         let seeded = seeded_before(&r).await;
         let end = r.env.run(&Drive::detached(r.build.clone())).await;
         let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
@@ -1805,7 +1805,7 @@ impl Gate for RefusedUpdate {
                 recorded.len() == 1
             };
             if first {
-                return Err(rdm_admin::build_drive::SeatMoveEnd::Failed { step: "primary-update".into(), reason: GONE_REASON.into() });
+                return Err(rdm_admin::build_drive::SeatMoveEnd::Failed { step: "primary-update".into(), reason: GONE_REASON.into() , code: rdm_core::outcome::Code::FailedPrecondition });
             }
             for n in topology.write().await.nodes.iter_mut() {
                 if n.mesh == m.holder.mesh {
@@ -1864,7 +1864,7 @@ async fn a_holders_own_update_refused_before_the_row_fails_its_attempt_by_name_a
         _ => None,
     }).collect();
     assert_eq!(end, DriveEnd::Terminal, "the refusal ends the drive at a terminal: verdicts {verdict:?}");
-    assert!(matches!(verdict.as_slice(), [rdm_admin::build_state::AttemptOutcome::Failed { reason }] if reason.contains(NO_SECONDARY)), "attempt 1 failed naming the refusal: {verdict:?}");
+    assert!(matches!(verdict.as_slice(), [rdm_admin::build_state::AttemptOutcome::Failed { reason , .. }] if reason.contains(NO_SECONDARY)), "attempt 1 failed naming the refusal: {verdict:?}");
     assert_eq!((p.attempt, p.attempt_executors.get(&1).map(String::as_str)), (1, Some("mesh1.admin.1")), "the holder claimed attempt 1 for itself and no other attempt was claimed");
     match terminal_of(&drive).await {
         BuildReply::Failed { attempt, reason, .. } => assert!(attempt == 1 && reason.contains(NO_SECONDARY), "{reason}"),
@@ -2104,7 +2104,7 @@ async fn a_holders_own_update_whose_new_holders_process_is_gone_after_the_row_fa
     };
     let first = verdicts(1).await;
     assert_eq!(end, DriveEnd::Terminal, "the failed step ends the drive at a terminal: verdicts {first:?}");
-    assert!(matches!(first.as_slice(), [rdm_admin::build_state::AttemptOutcome::Failed { reason }] if reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row")), "attempt 1 failed with the plain-English reason: {first:?}");
+    assert!(matches!(first.as_slice(), [rdm_admin::build_state::AttemptOutcome::Failed { reason , .. }] if reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row")), "attempt 1 failed with the plain-English reason: {first:?}");
     match terminal_of(&drive).await {
         BuildReply::Failed { attempt, step, reason, .. } => assert!(attempt == 1 && step == "primary-update" && reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row"), "{step}: {reason}"),
         other => panic!("the drive's terminal is the failed step: {other:?}"),

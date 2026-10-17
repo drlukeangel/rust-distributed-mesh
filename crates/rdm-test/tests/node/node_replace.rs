@@ -1491,7 +1491,7 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     // The call's own stream ends at the failed step: the held, then exited, birth never answered.
     let ended = loop {
         match deleting.next().await {
-            Some(Ok(BuildFrame::Failed { attempt, operation, step, reason })) => break (attempt, operation, step, reason),
+            Some(Ok(BuildFrame::Failed { attempt, operation, step, reason, .. })) => break (attempt, operation, step, reason),
             Some(Ok(_)) => continue,
             other => panic!("the stream of the node.connections.delete ended without its Failed frame: {other:?}"),
         }

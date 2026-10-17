@@ -20,7 +20,12 @@ pub enum RunEnd {
     /// The operation's own logic ended it with a named failure. The attempt ends `Failed`, and a
     /// Build whose attempt ended so is failed: the current-Build read skips it and a caller
     /// resubmits it (R-BI3, R-BI4).
-    Failed(String),
+    Failed {
+        /// Explanation of the failure.
+        reason: String,
+        /// The captured standard code.
+        code: rdm_core::outcome::Code,
+    },
     /// A participant of the operation was lost, or the proof its resume needs is not in yet: the
     /// operation is incomplete and its receipts stand. The attempt ends handed back to the
     /// fabric-primary, no terminal verdict is recorded, the Build stays in progress and the next
@@ -29,17 +34,24 @@ pub enum RunEnd {
 }
 
 impl RunEnd {
+    /// A named failed state without a remote delivery cause.
+    pub fn failed(reason: String) -> Self { Self::Failed { reason, code: rdm_core::outcome::Code::FailedPrecondition } }
+    /// Preserve a step failure at the operation boundary.
+    pub fn coded(code: rdm_core::outcome::Code, reason: String) -> Self { Self::Failed { reason, code } }
     /// Why the run ended short of complete.
     pub fn reason(&self) -> &str {
         match self {
-            Self::Failed(r) | Self::Incomplete(r) => r,
+            Self::Failed { reason: r, .. } | Self::Incomplete(r) => r,
         }
     }
 }
 
+impl From<crate::deployment::pipeline::PipelineError> for RunEnd {
+    fn from(e: crate::deployment::pipeline::PipelineError) -> Self { Self::coded(e.code, e.to_string()) }
+}
 impl From<String> for RunEnd {
     fn from(reason: String) -> Self {
-        Self::Failed(reason)
+        Self::failed(reason)
     }
 }
 
@@ -346,6 +358,8 @@ pub enum Reconciled {
         operation: String,
         /// Why it stopped.
         reason: String,
+        /// The captured standard code.
+        code: rdm_core::outcome::Code,
     },
     /// The attempt ran `operations` and stopped where admin `to` executes.
     HandedOff {
@@ -461,11 +475,11 @@ impl BuildExecutor {
         // its mesh's drift lane); this admin's own log takes the fact with it.
         let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: me.to_string() };
         if let Err(e) = builds.adopt_claim(&claim).await {
-            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") };
+            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
         }
         let build = match builds.read_build(build_id).await {
             Ok(b) => b,
-            Err(e) => return Reconciled::Failed { attempt, operation: String::new(), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") },
+            Err(e) => return Reconciled::Failed { attempt, operation: String::new(), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition },
         };
         let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
@@ -483,7 +497,7 @@ impl BuildExecutor {
             }
             match self.runner.run(&build.build_id, lane, attempt, op).await {
                 Ok(()) => {}
-                Err(RunEnd::Failed(reason)) => return self.finish(builds, &build, attempt, Err((op.key(), reason))).await,
+                Err(RunEnd::Failed { reason, code }) => return self.finish(builds, &build, attempt, Err((op.key(), reason, code))).await,
                 Err(RunEnd::Incomplete(reason)) => return self.hand_back(builds, &build, attempt, operations[..i].to_vec(), op, reason, span).await,
             }
         }
@@ -501,7 +515,7 @@ impl BuildExecutor {
                 None => {
                     let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| "no operation".into());
                     let reason = format!("{me}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view seats no fabric primary to hand it back to");
-                    self.finish(builds, &build, attempt, Err((String::new(), reason))).await
+                    self.finish(builds, &build, attempt, Err((String::new(), reason, rdm_core::outcome::Code::FailedPrecondition))).await
                 }
             };
         }
@@ -526,26 +540,26 @@ impl BuildExecutor {
     async fn hand_off(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
         let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } };
         if let Err(e) = builds.append_attempt_receipt(&receipt).await {
-            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
+            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
         }
         tracing::info!(to = %to, "the next operation belongs to another admin; handed off");
         Reconciled::HandedOff { attempt, operations, to }
     }
 
-    async fn finish(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String)>) -> Reconciled {
+    async fn finish(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String, rdm_core::outcome::Code)>) -> Reconciled {
         let outcome = match &r {
             Ok(_) => AttemptOutcome::Converged,
-            Err((op, reason)) if op.is_empty() => AttemptOutcome::Failed { reason: reason.clone() },
-            Err((op, reason)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}") },
+            Err((op, reason, code)) if op.is_empty() => AttemptOutcome::Failed { reason: reason.clone(), code: *code },
+            Err((op, reason, code)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}"), code: *code },
         };
         let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome };
         if let Err(e) = builds.append_attempt_receipt(&receipt).await {
-            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
+            return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") , code: rdm_core::outcome::Code::FailedPrecondition };
         }
         match r {
             Ok(operations) => Reconciled::Converged { attempt, operations },
-            Err((operation, reason)) if operation.is_empty() => Reconciled::Failed { attempt, reason, operation },
-            Err((operation, reason)) => Reconciled::Failed { attempt, reason: format!("{operation}: {reason}"), operation },
+            Err((operation, reason, code)) if operation.is_empty() => Reconciled::Failed { attempt, reason, operation, code },
+            Err((operation, reason, code)) => Reconciled::Failed { attempt, reason: format!("{operation}: {reason}"), operation, code },
         }
     }
 }

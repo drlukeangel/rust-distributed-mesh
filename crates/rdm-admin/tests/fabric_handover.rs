@@ -1433,7 +1433,7 @@ const GONE_AFTER_ROW: &str = "the new holder's process is gone, provider-confirm
 /// (4) who the ordinary rule seated, and (5) the provider's proof that the new holder's process is gone.
 fn holder_gone_after_row(end: &Result<Vec<CommittedSeat>, rdm_admin::build_drive::SeatMoveEnd>, n: &Admin, operation: &str, moved_revisions: &[&str], seated: &[&str]) -> String {
     match end {
-        Err(rdm_admin::build_drive::SeatMoveEnd::Failed { step, reason }) => {
+        Err(rdm_admin::build_drive::SeatMoveEnd::Failed { step, reason , .. }) => {
             assert_eq!(step, "primary-update", "the step is primary-update: {reason}");
             assert!(reason.starts_with(GONE_AFTER_ROW), "the failure reason starts with the plain-English prefix: {reason}");
             assert!(reason.contains(&format!("step primary-update ({operation})")), "(1) the reason records the step and its operation: {reason}");

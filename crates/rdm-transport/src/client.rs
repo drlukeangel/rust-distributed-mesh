@@ -705,7 +705,9 @@ impl NodeRpcClient {
             delivery = tracing::field::Empty,
         );
         let started = Instant::now();
+        let mut guard = CallSpanGuard::new(&span);
         let (out, evidence) = self.owe_steps(target, final_target, op, payload, max_reply, opts, decode, &span).instrument(span.clone()).await;
+        guard.complete();
         span.record("outcome", out.name());
         span.record("code", out.code().name());
         span.record("detail", out.detail_name());
@@ -1474,4 +1476,18 @@ fn stale_span(asked: &Target, current: &str) {
         current,
     )
     .in_scope(|| tracing::info!("the target is stale: RejectedStale, never dispatched"));
+}
+
+/// Records the caller's typed cancellation when its future is dropped before an outcome exists.
+pub(crate) struct CallSpanGuard { span: tracing::Span, started: Instant, done: bool }
+impl CallSpanGuard {
+    pub(crate) fn new(span: &tracing::Span) -> Self { Self { span: span.clone(), started: Instant::now(), done: false } }
+    pub(crate) fn complete(&mut self) { self.done = true; }
+}
+impl Drop for CallSpanGuard {
+    fn drop(&mut self) {
+        if !self.done {
+            self.span.record("code", "CANCELLED").record("detail", "caller-gone").record("outcome", "cancelled").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        }
+    }
 }

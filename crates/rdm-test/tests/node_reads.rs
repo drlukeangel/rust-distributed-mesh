@@ -141,7 +141,7 @@ fn a_node_admin_answers_node_mesh_and_fabric_reads_and_its_connections_over_node
         let awaited = fabrics.fact("the admin is the fabric-primary", WRONG, |f| f.fabric_primary.as_ref() == Some(&me.node.name)).await.unwrap_or_else(|e| panic!("fabric.get awaited: {e}"));
         assert_eq!(awaited.fabric_primary, Some(me.node.name.clone()));
         match fabrics.fact("a fabric-primary other than the admin", Duration::from_secs(1), |f| f.fabric_primary.as_ref().is_some_and(|p| *p != me.node.name)).await {
-            Err(CallEnd::Indeterminate { reason }) => assert!(
+            Err(CallEnd::Indeterminate { reason, .. }) => assert!(
                 reason.contains("a fabric-primary other than the admin") && reason.contains(&me.node.name.to_string()) && reason.contains(&format!("fabric-primary {}", me.node.name)),
                 "the unreported fact is named with the admin and its last report: {reason}"
             ),

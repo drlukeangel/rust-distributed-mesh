@@ -369,13 +369,13 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let applied = call(&rig, &executor, &apply, &CallOptions::default()).await;
     assert!(matches!(reply(&applied), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "{applied:?}");
     let apply_arm = command_admission(&applied);
-    assert!(matches!(&apply_arm, CommandAdmission::Refused { reply } if reply.contains("rejected-invalid-node-transition")), "{apply_arm:?}");
+    assert!(matches!(&apply_arm, CommandAdmission::Refused { reply , .. } if reply.contains("rejected-invalid-node-transition")), "{apply_arm:?}");
 
     // Refused: a stale incarnation, by name, never admitted.
     let stale_out = call(&rig, &executor, &command(IncarnationId::mint()), &CallOptions::default()).await;
     assert!(matches!(reply(&stale_out), StatusReply::RejectedStaleIncarnation { .. }), "{stale_out:?}");
     let refused = command_admission(&stale_out);
-    assert!(matches!(&refused, CommandAdmission::Refused { reply } if reply.contains("stale")), "{refused:?}");
+    assert!(matches!(&refused, CommandAdmission::Refused { reply , .. } if reply.contains("stale")), "{refused:?}");
     // NotSent: cut before the request's FIN.
     let (cut, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { cut_before_finish: true, ..Default::default() }).await;
     let not_sent = command_admission(&cut);

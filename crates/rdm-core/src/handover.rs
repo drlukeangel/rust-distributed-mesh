@@ -238,6 +238,8 @@ pub enum NodePrimaryUpdateReply {
         step: String,
         /// Why the step failed. Within [`MAX_FAILED_REASON_BYTES`].
         reason: String,
+        /// The standard code captured where the failure occurred.
+        code: crate::outcome::Code,
     },
 }
 
@@ -253,7 +255,7 @@ pub const MAX_RECORD_ABSENT_RECORD_BYTES: usize = 1024 - 1 - (2 + MAX_RECORD_ABS
 pub const MAX_FAILED_STEP_BYTES: usize = 128;
 /// The most bytes of the `reason` a `Failed` reply names: what is left of the 1024-byte reply bound
 /// after the variant (one byte), `step` at its budget and a two-byte length prefix on each string.
-pub const MAX_FAILED_REASON_BYTES: usize = 1024 - 1 - (2 + MAX_FAILED_STEP_BYTES) - 2;
+pub const MAX_FAILED_REASON_BYTES: usize = 1024 - 1 - 1 - (2 + MAX_FAILED_STEP_BYTES) - 2;
 
 /// The most bytes a refusal's reason holds: what is left of the 1024-byte reply bound after the
 /// variant (one byte) and a two-byte length prefix.
@@ -272,8 +274,8 @@ impl NodePrimaryUpdateReply {
 
     /// `Failed` with `step` and `reason` within their budgets so the reply always fits
     /// [`NodePrimaryUpdate`]'s reply bound.
-    pub fn failed(step: &str, reason: &str) -> Self {
-        Self::Failed { step: crate::status::within(step, MAX_FAILED_STEP_BYTES), reason: crate::status::within(reason, MAX_FAILED_REASON_BYTES) }
+    pub fn failed(step: &str, reason: &str, code: crate::outcome::Code) -> Self {
+        Self::Failed { step: crate::status::within(step, MAX_FAILED_STEP_BYTES), reason: crate::status::within(reason, MAX_FAILED_REASON_BYTES), code }
     }
 
     /// `RejectedNotAuthority` with `reason` within its budget.
@@ -388,7 +390,7 @@ impl NodeProtocol for NodePrimaryUpdate {
             NodePrimaryUpdateReply::Busy { .. } => ReplyKind::Busy,
             NodePrimaryUpdateReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             NodePrimaryUpdateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
-            NodePrimaryUpdateReply::Failed { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodePrimaryUpdateReply::Failed { code, .. } => ReplyKind::new(*code),
         }
     }
 

@@ -411,7 +411,7 @@ impl BuildDoor {
                 step: s.step.clone(),
                 result: match &s.outcome {
                     crate::build_state::StepOutcome::Complete => StepResult::Complete,
-                    crate::build_state::StepOutcome::Failed { reason, .. } => StepResult::Failed { reason: bounded_reason(reason.clone()) },
+                    crate::build_state::StepOutcome::Failed { reason, code, .. } => StepResult::Failed { reason: bounded_reason(reason.clone()), code: *code },
                 },
             })
             .collect();
@@ -421,7 +421,7 @@ impl BuildDoor {
         for s in steps.iter().cloned() {
             let weight = 32 + s.operation.len() + s.step.len() + match &s.result {
                 StepResult::Complete => 0,
-                StepResult::Failed { reason } => reason.len(),
+                StepResult::Failed { reason , .. } => reason.len() + 1,
             };
             if size + weight > 32 * 1024 && !chunks.last().is_some_and(Vec::is_empty) {
                 chunks.push(Vec::new());

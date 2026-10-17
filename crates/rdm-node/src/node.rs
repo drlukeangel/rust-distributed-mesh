@@ -1385,7 +1385,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     // republishes nothing.
                     if let Some((reason, retry_on)) = blocker {
                         let on = retry_on.name();
-                        let reply = StatusReply::blocked(me.digest.node.node_id.clone(), me.digest.node.incarnation.clone(), &reason, retry_on);
+                        let reply = rdm_core::reply::status::bounded_blocked(me.digest.node.node_id.clone(), me.digest.node.incarnation.clone(), &reason, retry_on);
                         tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on)
                             .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                         return Ok(reply);

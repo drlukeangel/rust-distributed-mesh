@@ -194,11 +194,11 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
 /// [`send_command`], with the reachability cause of a command that was never sent ([`unreachable_of`]).
 pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBook, target: &NodeTarget, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> (CommandAdmission, Option<Unreachable>) {
     let Some(incarnation) = node.incarnation_id.clone() else {
-        return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) }, None);
+        return (CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) , code: rdm_core::outcome::Code::FailedPrecondition }, None);
     };
     let build_id = match rdm_client::BuildId::parse(&ctx.build_id) {
         Ok(build_id) => build_id,
-        Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) }, None),
+        Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None),
     };
     let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
     let (node_id, attempt) = (node.node_id.clone(), ctx.attempt);
@@ -242,7 +242,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBoo
         CommandAdmission::Refused { .. } | CommandAdmission::NotSent { .. } | CommandAdmission::Indeterminate { .. } | CommandAdmission::StartFailed { .. } => format!("{admission:?}"),
         _ => String::new(),
     };
-    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), detail = %detail, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the command was sent to the exact birth"));
     (admission, unreachable)
 }
@@ -259,18 +259,22 @@ fn not_sent_cause(end: &Result<StatusReply, rdm_client::CallEnd>) -> Option<Unre
 /// other reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
 fn admission_of(r: Result<StatusReply, rdm_client::CallEnd>) -> CommandAdmission {
     use rdm_client::CallEnd;
+    let code = match &r {
+        Ok(reply) => <rdm_core::status::Status as rdm_core::protocol::NodeProtocol>::classify_reply(reply).code(),
+        Err(end) => end.code(),
+    };
     match r {
         Ok(StatusReply::Applied) => CommandAdmission::Admitted {},
         Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted {},
         Ok(StatusReply::Stopped { receipt }) => CommandAdmission::Stopped { receipt },
         Ok(StatusReply::Started) => CommandAdmission::Started {},
-        Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason },
-        Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
-        Err(CallEnd::NotSent { reason, .. }) => CommandAdmission::NotSent { reason },
-        Err(CallEnd::Indeterminate { reason }) => CommandAdmission::Indeterminate { reason },
-        Err(CallEnd::Unserved { op }) => CommandAdmission::Refused { reply: format!("unserved op {op:#04x}") },
-        Err(CallEnd::RejectedStale { target_node_id }) => CommandAdmission::Refused { reply: format!("stale target {target_node_id}") },
-        Err(other) => CommandAdmission::Refused { reply: other.to_string() },
+        Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason , code },
+        Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) , code },
+        Err(CallEnd::NotSent { reason, .. }) => CommandAdmission::NotSent { reason , code },
+        Err(CallEnd::Indeterminate { reason, .. }) => CommandAdmission::Indeterminate { reason , code },
+        Err(CallEnd::Unserved { op }) => CommandAdmission::Refused { reply: format!("unserved op {op:#04x}") , code },
+        Err(CallEnd::RejectedStale { target_node_id }) => CommandAdmission::Refused { reply: format!("stale target {target_node_id}") , code },
+        Err(other) => CommandAdmission::Refused { reply: other.to_string() , code },
     }
 }
 

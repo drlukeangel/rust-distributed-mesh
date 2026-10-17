@@ -1,4 +1,4 @@
-//! Code semantics beside unchanged protocol bytes.
+//! Standard code semantics, with the ruled failed-receipt fields retaining their captured code.
 use rdm_core::outcome::Code;
 use rdm_core::protocol::NodeProtocol;
 use rdm_core::status::{Status, StatusReply};
@@ -8,11 +8,15 @@ fn the_code_namespace_is_exactly_the_seventeen_standard_numbers_and_names() {
     let names = ["OK", "CANCELLED", "UNKNOWN", "INVALID_ARGUMENT", "DEADLINE_EXCEEDED", "NOT_FOUND", "ALREADY_EXISTS", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION", "ABORTED", "OUT_OF_RANGE", "UNIMPLEMENTED", "INTERNAL", "UNAVAILABLE", "DATA_LOSS", "UNAUTHENTICATED"];
     assert_eq!(Code::ALL.len(), 17);
     for (n, code) in Code::ALL.into_iter().enumerate() {
+        assert_eq!(rdm_core::protocol::encode(&code).unwrap(), vec![n as u8]);
         assert_eq!(code.number(), n as u8);
         assert_eq!(code.name(), names[n]);
         assert_eq!(Code::from_number(n as u8), Some(code));
     }
-    for n in 17..=255 { assert_eq!(Code::from_number(n), None); }
+    for n in 17..=255 {
+        assert_eq!(Code::from_number(n), None);
+        assert!(postcard::from_bytes::<Code>(&[n]).is_err());
+    }
 }
 
 #[test]
@@ -50,6 +54,11 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
         },
         0x20 => match rdm_core::build::Build::decode_reply(&wire).unwrap() {
             rdm_core::build::BuildReply::Started { disposition: rdm_core::build::Disposition::AlreadyApplied, .. } => 6,
+            rdm_core::build::BuildReply::Failed { code, .. } => code.number(),
+            _ => n,
+        },
+        0x21 => match rdm_core::handover::NodePrimaryUpdate::decode_reply(&wire).unwrap() {
+            rdm_core::handover::NodePrimaryUpdateReply::Failed { code, .. } => code.number(),
             _ => n,
         },
         0x22 => match rdm_core::node_command::NodeCommand::decode_reply(&wire).unwrap() {

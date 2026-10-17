@@ -163,20 +163,20 @@ async fn rename(
     span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1);
     if let Err((status, held_connections, why)) = admission.quiet {
         span.record("detail", format!("{me}: {} {why}; a name moves only when the node admits no connection (stopped, or its node.connections.delete {{ All }} completed with nothing held): nothing is claimed or written", held.name).as_str());
-        return StatusReply::rejected_admitting_connections(crate::views::node_status(status), &held_connections);
+        return rdm_core::reply::status::bounded_rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
     // 4. The name: within the grammar, and joined at the held record's path into a key this build keys.
     if let Some(reason) = rdm_core::status::name_refusal(name) {
         let why = format!("{me}: {reason}; nothing is claimed or written");
         span.record("detail", why.as_str());
-        return StatusReply::rejected_name(&why);
+        return rdm_core::reply::status::bounded_rejected_name(&why);
     }
     let to = match held.name.with_name(name) {
         Ok(to) => to,
         Err(e) => {
             let why = format!("{me}: the name {name:?} at the path {} makes no path.name this build keys: {e}; nothing is claimed or written", held.name.path());
             span.record("detail", why.as_str());
-            return StatusReply::rejected_name(&why);
+            return rdm_core::reply::status::bounded_rejected_name(&why);
         }
     };
     span.record("to", to.to_string().as_str());
@@ -188,7 +188,7 @@ async fn rename(
     let _one = door.one_at_a_time().await;
     let known = match door.written().known_row(storage, &held.mesh, node_id).await {
         Ok(row) => row,
-        Err(why) => return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: {why}: the rename of {} is refused and nothing is written", held.name)),
+        Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&held.name.to_string(), &format!("{me}: {why}: the rename of {} is refused and nothing is written", held.name)),
     };
     // The key the node's row stands at now: the row's own, else the name the view holds.
     let from = known.as_ref().map_or_else(|| held.name.clone(), |r| r.name.clone());
@@ -202,7 +202,7 @@ async fn rename(
         }
         if let Some(c) = cutover {
             if let Err(why) = mark_inherited(storage, me, door.written(), c, node_id).await {
-                return StatusReply::node_row_refused(&c.retained.to_string(), &why);
+                return rdm_core::reply::status::bounded_node_row_refused(&c.retained.to_string(), &why);
             }
         }
     } else {
@@ -222,7 +222,7 @@ async fn rename(
                 Err(why) => {
                     let why = format!("{why}: the cutover of {} to {to} inherits nothing, and nothing is claimed or written", held.name);
                     span.record("detail", why.as_str());
-                    return StatusReply::node_row_refused(&to.to_string(), &why);
+                    return rdm_core::reply::status::bounded_node_row_refused(&to.to_string(), &why);
                 }
             },
             None => own(),
@@ -239,7 +239,7 @@ async fn rename(
                 }
             }
             Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.name.to_string(), h.by),
-            Err(RenameRefused::Unwritten(why)) => return StatusReply::node_row_refused(&to.to_string(), &why),
+            Err(RenameRefused::Unwritten(why)) => return rdm_core::reply::status::bounded_node_row_refused(&to.to_string(), &why),
         };
         // The view reads the moved row: the birth is listed at the row's name from now on.
         moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
@@ -249,7 +249,7 @@ async fn rename(
         // The cutover's last write: the retained row's labels leave the tags index.
         if let Some(c) = cutover {
             if let Err(why) = mark_inherited(storage, me, door.written(), c, node_id).await {
-                return StatusReply::node_row_refused(&c.retained.to_string(), &why);
+                return rdm_core::reply::status::bounded_node_row_refused(&c.retained.to_string(), &why);
             }
         }
     }
@@ -283,7 +283,7 @@ async fn rename(
         Err(end) => (end.outcome(), format!("{me} moved the row to {to}; apply-node-name ended {end:?}; a resubmit resends the apply")),
     };
     span.record("answered", answered).record("detail", detail.as_str());
-    StatusReply::name_not_applied(&to.to_string(), answered, &detail)
+    rdm_core::reply::status::bounded_name_not_applied(&to.to_string(), answered, &detail)
 }
 
 /// The command ends incomplete after its put at `to`: the release of `from` is pending, both keys held
@@ -291,7 +291,7 @@ async fn rename(
 fn release_pending(me: &PathName, node_id: &rdm_core::NodeId, to: &PathName, from: &PathName, why: &str, span: &tracing::Span) -> StatusReply {
     let detail = format!("{me}: {node_id} holds {to} (its row carries renamed_from {from}) and the release of {from} is pending: {why}; a resubmit releases it and continues to the apply");
     span.record("answered", "release-pending").record("detail", detail.as_str());
-    StatusReply::name_not_applied(&to.to_string(), "release-pending", &detail)
+    rdm_core::reply::status::bounded_name_not_applied(&to.to_string(), "release-pending", &detail)
 }
 
 /// The predecessor's retained row a cutover inherits from: the row at `c.retained` while it is

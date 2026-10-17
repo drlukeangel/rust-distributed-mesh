@@ -18,3 +18,17 @@ fn the_rule_refuses_a_handler_in_every_runtime_family_but_accepts_a_read_pattern
         assert!(replies::scan(Path::new(&p),"fn inspect(r: StatusReply) { match r { StatusReply::Applied => (), _ => () } }").is_empty());
     }
 }
+
+#[test]
+fn aliases_and_macro_constructions_do_not_bypass_the_constructor_rule() {
+    for source in [
+        "use rdm_core::status::StatusReply as R; fn handle() -> R { R::Applied }",
+        "use rdm_core::status::StatusReply::Applied as done; fn handle() -> StatusReply { done }",
+        "use rdm_core::status::StatusReply::*; fn handle() -> StatusReply { Applied }",
+        "type R = StatusReply; fn handle() -> R { R::AlreadyApplied }",
+        "fn handle() { vec![StatusReply::Applied]; }",
+        "fn handle() { StatusReply::source_failed(\"s\", \"o\", \"r\"); }",
+    ] {
+        assert_eq!(replies::scan(Path::new("crates/example/src/handler.rs"),source).len(),1,"{source}");
+    }
+}

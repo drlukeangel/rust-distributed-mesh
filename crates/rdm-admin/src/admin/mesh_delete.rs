@@ -203,7 +203,7 @@ impl AdminRunner {
         let no_primary = format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to");
         // Before admission the leave is refused by name: nothing was dismantled and nothing is resumed.
         let Some(adm) = crate::mesh_delete::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))? else {
-            return Err(RunEnd::Failed(no_primary));
+            return Err(RunEnd::failed(no_primary));
         };
         if let Some(live) = view.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
             return Err(RunEnd::Incomplete(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name)));
@@ -349,7 +349,7 @@ impl AdminRunner {
         let (out, _) = node_rpc.client.call::<Status>(&rdm_transport::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
         match &out {
             rdm_core::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
-            rdm_core::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::Failed(format!("{outer}: {} refused delete-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
+            rdm_core::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::failed(format!("{outer}: {} refused delete-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
             // The call did not come back: the primary is unreached or the stream broke. A broken stream
             // proves neither a failed step nor a completed one (node-rpc-envelope.md, "Caller execution
             // and certainty"): the leave is incomplete and its receipts stand.
@@ -367,7 +367,7 @@ impl AdminRunner {
         let manifest = crate::mesh_delete::await_mesh_deleted(key, &named, handoff, self.records.subscribe_view(), || self.final_primary_exit(key, primary, &admitted, &inspected), crate::mesh_delete::MESH_DELETED_WAIT).await?;
         // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
         // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
-        self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::Failed)
+        self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::failed)
     }
 
     /// Whether the leave's final primary `primary` (the admitted or amended birth `admitted` names)

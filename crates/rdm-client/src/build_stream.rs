@@ -83,6 +83,8 @@ pub enum BuildFrame {
         step: String,
         /// The attempt's reason.
         reason: String,
+        /// The original failed step code.
+        code: rdm_core::outcome::Code,
     },
     /// Terminal of `build.get`: the Build's header.
     Got {
@@ -153,7 +155,7 @@ impl BuildStream {
                 StreamItem::Frame(_, r) => r,
                 StreamItem::Failed(f) => {
                     self.ended = true;
-                    return Some(Err(CallEnd::Indeterminate { reason: format!("the Build stream broke before its terminal: {f:?}") }));
+                    return Some(Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the Build stream broke before its terminal: {f:?}") }));
                 }
             };
             match reply {
@@ -174,9 +176,9 @@ impl BuildStream {
                     self.ended = true;
                     return Some(Ok(BuildFrame::Complete { attempt }));
                 }
-                BuildReply::Failed { attempt, operation, step, reason, .. } => {
+                BuildReply::Failed { attempt, operation, step, reason, code, .. } => {
                     self.ended = true;
-                    return Some(Ok(BuildFrame::Failed { attempt, operation, step, reason }));
+                    return Some(Ok(BuildFrame::Failed { attempt, operation, step, reason, code }));
                 }
                 BuildReply::Got { phase, attempt, executor, reason, last_failure, steps, chunks, .. } => {
                     self.ended = true;
@@ -270,13 +272,13 @@ impl BuildCarrier {
             // nothing of them: reading a frame is its recovery (node-rpc.md §43).
             let (first, stream) = match self.client.call_stream::<Build>(&NodeTarget::CurrentPath(target.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
                 Err((RpcOutcome::Reply(r), _)) => (r.into_value(), None),
-                Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { reason: "an early reply that is no refusal".into() })),
+                Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { code: rdm_core::outcome::Code::Internal, reason: "an early reply that is no refusal".into() })),
                 Ok((mut stream, _)) => match stream.next().await {
                     Some(StreamItem::Frame(_, f)) => (f, Some(stream)),
                     // The reserved reset 421 is how a node that does not serve the op answers: nothing was dispatched.
                     Some(StreamItem::Failed(StreamFailure::Indeterminate(IndeterminateReason::Reset(code)))) if code == u64::from(ResetCode::UnservedOp.code()) => return Err(CallEnd::Unserved { op: Build::OP }),
-                    Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { reason: format!("the stream broke before its Started frame: {f:?}") }),
-                    None => return Err(CallEnd::Indeterminate { reason: "the stream ended before its Started frame".into() }),
+                    Some(StreamItem::Failed(f)) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("the stream broke before its Started frame: {f:?}") }),
+                    None => return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the stream ended before its Started frame".into() }),
                 },
             };
             match (first, stream) {
@@ -319,10 +321,10 @@ impl BuildCarrier {
             }
         }
         let Some((phase, attempt, executor, reason, last_failure, n, _chunks)) = header else {
-            return Err(CallEnd::Indeterminate { reason: "the build.get stream ended without its header".into() });
+            return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the build.get stream ended without its header".into() });
         };
         if n as usize != steps.len() {
-            return Err(CallEnd::Indeterminate { reason: format!("the build.get header counts {n} receipts and {} arrived", steps.len()) });
+            return Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Internal, reason: format!("the build.get header counts {n} receipts and {} arrived", steps.len()) });
         }
         Ok(BuildReceipts { build_id: build_id.clone(), phase, attempt, executor, reason, last_failure, steps })
     }
@@ -334,7 +336,7 @@ impl BuildCarrier {
             Some(Ok(BuildFrame::Deleted)) => Ok(()),
             Some(Ok(other)) => Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a build.delete stream carried {other:?}") }),
             Some(Err(e)) => Err(e),
-            None => Err(CallEnd::Indeterminate { reason: "the build.delete stream ended without its terminal".into() }),
+            None => Err(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the build.delete stream ended without its terminal".into() }),
         }
     }
 }

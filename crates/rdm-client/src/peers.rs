@@ -79,7 +79,7 @@ impl Peers {
     /// none is named.
     pub async fn carrier_following(&self, entry: &PathName, fabric_primary: &PathName) -> Result<crate::BuildCarrier, crate::CallEnd> {
         let held = crate::Nodes::new(self.carrier_at(entry.clone())).get(&crate::NodeSelector::Mesh(fabric_primary.mesh.clone())).await?;
-        let birth = held.iter().find(|n| n.name == *fabric_primary).ok_or_else(|| crate::CallEnd::Indeterminate { reason: format!("the node list of {entry} holds no {fabric_primary}, the fabric-primary the caller was sent to") })?;
+        let birth = held.iter().find(|n| n.name == *fabric_primary).ok_or_else(|| crate::CallEnd::Indeterminate { code: rdm_core::outcome::Code::NotFound, reason: format!("the node list of {entry} holds no {fabric_primary}, the fabric-primary the caller was sent to") })?;
         self.learn_known(std::slice::from_ref(birth));
         Ok(self.carrier_at(fabric_primary.clone()))
     }

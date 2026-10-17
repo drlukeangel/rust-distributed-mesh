@@ -138,7 +138,7 @@ impl NodeConfigs {
             Err(why) => {
                 let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
                 span.record("detail", detail.as_str());
-                return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
+                return rdm_core::reply::status::bounded_config_row_refused(&subject.name.to_string(), &detail);
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
@@ -153,7 +153,7 @@ impl NodeConfigs {
         };
         if let Some(detail) = refused {
             span.record("detail", detail.as_str());
-            return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
+            return rdm_core::reply::status::bounded_config_row_refused(&subject.name.to_string(), &detail);
         }
         // A stopped node is told nothing: its config is a field of its row, and it gets it back in its
         // join answer at its next start (node-rpc-envelope.md "Node properties"), as node.name.update
@@ -186,7 +186,7 @@ impl NodeConfigs {
         };
         span.record("answered", answered);
         span.record("detail", detail.as_str());
-        StatusReply::config_not_applied(&subject.name.to_string(), answered, &detail)
+        rdm_core::reply::status::bounded_config_not_applied(&subject.name.to_string(), answered, &detail)
     }
 }
 

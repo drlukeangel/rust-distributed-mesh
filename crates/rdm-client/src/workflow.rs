@@ -352,7 +352,7 @@ pub fn fold_receipts(kind: &WorkflowKind, receipts: &BuildReceipts, from_attempt
             step: s.step.clone(),
             outcome: match &s.result {
                 StepResult::Complete => serde_json::Value::String("complete".into()),
-                StepResult::Failed { reason } => serde_json::json!({ "failed": { "reason": reason } }),
+                StepResult::Failed { reason, code } => serde_json::json!({ "failed": { "reason": reason, "code": code } }),
             },
         })
         .collect();
@@ -512,7 +512,7 @@ impl WorkflowStream {
         let rows = self.kind.rows();
         loop {
             let frame = match self.inner.next().await {
-                None => return Some(Err(self.broke(CallEnd::Indeterminate { reason: "the stream ended without a terminal frame".into() }))),
+                None => return Some(Err(self.broke(CallEnd::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: "the stream ended without a terminal frame".into() }))),
                 Some(Err(e)) => return Some(Err(self.broke(e))),
                 Some(Ok(f)) => f,
             };

@@ -283,12 +283,12 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
             NodeSelect::Tags(filter) => {
                 span.record("filter", filter.name()).record("labels", crate::node_rows::labels(filter.labels()).as_str());
                 if let Some(reason) = filter.refusal() {
-                    return StatusReply::rejected_tags(&format!("{me}: {reason}"));
+                    return rdm_core::reply::status::bounded_rejected_tags(&format!("{me}: {reason}"));
                 }
                 span.record("index_reads", filter.labels().len() as u64);
                 match tagged(me, storage, filter).await {
                     Ok(ids) => Chosen::Ids(ids),
-                    Err(f) => return StatusReply::source_failed(&f.source, &f.op, &f.cause),
+                    Err(f) => return rdm_core::reply::status::bounded_source_failed(&f.source, &f.op, &f.cause),
                 }
             }
         };
@@ -303,7 +303,7 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
                 }
                 reply
             }
-            Err(f) => StatusReply::source_failed(&f.source, &f.op, &f.cause),
+            Err(f) => rdm_core::reply::status::bounded_source_failed(&f.source, &f.op, &f.cause),
         }
     };
     // What the read's store calls took (the blocking pool's queue and run).

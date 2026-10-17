@@ -591,7 +591,7 @@ impl Estate {
             frames.push(frame.clone());
             match frame {
                 BuildFrame::Complete { .. } => return Ok(Reconciled { build_id, attempt, frames }),
-                BuildFrame::Failed { attempt, operation, step, reason } => panic!("Build {build_id} attempt {attempt} failed at {operation} {step}: {reason}"),
+                BuildFrame::Failed { attempt, operation, step, reason, .. } => panic!("Build {build_id} attempt {attempt} failed at {operation} {step}: {reason}"),
                 BuildFrame::SeatMoved { fabric_primary } => return Err((frames, fabric_primary)),
                 _ => {}
             }

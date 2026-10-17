@@ -32,6 +32,8 @@ pub enum Ratchet {
     TypedProtocolEvidence,
     StatusResealIsAtomic,
     ForwardResealIsAtomic,
+    BuildResealIsAtomic,
+    PrimaryUpdateResealIsAtomic,
     NodeCommandResealIsAtomic,
     TransportHeaderResealIsAtomic,
     OneNewLivenessPrimitive,
@@ -42,7 +44,7 @@ pub enum Ratchet {
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 24] = [
+    pub const ALL: [Ratchet; 26] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitPathConfig,
@@ -60,6 +62,8 @@ impl Ratchet {
         Self::TypedProtocolEvidence,
         Self::StatusResealIsAtomic,
         Self::ForwardResealIsAtomic,
+        Self::BuildResealIsAtomic,
+        Self::PrimaryUpdateResealIsAtomic,
         Self::NodeCommandResealIsAtomic,
         Self::TransportHeaderResealIsAtomic,
         Self::OneNewLivenessPrimitive,
@@ -88,6 +92,8 @@ impl Ratchet {
             Self::TypedProtocolIdentity => "typed_protocol_identity",
             Self::TypedProtocolEvidence => "typed_protocol_evidence",
             Self::StatusResealIsAtomic => "status_reseal_is_atomic",
+            Self::BuildResealIsAtomic => "build_reseal_is_atomic",
+            Self::PrimaryUpdateResealIsAtomic => "primary_update_reseal_is_atomic",
             Self::ForwardResealIsAtomic => "forward_reseal_is_atomic",
             Self::NodeCommandResealIsAtomic => "node_command_reseal_is_atomic",
             Self::TransportHeaderResealIsAtomic => "transport_header_reseal_is_atomic",
@@ -652,6 +658,14 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 ratchet,
                 &mut out,
             );
+        }
+        Ratchet::BuildResealIsAtomic => {
+            require(root, "crates/rdm-core/src/build.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 26;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/tests/build_wire.rs", &["fn failure_codes_are_appended_and_retained_by_the_build_reseal", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
+        }
+        Ratchet::PrimaryUpdateResealIsAtomic => {
+            require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 3;", "const REPLY_VARIANTS: u32 = 17;", "code: crate::outcome::Code"], ratchet, &mut out);
+            require(root, "crates/rdm-core/tests/handover_wire.rs", &["fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "MAX_REPLY_FRAME_BYTES"], ratchet, &mut out);
         }
         Ratchet::ForwardResealIsAtomic => {
             require(

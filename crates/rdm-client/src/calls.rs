@@ -34,6 +34,8 @@ pub enum CallEnd {
     },
     /// The request committed and no stronger proof exists that it did or did not run.
     Indeterminate {
+        /// The standard code captured from the typed delivery outcome.
+        code: rdm_core::outcome::Code,
         /// Why no stronger proof exists.
         reason: String,
     },
@@ -91,7 +93,7 @@ impl std::fmt::Display for CallEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotSent { reason, .. } => write!(f, "not sent: {reason}"),
-            Self::Indeterminate { reason } => write!(f, "indeterminate: {reason}"),
+            Self::Indeterminate { reason, .. } => write!(f, "indeterminate: {reason}"),
             Self::Unserved { op } => write!(f, "unserved op {op:#04x}"),
             Self::RejectedStale { target_node_id } => write!(f, "stale target {target_node_id}"),
             Self::Refused { status, error, detail } => write!(f, "refused ({status} {error}): {detail}"),
@@ -106,6 +108,18 @@ impl std::fmt::Display for CallEnd {
 impl std::error::Error for CallEnd {}
 
 impl CallEnd {
+    /// Standard code selected from this typed ending, never its explanation.
+    pub fn code(&self) -> rdm_core::outcome::Code {
+        use rdm_core::outcome::Code;
+        match self {
+            Self::NotSent { cause, .. } => cause.code(),
+            Self::Indeterminate { code, .. } => *code,
+            Self::Unserved { .. } | Self::NotBackedToday { .. } => Code::Unimplemented,
+            Self::RejectedStale { .. } => Code::Aborted,
+            Self::UnrecognisedReceipt { .. } => Code::DataLoss,
+            Self::Refused { .. } | Self::Rejected { .. } | Self::BuildInProgress { .. } => Code::FailedPrecondition,
+        }
+    }
     /// The span outcome word of this ending.
     pub fn outcome(&self) -> &'static str {
         match self {
@@ -144,7 +158,7 @@ impl From<ClientError> for CallEnd {
                 let reason = format!("{url}: {reason}");
                 Self::NotSent { cause: rdm_core::outcome::NotSentReason::Connection(reason.clone()), reason }
             }
-            ClientError::Transport { url, reason, request_written: true } => Self::Indeterminate { reason: format!("{url}: {reason}") },
+            ClientError::Transport { url, reason, request_written: true } => Self::Indeterminate { code: rdm_core::outcome::Code::Unknown, reason: format!("{url}: {reason}") },
         }
     }
 }
@@ -159,7 +173,7 @@ pub(crate) fn ended<R>(out: RpcOutcome<R>) -> Result<R, CallEnd> {
         RpcOutcome::NotSent(n) => Err(CallEnd::NotSent { reason: format!("{:?}", n.reason()), cause: n.reason().clone() }),
         RpcOutcome::Unserved(u) => Err(CallEnd::Unserved { op: u.op() }),
         RpcOutcome::RejectedStale(r) => Err(CallEnd::RejectedStale { target_node_id: r.target_node_id().to_string() }),
-        RpcOutcome::Indeterminate(i) => Err(CallEnd::Indeterminate { reason: format!("{:?}", i.reason()) }),
+        RpcOutcome::Indeterminate(i) => Err(CallEnd::Indeterminate { code: i.code(), reason: format!("{:?}", i.reason()) }),
     }
 }
 
@@ -417,7 +431,7 @@ impl<'a> NodeRpc<'a> {
                     view.departed.extend(departed);
                 }
                 TopologyReply::Started | TopologyReply::End { .. } | TopologyReply::Unchanged { .. } | TopologyReply::Seats { .. } | TopologyReply::RafkaTime { .. } => {}
-                other => return Err(CallEnd::Indeterminate { reason: format!("{} answered {other:?} to the topology read", target_name(target)) }),
+                other => return Err(CallEnd::Indeterminate { code: <Topology as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code(), reason: format!("{} answered {other:?} to the topology read", target_name(target)) }),
             }
         }
         Ok(view)
@@ -456,7 +470,7 @@ impl<'a> NodeRpc<'a> {
                         break;
                     }
                 }
-                StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { reason: format!("{f:?}") }),
+                StreamItem::Failed(f) => return Err(CallEnd::Indeterminate { code: f.code(), reason: format!("{f:?}") }),
             }
         }
         Ok(frames)
@@ -519,5 +533,22 @@ impl<'a> NodeRpc<'a> {
         });
         span.in_scope(|| tracing::info!(op = NodeOp::FabricPrimaryUpdate.name(), "an object call ended"));
         r
+    }
+}
+
+#[cfg(test)]
+mod outcome_code_cells {
+    use super::*;
+    use rdm_core::protocol::NodeProtocol;
+    use rdm_core::outcome::{Code, PreCommit, RequestFinished, IndeterminateReason};
+    #[test]
+    fn object_adapters_preserve_the_original_typed_delivery_code() {
+        for cause in [IndeterminateReason::ReplyLost("same explanation".into()), IndeterminateReason::ReplyDeadline, IndeterminateReason::ReceiverGone("same explanation".into())] {
+            let code = cause.code();
+            let committed = PreCommit::begin(Status::OP).commit(RequestFinished::after_complete_write(1,1).unwrap());
+            let end = ended::<StatusReply>(committed.indeterminate(cause)).unwrap_err();
+            assert_eq!(end.code(), code);
+        }
+        assert_eq!(Code::DeadlineExceeded.number(),4);
     }
 }

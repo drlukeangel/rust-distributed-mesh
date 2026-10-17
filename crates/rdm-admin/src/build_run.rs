@@ -438,7 +438,7 @@ impl HeldRun {
         let outcome = match &terminal {
             BuildReply::HandedOff { to, .. } => Some(AttemptOutcome::HandedOff { to: to.clone() }),
             BuildReply::Complete { .. } => Some(AttemptOutcome::Converged),
-            BuildReply::Failed { reason, .. } => Some(AttemptOutcome::Failed { reason: reason.clone() }),
+            BuildReply::Failed { reason, code, .. } => Some(AttemptOutcome::Failed { reason: reason.clone(), code: *code }),
             _ => None,
         };
         let terminal = match outcome {
@@ -447,7 +447,7 @@ impl HeldRun {
                     at_verdict.await;
                     terminal
                 }
-                Err(e) => rdm_core::reply::build::failed(self.build_id.to_string(), self.attempt, String::new(), "attempt".into(), bounded_reason(format!("recording attempt {}: {e}", self.attempt))),
+                Err(e) => rdm_core::reply::build::failed(self.build_id.to_string(), self.attempt, String::new(), "attempt".into(), bounded_reason(format!("recording attempt {}: {e}", self.attempt)), rdm_core::outcome::Code::FailedPrecondition),
             },
             None => terminal,
         };
@@ -686,9 +686,9 @@ impl RunDoor {
         let terminal = match verdict {
             Some(AttemptOutcome::Converged) => BuildReply::Complete { build_id: build_id.to_string(), attempt },
             Some(AttemptOutcome::HandedOff { to }) => BuildReply::HandedOff { build_id: build_id.to_string(), attempt, to },
-            Some(AttemptOutcome::Failed { reason }) => {
+            Some(AttemptOutcome::Failed { reason, code }) => {
                 let (operation, step, _) = failed.unwrap_or_else(|| (String::new(), "attempt".into(), String::new()));
-                rdm_core::reply::build::failed(build_id.to_string(), attempt, operation, step, bounded_reason(reason))
+                rdm_core::reply::build::failed(build_id.to_string(), attempt, operation, step, bounded_reason(reason), code)
             }
             None => {
                 return Attached::Refused(rdm_core::reply::build::not_ready(format!("{me}: attempt {attempt} of Build {build_id} is {:?} with no verdict receipt and no run here", p.state)));
@@ -794,14 +794,14 @@ pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, S
     match r {
         Reconciled::Converged { attempt, .. } => BuildReply::Complete { build_id: build_id.to_string(), attempt: *attempt },
         Reconciled::HandedOff { attempt, to, .. } => BuildReply::HandedOff { build_id: build_id.to_string(), attempt: *attempt, to: to.clone() },
-        Reconciled::Failed { attempt, operation, reason } => {
+        Reconciled::Failed { attempt, operation, reason, code } => {
             // The step a receipt names is the one that failed when its operation is the attempt's.
             // The reason is the attempt's own, word for word the verdict receipt's.
             let step = match failed {
                 Some((op, step, _)) if operation.is_empty() || op == *operation => step,
                 _ => "attempt".to_string(),
             };
-            rdm_core::reply::build::failed(build_id.to_string(), *attempt, operation.clone(), step, bounded_reason(reason.clone()))
+            rdm_core::reply::build::failed(build_id.to_string(), *attempt, operation.clone(), step, bounded_reason(reason.clone()), *code)
         }
     }
 }
@@ -851,15 +851,25 @@ mod tests {
         assert!(reader.next().await.is_none(), "nothing follows the terminal");
     }
 
+    #[test]
+    fn a_failed_terminal_retains_its_typed_cause_without_reclassifying_the_explanation() {
+        use rdm_core::outcome::Code;
+        for code in [Code::Unknown, Code::DeadlineExceeded, Code::Unavailable] {
+            let r = Reconciled::Failed { attempt: 1, operation: "node.start:mesh1.rpc.2".into(), reason: "same explanation".into(), code };
+            let receipt = Some(("node.start:mesh1.rpc.2".into(), "StartNode".into(), "same explanation".into()));
+            assert!(matches!(terminal_of(&id(), &r, receipt), BuildReply::Failed { code: held, .. } if held == code));
+        }
+    }
+
     /// CONTRACT: the terminal frame of a failed attempt names the step the failed receipt names
     /// when that receipt belongs to the failed operation, and carries the attempt's own reason.
     #[test]
     fn a_failed_attempt_names_the_step_its_failed_receipt_names() {
-        let r = Reconciled::Failed { attempt: 2, operation: "node.create:mesh1.rpc.2".into(), reason: "node.create:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() };
+        let r = Reconciled::Failed { attempt: 2, operation: "node.create:mesh1.rpc.2".into(), reason: "node.create:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() , code: rdm_core::outcome::Code::FailedPrecondition };
         let failed = Some(("node.create:mesh1.rpc.2".to_string(), "WaitForMeshJoin".to_string(), "no join".to_string()));
         assert_eq!(
             terminal_of(&id(), &r, failed),
-            BuildReply::Failed { build_id: "vhpqxdbt5w2g".into(), attempt: 2, operation: "node.create:mesh1.rpc.2".into(), step: "WaitForMeshJoin".into(), reason: "node.create:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() }
+            BuildReply::Failed { build_id: "vhpqxdbt5w2g".into(), attempt: 2, operation: "node.create:mesh1.rpc.2".into(), step: "WaitForMeshJoin".into(), reason: "node.create:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() , code: rdm_core::outcome::Code::FailedPrecondition }
         );
         let other = Some(("node.create:mesh1.rpc.9".to_string(), "DeployRuntime".to_string(), "other".to_string()));
         assert!(matches!(terminal_of(&id(), &r, other), BuildReply::Failed { step, .. } if step == "attempt"), "a failed receipt of another operation is not this attempt's step");

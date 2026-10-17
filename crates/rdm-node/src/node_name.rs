@@ -63,7 +63,7 @@ pub fn reply(decision: &NameApply) -> StatusReply {
     match decision {
         NameApply::Applied => rdm_core::reply::applied(),
         NameApply::AlreadyApplied => rdm_core::reply::already_applied(),
-        NameApply::Busy { connections, .. } => StatusReply::busy_holding_connections(connections),
+        NameApply::Busy { connections, .. } => rdm_core::reply::status::bounded_busy_holding_connections(connections),
     }
 }
 

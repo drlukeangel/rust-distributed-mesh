@@ -24,8 +24,9 @@
 use crate::codes::ResetCode;
 use crate::protocol::{DecodeFailure, NodeProtocol};
 
-/// The standard gRPC outcome codes. Derived locally; never serialized into a Node RPC reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// The standard gRPC outcome codes. Derived from typed outcomes; failed Build receipts retain the numeric code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
 #[repr(u8)]
 pub enum Code {
     /// Standard code 0: `OK`.
@@ -94,6 +95,18 @@ impl Code {
     /// Decode a standard numeric value; no extra top-level code exists.
     pub fn from_number(n: u8) -> Option<Self> { Self::ALL.into_iter().find(|c| c.number() == n) }
 }
+
+impl From<Code> for u8 {
+    fn from(code: Code) -> Self { code.number() }
+}
+impl TryFrom<u8> for Code {
+    type Error = &'static str;
+    fn try_from(n: u8) -> Result<Self, Self::Error> {
+        Self::from_number(n).ok_or("unknown standard outcome code")
+    }
+}
+/// Classification of a failed-state receipt written before codes were retained.
+pub fn legacy_failed_code() -> Code { Code::FailedPrecondition }
 
 /// A view over the standard code. RDM's typed detail is the protocol reply in Replied<R>.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -254,6 +267,21 @@ pub enum IndeterminateReason {
 }
 
 impl IndeterminateReason {
+    /// The typed delivery cause name.
+    pub fn detail_name(&self) -> &'static str { match self {
+                Self::ReplyLost(_) => "reply-lost",
+                Self::ReplyDeadline => "reply-deadline",
+                Self::Reset(n) => match ResetCode::from_code(*n) {
+                    Some(ResetCode::InternalRpcFailure) => "handler-fault",
+                    Some(ResetCode::ProtocolViolation) => "protocol-violation",
+                    _ => "reset",
+                },
+                Self::UnsupportedReplyVariant => "unsupported-reply-variant",
+                Self::CorruptReply => "corrupt-reply",
+                Self::ProtocolViolation(_) => "protocol-violation",
+                Self::ReceiverGone(_) => "receiver-gone",
+            } }
+
     /// Standard code derived from the typed cause, never the explanation.
     pub fn code(&self) -> Code {
         match self {
@@ -395,19 +423,7 @@ impl<R> RpcOutcome<R> {
                 NotSentReason::NoActiveRoute => "no-active-route",
                 NotSentReason::AdmissionBlocked(_) => "admission-blocked",
             },
-            Self::Indeterminate(i) => match i.reason() {
-                IndeterminateReason::ReplyLost(_) => "reply-lost",
-                IndeterminateReason::ReplyDeadline => "reply-deadline",
-                IndeterminateReason::Reset(n) => match ResetCode::from_code(*n) {
-                    Some(ResetCode::InternalRpcFailure) => "handler-fault",
-                    Some(ResetCode::ProtocolViolation) => "protocol-violation",
-                    _ => "reset",
-                },
-                IndeterminateReason::UnsupportedReplyVariant => "unsupported-reply-variant",
-                IndeterminateReason::CorruptReply => "corrupt-reply",
-                IndeterminateReason::ProtocolViolation(_) => "protocol-violation",
-                IndeterminateReason::ReceiverGone(_) => "receiver-gone",
-            },
+            Self::Indeterminate(i) => i.reason().detail_name(),
         }
     }
 

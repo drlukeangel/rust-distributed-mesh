@@ -340,6 +340,13 @@ pub enum StreamFailure {
     Violation(String),
 }
 
+impl StreamFailure {
+    /// Standard code from the typed stream ending.
+    pub fn code(&self) -> rdm_core::outcome::Code {
+        match self { Self::Indeterminate(reason) => reason.code(), Self::Violation(_) => rdm_core::outcome::Code::Internal }
+    }
+}
+
 /// One received item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamItem<R> {
@@ -358,6 +365,8 @@ pub enum StreamItem<R> {
 /// Until then the responder owes the frame: it holds the producer (at most 64 frames unacked), and a
 /// reconnect has it resent, never handed to the owner twice.
 pub struct ReplyStream<P: StreamingProtocol> {
+    span: tracing::Span,
+    started: Instant,
     owed: OwedCall,
     order: FrameOrder,
     deadline: Option<Instant>,
@@ -396,6 +405,9 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                             Err(e) => return Some(self.fail(StreamFailure::Violation(format!("a frame does not decode: {e:?}")))),
                         };
                         let kind = P::frame_kind(&frame);
+                        let code = P::classify_reply(&frame).code();
+                        let detail = P::reply_detail(&frame);
+                        self.span.in_scope(|| tracing::info_span!("rdm.node_rpc.stream.update.via-received-frame", protocol = P::NAME, code = code.name(), detail).in_scope(|| {}));
                         if let Err(reason) = self.order.admit(kind) {
                             return Some(self.fail(StreamFailure::Violation(reason)));
                         }
@@ -406,6 +418,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                         if self.order.state() == OrderState::Done {
                             self.done = true;
                             self.terminal_handed = true;
+                            self.span.record("code", code.name()).record("detail", detail).record("elapsed_ms", self.started.elapsed().as_millis() as u64);
                         }
                         if self.read_only {
                             self.accepted().await;
@@ -457,6 +470,11 @@ impl<P: StreamingProtocol> ReplyStream<P> {
 
     fn fail(&mut self, f: StreamFailure) -> StreamItem<P::Reply> {
         self.done = true;
+        let (code, detail) = match &f {
+            StreamFailure::Indeterminate(reason) => (reason.code(), reason.detail_name()),
+            StreamFailure::Violation(_) => (rdm_core::outcome::Code::Internal, "protocol-violation"),
+        };
+        self.span.record("code", code.name()).record("detail", detail).record("outcome", "failed").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
         // The owner has its end: the invocation is owed no longer.
         self.owed.guard.complete();
         if let Some(h) = &self.owed._task.0 {
@@ -495,6 +513,7 @@ impl NodeRpcClient {
         let started = Instant::now();
         let start = started;
         let (send_deadline, overall) = crate::client::deadlines_of(opts.budget, start);
+        let mut opening = crate::client::CallSpanGuard::new(&span);
         let opened = self.owe(target, None, P::OP, Payload::Ready(payload), P::MAX_REPLY_FRAME_BYTES, opts, false, (send_deadline, overall), &span);
         let finish = |outcome: &str| {
             span.record("outcome", outcome);
@@ -503,6 +522,7 @@ impl NodeRpcClient {
         let mut owed = match opened {
             Ok(o) => o,
             Err((out, ev)) => {
+                opening.complete();
                 finish(out.name());
                 span.record("code", out.code().name());
                 span.record("detail", out.detail_name());
@@ -516,6 +536,7 @@ impl NodeRpcClient {
             tokio::select! {
                 ev = owed.attempted.recv() => match ev {
                     Some(Attempted::Committed { .. }) => {
+                        opening.complete();
                         finish("stream-open");
                         span.in_scope(|| tracing::info!("node rpc stream call opened"));
                         let deadline = match (opts.budget, overall) {
@@ -524,7 +545,7 @@ impl NodeRpcClient {
                             _ => None,
                         };
                         let evidence = owed.evidence.lock().unwrap().clone();
-                        return Ok((ReplyStream { owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::SendDeadline(r)) => {
@@ -559,6 +580,7 @@ impl NodeRpcClient {
                 },
             }
         };
+        opening.complete();
         finish(ended.name());
         span.record("code", ended.code().name());
         span.record("detail", ended.detail_name());
@@ -566,5 +588,13 @@ impl NodeRpcClient {
         let evidence = owed.evidence.lock().unwrap().clone();
         owed.close(true).await;
         Err((ended, Some(evidence)))
+    }
+}
+
+impl<P: StreamingProtocol> Drop for ReplyStream<P> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.span.record("code", "CANCELLED").record("detail", "caller-gone").record("outcome", "cancelled").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        }
     }
 }

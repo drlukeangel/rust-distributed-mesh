@@ -109,7 +109,7 @@ where
             Ok(r) => r,
             Err(d) => {
                 let refused = Box::pin(async move {
-                    tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", protocol = P::NAME, kind = ?d)
+                    tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", protocol = P::NAME, kind = ?d, code = rdm_core::outcome::ReplyKind::Malformed(d.into()).code().name(), detail = "malformed")
                         .in_scope(|| tracing::info!(?d, "request does not decode"));
                     P::encode_reply(&P::malformed(d.into())).map_err(|e| HandlerFault::invariant_broken(e.0))
                 });
@@ -154,6 +154,7 @@ where
             Refusal::ConnectionsDeleting(s) => P::connections_deleting(s),
             Refusal::Malformed(k) => P::malformed(k),
         };
+        tracing::info_span!("rdm.node_rpc.request.reject.via-refusal", protocol = P::NAME, code = P::classify_reply(&reply).code().name(), detail = P::reply_detail(&reply)).in_scope(|| {});
         P::encode_reply(&reply).unwrap_or_default()
     }
 
@@ -608,7 +609,7 @@ impl NodeRpcServer {
             Ok(None) => return,
             Err(ReadEnd::Violation(why)) => {
                 self.inner.stats.violations.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?Option::<u8>::None, reason = why)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?Option::<u8>::None, reason = why, code = "INTERNAL", detail = "protocol-violation")
                     .in_scope(|| tracing::info!(reason = why, "protocol violation: 424"));
                 let mut send = send;
                 let _ = send.reset(code(ResetCode::ProtocolViolation));
@@ -638,7 +639,7 @@ impl NodeRpcServer {
 
     fn dropped(&self, peer: iroh::PublicKey, reason: &'static str) {
         self.inner.stats.dropped_unfinished.fetch_add(1, Ordering::SeqCst);
-        tracing::info_span!("rdm.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer)
+        tracing::info_span!("rdm.node_rpc.request.reject.via-frame-not-sent", reason, peer = %peer, code = "UNAVAILABLE", detail = "frame-not-sent")
             .in_scope(|| tracing::info!(reason, "unfinished request dropped; never dispatched"));
     }
 
@@ -793,7 +794,7 @@ impl NodeRpcServer {
                     // A closed gate refuses every op, ping included, before anything else.
                     if self.inner.ready.as_ref().is_some_and(|r| !r.load(Ordering::SeqCst)) {
                         stats.not_ready.fetch_add(1, Ordering::SeqCst);
-                        tracing::info_span!("rdm.node_rpc.request.reject.via-not-ready", op, peer = %peer)
+                        tracing::info_span!("rdm.node_rpc.request.reject.via-not-ready", op, peer = %peer, code = "UNAVAILABLE", detail = "not-ready")
                             .in_scope(|| tracing::info!(op, "the node's ready gate is closed: typed NotReady"));
                         refusal = Some(Refusal::NotReady("this node is not ready: its authority is not filled yet".into()));
                     } else if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
@@ -821,7 +822,7 @@ impl NodeRpcServer {
             ServerAction::Continue => unreachable!("loop breaks only on a decision"),
             ServerAction::ResetUnserved { op } => {
                 stats.unserved.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rdm.node_rpc.request.reject.via-unserved-op", op, peer = %peer)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-unserved-op", op, peer = %peer, code = "UNIMPLEMENTED", detail = "unserved-op")
                     .in_scope(|| tracing::info!(op, "unserved op: 421"));
                 out.reset(ResetCode::UnservedOp).await;
                 let _ = recv.stop(code(ResetCode::UnservedOp));
@@ -829,14 +830,14 @@ impl NodeRpcServer {
             }
             ServerAction::RefuseMalformed { op, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", op, kind = ?kind)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", op, kind = ?kind, code = rdm_core::outcome::ReplyKind::Malformed(kind).code().name(), detail = "malformed")
                     .in_scope(|| tracing::info!(?kind, "malformed request refused before the body"));
                 let _ = recv.stop(code(ResetCode::RequestStop));
                 self.answer_refusal(op, Refusal::Malformed(kind), &id, peer, out, None).await;
             }
             ServerAction::ResetViolation { op, reason } => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
-                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?op, reason)
+                tracing::info_span!("rdm.node_rpc.request.reject.via-protocol-violation", op = ?op, reason, code = "INTERNAL", detail = "protocol-violation")
                     .in_scope(|| tracing::info!(reason, "protocol violation: 424"));
                 out.reset(ResetCode::ProtocolViolation).await;
                 let _ = recv.stop(code(ResetCode::ProtocolViolation));

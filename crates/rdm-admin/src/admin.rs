@@ -1433,7 +1433,7 @@ mod tests {
             crate::build_state::BuildFact::Claim(crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: b1.clone(), attempt: 2, executor: "mesh2.admin.2".into() }),
             crate::build_state::BuildFact::Step(deleted("NodeDeleted")),
             crate::build_state::BuildFact::Step(deleted("Complete")),
-            crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { mesh: None, build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into() } }),
+            crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { mesh: None, build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into() , code: rdm_core::outcome::Code::FailedPrecondition } }),
         ]).await;
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::FabricStorage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
@@ -1766,7 +1766,7 @@ mod tests {
         }
         assert_eq!(book.in_flight(), vec![op.clone()], "the removal's NodeDeleting receipt opens its overlay");
         // The attempt's verdict: the workflow failed (the member's runtime exited under it).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the replace".into() } }));
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the replace".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             overlays_from_facts(&facts, &book, &mut named);
@@ -1849,7 +1849,7 @@ mod tests {
         derive(&facts, &mut named);
         assert_eq!(book.in_flight(), vec![op.clone()], "mesh2's attempt 1 holds the member");
         // The attempt's verdict in mesh2's lane: Failed (its claimant departed with it unfinished).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.admin.1 departed with attempt 1 of mesh2's lane unfinished".into() } }));
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.admin.1 departed with attempt 1 of mesh2's lane unfinished".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
         derive(&facts, &mut named);
         assert_eq!(book.in_flight(), Vec::<rdm_core::LifecycleOp>::new(), "the failed drift attempt's hold closes: the member's exit belongs to no workflow now");
         let closed = capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts");
@@ -1863,7 +1863,7 @@ mod tests {
         let op = recovery("7k2qm4xw9bdc");
         let build = crate::build::BuildId::parse(&op.build_id).unwrap();
         let mut facts = lane_attempt(&build, &op);
-        facts.insert(1, BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "a topology operation failed".into() } }));
+        facts.insert(1, BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "a topology operation failed".into() , code: rdm_core::outcome::Code::FailedPrecondition } }));
         derive(&facts, &mut named);
         assert_eq!(book.in_flight(), vec![op], "the fabric lane's verdict closes nothing of mesh2's running attempt");
         assert_eq!(capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts").len(), 1, "no second close");

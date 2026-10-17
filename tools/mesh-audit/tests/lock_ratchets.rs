@@ -151,7 +151,7 @@ fn retire_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
 #[test]
 fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
+    t.edit("crates/rdm-admin/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n        /// Standard code of the original typed command outcome.\n        #[serde(default = \"rdm_core::outcome::legacy_failed_code\")]\n        code: rdm_core::outcome::Code,\n    },\n", "");
     let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
     assert!(matches!(&v[0], Violation::Arms { found, .. } if !found.iter().any(|a| a == "Refused")));
 }
@@ -448,4 +448,24 @@ fn one_rename_write_path_fails_a_release_outside_move_row_or_a_second_rename_doo
     let d = Planted::of_tree();
     d.edit("crates/rdm-admin/src/node_rows.rs", "pub(crate) async fn move_row(storage: &dyn NodesStorage,", "pub async fn rename(storage: &dyn NodesStorage,");
     only(check(d.root()), Ratchet::OneRenameWritePath);
+}
+
+#[test]
+fn build_reseal_refuses_a_moved_position_or_a_lost_golden() {
+    let t = Planted::of_tree();
+    t.edit("crates/rdm-core/src/build.rs", "const REPLY_VARIANTS: u32 = 26;", "const REPLY_VARIANTS: u32 = 27;");
+    only(check(t.root()), Ratchet::BuildResealIsAtomic);
+    let f = Planted::of_tree();
+    f.delete("crates/rdm-core/tests/build_wire.rs");
+    only(check(f.root()), Ratchet::BuildResealIsAtomic);
+}
+
+#[test]
+fn handover_reseal_refuses_a_moved_position_or_a_lost_golden() {
+    let t = Planted::of_tree();
+    t.edit("crates/rdm-core/src/handover.rs", "const REPLY_VARIANTS: u32 = 17;", "const REPLY_VARIANTS: u32 = 18;");
+    only(check(t.root()), Ratchet::PrimaryUpdateResealIsAtomic);
+    let f = Planted::of_tree();
+    f.edit("crates/rdm-core/tests/handover_wire.rs", "fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "fn changed_failed_primary_update_cell");
+    only(check(f.root()), Ratchet::PrimaryUpdateResealIsAtomic);
 }

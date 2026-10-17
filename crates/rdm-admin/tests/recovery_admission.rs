@@ -718,7 +718,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
         _ => None,
     });
     match ended {
-        Some(AttemptOutcome::Failed { reason }) => assert!(reason.contains("mesh2.admin.1") && reason.contains(incarnation.as_str()), "attempt 1's verdict names the departed claimant's exact birth: {reason}"),
+        Some(AttemptOutcome::Failed { reason , .. }) => assert!(reason.contains("mesh2.admin.1") && reason.contains(incarnation.as_str()), "attempt 1's verdict names the departed claimant's exact birth: {reason}"),
         other => panic!("attempt 1 of mesh2's lane ends Failed on its claimant's departure: {other:?}"),
     }
     let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
@@ -965,7 +965,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
         builds.append_step_receipt(&r).await.unwrap();
     }
     let failed = "node.create:mesh2.rpc.1 step PrepareStorage: node-key is missing in the inherited data dir";
-    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: failed.into() } }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: failed.into() , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
     claims.release("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() }).await.unwrap();
     assert_eq!(builds.exits_owed(&b0, "mesh2").await.unwrap().iter().map(|o| (o.path.clone(), o.attempt)).collect::<Vec<_>>(), vec![(member.clone(), 1)], "after attempt 1's Failed verdict the member is owed a submit");
 

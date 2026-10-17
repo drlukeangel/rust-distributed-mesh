@@ -1055,7 +1055,7 @@ impl HandoffVerdict {
         match self {
             HandoffVerdict::Accept(_) => None,
             HandoffVerdict::Unmatched { field, expected, reported } => Some(rdm_core::reply::status::rejected_unmatched_completion(field.clone(), expected.clone(), reported.clone())),
-            HandoffVerdict::Incomplete { reason, without_exit } => Some(StatusReply::incomplete_manifest(without_exit, reason)),
+            HandoffVerdict::Incomplete { reason, without_exit } => Some(rdm_core::reply::status::bounded_incomplete_manifest(without_exit, reason)),
         }
     }
 }
@@ -1147,7 +1147,7 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
 pub fn refuse_source_failed(call: &'static str, key: &MeshDeleteKey, source: &str, op: &str, cause: &str) -> StatusReply {
     tracing::info_span!("rdm.node_admin.mesh.reject.via-source-failed", call, mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, source, op, cause)
         .in_scope(|| tracing::info!("what the call needed to read failed: it is refused by name and nothing is admitted"));
-    StatusReply::source_failed(source, op, cause)
+    rdm_core::reply::status::bounded_source_failed(source, op, cause)
 }
 
 /// The admin a leave hands back to, the owner of the workflow, and where a call to it goes.

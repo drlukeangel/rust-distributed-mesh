@@ -78,6 +78,30 @@ pub fn rejected_name(reason: String) -> StatusReply { StatusReply::RejectedName 
 pub fn busy_holding_connections(connections: Vec<ConnectionId>) -> StatusReply { StatusReply::BusyHoldingConnections { connections } }
 /// Construct the typed request-not-handled outcome.
 pub fn request_not_handled(request: String) -> StatusReply { StatusReply::RequestNotHandled { request } }
+/// Construct the bounded config-row-refused outcome.
+pub fn bounded_config_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::config_row_refused(node, reason) }
+/// Construct the bounded config-not-applied outcome.
+pub fn bounded_config_not_applied(node: &str, answered: &str, reason: &str) -> StatusReply { StatusReply::config_not_applied(node, answered, reason) }
+/// Construct the bounded blocked outcome.
+pub fn bounded_blocked(node_id: NodeId, incarnation: IncarnationId, reason: &str, retry_on: RetryOn) -> StatusReply { StatusReply::blocked(node_id, incarnation, reason, retry_on) }
+/// Construct the bounded rejected-tags outcome.
+pub fn bounded_rejected_tags(reason: &str) -> StatusReply { StatusReply::rejected_tags(reason) }
+/// Construct the bounded rejected-fabric-not-ready outcome.
+pub fn bounded_rejected_fabric_not_ready(workflow: &str, status: &str) -> StatusReply { StatusReply::rejected_fabric_not_ready(workflow, status) }
+/// Construct the bounded node-row-refused outcome.
+pub fn bounded_node_row_refused(node: &str, reason: &str) -> StatusReply { StatusReply::node_row_refused(node, reason) }
+/// Construct the bounded rejected-name outcome.
+pub fn bounded_rejected_name(reason: &str) -> StatusReply { StatusReply::rejected_name(reason) }
+/// Construct the bounded rejected-admitting-connections outcome.
+pub fn bounded_rejected_admitting_connections(status: NodeStatus, held: &[ConnectionId]) -> StatusReply { StatusReply::rejected_admitting_connections(status, held) }
+/// Construct the bounded busy-holding-connections outcome.
+pub fn bounded_busy_holding_connections(held: &[ConnectionId]) -> StatusReply { StatusReply::busy_holding_connections(held) }
+/// Construct the bounded name-not-applied outcome.
+pub fn bounded_name_not_applied(node: &str, answered: &str, reason: &str) -> StatusReply { StatusReply::name_not_applied(node, answered, reason) }
+/// Construct the bounded source-failed outcome.
+pub fn bounded_source_failed(source: &str, op: &str, cause: &str) -> StatusReply { StatusReply::source_failed(source, op, cause) }
+/// Construct the bounded incomplete-manifest outcome.
+pub fn bounded_incomplete_manifest(without_exit: &[String], reason: &str) -> StatusReply { StatusReply::incomplete_manifest(without_exit, reason) }
 }
 
 /// Constructors for the NodeCommandReply family.
@@ -119,7 +143,7 @@ use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::{IncarnationId, NodeId, NodeKind, PathName};
 use serde::{Deserialize, Serialize};
 /// Construct the typed failed outcome.
-pub fn failed(build_id: String, attempt: u32, operation: String, step: String, reason: String) -> BuildReply { BuildReply::Failed { build_id, attempt, operation, step, reason } }
+pub fn failed(build_id: String, attempt: u32, operation: String, step: String, reason: String, code: crate::outcome::Code) -> BuildReply { BuildReply::Failed { build_id, attempt, operation, step, reason, code } }
 /// Construct the typed not-fabric-primary outcome.
 pub fn not_fabric_primary(fabric_primary: Option<String>) -> BuildReply { BuildReply::NotFabricPrimary { fabric_primary } }
 /// Construct the typed not-executor outcome.
@@ -266,7 +290,21 @@ pub fn busy(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::
 /// Construct the typed connections-deleting outcome.
 pub fn connections_deleting(reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::ConnectionsDeleting { reason } }
 /// Construct the typed failed outcome.
-pub fn failed(step: String, reason: String) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::Failed { step, reason } }
+pub fn failed(step: String, reason: String, code: crate::outcome::Code) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::failed(&step, &reason, code) }
+/// Construct the bounded no-successor outcome.
+pub fn bounded_no_successor(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::no_successor(reason) }
+/// Construct the bounded incomplete outcome.
+pub fn bounded_incomplete(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::incomplete(reason) }
+/// Construct the bounded failed outcome.
+pub fn bounded_failed(step: &str, reason: &str, code: crate::outcome::Code) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::failed(step, reason, code) }
+/// Construct the bounded not-authority outcome.
+pub fn bounded_not_authority(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::not_authority(reason) }
+/// Construct the bounded fabric-not-ready outcome.
+pub fn bounded_fabric_not_ready(reason: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::fabric_not_ready(reason) }
+/// Construct the bounded source-failed outcome.
+pub fn bounded_source_failed(source: &str, op: &str, cause: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::source_failed(source, op, cause) }
+/// Construct the bounded record-absent outcome.
+pub fn bounded_record_absent(record: &str, holder: &str) -> NodePrimaryUpdateReply { NodePrimaryUpdateReply::record_absent(record, holder) }
 }
 
 /// Constructors for the TopologyReply family.

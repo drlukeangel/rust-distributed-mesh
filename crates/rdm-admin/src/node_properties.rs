@@ -50,10 +50,10 @@ pub async fn refused_before_first_ready(me: &PathName, view: &RwLock<Topology>, 
         Err(e) => {
             let (source, read) = (format!("status storage of {me}"), format!("read whether fabric {fabric_id} first reached ready-for-traffic for {workflow}"));
             span.record("detail", format!("{me}: {workflow} is refused: {source} could not be read to {read}: {e}; nothing is claimed or written").as_str());
-            return Some(StatusReply::source_failed(&source, &read, &e.to_string()));
+            return Some(rdm_core::reply::status::bounded_source_failed(&source, &read, &e.to_string()));
         }
     }
-    let refused = StatusReply::rejected_fabric_not_ready(&workflow, status);
+    let refused = rdm_core::reply::status::bounded_rejected_fabric_not_ready(&workflow, status);
     span.record("detail", format!("{me}: {workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}), and before state-commit the row would live only in this mesh-primary's scratchpad; nothing is claimed or written").as_str());
     tracing::info_span!("rdm.node_admin.node.reject.via-fabric-not-ready", node = %me, workflow = %workflow, status, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("{op} is refused until the initial fabric has first reached ready-for-traffic"));
@@ -116,7 +116,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     if let Some(reason) = refusal {
         let why = format!("{me}: the labels of node {node_id} are refused and nothing is written: {reason}");
         span.record("detail", why.as_str());
-        return StatusReply::rejected_tags(&why);
+        return rdm_core::reply::status::bounded_rejected_tags(&why);
     }
     // The subject is the exact birth the call names, wherever its row stands (`Topology::own`); one
     // this receiver does not hold is the receiver's own fact, never a peer that did not resolve.
@@ -148,7 +148,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     let _one = door.one_at_a_time().await;
     let known = match door.written().known_row(storage, &subject.mesh, node_id).await {
         Ok(row) => row,
-        Err(why) => return StatusReply::node_row_refused(&subject.name.to_string(), &format!("{me}: {why}: the tags of {} are not written", subject.name)),
+        Err(why) => return rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &format!("{me}: {why}: the tags of {} are not written", subject.name)),
     };
     // A writer that meets the row finishes the release a rename left pending (proposal
     // node-properties-own-commands.md §2.1), whether or not this command writes; one that fails again
@@ -171,7 +171,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
             if let Some(reason) = rdm_core::status::tags_refusal(&tags) {
                 let why = format!("{me}: {} carries {} and the create adds {}: {reason}; nothing is written", subject.name, crate::node_rows::labels(&was), crate::node_rows::labels(&arrived));
                 span.record("detail", why.as_str());
-                return StatusReply::rejected_tags(&why);
+                return rdm_core::reply::status::bounded_rejected_tags(&why);
             }
             (if arrived.is_empty() { None } else { Some(tags) }, StatusReply::TagsCreated { node_id: node_id.clone(), incarnation: incarnation.clone(), already_carried: already })
         }
@@ -196,12 +196,12 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         Ok(Err(held)) => {
             let why = format!("{me}: nodes.storage refused the row of {} ({node_id}): {held}", subject.name);
             span.record("detail", why.as_str());
-            StatusReply::node_row_refused(&subject.name.to_string(), &why)
+            rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &why)
         }
         Err(e) => {
             let why = format!("{me}: nodes.storage refused the row of {} ({node_id}): {e}", subject.name);
             span.record("detail", why.as_str());
-            StatusReply::node_row_refused(&subject.name.to_string(), &why)
+            rdm_core::reply::status::bounded_node_row_refused(&subject.name.to_string(), &why)
         }
     }
 }

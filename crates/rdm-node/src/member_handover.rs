@@ -93,7 +93,7 @@ impl MemberDoor {
         let me = self.held_name();
         let of = Refusing { operation, build_id, attempt, holder: seats.first().map(|u| &u.holder), successor: seats.first().map(|u| &u.successor) };
         refused(side, "conflict", &format!("{me}: operation {operation} was answered for seats {:?}; this call carries {seats:?}", held.0), &of);
-        Some(Reply::RejectedConflict { operation: operation.to_string() })
+        Some(rdm_core::reply::handover::rejected_conflict(operation.to_string()))
     }
 
     /// Serve one node.primary.update call.
@@ -106,7 +106,7 @@ impl MemberDoor {
                 let me = self.held_name();
                 let reason = format!("{me} holds no node-admin or fabric seat: the seat of its cohort is moved by its mesh-primary, which writes the row and commands it with the row's content");
                 refused("holder", "not-authority", &reason, &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None });
-                Reply::not_authority(&reason)
+                rdm_core::reply::handover::bounded_not_authority(&reason)
             }
         }
     }
@@ -120,7 +120,7 @@ impl MemberDoor {
         let me = self.held_name();
         let Some(first) = seats.first().cloned() else {
             refused("successor", "conflict", &format!("{me}: the call names no seat, so it is no committed row's content"), &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None });
-            return Reply::RejectedConflict { operation };
+            return rdm_core::reply::handover::rejected_conflict(operation);
         };
         let committed: Vec<CommittedSeat> = seats.iter().map(SeatUpdate::committed).collect();
         // The holder by the name this node's mesh channel holds for its birth.
@@ -153,7 +153,7 @@ impl MemberDoor {
         let me = self.held_name();
         let Some(first) = seats.first().cloned() else {
             refused("holder", "conflict", &format!("{me}: the command names no seat, so it carries no committed row"), &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None });
-            return Reply::RejectedConflict { operation };
+            return rdm_core::reply::handover::rejected_conflict(operation);
         };
         let span = tracing::info_span!("rdm.node_admin.seat.update.via-holder-call", node = %me, fabric = %fabric, operation = %operation, build_id = %build_id, attempt, holder = %births(&first.holder), successor = %births(&first.successor), seat = first.seat.name(), revision = first.revision, outcome = tracing::field::Empty, detail = tracing::field::Empty);
         let req = Request::PrimaryUpdate { seats: seats.clone(), build_id: build_id.clone(), attempt, operation: operation.clone() };
@@ -168,7 +168,7 @@ impl MemberDoor {
             other => {
                 let detail = format!("{me}: node.primary.update {operation} to {} did not answer node.primary.updated: the {} call ended {} ({other:?}); the seat is the successor's from the row", births(&first.successor), req.op(), other.name());
                 span.record("outcome", other.name()).record("detail", detail.as_str());
-                Reply::incomplete(&detail)
+                rdm_core::reply::handover::bounded_incomplete(&detail)
             }
         }
     }
@@ -184,7 +184,7 @@ pub fn serve_member(b: ServerBuilder, slot: MemberSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(Reply::NotReady { reason: "this node has not joined its mesh yet".into() });
+                return Ok(rdm_core::reply::handover::not_ready("this node has not joined its mesh yet".into()));
             };
             Ok(door.serve(req).await)
         }

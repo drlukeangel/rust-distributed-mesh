@@ -95,7 +95,7 @@ pub struct SourceFailure {
 impl SourceFailure {
     /// The refusal that names this failure, within the reply's budgets.
     pub fn reply(&self) -> Reply {
-        Reply::source_failed(&self.source, &self.op, &self.cause)
+        rdm_core::reply::handover::bounded_source_failed(&self.source, &self.op, &self.cause)
     }
 }
 
@@ -520,7 +520,7 @@ impl HandoverDoor {
                 let fabric_primary = fabric_primary_mesh.as_deref().map(|m| format!(", nor do those of the fabric-primary's mesh {m}")).unwrap_or_else(|| ", and the seat book names no fabric-primary whose mesh's rows it could read".into());
                 let detail = format!("{me}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}{fabric_primary}), and no seat moves before it does", status.name());
                 refused(side, "fabric-not-ready", &detail, of, None);
-                Some(Reply::fabric_not_ready(&detail))
+                Some(rdm_core::reply::handover::bounded_fabric_not_ready(&detail))
             }
             Err(e) => {
                 let failed = SourceFailure { source: format!("status storage of {me}"), op: format!("read whether fabric {fabric_id} first reached ready-for-traffic for node.primary.update {operation}"), cause: e };
@@ -552,7 +552,7 @@ impl HandoverDoor {
         }
         let Some(holder_mesh) = named_holder.as_ref().map(|h| h.mesh.clone()) else {
             refused("successor", "conflict", &format!("{me}: the call names no seat, so it is no committed row's content"), &of, None);
-            return Reply::RejectedConflict { operation };
+            return rdm_core::reply::handover::rejected_conflict(operation);
         };
         let row = match self.storage.seat_transfer(&holder_mesh, &operation).await {
             Ok(r) => r,
@@ -565,18 +565,18 @@ impl HandoverDoor {
         let Some(row) = row else {
             let record = format!("the seat-transfer row {operation} under mesh {holder_mesh}");
             refused("successor", "record-absent", &format!("{me}: the store root holds no {record}: no row was committed for this call"), &of, None);
-            return Reply::record_absent(&record, &me.to_string());
+            return rdm_core::reply::handover::bounded_record_absent(&record, &me.to_string());
         };
         if !is_row(&row, &seats, &build_id) {
             let detail = format!("operation {operation} committed another payload: Build {} attempt {}, holder {}, successor {}, seats {:?}", row.build_id, row.attempt, births(&row.holder), births(&row.successor), row.seats);
             refused("successor", "conflict", &detail, &of, None);
-            return Reply::RejectedConflict { operation };
+            return rdm_core::reply::handover::rejected_conflict(operation);
         }
         let name = self.topology.read().await.births().find(|n| n.node_id == row.holder.node_id).map(|n| n.name.clone());
         let Some(name) = name else {
             let record = format!("the node record of {}", births(&row.holder));
             refused("successor", "record-absent", &format!("{me} holds no {record}: the update's subject cannot be named"), &of, None);
-            return Reply::record_absent(&record, &me.to_string());
+            return rdm_core::reply::handover::bounded_record_absent(&record, &me.to_string());
         };
         let op = self.op_of(&row.holder, name.clone(), &row.build_id, row.attempt, &row.operation);
         // A row that moves the fabric seat is the fabric-primary's own update, run as a step of the
@@ -661,7 +661,7 @@ impl HandoverDoor {
         let of = Refusing { operation: &operation, build_id: &build_id, attempt, holder: Some(&me), successor: None };
         if fabric != self.fabric {
             refused("holder", "conflict", &format!("the command names fabric {fabric}, this admin is in {}", self.fabric), &of, None);
-            return Reply::RejectedConflict { operation };
+            return rdm_core::reply::handover::rejected_conflict(operation);
         }
         let mut mesh_expected = None;
         let mut mesh_named = false;
@@ -677,27 +677,27 @@ impl HandoverDoor {
                     if e.expected_revision != 0 {
                         if let Some(h) = self.membership.seats().fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation) && h.revision != e.expected_revision) {
                             refused("holder", "stale-seat", &format!("{me_name}: the fabric-primary seat is at revision {}", h.revision), &of, None);
-                            return Reply::RejectedStaleSeat { seat: e.seat.clone(), expected: e.expected_revision, current: h.revision };
+                            return rdm_core::reply::handover::rejected_stale_seat(e.seat.clone(), e.expected_revision, h.revision);
                         }
                     }
                 }
                 WireSeat::MeshPrimary { mesh } => {
                     let reason = format!("{me_name}: the command names the mesh-primary seat of {mesh}; this admin is of mesh {}", self.me.mesh);
                     refused("holder", "not-authority", &reason, &of, None);
-                    return Reply::not_authority(&reason);
+                    return rdm_core::reply::handover::bounded_not_authority(&reason);
                 }
                 WireSeat::Cohort { mesh, kind } => {
                     // Another cohort of a mesh: commanded through that mesh's primary, its commander and
                     // row writer (Q3), alone in its command.
                     if seats.len() != 1 {
                         refused("holder", "conflict", &format!("{me_name}: the command names the {} seat of {mesh} with other seats; a cohort's seat moves in its own row", kind.name()), &of, None);
-                        return Reply::RejectedConflict { operation };
+                        return rdm_core::reply::handover::rejected_conflict(operation);
                     }
                     let holder = self.topology.read().await.cohort_primary(mesh, *kind).cloned();
                     let Some(holder) = holder.filter(|_| *mesh == self.me.mesh) else {
                         let reason = format!("{me_name}: the command names the {} seat of {mesh}; this admin, of mesh {}, names no holder of it in its view", kind.name(), self.me.mesh);
                         refused("holder", "not-authority", &reason, &of, None);
-                        return Reply::not_authority(&reason);
+                        return rdm_core::reply::handover::bounded_not_authority(&reason);
                     };
                     let expected = (e.expected_revision != 0).then_some(e.expected_revision);
                     return match self.update_cohort_primary(&holder, expected, &build_id, attempt, &operation).await {
@@ -733,7 +733,7 @@ impl HandoverDoor {
             (false, false) => {
                 let reason = format!("{me_name}: the command names no seat to move");
                 refused("holder", "not-authority", &reason, &of, None);
-                return Reply::not_authority(&reason);
+                return rdm_core::reply::handover::bounded_not_authority(&reason);
             }
         };
         match self.update_primary(moving, mesh_expected, &build_id, attempt, &operation).await {
@@ -785,7 +785,7 @@ impl HandoverDoor {
     pub async fn move_own_seats(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
         use crate::build_drive::SeatMoveEnd;
         self.update_primary(moving, None, build_id, attempt, operation).await.map_err(|e| match e {
-            Reply::Failed { step, reason } => SeatMoveEnd::Failed { step, reason },
+            Reply::Failed { step, reason, code } => SeatMoveEnd::Failed { step, reason, code },
             r @ Reply::Incomplete { .. } => SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name())),
             other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
         })
@@ -808,7 +808,7 @@ impl HandoverDoor {
             Ok(Some(row)) => {
                 let detail = format!("operation {operation} committed another update (holder {}, successor {})", births(&row.holder), births(&row.successor));
                 refused("holder", "conflict", &detail, &of, None);
-                return Err(Reply::RejectedConflict { operation: operation.to_string() });
+                return Err(rdm_core::reply::handover::rejected_conflict(operation.to_string()));
             }
             Ok(None) => {}
             Err(e) => {
@@ -824,11 +824,11 @@ impl HandoverDoor {
             let Some(h) = book.mesh(&self.me.mesh).filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
                 let reason = format!("{me_name} holds no mesh-primary seat of {}: its record names {}", self.me.mesh, book.mesh(&self.me.mesh).map(|h| h.to_string()).unwrap_or_else(|| "no holder".into()));
                 refused("holder", "not-authority", &reason, &of, None);
-                return Err(Reply::not_authority(&reason));
+                return Err(rdm_core::reply::handover::bounded_not_authority(&reason));
             };
             if let Some(e) = expected.filter(|e| *e != h.revision) {
                 refused("holder", "stale-seat", &format!("{me_name}: the mesh-primary seat is at revision {}", h.revision), &of, None);
-                return Err(Reply::RejectedStaleSeat { seat: wire, expected: e, current: h.revision });
+                return Err(rdm_core::reply::handover::rejected_stale_seat(wire, e, h.revision));
             }
             held.push((wire, h));
         }
@@ -836,7 +836,7 @@ impl HandoverDoor {
             let Some(h) = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation)) else {
                 let reason = format!("{me_name} holds no fabric-primary seat: its record names {}", book.fabric().map(|h| h.to_string()).unwrap_or_else(|| "no holder".into()));
                 refused("holder", "not-authority", &reason, &of, None);
-                return Err(Reply::not_authority(&reason));
+                return Err(rdm_core::reply::handover::bounded_not_authority(&reason));
             };
             held.push((WireSeat::FabricPrimary, h));
         }
@@ -844,7 +844,7 @@ impl HandoverDoor {
             if h.revision.checked_add(1).is_none() {
                 let detail = overflow_detail(&me_name, seat, h.revision);
                 refused("holder", "revision-overflow", &detail, &of, None);
-                return Err(Reply::RejectedRevisionOverflow { seat: seat.clone(), revision: h.revision });
+                return Err(rdm_core::reply::handover::rejected_revision_overflow(seat.clone(), h.revision));
             }
         }
         // Step 2: the pre-check, from this writer's own view.
@@ -853,19 +853,19 @@ impl HandoverDoor {
         let Some(me_node) = nodes.iter().find(|n| n.node_id == self.node_id).cloned() else {
             let record = format!("the node record of {me_name}");
             refused("holder", "record-absent", &format!("{me_name} is not a member of its own view"), &of, None);
-            return Err(Reply::record_absent(&record, &me_name.to_string()));
+            return Err(rdm_core::reply::handover::bounded_record_absent(&record, &me_name.to_string()));
         };
         let successor = match crate::election::commanded_successor(&nodes, &self.incumbency(), &me_node, moving) {
             Ok(n) => n,
             Err(text) => {
                 refused("holder", "no-successor", &text, &of, None);
-                return Err(Reply::no_successor(&text));
+                return Err(rdm_core::reply::handover::bounded_no_successor(&text));
             }
         };
         let Some(to) = birth_of(&successor) else {
             let record = format!("the birth of {}", successor.name);
             refused("holder", "record-absent", &format!("{me_name}'s view holds {} with no birth", successor.name), &of, None);
-            return Err(Reply::record_absent(&record, &me_name.to_string()));
+            return Err(rdm_core::reply::handover::bounded_record_absent(&record, &me_name.to_string()));
         };
         tracing::Span::current().record("successor", successor.name.to_string().as_str()).record("successor_node_id", to.node_id.as_str());
         let seats: Vec<CommittedSeat> = held.iter().map(|(seat, h)| CommittedSeat { seat: seat.clone(), holder: to.clone(), revision: h.revision + 1 }).collect();
@@ -968,7 +968,7 @@ impl HandoverDoor {
                 let proof = format!("{} exit-proof row recorded (proof {} observed at {} ms)", births(&row.successor), exit.proof, exit.observed_at_ms);
                 let reason = self.gone_after_row_reason(row, &proof).await;
                 refused("holder", "exit-proven", &reason, &of, None);
-                return Err(Reply::failed("primary-update", &reason));
+                return Err(rdm_core::reply::handover::bounded_failed("primary-update", &reason, rdm_core::outcome::Code::Unavailable));
             }
             Ok(None) => {}
             Err(e) => {
@@ -976,7 +976,7 @@ impl HandoverDoor {
                 let failed = SourceFailure { source: format!("status.storage of {me}, the exit-proof row of {} under mesh {}", births(&row.successor), row.successor.mesh), op: format!("read the exit-proof row of the successor {} names", row.operation), cause: e };
                 let detail = format!("{me}: node.primary.update {} committed the seat(s) to {}, and whether that birth is proven exited cannot be read, so it is not called: {failed}", row.operation, births(&row.successor));
                 refused("holder", "source-failed", &detail, &of, Some(&failed));
-                return Err(Reply::incomplete(&detail));
+                return Err(rdm_core::reply::handover::bounded_incomplete(&detail));
             }
         }
         self.update_successor(row).await
@@ -1032,11 +1032,11 @@ impl HandoverDoor {
             }
             let failed_reason = self.gone_after_row_reason(row, &why).await;
             refused(side, reason, &failed_reason, &of, None);
-            return Err(Reply::failed("primary-update", &failed_reason));
+            return Err(rdm_core::reply::handover::bounded_failed("primary-update", &failed_reason, rdm_core::outcome::Code::Unavailable));
         }
         let detail = format!("{me}: node.primary.update {} to {} did not answer node.primary.updated; the call {call} ({call_why}); {why}", row.operation, births(&row.successor));
         refused(side, reason, &detail, &of, None);
-        Err(Reply::incomplete(&detail))
+        Err(rdm_core::reply::handover::bounded_incomplete(&detail))
     }
 
     /// The plain-English failure reason when the new holder's process is gone, provider-confirmed,
@@ -1203,7 +1203,7 @@ impl HandoverDoor {
         let req = Request::UpdatePrimary { fabric: self.fabric.clone(), holder: hb.clone(), seats: vec![SeatRevision { seat: WireSeat::of(Seat::MeshPrimary, &holder.mesh), expected_revision: held.revision }], build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         match self.call_once(&hb.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
             Called::Reply(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => Ok(self.install_committed(&holder.name, &hb, revisions, build_id, attempt, operation, "primary-updated").await),
-            Called::Reply(Reply::Failed { step, reason }) => Err(("failed", SeatMoveEnd::Failed { step, reason })),
+            Called::Reply(Reply::Failed { step, reason, code }) => Err(("failed", SeatMoveEnd::Failed { step, reason, code })),
             Called::Reply(Reply::Incomplete { reason }) => Err(("incomplete", SeatMoveEnd::Incomplete(format!("{me}: node.primary.update {operation} of {} is incomplete: {reason}", holder.name)))),
             Called::Reply(refusal) => {
                 let (reason, detail) = refusal_reason(&refusal);
@@ -1227,7 +1227,7 @@ impl HandoverDoor {
                 read.in_scope(|| tracing::info!("the fabric-primary read the committed row of a holder proven gone: it obtains the successor's node.primary.updated before it installs"));
                 match self.call_successor(&row, "commander").instrument(read).await {
                     Ok(revisions) => Ok(self.install_committed(&holder.name, hb, revisions, build_id, attempt, operation, "committed-row").await),
-                    Err(Reply::Failed { step, reason }) => Err(("failed", SeatMoveEnd::Failed { step, reason })),
+                    Err(Reply::Failed { step, reason, code }) => Err(("failed", SeatMoveEnd::Failed { step, reason, code })),
                     Err(ended) => Err(("incomplete", SeatMoveEnd::Incomplete(refusal_reason(&ended).1))),
                 }
             }
@@ -1389,7 +1389,7 @@ impl HandoverDoor {
                 let me = self.held_name();
                 let reason = format!("{me} is a node-admin: it holds no seat of a cohort of another type, whose mesh-primary commands that cohort's holder with the row");
                 refused("holder", "not-authority", &reason, &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None }, None);
-                Reply::not_authority(&reason)
+                rdm_core::reply::handover::bounded_not_authority(&reason)
             }
         }
     }
@@ -1444,7 +1444,7 @@ impl HandoverDoor {
         let Some(hb) = birth_of(holder) else {
             let record = format!("the birth of {}", holder.name);
             refused("writer", "record-absent", &format!("{me}'s view holds {} with no birth", holder.name), &Refusing { operation, build_id, attempt, holder: None, successor: None }, None);
-            return Err(Reply::record_absent(&record, &me.to_string()));
+            return Err(rdm_core::reply::handover::bounded_record_absent(&record, &me.to_string()));
         };
         let of = Refusing { operation, build_id, attempt, holder: Some(&hb), successor: None };
         if let Some(refusal) = self.refused_before_first_ready("writer", &of).await {
@@ -1455,7 +1455,7 @@ impl HandoverDoor {
         if self.me.mesh != mesh || !book.mesh(&mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
             let reason = format!("{me} is not the mesh-primary of {mesh}, the {} cohort's commander and row writer: its record names {}", kind.name(), book.mesh(&mesh).map(|h| h.to_string()).unwrap_or_else(|| "no holder".into()));
             refused("writer", "not-authority", &reason, &of, None);
-            return Err(Reply::not_authority(&reason));
+            return Err(rdm_core::reply::handover::bounded_not_authority(&reason));
         }
         // A retry or a later attempt after the row: the row stands, and the update completes from it.
         match self.storage.seat_transfer(&mesh, operation).await {
@@ -1463,7 +1463,7 @@ impl HandoverDoor {
             Ok(Some(row)) => {
                 let detail = format!("operation {operation} committed another update (holder {}, successor {})", births(&row.holder), births(&row.successor));
                 refused("writer", "conflict", &detail, &of, None);
-                return Err(Reply::RejectedConflict { operation: operation.to_string() });
+                return Err(rdm_core::reply::handover::rejected_conflict(operation.to_string()));
             }
             Ok(None) => {}
             Err(e) => {
@@ -1479,17 +1479,17 @@ impl HandoverDoor {
         if !view.cohort_primary(&mesh, kind).is_some_and(|p| p.node_id == hb.node_id) {
             let reason = format!("{me}'s view names {} the {} primary of {mesh}, not {}", view.cohort_primary(&mesh, kind).map(|p| p.name.to_string()).unwrap_or_else(|| "no node".into()), kind.name(), holder.name);
             refused("writer", "not-authority", &reason, &of, None);
-            return Err(Reply::not_authority(&reason));
+            return Err(rdm_core::reply::handover::bounded_not_authority(&reason));
         }
         let revision = book.cohort(&mesh, kind).map(|h| h.revision).unwrap_or(0);
         if let Some(e) = expected.filter(|e| *e != revision) {
             refused("writer", "stale-seat", &format!("{me}: the {} seat of {mesh} is at revision {revision}", kind.name()), &of, None);
-            return Err(Reply::RejectedStaleSeat { seat: wire, expected: e, current: revision });
+            return Err(rdm_core::reply::handover::rejected_stale_seat(wire, e, revision));
         }
         if revision.checked_add(1).is_none() {
             let detail = overflow_detail(&me, &wire, revision);
             refused("writer", "revision-overflow", &detail, &of, None);
-            return Err(Reply::RejectedRevisionOverflow { seat: wire, revision });
+            return Err(rdm_core::reply::handover::rejected_revision_overflow(wire, revision));
         }
         // Step 2: the pre-check, from this writer's own view (Q7's text when none).
         let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
@@ -1497,13 +1497,13 @@ impl HandoverDoor {
             Ok(n) => n,
             Err(text) => {
                 refused("writer", "no-successor", &text, &of, None);
-                return Err(Reply::no_successor(&text));
+                return Err(rdm_core::reply::handover::bounded_no_successor(&text));
             }
         };
         let Some(to) = birth_of(&successor) else {
             let record = format!("the birth of {}", successor.name);
             refused("writer", "record-absent", &format!("{me}'s view holds {} with no birth", successor.name), &of, None);
-            return Err(Reply::record_absent(&record, &me.to_string()));
+            return Err(rdm_core::reply::handover::bounded_record_absent(&record, &me.to_string()));
         };
         tracing::Span::current().record("successor", successor.name.to_string().as_str()).record("successor_node_id", to.node_id.as_str());
         let seats = vec![CommittedSeat { seat: wire.clone(), holder: to.clone(), revision: revision + 1 }];
@@ -1558,7 +1558,7 @@ impl HandoverDoor {
                     let of = Refusing { operation: &row.operation, build_id: &row.build_id, attempt: row.attempt, holder: Some(&row.holder), successor: Some(&row.successor) };
                     let detail = format!("{me}: node.primary.update {} committed the seat to {}; the command to its holder {holder} did not answer node.primary.updated: {call} ({why}); the seat is the successor's from the row and the update is incomplete until a later attempt obtains its answer", row.operation, births(&row.successor));
                     refused("writer", call, &detail, &of, None);
-                    return Err(Reply::incomplete(&detail));
+                    return Err(rdm_core::reply::handover::bounded_incomplete(&detail));
                 }
             }
         };
@@ -1585,7 +1585,7 @@ impl HandoverDoor {
         if mp.node_id == self.node_id {
             return match self.update_cohort_primary(holder, None, build_id, attempt, operation).await {
                 Ok(revisions) => Ok((successor_of(&revisions), revisions)),
-                Err(Reply::Failed { step, reason }) => Err(("failed", SeatMoveEnd::Failed { step, reason })),
+                Err(Reply::Failed { step, reason, code }) => Err(("failed", SeatMoveEnd::Failed { step, reason, code })),
                 Err(Reply::Incomplete { reason }) => Err(("incomplete", SeatMoveEnd::Incomplete(reason))),
                 Err(refusal) => {
                     let (reason, detail) = refusal_reason(&refusal);
@@ -1597,7 +1597,7 @@ impl HandoverDoor {
         let req = Request::UpdatePrimary { fabric: self.fabric.clone(), holder: hb.clone(), seats: vec![SeatRevision { seat: WireSeat::of(Seat::Cohort(kind), &holder.mesh), expected_revision: expected }], build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         match self.call_once(&mp.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
             Called::Reply(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => Ok(self.install_committed(&holder.name, hb, revisions, build_id, attempt, operation, "primary-updated").await),
-            Called::Reply(Reply::Failed { step, reason }) => Err(("failed", SeatMoveEnd::Failed { step, reason })),
+            Called::Reply(Reply::Failed { step, reason, code }) => Err(("failed", SeatMoveEnd::Failed { step, reason, code })),
             Called::Reply(Reply::Incomplete { reason }) => Err(("incomplete", SeatMoveEnd::Incomplete(format!("{me}: node.primary.update {operation} of {} is incomplete at {}: {reason}", holder.name, mp.name)))),
             Called::Reply(refusal) => {
                 let (reason, detail) = refusal_reason(&refusal);
@@ -1709,7 +1709,7 @@ fn refusal_reason(r: &Reply) -> (&'static str, String) {
         Reply::RejectedSourceFailed { source, op, cause } => ("source-failed", format!("{source}: {op}: {cause}")),
         Reply::RejectedRecordAbsent { record, holder } => ("record-absent", format!("{holder} holds no {record}: it was never written there")),
         Reply::Incomplete { reason } => ("incomplete", reason.clone()),
-        Reply::Failed { step, reason } => ("failed", format!("{step}: {reason}")),
+        Reply::Failed { step, reason, .. } => ("failed", format!("{step}: {reason}")),
         Reply::NotReady { reason } => ("not-ready", reason.clone()),
         Reply::Unauthorized { reason } => ("unauthorized", reason.clone()),
         Reply::PeerUnresolved { reason } => ("peer-unresolved", reason.clone()),
@@ -1741,7 +1741,7 @@ pub fn serve(b: ServerBuilder, slot: HandoverSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(Reply::NotReady { reason: "this admin holds no view yet".into() });
+                return Ok(rdm_core::reply::handover::not_ready("this admin holds no view yet".into()));
             };
             Ok(door.serve(req).await)
         }

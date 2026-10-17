@@ -462,13 +462,21 @@ names below.
 
 Every canonical call emits `rdm.node_rpc.request.update.via-call` on the caller and
 `rdm.node_rpc.request.serve.via-direct` on the server. The caller records `target`, `op`,
-`outcome`, `reason`, `reused`, `elapsed_ms`; the server records `protocol`, `op`, `peer`,
-`caller_system`, `context_dropped`, `test_case`, `scenario`, `operation`.
+`outcome`, `reason`, `reused`, `elapsed_ms`, `code`, `detail`; the server records `protocol`,
+`op`, `peer`, `caller_system`, `context_dropped`, `test_case`, `scenario`, `operation`,
+`code`, `detail`. `code` is the standard gRPC name from §25. `detail` names the typed result
+or refusal, or the typed local delivery reason; explanation text stays in `reason` and never
+selects a code. Both attributes come from the typed outcome. An owner's bound lapsing is
+`DEADLINE_EXCEEDED`, including before commit; resolver Unknown is `NOT_FOUND`, while a proven
+receiver-gone is `UNAVAILABLE`; a lost connection after commit is `UNKNOWN`, while HandlerFault
+and a real PROTOCOL_VIOLATION are `INTERNAL`.
 With propagated context, the server shares the caller's TraceId and its ParentSpanId is the
 call span's SpanId. Handler spans belong to the serving process. The invocation's own end — a stream's
-`rdm.node_rpc.stream.serve.via-terminal` or refusal, a unary fault or panic — is a child of its serve span. Compatibility adapters emit
-their own diagnostics as stated below; they do not acquire canonical spans merely by being
-reserved in the ledger.
+`rdm.node_rpc.stream.serve.via-terminal` or refusal, a unary fault or panic — is a child of its serve span.
+Stream result frames and the invocation's end record their own `code` and `detail`; workflow step
+spans retain the step's code and named detail, and a failed Build receipt carries that code beside
+its step and explanation. Compatibility adapters emit their own diagnostics as stated below;
+they do not acquire canonical spans merely by being reserved in the ledger.
 
 Each call carries the operation trace; the child calls of one workflow share it, each with its
 own caller span. Correlate events and receipts by `build_id`, `attempt`, `operation`, `step`,
@@ -1416,7 +1424,7 @@ pub enum Disposition {
 
 pub enum StepResult {
     Complete,
-    Failed { reason: String },
+    Failed { reason: String, code: Code },
 }
 
 pub struct StepReceipt {
@@ -1442,7 +1450,7 @@ pub enum BuildReply {
     Blocked { build_id: String, attempt: u32, operation: String, step: String, reason: String },
     Steps { build_id: String, chunk_index: u32, chunk_count: u32, steps: Vec<StepReceipt> },
     Complete { build_id: String, attempt: u32 },
-    Failed { build_id: String, attempt: u32, operation: String, step: String, reason: String },
+    Failed { build_id: String, attempt: u32, operation: String, step: String, reason: String, code: Code },
     HandedOff { build_id: String, attempt: u32, to: String },
     Got {
         build_id: String,
@@ -1513,8 +1521,8 @@ so a new transfer.
 The commanded arm rides the same op: the fabric-primary commands a mesh-primary's update with
 `UpdatePrimary { seat, build_id, run, operation }` on the holder, and the mesh-primary commands another cohort's
 holder the same way. The holder runs the sequence and answers `PrimaryUpdated { revisions }` when it completes,
-or `Failed { step, reason }`, the Build carrier's terminal (R-BI4), when it ends failed; `Incomplete` is never
-used for a step that ended. The commander fails the step on that variant, never on the reason's text, and
+or `Failed { step, reason, code }`, the Build carrier's terminal (R-BI4), when it ends failed; `Incomplete` is never
+used for a step that ended. The commander fails the step on that variant, retaining the code and never selecting it from the reason's text, and
 claims the attempt at the claim door before it commands.
 
 Lost replies: the successor keeps serving PrimaryUpdate and Status after the row. An identical retry

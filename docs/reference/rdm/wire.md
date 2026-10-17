@@ -829,6 +829,7 @@ One frame of a Build stream.
 | 5.2 | `operation` | `String` |  |  | The operation the failed step belongs to. |
 | 5.3 | `step` | `String` |  |  | The step that failed. |
 | 5.4 | `reason` | `String` |  |  | The step's own reason. |
+| 5.5 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The standard code captured where the failure occurred. |
 | 6 | **`HandedOff`** |  |  | `name() = "handed-off"` | Terminal of `AttemptRun`: the run ended at an operation another executor runs. The |
 | 6.0 | `build_id` | `String` |  |  | The Build. |
 | 6.1 | `attempt` | `u32` |  |  | The attempt that ran. |
@@ -985,6 +986,7 @@ The answer to a node.primary.update call.
 | 16 | **`Failed`** |  |  | `name() = "failed"` | The commanded `node.primary.update` ended failed after the committed row (Q10, R-PU2, R-BI4): |
 | 16.0 | `step` | `String` |  |  | The step that failed (`primary-update`). Within `MAX_FAILED_STEP_BYTES`. |
 | 16.1 | `reason` | `String` |  |  | Why the step failed. Within `MAX_FAILED_REASON_BYTES`. |
+| 16.2 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The standard code captured where the failure occurred. |
 
 ## 0x22 `node-command`
 
@@ -1666,6 +1668,36 @@ The observability context one invocation carries.
 | 1 | `traceparent` | `Option<String>` |  | The W3C `traceparent`. |
 | 2 | `tracestate` | `Option<String>` |  | The W3C `tracestate`. |
 | 3 | `baggage` | `Option<String>` |  | The W3C `baggage`. |
+
+<a id="t-rdm_core-outcome-Code"></a>
+
+### `Code`
+
+`crates/rdm-core/src/outcome.rs` · enum · 17 variants · rdm-core
+
+The standard gRPC outcome codes. Derived from typed outcomes; failed Build receipts retain the numeric code.
+
+serde: `try_from = "u8", into = "u8"`
+
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`Ok`** = `0` |  |  | `name() = "OK"` | Standard code 0: `OK`. |
+| 1 | **`Cancelled`** = `1` |  |  | `name() = "CANCELLED"` | Standard code 1: `CANCELLED`. |
+| 2 | **`Unknown`** = `2` |  |  | `name() = "UNKNOWN"` | Standard code 2: `UNKNOWN`. |
+| 3 | **`InvalidArgument`** = `3` |  |  | `name() = "INVALID_ARGUMENT"` | Standard code 3: `INVALID_ARGUMENT`. |
+| 4 | **`DeadlineExceeded`** = `4` |  |  | `name() = "DEADLINE_EXCEEDED"` | Standard code 4: `DEADLINE_EXCEEDED`. |
+| 5 | **`NotFound`** = `5` |  |  | `name() = "NOT_FOUND"` | Standard code 5: `NOT_FOUND`. |
+| 6 | **`AlreadyExists`** = `6` |  |  | `name() = "ALREADY_EXISTS"` | Standard code 6: `ALREADY_EXISTS`. |
+| 7 | **`PermissionDenied`** = `7` |  |  | `name() = "PERMISSION_DENIED"` | Standard code 7: `PERMISSION_DENIED`. |
+| 8 | **`ResourceExhausted`** = `8` |  |  | `name() = "RESOURCE_EXHAUSTED"` | Standard code 8: `RESOURCE_EXHAUSTED`. |
+| 9 | **`FailedPrecondition`** = `9` |  |  | `name() = "FAILED_PRECONDITION"` | Standard code 9: `FAILED_PRECONDITION`. |
+| 10 | **`Aborted`** = `10` |  |  | `name() = "ABORTED"` | Standard code 10: `ABORTED`. |
+| 11 | **`OutOfRange`** = `11` |  |  | `name() = "OUT_OF_RANGE"` | Standard code 11: `OUT_OF_RANGE`. |
+| 12 | **`Unimplemented`** = `12` |  |  | `name() = "UNIMPLEMENTED"` | Standard code 12: `UNIMPLEMENTED`. |
+| 13 | **`Internal`** = `13` |  |  | `name() = "INTERNAL"` | Standard code 13: `INTERNAL`. |
+| 14 | **`Unavailable`** = `14` |  |  | `name() = "UNAVAILABLE"` | Standard code 14: `UNAVAILABLE`. |
+| 15 | **`DataLoss`** = `15` |  |  | `name() = "DATA_LOSS"` | Standard code 15: `DATA_LOSS`. |
+| 16 | **`Unauthenticated`** = `16` |  |  | `name() = "UNAUTHENTICATED"` | Standard code 16: `UNAUTHENTICATED`. |
 
 <a id="t-rdm_core-seat-transfer-CommittedSeat"></a>
 
@@ -2795,6 +2827,7 @@ How a step ended, as a receipt says it.
 | 0 | **`Complete`** |  |  | The step completed. |
 | 1 | **`Failed`** |  |  | The step failed. |
 | 1.0 | `reason` | `String` |  | Why it failed. |
+| 1.1 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  | The standard code captured where the failure occurred. |
 
 <a id="t-rdm_core-topology-StoredNode"></a>
 

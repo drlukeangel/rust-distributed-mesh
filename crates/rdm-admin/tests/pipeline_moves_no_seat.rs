@@ -61,7 +61,7 @@ impl NodeObserver for Executor {
     }
     async fn send_command(&self, node: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
         self.sent.lock().unwrap().push(cmd);
-        CommandAdmission::NotSent { reason: format!("this cell sends {} nothing", node.name) }
+        CommandAdmission::NotSent { reason: format!("this cell sends {} nothing", node.name) , code: rdm_core::outcome::Code::FailedPrecondition }
     }
 }
 
