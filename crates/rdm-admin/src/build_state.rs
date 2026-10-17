@@ -3362,3 +3362,14 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod outcome_code_receipt_cells {
+    #[test]
+    fn a_failed_step_receipt_carries_its_standard_code_beside_its_reason() {
+        let receipt = super::StepOutcome::failed("same explanation");
+        let value = serde_json::to_value(receipt).unwrap();
+        assert_eq!(value["failed"]["code"], serde_json::json!(9), "the failed-state receipt carries FAILED_PRECONDITION, not just explanation text");
+        assert_eq!(value["failed"]["reason"], "same explanation");
+    }
+}

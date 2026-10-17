@@ -233,6 +233,7 @@ async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller
     let (c, _) = client(Some("rdm"), &[&p.resolved]).await;
     let caller = tracing::info_span!("test.caller");
     let trace = caller.context().span().span_context().trace_id().to_string();
+    let _artifact = crate::common::TraceArtifact::new(&trace);
     let parent = caller.context().span().span_context().span_id().to_string();
     let out = {
         let _g = caller.enter();
@@ -254,6 +255,10 @@ async fn a_client_without_explicit_context_sends_its_current_span_and_its_caller
     assert_eq!(call.len(), 1, "one call span in the caller's trace: {call:?}");
     assert_eq!(call[0].parent_span_id.to_string(), parent, "the call span is a child of the caller's span");
     assert_eq!(attr(&call[0], "outcome").as_deref(), Some("Reply"));
+    assert_eq!(attr(&call[0], "code").as_deref(), Some("OK"), "the caller records the derived standard code");
+    assert_eq!(attr(&call[0], "detail").as_deref(), Some("pong"), "the named typed reply detail stays beside the code");
+    assert_eq!(attr(&serve[0], "code").as_deref(), Some("OK"), "the server records the same derived code");
+    assert_eq!(attr(&serve[0], "detail").as_deref(), Some("pong"));
     assert_eq!(serve[0].parent_span_id, call[0].span_context.span_id(), "the serve span is a child of the call span");
     assert_eq!(attr(&serve[0], "caller_system").as_deref(), Some("rdm"));
 }
