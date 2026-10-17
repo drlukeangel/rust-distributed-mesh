@@ -16,7 +16,7 @@
 //! `Indeterminate`. Dropping the stream ends the invocation: the server's next write sees the caller
 //! gone.
 
-use crate::client::{Attempted, Budget, CallEvidence, CallOptions, NodeRpcClient, OwedCall, Payload};
+use crate::client::{AttemptEnd, Attempted, Budget, CallEvidence, CallOptions, NodeRpcClient, OwedCall, Payload};
 use crate::delivery::{AckOnRecovery, FrameOut, Settled, SlotEvent, Written};
 use crate::resolve::NodeTarget;
 use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
@@ -355,6 +355,9 @@ pub struct ReplyStream<P: StreamingProtocol> {
     /// The terminal was handed over: the invocation completes once the owner recovers it.
     terminal_handed: bool,
     read_only: bool,
+    /// The path the attempt task ended on, once it said (i146 Q38): named if the stream's attempts end
+    /// before its terminal.
+    attempt_end: Option<AttemptEnd>,
     _p: PhantomData<fn() -> P>,
 }
 
@@ -404,8 +407,13 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                     Some(Attempted::Reset(c)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::Reset(c)))),
                     Some(Attempted::ReceiverGone(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReceiverGone(why)))),
                     Some(Attempted::TransportLost(why)) => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(why)))),
-                    Some(Attempted::EndedPreCommit(_)) | None => {
+                    Some(Attempted::EndedPreCommit(_)) => {
                         return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost("the stream ended before its terminal".into()))));
+                    }
+                    Some(Attempted::Ended(path)) => self.attempt_end = Some(path),
+                    None => {
+                        let path = self.attempt_end.map_or("no path reported: the attempt task ended without naming one", AttemptEnd::name);
+                        return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyLost(format!("the stream ended before its terminal: its attempts ended ({path})")))));
                     }
                     Some(_) => {}
                 },
@@ -503,7 +511,7 @@ impl NodeRpcClient {
                             _ => None,
                         };
                         let evidence = owed.evidence.lock().unwrap().clone();
-                        return Ok((ReplyStream { owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), terminal_handed: false, read_only: false, _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::SendDeadline(r)) => {
@@ -528,6 +536,8 @@ impl NodeRpcClient {
                     Some(Attempted::Reset(c)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Connection(format!("reset {c} before the commit cut"))),
                     Some(Attempted::ReceiverGone(_)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
                     Some(Attempted::TransportLost(why)) => break pre.take().expect("pre-commit").not_sent(NotSentReason::Connection(why)),
+                    // The attempt task's last word: what ended it was said above, or its end follows.
+                    Some(Attempted::Ended(_)) => {}
                     None => break pre.take().expect("pre-commit").not_sent(last.clone()),
                 },
             }

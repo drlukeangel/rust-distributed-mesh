@@ -235,6 +235,59 @@ pub(crate) enum Attempted {
     /// A `Budget::Stream` call, committed, lost its connection to the responder and no fresh dial
     /// connected within its send bound: the transport's liveness, its only reply bound, ended.
     TransportLost(String),
+    /// The attempt task's last word: the path it ended on, after any outcome above (i146 Q38). The
+    /// call names it when its attempts end with no reply delivered.
+    Ended(AttemptEnd),
+}
+
+/// The path an attempt task ended on: one per return of it (i146 Q38).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptEnd {
+    /// The invocation was complete when the task looked, at the top of its turn.
+    CompleteAtTurn,
+    /// No attempt committed within the send budget (`Attempted::SendDeadline`).
+    SendDeadline,
+    /// The connection a `Budget::Stream` request committed on closed (`Attempted::TransportLost`).
+    CommittedConnectionClosed,
+    /// The receiving birth's exit or removal is proven (`Attempted::ReceiverGone`).
+    ReceiverGone,
+    /// Acked, its stream lost, and no resent response is waited for: asked once, or a
+    /// `Budget::Stream` call whose connection closed (`Attempted::TransportLost`).
+    HoldLost,
+    /// The target did not resolve and an unsent attempt ends the call (`Attempted::EndedPreCommit`).
+    UnreachedFinal,
+    /// An attempt ended definitively before its commit cut (`Attempted::EndedPreCommit`).
+    EndedPreCommit,
+    /// The receiver stopped the request before it was complete, and its refusal was read.
+    RefusalRead,
+    /// The stream the attempt read ended with the invocation complete.
+    StreamComplete,
+    /// The stream the attempt read broke the protocol, and the violation was handed to the call.
+    StreamViolation,
+    /// The stream was reset with a code that ends the request (`Attempted::Reset`).
+    Reset,
+    /// A request asked once lost its stream before an answer (`Attempted::TransportLost`).
+    LostAskedOnce,
+}
+
+impl AttemptEnd {
+    /// The path's name, as spans and reasons carry it.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::CompleteAtTurn => "complete-at-turn",
+            Self::SendDeadline => "send-deadline",
+            Self::CommittedConnectionClosed => "committed-connection-closed",
+            Self::ReceiverGone => "receiver-gone",
+            Self::HoldLost => "hold-lost",
+            Self::UnreachedFinal => "unreached-final",
+            Self::EndedPreCommit => "ended-pre-commit",
+            Self::RefusalRead => "refusal-read",
+            Self::StreamComplete => "stream-complete",
+            Self::StreamViolation => "stream-violation",
+            Self::Reset => "reset",
+            Self::LostAskedOnce => "lost-asked-once",
+        }
+    }
 }
 
 impl NodeRpcClient {
@@ -767,6 +820,10 @@ impl NodeRpcClient {
         // Before the commit the attempt task bounds every step by the send budget and says when it
         // lapsed; after it, the reply budget is this owner's.
         let mut deadline: Option<Instant> = None;
+        // The path the attempt task ended on, and whether the invocation's frame channel closed with no
+        // frame: named when the attempts end (i146 Q38).
+        let mut attempt_end: Option<AttemptEnd> = None;
+        let mut slot_closed = false;
         let out = loop {
             let wait = async {
                 match deadline {
@@ -777,7 +834,7 @@ impl NodeRpcClient {
             tokio::select! {
                 // A frame already delivered is taken before anything the attempt task said after it.
                 biased;
-                f = owed.frames.recv() => match f {
+                f = owed.frames.recv(), if !slot_closed => match f {
                     Some(SlotEvent::Frame(bytes, _)) => {
                         span.record("delivery", "acked");
                         break match (committed.take(), stopped.take(), pre.take()) {
@@ -795,7 +852,11 @@ impl NodeRpcClient {
                             (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Connection(why)),
                         };
                     }
-                    None => continue,
+                    // Closed with no frame: not polled again, so the attempts' end is heard.
+                    None => {
+                        slot_closed = true;
+                        continue;
+                    }
                 },
                 ev = owed.attempted.recv() => match ev {
                     Some(Attempted::Committed { frame_len }) => {
@@ -849,9 +910,16 @@ impl NodeRpcClient {
                             (None, None) => PreCommit::begin(op).not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
                         };
                     }
+                    Some(Attempted::Ended(path)) => attempt_end = Some(path),
                     None => {
+                        let path = match (attempt_end, slot_closed) {
+                            (Some(p), false) => p.name().to_string(),
+                            (Some(p), true) => format!("{}, the invocation's frame channel closed with no frame", p.name()),
+                            (None, true) => "slot-closed: the invocation's frame channel closed with no frame".to_string(),
+                            (None, false) => "no path reported: the attempt task ended without naming one".to_string(),
+                        };
                         break match (committed.take(), stopped.take(), pre.take()) {
-                            (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyLost("the request's attempts ended".into())),
+                            (Some(c), _, _) => c.indeterminate(IndeterminateReason::ReplyLost(format!("the request's attempts ended ({path})"))),
                             (None, Some(e), _) => decode(Decode::Early(e, None)),
                             (None, None, Some(p)) => p.not_sent(last.clone()),
                             (None, None, None) => PreCommit::begin(op).not_sent(last.clone()),
@@ -1060,36 +1128,46 @@ impl Attempts {
         }
     }
 
+    /// The request's attempts, then the path they ended on: every return is spanned and told to the
+    /// call, after any outcome of its own (i146 Q38).
     async fn run(mut self) {
+        let end = self.until_end().await;
+        let attempts = self.attempts.load(std::sync::atomic::Ordering::SeqCst);
+        tracing::info_span!("rdm.node_rpc.delivery.update.via-attempt-ended", delivery_id = %self.id, attempts, path = end.name())
+            .in_scope(|| tracing::info!("the request's attempt task ended"));
+        let _ = self.tx.send(Attempted::Ended(end));
+    }
+
+    async fn until_end(&mut self) -> AttemptEnd {
         let pacing = self.client.delivery.pacing();
         let mut attempt = 0u32;
         let mut committed = false;
         let mut last = NotSentReason::Deadline;
         loop {
             if self.state.borrow().complete {
-                return;
+                return AttemptEnd::CompleteAtTurn;
             }
             if !committed && Instant::now() >= self.deadlines.0 {
                 let _ = self.tx.send(Attempted::SendDeadline(last));
-                return;
+                return AttemptEnd::SendDeadline;
             }
             // A stream budget's only reply bound is the transport: the call lives as long as the
             // connection its request committed on.
             if let Some(why) = self.committed_on.as_ref().and_then(|c| c.close_reason()) {
                 let _ = self.tx.send(Attempted::TransportLost(format!("the connection the request committed on closed ({why})")));
-                return;
+                return AttemptEnd::CommittedConnectionClosed;
             }
             if let Some(why) = self.receiver_gone() {
                 tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", delivery_id = %self.id, attempts = attempt, reason = %why)
                     .in_scope(|| tracing::info!("the receiving birth ended: the request is owed no longer"));
                 let _ = self.tx.send(Attempted::ReceiverGone(why));
-                return;
+                return AttemptEnd::ReceiverGone;
             }
             if self.state.borrow().acked {
                 // Acked, its response not complete: hold a connection the responder can resend on.
                 if let Err(why) = self.hold_connection(attempt).await {
                     let _ = self.tx.send(Attempted::TransportLost(why));
-                    return;
+                    return AttemptEnd::HoldLost;
                 }
                 attempt += 1;
                 continue;
@@ -1114,7 +1192,7 @@ impl Attempts {
                 Ok(n) => n,
                 Err(r) if self.opts.unsent_is_final && !committed => {
                     let _ = self.tx.send(Attempted::EndedPreCommit(PreCommit::begin(self.op).not_sent(r)));
-                    return;
+                    return AttemptEnd::UnreachedFinal;
                 }
                 Err(r) => {
                     last = r.clone();
@@ -1143,12 +1221,12 @@ impl Attempts {
                         continue;
                     }
                     let _ = self.tx.send(Attempted::EndedPreCommit(out));
-                    return;
+                    return AttemptEnd::EndedPreCommit;
                 }
                 Phase::Stopped(opened) => {
                     let _ = self.tx.send(Attempted::StoppedBeforeComplete);
                     self.read_refusal(opened).await;
-                    return;
+                    return AttemptEnd::RefusalRead;
                 }
                 Phase::Committed(opened, frame_len) => {
                     if !committed {
@@ -1163,15 +1241,16 @@ impl Attempts {
                     let ack_by = (!self.state.borrow().acked && !self.opts.once).then(|| Instant::now() + pacing.after(attempt));
                     let resend_at = ack_by.unwrap_or(next_at);
                     match self.read(opened, ack_by).await {
-                        StreamEnd::Complete | StreamEnd::Violation => return,
+                        StreamEnd::Complete => return AttemptEnd::StreamComplete,
+                        StreamEnd::Violation => return AttemptEnd::StreamViolation,
                         StreamEnd::Definitive(code) => {
                             let _ = self.tx.send(Attempted::Reset(code));
-                            return;
+                            return AttemptEnd::Reset;
                         }
                         StreamEnd::NoAck => continue,
                         StreamEnd::Lost if self.opts.once => {
                             let _ = self.tx.send(Attempted::TransportLost("asked once: its stream was lost before an answer".into()));
-                            return;
+                            return AttemptEnd::LostAskedOnce;
                         }
                         StreamEnd::Lost => {
                             if !self.state.borrow().acked {

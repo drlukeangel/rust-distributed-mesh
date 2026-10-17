@@ -1035,3 +1035,77 @@ async fn a_frame_its_consumer_has_not_recovered_is_not_acked_and_is_resent_after
     assert!(stream.next().await.is_none());
     eventually("the terminal is recovered and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
 }
+
+/// Cell 23. CONTRACT (i146 Q38): every return of a request's attempt task names its path, spanned
+/// under its call in the caller's trace (`rdm.node_rpc.delivery.update.via-attempt-ended`, its
+/// `path` and `delivery_id`): a served call's attempt ends `stream-complete`, one whose reply
+/// direction the receiver resets with `INTERNAL_RPC_FAILURE` ends `reset`, one whose receiver's exit
+/// is proven ends `receiver-gone`. Must NOT happen: a call whose attempt task ended without the span,
+/// or a span naming a path other than the one its call ended on.
+#[test]
+fn every_return_of_a_requests_attempt_task_is_spanned_with_its_path() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-attempt-ended").expect("the cell's evidence file can be created");
+    let (trace, calls) = capture.run(4, async {
+        let root = tracing::info_span!("rdm.test.delivery.update.via-attempt-ended");
+        let trace = trace_of(&root);
+        let calls = tracing::Instrument::instrument(
+            async {
+                // Served: the reply completes the invocation on the attempt's stream.
+                let s = served().await;
+                let (client, _) = client_of(&[&s.node]).await;
+                let served_id = DeliveryId { sender: client.delivery().me().clone(), delivery_seq: 1 };
+                let (out, _) = client.call::<Command>(&s.target(), &run(23, Mode::Apply), &budget(Duration::from_secs(5))).await;
+                assert_eq!(ran(&out), Some((23, 1)), "{out:?}");
+
+                // Reset: the receiver reads the whole request, then resets its reply direction.
+                let mut r = raw().await;
+                let (client, _) = client_of(&[&r.node]).await;
+                let reset_id = DeliveryId { sender: client.delivery().me().clone(), delivery_seq: 1 };
+                let target = NodeTarget::ExactNode(r.node.node_id.clone());
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    async move { client.call::<Command>(&target, &run(23, Mode::Apply), &budget(Duration::from_secs(5))).await.0 },
+                    tracing::Span::current(),
+                ));
+                let conn = r.conns.recv().await.unwrap();
+                let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+                let _ = read_request(&mut recv).await;
+                let failure = rdm_core::ResetCode::InternalRpcFailure.code();
+                send.reset(iroh::endpoint::VarInt::from_u32(failure)).unwrap();
+                let out = call.await.unwrap();
+                assert!(matches!(&out, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(u64::from(failure))), "{out:?}");
+
+                // Receiver gone: a silent receiver, then its proven exit.
+                let gone = raw().await;
+                let (client, resolver) = client_of(&[&gone.node]).await;
+                let cd = client.delivery().clone();
+                let gone_id = DeliveryId { sender: cd.me().clone(), delivery_seq: 1 };
+                let target = NodeTarget::ExactNode(gone.node.node_id.clone());
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    async move { client.call::<Command>(&target, &run(23, Mode::Apply), &budget(Duration::from_secs(20))).await.0 },
+                    tracing::Span::current(),
+                ));
+                eventually("the silent receiver's request is resent", Duration::from_secs(3), || get(&cd.stats().resends) >= 1).await;
+                resolver.remove_gone(&gone.node.node_id);
+                let out = call.await.unwrap();
+                assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))), "{out:?}");
+                vec![(served_id, "stream-complete"), (reset_id, "reset"), (gone_id, "receiver-gone")]
+            },
+            root,
+        )
+        .await;
+        (trace, calls)
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let named = |name: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace.as_str()).collect() };
+    let calls_spanned = named("rdm.node_rpc.request.update.via-call");
+    let ended = named("rdm.node_rpc.delivery.update.via-attempt-ended");
+    for (id, path) in &calls {
+        let id = id.to_string();
+        let call = calls_spanned.iter().find(|c| c["attributes"]["delivery_id"] == id.as_str()).unwrap_or_else(|| panic!("the call {id} is spanned in the caller's trace: {}", flame(&trace)));
+        let of_call: Vec<&&serde_json::Value> = ended.iter().filter(|e| e["attributes"]["delivery_id"] == id.as_str()).collect();
+        assert_eq!(of_call.len(), 1, "one end of the call {id}'s attempt task, spanned: {of_call:#?} ({})", flame(&trace));
+        assert_eq!(of_call[0]["attributes"]["path"], *path, "the call {id} ended on `{path}`: {:#?} ({})", of_call[0]["attributes"], flame(&trace));
+        assert_eq!(of_call[0]["parent_span_id"], call["span_id"], "the end is spanned under its own call: {} ({})", of_call[0], flame(&trace));
+    }
+    println!("delivery flame (every attempt task's end, named by its path): {}", flame(&trace));
+}

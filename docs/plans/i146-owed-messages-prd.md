@@ -398,7 +398,28 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   The gate after (`360c69d4`) red at `node_stop.rs:166`: the parked birth's post-cut dial for its
   declaration is the connection the start then rode; the cell counts a dial after the cut by either
   end. The same gate's `flood` red, its reason named (`Indeterminate(ReplyLost("the request's attempts
-  ended"))`, trace `953088dfb155d2b745f9b890aef34316`), went to Luke as a packet (Q32's rule).
+  ended"))`, trace `953088dfb155d2b745f9b890aef34316`), went to Luke as a packet (Q32's rule). Q38 (Luke
+  2026-10-17, arm A): every return of the attempt task carries its path as a typed value
+  (`AttemptEnd`, one per return: `complete-at-turn`, `send-deadline`, `committed-connection-closed`,
+  `receiver-gone`, `hold-lost`, `unreached-final`, `ended-pre-commit`, `refusal-read`,
+  `stream-complete`, `stream-violation`, `reset`, `lost-asked-once`), spanned under its call
+  (`rdm.node_rpc.delivery.update.via-attempt-ended`, `path`; info, as `via-call`, so a gate's held
+  flame carries it), and a call that ends Indeterminate because its attempts ended names that path in
+  its reason (`the request's attempts ended (<path>)`), with `slot-closed` when the invocation's frame
+  channel closed with no frame; a stream's `the stream ended before its terminal: its attempts ended
+  (<path>)` the same. No change to when a call ends. The occurrence on `360c69d4`: 1 of 7480 calls,
+  trace `953088dfb155d2b745f9b890aef34316`, one attempt, the handler served at +12.5 ms, the call
+  ended 33 ms later with no resend either way; its path was not recorded (the attempt's return
+  carried none). The next recurrence names its path; if it is `delivery.rs:516-520`'s order (the slot
+  read, then `complete` marked by another path, the frame dropped as a response of a completed
+  invocation), it is an ordering defect and gets its own packet. The call's frame arm is no longer
+  polled once its channel closes: `None => continue` under `biased` took that arm on every turn until
+  the scheduler's budget let the attempt channel's end through. Cell
+  `delivery::every_return_of_a_requests_attempt_task_is_spanned_with_its_path`: a served call ends
+  `stream-complete`, a reply direction reset with 423 ends `reset`, a proven exit ends
+  `receiver-gone`, each under its own call (flame `41387062b3b5340debf1f58a1e3aa440`). A
+  `stream-violation` end can go unspanned: the call ends on the violation it was handed and aborts
+  the task at its reset write, and the call's own reason names the violation.
   The Q33 split's gate (`8360d55e`) red at
   `node_restart::a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission:183`
   (red before e3 too: `184aa116`, `c393b290`): the suspended member's first stop-node is sent or not
