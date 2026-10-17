@@ -146,7 +146,7 @@ impl RunningNode {
     /// still running at the deadline.
     pub async fn drain(&self, deadline: Duration) -> u64 {
         self.cancel.cancel();
-        self.server.drain();
+        self.server.begin_connections_delete();
         *self.status.lock().unwrap() = MemberStatus::Draining;
         let _ = self.declare_own(rdm_core::status::NodeState::Draining).await;
         let stats = self.server.stats();

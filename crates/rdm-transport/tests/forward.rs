@@ -312,7 +312,7 @@ async fn a_nested_forward_and_a_draining_carrier_are_still_refused_by_name() {
     let nested = ForwardRequest::Forward { target: r.target.resolved.node_id.clone(), inner_op: Forward::OP, inner: Vec::new(), remaining_ms: 5_000 };
     let (out, _) = r.origin.call::<Forward>(&carrier_of(&r), &nested, &CallOptions::default()).await;
     assert_eq!(out.reply().map(|x| x.value().clone()), Some(ForwardReply::NotForwardable { op: Forward::OP }));
-    r.carrier_server.drain();
+    r.carrier_server.begin_connections_delete();
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(why) if why.contains("connections-deleting"))), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);

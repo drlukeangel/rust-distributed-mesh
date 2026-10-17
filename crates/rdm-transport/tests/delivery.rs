@@ -950,7 +950,7 @@ async fn a_connections_deleting_endpoint_still_receives_an_owed_response() {
     let client = NodeRpcClient::new(ep.clone(), resolver).with_delivery(delivery.clone());
     let server = ServerBuilder::new().ledger(ledger()).with_delivery(delivery.clone()).seal(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
-    server.drain();
+    server.begin_connections_delete();
     let mut r = r;
     let target = NodeTarget::ExactNode(r.node.node_id.clone());
     let call = tokio::spawn(async move { client.call::<Command>(&target, &run(19, Mode::Apply), &budget(Duration::from_secs(5))).await.0 });

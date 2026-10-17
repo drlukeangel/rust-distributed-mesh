@@ -197,7 +197,7 @@ async fn a_forward_naming_forward_is_refused_not_forwardable_by_the_admin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draining_admin_refuses_forward_by_name() {
     let r = rig().await;
-    r.admin_server.drain();
+    r.admin_server.begin_connections_delete();
     let (out, _) = r.origin.call_via::<Status>(&admin_target(&r), &r.target.node_id, &probe(&r.target), &CallOptions::default()).await;
     match &out {
         RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::Carried(why) if why.contains("connections-deleting")), "{out:?}"),

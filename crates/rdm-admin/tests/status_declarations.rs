@@ -419,7 +419,7 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draining_authority_accepts_upward_status_and_decides_it_for_the_subject() {
     let (rig, b) = rig().await;
-    rig.server.drain();
+    rig.server.begin_connections_delete();
     for subject in [&b["rpc1"], &b["admin2"]] {
         for state in [NodeState::Draining, NodeState::Leaving] {
             let request = declare(subject, state);

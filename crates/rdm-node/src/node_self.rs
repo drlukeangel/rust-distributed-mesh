@@ -385,7 +385,7 @@ impl NodeSelf {
                 }
                 // The block on new application work: from here the node refuses new non-status calls
                 // (Node RPC §35); the node is connections-deleting, and says so.
-                self.server.drain();
+                self.server.begin_connections_delete();
                 admitted().await;
                 let waited = self.await_in_flight().await;
                 // Every connection open once admitted work has finished is closed, the ones that
@@ -493,7 +493,7 @@ impl NodeSelf {
     /// it waits and is not eligible work. The node refuses new non-status calls with typed `Draining`
     /// from here on (Node RPC §35); control streams stay usable.
     async fn await_in_flight(&self) -> InFlight {
-        self.server.drain();
+        self.server.begin_connections_delete();
         let stats = self.server.stats();
         let eligible = || rdm_transport::ServerStats::get(&stats.in_flight).saturating_sub(1);
         let began = eligible();
@@ -1189,7 +1189,7 @@ impl NodeSelf {
                     // held (a turn its rejoin let begin runs to its end), then its connections cut,
                     // sparing every call commanding the start so each is answered.
                     let _ = (self.set_status)(MemberStatus::Leaving);
-                    self.server.drain();
+                    self.server.begin_connections_delete();
                     self.block_new_connections("its start stopped at a step and it is stopped again");
                     let _ = session.park_tasks().await;
                     let calls = match &*self.cycle.lock().unwrap() {

@@ -1048,7 +1048,7 @@ async fn a_retry_after_the_holder_stopped_taking_new_calls_is_answered_from_the_
     let op = "node.stop:mesh1.admin.1";
     let first = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
     assert_eq!(first, updated(committed_mesh(&f.n, 4)));
-    f.p.server.drain();
+    f.p.server.begin_connections_delete();
     assert_eq!(send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await, first, "a holder that takes no new calls answers the identical command from the row");
     assert_eq!(f.n.storage.seat_transfers().await.unwrap().len(), 1, "nothing committed twice");
 }

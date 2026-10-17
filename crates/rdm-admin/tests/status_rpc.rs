@@ -359,7 +359,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     assert!(matches!(&ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::Pong { .. })), "{ping:?}");
 
     // The server drains: every ordinary call is refused as ConnectionsDeleting, the status door stays admitted.
-    rig.server.drain();
+    rig.server.begin_connections_delete();
     let (refused_ping, _) = c.call::<Ping>(&target, &PingRequest::Ping { payload: b"after".to_vec() }, &CallOptions::default()).await;
     assert!(matches!(&refused_ping, RpcOutcome::Reply(r) if matches!(r.value(), PingReply::ConnectionsDeleting { .. })), "a non-status call is refused as ConnectionsDeleting: {refused_ping:?}");
     let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
