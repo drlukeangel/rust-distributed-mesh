@@ -186,6 +186,8 @@ pub enum Decode<'a> {
 
 /// Where an invocation stands after the commit-cut phase.
 pub(crate) enum Phase<R> {
+    /// An Owed dial learned that its exact receiver ended, before any commit.
+    ReceiverGone(String),
     /// The attempt ended before the commit cut.
     Done(RpcOutcome<R>),
     /// The complete request frame is written: the frame's length.
@@ -459,6 +461,17 @@ impl NodeRpcClient {
         .await
     }
 
+    /// The exact receiving incarnation ended; an endpoint-slot change alone is not that proof.
+    fn receiver_gone(&self, target: &NodeTarget, held: &rdm_core::IncarnationId) -> Option<String> {
+        match self.resolver.resolve(target) {
+            Ok(n) if &n.incarnation == held => None,
+            Ok(n) => Some(format!("incarnation {} superseded by {}", held.as_str(), n.incarnation.as_str())),
+            Err(ResolveFailure::Gone) => Some(format!("incarnation {} removed", held.as_str())),
+            Err(ResolveFailure::Unavailable) => Some(format!("incarnation {} exited: its exit is proven", held.as_str())),
+            Err(_) => None,
+        }
+    }
+
     /// Where `target` is now, or the reason the call cannot be sent.
     pub(crate) fn reach(&self, target: &NodeTarget) -> Result<Reach, NotSentReason> {
         Ok(match target {
@@ -528,7 +541,14 @@ impl NodeRpcClient {
                 c
             }
             Err(DialError::Superseded) => {
-                // The birth moved while this dial was in flight: the target is stale.
+                // The pool also invalidates a dial when its receiving birth ends. For an Owed
+                // call that proof ends the obligation as receiver-gone, not a stale live slot.
+                if matches!(opts.budget, Budget::Owed) {
+                    if let Some(why) = node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)) {
+                        return Phase::ReceiverGone(why);
+                    }
+                }
+                // A pinned endpoint slot on a living birth remains stale.
                 let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.to_string()).unwrap_or_default();
                 stale_span(&request_target, &format!("incarnation {} superseded by {now}", key.birth()));
                 return Phase::Done(pre.stale_before_finish(&request_target));
@@ -1114,15 +1134,14 @@ struct Attempts {
 
 impl Attempts {
     fn receiver_gone(&self) -> Option<String> {
-        let held = self.birth.as_ref()?;
-        match self.client.resolver.resolve(&self.target) {
-            Ok(n) if &n.incarnation == held => None,
-            Ok(n) => Some(format!("incarnation {} superseded by {}", held.as_str(), n.incarnation.as_str())),
-            Err(ResolveFailure::Gone) => Some(format!("incarnation {} removed", held.as_str())),
-            // The live resolver answers `Unavailable` for exactly a birth whose exit is proven.
-            Err(ResolveFailure::Unavailable) => Some(format!("incarnation {} exited: its exit is proven", held.as_str())),
-            Err(_) => None,
-        }
+        self.client.receiver_gone(&self.target, self.birth.as_ref()?)
+    }
+
+    fn end_receiver_gone(&self, why: String, attempts: u32) -> AttemptEnd {
+        tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", delivery_id = %self.id, attempts, reason = %why)
+            .in_scope(|| tracing::info!("the receiving birth ended: the request is owed no longer"));
+        let _ = self.tx.send(Attempted::ReceiverGone(why));
+        AttemptEnd::ReceiverGone
     }
 
     fn lowest_unacked(&self) -> u64 {
@@ -1180,10 +1199,7 @@ impl Attempts {
                 return AttemptEnd::CommittedConnectionClosed;
             }
             if let Some(why) = self.receiver_gone() {
-                tracing::info_span!("rdm.node_rpc.delivery.remove.via-receiver-gone", delivery_id = %self.id, attempts = attempt, reason = %why)
-                    .in_scope(|| tracing::info!("the receiving birth ended: the request is owed no longer"));
-                let _ = self.tx.send(Attempted::ReceiverGone(why));
-                return AttemptEnd::ReceiverGone;
+                return self.end_receiver_gone(why, attempt);
             }
             if self.state.borrow().acked {
                 // Acked, its response not complete: hold a connection the responder can resend on.
@@ -1234,6 +1250,7 @@ impl Attempts {
             let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
             let phase = self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await;
             match phase {
+                Phase::ReceiverGone(why) => return self.end_receiver_gone(why, attempt),
                 Phase::Done(out) => {
                     // The owner's cut, a source that admits no new connection (nothing was sent, and
                     // nothing is owed for a request this source refuses to originate), a request
