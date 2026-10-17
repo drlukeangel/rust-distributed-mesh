@@ -158,6 +158,15 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    // Q23: the lost holder is investigated from the observer's own silence evidence;
+    // no Concern is published and no receipt of gossip commands an investigation.
+    assert!(named(&spans, "rdm.mesh.seat.update.via-concern").is_empty(), "no Concern on the wire");
+    assert!(named(&spans, "rdm.node_admin.seat.update.via-concern-answer").is_empty(), "no Concern-driven re-feed");
+    let investigation = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter()
+        .find(|sp| attr(sp, "suspect") == old_primary && attr(sp, "finding") == "exit-proven")
+        .expect("the holder's exact runtime exit was investigated before its replacement");
+    assert_eq!(attr(investigation, "trigger"), "silence");
+    println!("Q23 silence investigation trace {}", s(&investigation["trace_id"]));
     // No member answered: the verdict and every probe of the investigation that reached it are
     // unreachable, and no carrier-edge-lost recovery opened. (The fabric's own stop later makes the
     // recovered mesh unheard again; that investigation is the stop's.)
