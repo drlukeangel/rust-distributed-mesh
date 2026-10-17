@@ -57,12 +57,12 @@ Iroh
     authenticated EndpointId + QUIC paths
 
 iroh-gossip
-    HyParView topic membership
+    HyParView channel membership
     Plumtree eager/lazy dissemination and repair
     neighbour state and peer queues
 
 RDM membership/topology layer
-    topic derivation
+    channel derivation
     known/held peer directory
     current birth facts, including RuntimeFact + required runtime metadata
     hierarchical mesh/backbone publisher policy
@@ -134,9 +134,9 @@ version and the book under one hold of the receiver. A reader of that version ne
 an older book.
 
 Two channels carry membership: a Mesh's membership channel (one per MeshId) and the node-admin
-backbone (one per FabricId). The Build topic is a third, separate channel for Build facts
+backbone (one per FabricId). The Build channel is a third, separate channel for Build facts
 (`Accepted`, `Opened`, `Claim`, `Step`, `Attempt`, `Forget`); it is not membership and is not in
-this catalog. No other topic exists.
+this catalog. No other channel exists.
 
 Four orderings, four jobs, never substituted for one another:
 
@@ -658,6 +658,8 @@ catalog's per-frame fields (§3.1) are the values these attributes carry.
 | `sequence` | the per-`(source, subject)` version: a birth's `digest_seq`, a projection's `topology_version`, a seat's `revision` |
 | `time` | rafka-time of the fact; never an ordering |
 | `data` | the body, the frame's own fields |
+| `datacontenttype` | `application/octet-stream`, always: `data` is postcard bytes; any other value is refused by name |
+| `dataschema` | absent on an `rdm.*` frame; on an app event, the app's own schema name for `data`, carried opaque both ways (a rolling deploy's slot); RDM reads it for nothing |
 | `traceparent`, `tracestate` | the [Distributed Tracing extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md): the author's W3C trace context, so the receive spans parent to the author's trace. Observability only: never dispatch, routing or execution; a malformed value is dropped by name and the frame continues, the same rule as the Node RPC context section (Luke, 2026-10-17) |
 
 The receive rules (§3.1) in these terms: for one `(source, subject)`, a higher `sequence` installs,
@@ -667,7 +669,7 @@ fact is a subject whose latest value is its completion, so a late or repeated on
 Gossip stays best-effort (§7): no acknowledgement and no delivery identity beyond `id`'s duplicate
 suppression.
 
-A declared app type (§8, `rafka.entity.<kind>`) rides this same envelope on its own topic (§4).
+A declared app type (§8, `rafka.entity.<kind>`) rides this same envelope on its own channel (§4).
 Its receiver is the app: RDM authors `id`, `source`, `time` and the trace context, carries
 `subject`, `sequence` and `data` opaque, and decides nothing on the frame. The receive rules above
 apply to the `rdm.*` types only. An event whose complete encoded frame, metadata included, exceeds
@@ -675,25 +677,30 @@ apply to the `rdm.*` types only. An event whose complete encoded frame, metadata
 and `data { i, n, bytes }`, `n` at most 16; the receiver assembles by `(source, event id)`, takes
 a duplicate chunk as nothing and a reordered one in its place, decodes the whole event once under
 its own `id`, and evicts an assembly still incomplete after `RDM_STALENESS_MS` by name
-(`rdm.mesh.membership.reject.via-chunk-incomplete`). Each topic's receive queue is bounded (1024
-events): a full queue drops the newest event by name (`rdm.mesh.topic.reject.via-queue-full`, with
-the count) and never holds the carrier, so a slow app stalls nothing but itself.
+(`rdm.mesh.membership.reject.via-chunk-incomplete`). Each channel's receive queue is bounded (1024
+events): a full queue drops the newest event by name (`rdm.mesh.channel.reject.via-queue-full`, with
+the count) and never holds the carrier, so a slow app stalls nothing but itself. Every event RDM loses
+locally on a channel, a drop or an assembly evicted incomplete, advances that channel's loss
+generation (`Channel::lost()`), which the app reads to re-pull; a loss that cannot name a subject is
+still counted.
 
 Until the envelope lands ([i147 e3](../plans/i147-gossip-conformance-prd.md)) the frames carry the
 same values under the catalog's field names; the receive rules are the same either way.
 
-## 4. Topic identity
+## 4. Channel identity
 
-Topic derivation uses logical Fabric/Mesh identity, not transport identity.
+A channel is one gossip subscription: RDM's word for what iroh-gossip calls a topic (`TopicId`), kept
+apart from Rafka's topics. Channel derivation uses logical Fabric/Mesh identity, not transport identity.
 
 Conceptually:
 
 ```text
-mesh membership topic = f(logical FabricId, MeshId)
-backbone topic        = f(logical FabricId)
+mesh membership channel = f(logical FabricId, MeshId)
+backbone channel        = f(logical FabricId)
+app channel             = f(logical FabricId, declared type)
 ```
 
-EndpointId/address data is used to join/dial peers; it is not the logical Fabric identity or topic identity.
+EndpointId/address data is used to join/dial peers; it is not the logical Fabric identity or channel identity.
 
 ---
 
@@ -854,10 +861,10 @@ joins every type it does not already hold before it answers the join, and writes
 that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
 learns, so every projected kind reaches every node-admin (§10: gossip says changed, the call is
 the certainty). A
-node joins the topic of every type it declared through `Membership::join_topic`
-(`rdm_transport::gossip`); the topic id is `f(fabric_id, type)` (§4), so two fabrics on one
+node joins the channel of every type it declared through `Membership::join_channel`
+(`rdm_transport::gossip`); the channel id is `f(fabric_id, type)` (§4), so two fabrics on one
 network never share a kind; its first neighbour is its own mesh's node-admin, already joined. A write is one
-`Event { subject, sequence, data }` published once on its kind's topic. So a compute node never
+`Event { subject, sequence, data }` published once on its kind's channel. So a compute node never
 receives a gateway-only kind (`principal`, `service_account`, `path_config` and the rest).
 
 **The event rides the envelope (§3.4) and RDM decides nothing on it.** `subject` is the row key,
@@ -875,16 +882,17 @@ empty org by name (`crates/rafka-entity-framework/src/gossip.rs::entity_projecti
 `rafka.entity_store.projection.reject.via-org-unstamped`). An undeclared type is refused by name
 on publish and dropped by name on receive.
 
-**node-admin holds every channel raw.** node-admin publishes the union of its peers' declared
-types as its own, so every projected kind reaches it. It keeps each kind's current rows undecoded in
-a `RawProjectionStore` (`crates/rafka-entity-framework/src/raw_projection.rs`): one row per
-`(org, key)`, where a higher `version` wins, then a higher `offset`. Tombstones and
-clear-projection apply to it like any other row.
+**node-admin holds every channel, as the app.** node-admin holds the union of its members' declared
+types (`held`), so every projected kind reaches it; it is a Rafka binary embedding RDM, and the rows
+it keeps are the app's: the entity framework runs in node-admin as a `Channel` subscriber and applies
+the kind's one comparator, the same one its typed stores apply, read from the event's header
+`(offset, order_key, version, tombstone)` without decoding the value. RDM holds none of them and
+decides nothing on them.
 
 **Entry ends with a pull.** When a gateway or compute node has registered its stores and its gossip loop is
-running, it reads its kind set from node-admin with [node.topology.get](lifecycles/node-topology-get.md).
-node-admin answers with the current rows of exactly those kinds: a kind node-admin holds as a store is served
-from that store, every other kind raw, and the node installs the answer only once it is complete. Live frames
+running, it pulls its kinds' current rows from node-admin with Rafka's projection op, served through node-admin's
+`serve_app` (`node.topology.get` is membership repair and carries no app row); node-admin answers from its
+stores and its raw projection under the one comparator, and the node installs the answer only once it is complete. Live frames
 and pulled rows share one apply rule, so nothing gossiped during the pull is lost. Only then does the node mark
 itself ready (span `rafka.mesh.entry.update.via-projection-pulled`, with `entity_rows` and `raw_applied`).
 
@@ -955,7 +963,7 @@ There is no leadership-specific repair protocol.
 
 Gossip does not decide to recreate a missing node.
 
-Build-topic facts remain broadcast for durability and recovery. The fabric-primary
+Build-channel facts remain broadcast for durability and recovery. The fabric-primary
 is the sole Build driver; it claims and calls the executor over the
 [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm). Caller progress waits on
 no gossip receipt.

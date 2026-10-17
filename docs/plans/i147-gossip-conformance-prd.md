@@ -388,7 +388,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 - **Luke reassignment — Owed receiver socket.** The collision was a released socket, not an insufficient wait: the old rig closed its OS-assigned endpoint and later attempted the same fixed address. The corrected rig binds `127.0.0.1:0` once, reads the assigned address and keeps that endpoint while Node RPC is not served; when the receiver comes it installs the router on that same endpoint. All ordinary responder rigs use the same `served_on` helper with an already-bound endpoint. The receiver cell is GREEN 1/1 (3.22 s): the bounded control lapses, the Owed call remains pending past it and is resent, then one handler runs when the receiver comes. Every bound and assertion stands; no port search, fixed-port reservation or retry was added. This is a second, separate test-only correction after runtime commit `039d8c0a` and before e4’s land-script gate.
 
 
-#### e5 — app types on the envelope: `Topic`, `Event`, `Received` (Luke, 2026-10-17: "that's clean, I'm into it")
+#### e5 — app types on the envelope: `Channel`, `Event`, `Received` (Luke, 2026-10-17: "that's clean, I'm into it")
 
 - **Goal → gap.** Rafka links iroh-gossip itself (six crates), builds a raw `GossipSender` per
   entity kind (`crates/rafka-node-base/src/kind_topics.rs`) and broadcasts its own frame bytes
@@ -400,10 +400,10 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   per the arch review below):
 
   ```rust
-  impl Membership { pub async fn join_topic(&self, r#type: &str) -> Result<Topic, TopicError>; }
-  pub struct Topic;                                     // one joined topic, one declared type; not Clone
-  impl Topic {
-      pub async fn publish(&self, event: Event) -> Result<(), TopicError>;
+  impl Membership { pub async fn join_channel(&self, r#type: &str) -> Result<Channel, ChannelError>; }
+  pub struct Channel;                                     // one joined channel, one declared type; not Clone
+  impl Channel {
+      pub async fn publish(&self, event: Event) -> Result<(), ChannelError>;
       pub async fn recv(&mut self) -> Option<Received>; // None once left
       pub fn split(self) -> (Publisher, Subscriber);    // the same two methods, each owned once
       pub fn dropped(&self) -> u64;                     // events the full queue dropped, by name
@@ -412,7 +412,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   pub struct Event    { pub subject: String, pub sequence: Option<u64>, pub data: bytes::Bytes }
   pub struct Received { pub source: Birth, pub subject: String, pub sequence: Option<u64>,
                         pub time_ms: u64, pub data: bytes::Bytes, pub span: tracing::Span }
-  pub enum TopicError { UndeclaredType { r#type: String }, Oversize { bytes: usize, max: usize }, Left }
+  pub enum ChannelError { UndeclaredType { r#type: String }, Oversize { bytes: usize, max: usize }, Left }
   ```
 
   The role's `run` takes its declared types once, `types: &[&str]`, beside its hydration hook.
@@ -431,9 +431,9 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   parented to it and returns that span in `Received.span` for the app to apply in; no byte of
   `data` enters a span (attributes: type, subject, sequence, source, bytes); a malformed context
   is dropped by name and the event continues (§3.4). No explicit context argument: a different
-  parent is a span the app enters first. (5) Topic id `f(fabric_id, type)` per §4 (Rafka's
+  parent is a span the app enters first. (5) Channel id `f(fabric_id, type)` per §4 (Rafka's
   `blake3("rafka.entity.<kind>")` has no fabric in it, so two fabrics on one network share entity
-  gossip today). (6) Nobody creates a topic: it is an id every subscriber derives. node-admin
+  gossip today). (6) Nobody creates a channel: it is an id every subscriber derives. node-admin
   learns a member's types at its JoinNode, joins every type it does not already hold before it
   answers, and writes its own row's `held_hash`; so a joining node's first neighbour is its own
   node-admin, already there. Two sets per node, both answered by `node.get`: `types`, the
@@ -444,8 +444,8 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   node-admin that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds
   what it learns (gossip.md §10). No type list rides a digest. The fabric-primary has no
   part. (7) Receiver: one owner; `recv(&mut self)`, or `split` once into an owned `Publisher` and
-  `Subscriber`; the queue is bounded at 1024 events per topic, a full queue drops the newest by
-  name (`rdm.mesh.topic.reject.via-queue-full`, count in `dropped()`) and never holds the
+  `Subscriber`; the queue is bounded at 1024 events per channel, a full queue drops the newest by
+  name (`rdm.mesh.channel.reject.via-queue-full`, count in `dropped()`) and never holds the
   carrier's receive task, so a slow app stalls nothing but itself. (8) Chunking: an event whose
   complete encoded frame, metadata included, exceeds `MAX_MESSAGE_BYTES` goes as `rdm.gossip.chunk` frames (a 23rd `rdm.*` type), each
   with its own delivery `id` (`<event id>/<i>`) so `id` duplicate suppression never discards a
@@ -474,7 +474,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   §3.4: one paragraph after the best-effort sentence (a declared app type rides this envelope, the
   receiver is the app, the carrier decides nothing, the chunk and queue rules). §8: the "Only
   projected kinds gossip" paragraph (declared type, JoinNode carries the list, `held_hash`, join
-  before answer, cross-mesh `node.get`, topic id `f(fabric_id, type)`, one `Event` per write) and
+  before answer, cross-mesh `node.get`, channel id `f(fabric_id, type)`, one `Event` per write) and
   "The event rides the envelope (§3.4) and RDM decides nothing on it" (subject, sequence, data,
   the trace rule, the framework's comparator); "kind sets" → "declared types" in the node-admin
   paragraph.
@@ -486,11 +486,11 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   `an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked`;
   `a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped` (the carrier decides
   nothing); `the_receive_span_parents_to_the_publishers_span_and_carries_no_data`;
-  `the_topic_id_differs_across_fabrics_for_one_type`;
+  `the_channel_id_differs_across_fabrics_for_one_type`;
   `a_chunked_event_arrives_whole_when_its_chunks_are_reordered_and_one_is_duplicated`;
   `a_chunked_event_with_a_missing_chunk_is_evicted_by_name_after_the_staleness_floor`;
   `a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once` (compile-fail cell);
-  `a_full_topic_queue_drops_the_newest_by_name_and_the_carrier_keeps_receiving`. The envelope
+  `a_full_channel_queue_drops_the_newest_by_name_and_the_carrier_keeps_receiving`. The envelope
   ratchet gains the app and chunk branches; the join and node.get goldens reseal.
 - **Arch review 3, 2026-10-17: the projection contract (the migration's real risk), and the
   inventory corrected.** The lead's gap list of the same day proposed a facts stream, a seat watch,
@@ -507,20 +507,20 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
      value, so the one comparator reads the header without decoding the value, and the raw store
      and the typed store apply the same rule by construction. Rafka decides the rule once per kind
      (i141 e11; a durable-format move there).
-  2. **Snapshot and live reconcile under that one rule.** The topic is joined before the snapshot
+  2. **Snapshot and live reconcile under that one rule.** The channel is joined before the snapshot
      pull (the `HydrateCtx` order), and every row, pulled or live, goes through the one apply; so
      arrival order never matters and a tombstone is a row that wins like any other.
-  3. **Loss is a generation, not a message.** Every event RDM loses locally for a topic, a drop on
-     a full queue or an assembly evicted incomplete, advances `Topic::lost()`, a `watch<u64>` the
+  3. **Loss is a generation, not a message.** Every event RDM loses locally for a channel, a drop on
+     a full queue or an assembly evicted incomplete, advances `Channel::lost()`, a `watch<u64>` the
      app reads; the drop stays drop-newest and named. A loss that cannot name a subject is still
      counted. Recovery is the app's and is one thing: re-pull the kind's snapshot and apply under
      the one rule; the hook does not return ready while `lost` advanced across its pull.
   4. **The entry pull is a Rafka projection op, served through `serve_app` on node-admin, not
      `node.topology.get`** (which keeps its membership-repair contract and carries no app rows).
      RDM holds no app row and decides nothing on one; node-admin, embedding the framework, holds
-     the rows as a `Topic` subscriber under rule 1. This changes the i142 "Moved from RDM i143" row
-     (awaits Luke's yes) and gossip.md §8's third and "Entry ends with a pull" paragraphs (text
-     below, awaits Luke's yes).
+     the rows as a `Channel` subscriber under rule 1. This changes the i142 "Moved from RDM i143" row
+     (applied 2026-10-17, Luke: yes) and gossip.md §8's third and "Entry ends with a pull" paragraphs (applied
+     2026-10-17, Luke: yes).
   5. **node-admin takes its declared types and ALPNs through `Wiring`**, beside `hydration` and
      `serve_app`; no second registration surface.
   6. **`dataschema`** rides `Event` and `Received` as an opaque `Option<String>`, carried both
@@ -536,16 +536,16 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
      the old protocol, never redesigned. Old paths are deleted only after their information and
      behaviour have a demonstrated replacement.
   9. **Demo acceptance for e5**, the i148 bar, in the pinned demo consumer through public API only:
-     late topic discovery (a node declaring a type after its admin started); concurrent snapshot and
+     late channel discovery (a node declaring a type after its admin started); concurrent snapshot and
      live updates converging to one row under the one rule; overflow with `lost` advancing and a
      re-pull healing; a missing chunk evicted, counted and healed; the ordinary broker round
      participation through `RoundActions` with no watcher.
-  - **§8 text (old → new, awaits Luke's yes).** Third paragraph "**node-admin holds every channel
+  - **§8 text (old → new, applied 2026-10-17 on Luke's yes).** Third paragraph "**node-admin holds every channel
     raw.** ... where a higher `version` wins, then a higher `offset`. Tombstones and clear-projection
     apply to it like any other row." → "**node-admin holds every channel, as the app.** node-admin
     holds the union of its members' declared types (`held`), so every projected kind reaches it; it
     is a Rafka binary embedding RDM, and the rows it keeps are the app's: the entity framework runs
-    in node-admin as a `Topic` subscriber and applies the kind's one comparator, the same one its
+    in node-admin as a `Channel` subscriber and applies the kind's one comparator, the same one its
     typed stores apply, read from the event's header `(offset, order_key, version, tombstone)`
     without decoding the value. RDM holds none of them and decides nothing on them." The "Entry
     ends with a pull" paragraph: "it reads its kind set from node-admin with node.topology.get.
@@ -558,6 +558,10 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   encoding, the `ChunkAssembler`, the membership digest loop and the six direct iroh-gossip
   dependencies go; the entity frame becomes an `Event` with the row's version as `sequence`.
   Not here.
+- **The word (Luke, 2026-10-17).** `channel` is RDM's word for one gossip subscription, everywhere: pages,
+  records, identifiers (`join_channel`, `Channel`, `ChannelError`, `rdm.mesh.channel.*`). `topic` is Rafka's
+  entity and iroh's `TopicId` type name, nothing else; e5 renames what the code still calls a topic in the
+  gossip sense (`mesh_topic`, `kind_topic`, the membership `Channel` internals keep their name).
 - **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144). Sibling: `i148-data-plane-connections-prd.md`, the connections half, after this.
 - **State.** Recorded 2026-10-17; gossip.md and node-rpc-envelope.md text on main; packet sent to Codex; not started.
 

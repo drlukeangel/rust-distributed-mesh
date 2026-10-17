@@ -141,7 +141,7 @@ execution (a closed connection) exactly as Rafka distinguishes them today.
     `.reject.via-refused`, `.update.via-presented`, the route and reconnect spans) plus
     `rdm.node.connections.create.via-tunnel` (source, carrier, destination, alpn) on the source and
     the carrier; the app's stream bytes are never spanned. A dial parents to the span the caller is
-    in, the same rule as `Topic::publish`.
+    in, the same rule as `Channel::publish`.
 
 ## Arch review, 2026-10-17 (five gaps and one, each closed above)
 

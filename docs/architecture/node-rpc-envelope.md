@@ -1249,7 +1249,7 @@ pub enum BuildFactsReply {
 }
 ```
 
-The stream is Started, Facts*, End. Each Facts chunk is one Build-topic frame, at most
+The stream is Started, Facts*, End. Each Facts chunk is one Build-channel frame, at most
 4032 bytes. The caller accepts it only when End arrives, every chunk index in 0..chunks
 is present exactly once, and the fact count equals End.facts. complete=true only when
 the responder holds the Build fully. End.complete must be true for hydration. Missing, duplicated or incomplete evidence is never
@@ -1317,7 +1317,7 @@ never a defect and never a new execution (Node RPC §34, §43).
 Blocked is live progress, **not a durable step outcome**. Durable step outcomes
 remain Complete and Failed. A stream cut cancels neither the fabric-primary's
 Build drive nor the executor's inner run. Only a yielded seat or a failed step ends an
-attempt. Progress waits on no gossip; Build-topic facts remain durability and
+attempt. Progress waits on no gossip; Build-channel facts remain durability and
 recovery evidence through the existing publication path.
 
 Resubmission by build_id never creates a second Build. The fabric-primary answers:
