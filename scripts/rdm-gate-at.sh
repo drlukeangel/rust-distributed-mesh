@@ -318,14 +318,27 @@ echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=
 for j in i143-rshape-composition-process i143-rshape-authority-chaos-process i143-rshape-lifecycle-chaos-process i143-rshape-routing-chaos-process i143-rshape-partition-chaos-process; do
     grep -q "\"$j\"" tools/mesh-audit/i143-acceptance-jobs.json && echo "rshape-${j#i143-rshape-} sh:scripts/i143-acceptance-gate.sh $j" >> $D/jobs
 done
-# The demo workspace (demo/: the R-shape consumer and the admin UI, RDM by pinned git rev) builds
-# on its own: its UI tests are a release job.
-# The R-shape consumer is built AT THE CANDIDATE (its manifest is what the rshape jobs check, i143-acceptance-gate.sh:117-128);
-# UI tests run in the same concurrent batch as the R-shape and container jobs.
-if [ -f demo/Cargo.toml ] && [ -x scripts/i143-rshape-build-consumer.sh ]; then
-    echo "demo-admin-ui sh:cargo test --locked --manifest-path target/i143-rshape/consumer-workspace/Cargo.toml -q -p rafka-admin-ui" >> $D/jobs
-elif [ -f demo/Cargo.toml ]; then
-    echo "demo-admin-ui sh:cd demo && cargo test -q -p rafka-admin-ui" >> $D/jobs
+# The consumer's UI test executables were built with its immutable runtime binaries.
+# Start each in the same concurrent batch, with no Cargo compilation during a live cell.
+if [ "$GATE" = release ] && [ -f demo/Cargo.toml ] && [ -x scripts/i143-rshape-build-consumer.sh ]; then
+    python3 - target/i143-rshape/consumer-build/artifacts.json >> "$D/jobs" <<'PYUI'
+import json, os, shlex, sys
+seen = set()
+for line in open(sys.argv[1]):
+    row = json.loads(line)
+    if row.get("reason") != "compiler-artifact" or not row.get("profile", {}).get("test") or not row.get("executable"):
+        continue
+    identity = row["package_id"]
+    name = identity.rsplit("#", 1)[-1].split("@", 1)[0] if "@" in identity.rsplit("#", 1)[-1] else identity.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if name != "rafka-admin-ui" or row["executable"] in seen:
+        continue
+    seen.add(row["executable"])
+    directory = shlex.quote(os.path.dirname(row["manifest_path"]))
+    exe = shlex.quote(row["executable"])
+    print(f"demo-admin-ui-{row['target']['name']} sh:(cd {directory} && CARGO_MANIFEST_DIR={directory} {exe} -q)")
+if not seen:
+    raise SystemExit("the consumer build produced no admin-ui test executables")
+PYUI
 fi
 echo "dep-rules run:dep-rules" >> $D/jobs
 echo "address-lookup run:address-lookup" >> $D/jobs

@@ -66,10 +66,26 @@ materialize_and_build() {
     for db in "${CARGO_HOME:-$HOME/.cargo}"/git/db/rust-distributed-mesh-*; do
         [ -d "$db" ] && git -C "$db" fetch -q "$ROOT" "+$CANDIDATE:refs/commit/$CANDIDATE" 2>/dev/null || true
     done
-    cargo build --locked --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins || return 1
+    cargo build --locked --message-format=json --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins --tests > "$OUTPUT/artifacts.json" || return 1
     # The admin UI's own tests (its flows run against node-admin's real control router).
     if [ "$SKIP_UI_TESTS" != 1 ]; then
-        cargo test --locked --manifest-path "$WORKSPACE/Cargo.toml" -p rafka-admin-ui || return 1
+        python3 - "$OUTPUT/artifacts.json" <<'PYTESTS' || return 1
+import json, os, subprocess, sys
+seen = set()
+for line in open(sys.argv[1]):
+    row = json.loads(line)
+    if row.get("reason") != "compiler-artifact" or not row.get("profile", {}).get("test") or not row.get("executable"):
+        continue
+    identity = row["package_id"]
+    name = identity.rsplit("#", 1)[-1].split("@", 1)[0] if "@" in identity.rsplit("#", 1)[-1] else identity.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    if name != "rafka-admin-ui" or row["executable"] in seen:
+        continue
+    seen.add(row["executable"])
+    directory = os.path.dirname(row["manifest_path"])
+    subprocess.run([row["executable"]], cwd=directory, env=dict(os.environ, CARGO_MANIFEST_DIR=directory), check=True)
+if not seen:
+    raise SystemExit("the consumer build produced no admin-ui test executables")
+PYTESTS
     fi
 }
 materialize_and_build > "$LOG" 2>&1 || { tail -20 "$LOG" >&2; refuse "the consumer did not materialize or build at $CANDIDATE (see $LOG)"; }
