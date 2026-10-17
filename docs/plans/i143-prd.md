@@ -2474,6 +2474,8 @@ Concrete-route control `e772f35a`: container restart canary green; container kil
 
 With matching cadence, container kill/recovery completed under its original bound (`42e95a74`), then the cell's old span selector failed at `container_kill.rs:95`: it expected `via-proven-drift` and the retired cohort-count scope. The evidence holds the completed exact-birth `via-node-recovery`, same accepted Build `v1m5ywaq4smm`, provider exit 137, and the new birth's boot, trace `adc30aa2ecde703c4fb2f04e3fba2681`. The cell now selects that named recovery record by Build and exited birth, checks the replacement's new node id as node-recovery.md requires, and retains the existing provider-proof, same-Build, create-step, survivor and cleanup assertions and all bounds. Log `/home/admin/rust-distributed-mesh-deploy/s88-container-kill-cadence.log`.
 
+Targeted live confirmation: restart canary green (`/home/admin/rust-distributed-mesh-deploy/s88-entry-route-live.log`); container kill/recovery green, 46.22 s, original bounds (`/home/admin/rust-distributed-mesh-deploy/s88-container-kill-green.log`). The demo pin includes the concrete-entry client and cadence fixes; next proof is the full concurrent release batch, including all three enabled container jobs.
+
 ### Remaining
 
 - [ ] A functional cell proving hard-link insertion (`create_new`), atomic rename (`replace`), file and directory `fsync`, and coherent reads and listings across containers sharing the container provider's mounted `RDM_STORE_DIR` (`R14 item 6`).

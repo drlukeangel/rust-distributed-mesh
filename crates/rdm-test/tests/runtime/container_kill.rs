@@ -8,8 +8,8 @@
 //! a new container. Nothing here signals the fabric: the Build and runtime-adoption path does the
 //! recovery.
 //!
-//! The node-admins stay host processes: a node-admin in a container would need the Docker daemon
-//! inside it. One node-admin drives the container fabric.
+//! The Day-0 node-admin runs in the fabric's container network and drives the same Docker
+//! daemon through its mounted socket. Every runtime shares the mounted fabric store.
 //!
 //! Opt-in: it runs only with `RDM_CONTAINER_PROOF=1` (the container-proof step); otherwise it
 //! skips by name and starts nothing.
