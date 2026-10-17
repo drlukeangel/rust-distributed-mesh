@@ -274,6 +274,7 @@ impl IndeterminateReason {
 pub struct Replied<R> {
     value: R,
     class: ReplyKind,
+    detail_name: &'static str,
 }
 
 impl<R> Replied<R> {
@@ -283,6 +284,8 @@ impl<R> Replied<R> {
     }
     /// The typed named RDM result/refusal beside the code.
     pub fn detail(&self) -> &R { &self.value }
+    /// The protocol’s typed result name, captured at decode.
+    pub fn detail_name(&self) -> &'static str { self.detail_name }
     /// How the protocol classified the reply.
     pub fn class(&self) -> ReplyKind {
         self.class
@@ -371,6 +374,43 @@ pub enum RpcOutcome<R> {
 }
 
 impl<R> RpcOutcome<R> {
+    /// The typed result/refusal or delivery-reason name, independent of explanation text.
+    pub fn detail_name(&self) -> &'static str {
+        match self {
+            Self::Reply(r) => r.detail_name(),
+            Self::Unserved(_) => "unserved-op",
+            Self::RejectedStale(_) => "stale-target",
+            Self::NotSent(n) => match n.reason() {
+                NotSentReason::Resolve(ResolveFailure::Unknown) => "peer-unresolved",
+                NotSentReason::Resolve(ResolveFailure::Gone) => "receiver-gone",
+                NotSentReason::Resolve(ResolveFailure::Unavailable) => "unavailable",
+                NotSentReason::Connection(_) => "connection",
+                NotSentReason::StreamBudget => "stream-budget",
+                NotSentReason::Deadline => "deadline",
+                NotSentReason::FrameNotSent => "frame-not-sent",
+                NotSentReason::Carried(_) => "carried",
+                NotSentReason::CarrierEdgeLost(_) => "carrier-edge-lost",
+                NotSentReason::CarrierNoBudget { .. } => "carrier-no-budget",
+                NotSentReason::NotForwardable { .. } => "not-forwardable",
+                NotSentReason::NoActiveRoute => "no-active-route",
+                NotSentReason::AdmissionBlocked(_) => "admission-blocked",
+            },
+            Self::Indeterminate(i) => match i.reason() {
+                IndeterminateReason::ReplyLost(_) => "reply-lost",
+                IndeterminateReason::ReplyDeadline => "reply-deadline",
+                IndeterminateReason::Reset(n) => match ResetCode::from_code(*n) {
+                    Some(ResetCode::InternalRpcFailure) => "handler-fault",
+                    Some(ResetCode::ProtocolViolation) => "protocol-violation",
+                    _ => "reset",
+                },
+                IndeterminateReason::UnsupportedReplyVariant => "unsupported-reply-variant",
+                IndeterminateReason::CorruptReply => "corrupt-reply",
+                IndeterminateReason::ProtocolViolation(_) => "protocol-violation",
+                IndeterminateReason::ReceiverGone(_) => "receiver-gone",
+            },
+        }
+    }
+
     /// The code derived from the reply or the local typed proving condition.
     pub fn code(&self) -> Code {
         match self {
@@ -529,7 +569,8 @@ impl EarlyRefusal {
         match reply_payload.map(P::decode_reply) {
             Some(Ok(value)) => {
                 let class = P::classify_reply(&value);
-                RpcOutcome::Reply(Replied { value, class })
+                let detail_name = P::reply_detail(&value);
+                RpcOutcome::Reply(Replied { value, class, detail_name })
             }
             _ => RpcOutcome::NotSent(NotSent { reason: NotSentReason::FrameNotSent }),
         }
@@ -547,7 +588,8 @@ impl Committed {
         match P::decode_reply(reply_payload) {
             Ok(value) => {
                 let class = P::classify_reply(&value);
-                RpcOutcome::Reply(Replied { value, class })
+                let detail_name = P::reply_detail(&value);
+                RpcOutcome::Reply(Replied { value, class, detail_name })
             }
             Err(DecodeFailure::UnknownVariant) => self.indeterminate(IndeterminateReason::UnsupportedReplyVariant),
             Err(DecodeFailure::Corrupt) => self.indeterminate(IndeterminateReason::CorruptReply),
@@ -578,7 +620,8 @@ impl Committed {
 fn forwarded_reply(payload: &[u8]) -> RpcOutcome<crate::forward::ForwardReply> {
     let value = crate::forward::ForwardReply::Forwarded { inner: payload.to_vec() };
     let class = crate::forward::Forward::classify_reply(&value);
-    RpcOutcome::Reply(Replied { value, class })
+    let detail_name = crate::forward::Forward::reply_detail(&value);
+    RpcOutcome::Reply(Replied { value, class, detail_name })
 }
 
 /// The outcome of a carried call of protocol `P`, from the outcome of its outer forward call to
@@ -600,7 +643,8 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         ForwardReply::Forwarded { inner } => match P::decode_reply(&inner) {
             Ok(value) => {
                 let class = P::classify_reply(&value);
-                RpcOutcome::Reply(Replied { value, class })
+                let detail_name = P::reply_detail(&value);
+                RpcOutcome::Reply(Replied { value, class, detail_name })
             }
             Err(DecodeFailure::UnknownVariant) => indeterminate(IndeterminateReason::UnsupportedReplyVariant),
             Err(DecodeFailure::Corrupt) => indeterminate(IndeterminateReason::CorruptReply),

@@ -139,15 +139,15 @@ async fn rename(
     // peer that did not resolve.
     let Some(held) = now.nodes.iter().find(|n| n.node_id == *node_id).cloned() else {
         span.record("detail", format!("{me}: node {node_id} is not in the mesh-primary's view; it cannot be renamed").as_str());
-        return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+        return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
     };
     span.record("from", held.name.to_string().as_str());
     // 1. The exact birth.
     match held.incarnation_id.as_ref() {
-        Some(h) if h != incarnation => return StatusReply::RejectedStaleIncarnation { held: h.clone() },
+        Some(h) if h != incarnation => return rdm_core::reply::stale(h.clone()),
         None => {
             span.record("detail", format!("{me}: {} has no known birth; it cannot be renamed", held.name).as_str());
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
         }
         Some(_) => {}
     }
@@ -156,7 +156,7 @@ async fn rename(
         let held_by = now.cohort_primary(&held.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", held.mesh, held.name);
         span.record("detail", needed.as_str());
-        return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };
+        return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
     }
     // 3. The node admits no connection.
     let admission = admission_of(&held, deleted);
@@ -181,7 +181,7 @@ async fn rename(
     };
     span.record("to", to.to_string().as_str());
     let Some(door) = doors.configs else {
-        return StatusReply::NotReady { reason: format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the rename of {} is refused and nothing is written", held.name) };
+        return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the rename of {} is refused and nothing is written", held.name));
     };
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config and the tags included.
@@ -207,7 +207,7 @@ async fn rename(
         }
     } else {
         let Some(moved) = doors.moved.get() else {
-            return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
+            return rdm_core::reply::status::not_ready(format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name));
         };
         // A cutover's row carries the retained predecessor row's config and tags once; a repeated
         // cutover after the retained row already named this successor preserves the successor's own.
@@ -238,7 +238,7 @@ async fn rename(
                     Moved::Renamed | Moved::AlreadyMoved => None,
                 }
             }
-            Err(RenameRefused::NameHeld(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
+            Err(RenameRefused::NameHeld(h)) => return rdm_core::reply::status::name_held(h.name.to_string(), h.by),
             Err(RenameRefused::Unwritten(why)) => return StatusReply::node_row_refused(&to.to_string(), &why),
         };
         // The view reads the moved row: the birth is listed at the row's name from now on.
@@ -267,7 +267,7 @@ async fn rename(
                 let (_, decision) = rename(to.clone()).await;
                 Ok(crate::node_name::reply(&decision))
             }
-            None => Ok(StatusReply::NotReady { reason: format!("{me}: its digest does not exist yet; the name {to} is not taken") }),
+            None => Ok(rdm_core::reply::status::not_ready(format!("{me}: its digest does not exist yet; the name {to} is not taken"))),
         }
     } else {
         span.record("apply", "direct");

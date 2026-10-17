@@ -291,6 +291,25 @@ impl NodeProtocol for Forward {
     type Request = ForwardRequest;
     type Reply = ForwardReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            ForwardReply::Forwarded { .. } => "forwarded",
+            ForwardReply::InnerNotSent { .. } => "inner-not-sent",
+            ForwardReply::InnerUnserved { .. } => "inner-unserved",
+            ForwardReply::InnerRejectedStale { .. } => "inner-rejected-stale",
+            ForwardReply::InnerIndeterminate { .. } => "inner-indeterminate",
+            ForwardReply::NotForwardable { .. } => "not-forwardable",
+            ForwardReply::PeerUnresolved { .. } => "peer-unresolved",
+            ForwardReply::NotReady { .. } => "not-ready",
+            ForwardReply::Busy { .. } => "busy",
+            ForwardReply::ConnectionsDeleting { .. } => "connections-deleting",
+            ForwardReply::Malformed { .. } => "malformed",
+            ForwardReply::Unauthorized { .. } => "unauthorized",
+            ForwardReply::CarrierEdgeLost { .. } => "carrier-edge-lost",
+            ForwardReply::NoInnerBudget { .. } => "no-inner-budget",
+        }
+    }
+
     fn classify_reply(reply: &ForwardReply) -> ReplyKind {
         match reply {
             ForwardReply::Forwarded { .. } => ReplyKind::Success,

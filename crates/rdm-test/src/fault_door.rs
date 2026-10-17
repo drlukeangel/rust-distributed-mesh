@@ -325,6 +325,21 @@ impl NodeProtocol for FaultDoor {
     type Request = FaultRequest;
     type Reply = FaultReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            FaultReply::Armed { .. } => "armed",
+            FaultReply::Released { .. } => "released",
+            FaultReply::State(..) => "state",
+            FaultReply::Refused { .. } => "refused",
+            FaultReply::PeerUnresolved { .. } => "peer-unresolved",
+            FaultReply::NotReady { .. } => "not-ready",
+            FaultReply::Busy { .. } => "busy",
+            FaultReply::ConnectionsDeleting { .. } => "connections-deleting",
+            FaultReply::Malformed { .. } => "malformed",
+            FaultReply::CallerRefused { .. } => "caller-refused",
+        }
+    }
+
     fn classify_reply(reply: &FaultReply) -> ReplyKind {
         match reply {
             FaultReply::State(_) => ReplyKind::Success,

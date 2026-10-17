@@ -884,7 +884,7 @@ impl FabricRounds {
 
     /// A round op addressed to this admin, decided from `view`. `own` answers it as a plain member.
     pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
-        let Some(op) = RoundOp::of(req) else { return StatusReply::NotReady { reason: format!("{} is not a round op", req.op()) } };
+        let Some(op) = RoundOp::of(req) else { return rdm_core::reply::status::not_ready(format!("{} is not a round op", req.op())) };
         let me = self.held_name_in(view).to_string();
         let reply = if op.is_down { self.serve_down(view, sender, peer, req, &op, own).await } else { self.serve_up(view, req, &op) };
         tracing::info_span!(
@@ -910,24 +910,24 @@ impl FabricRounds {
     #[allow(clippy::too_many_arguments)]
     async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
         let me_name = self.held_name_in(view);
         // Answered by the admin the call reached (R-RX5: no receiver refuses a downward call for the
         // node id it names); the exact birth it names is checked, so a call that reached another
         // birth is refused naming the one held.
         if let Some(held) = me.incarnation_id.as_ref().filter(|h| *h != op.incarnation) {
-            return StatusReply::RejectedStaleIncarnation { held: held.clone() };
+            return rdm_core::reply::stale(held.clone());
         }
         if *op.fabric_id != self.env.fabric_id {
-            return StatusReply::RejectedStaleFabric { held: self.env.fabric_id.clone() };
+            return rdm_core::reply::status::rejected_stale_fabric(self.env.fabric_id.clone());
         }
         let want = op.kind.operation(op.fabric_id);
         if op.operation != want {
-            return StatusReply::NotReady { reason: format!("{me_name}: {} names operation {}, the round's is {want}", req.op(), op.operation) };
+            return rdm_core::reply::status::not_ready(format!("{me_name}: {} names operation {}, the round's is {want}", req.op(), op.operation));
         }
         if me.is_fabric_primary {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("a mesh-primary the fabric-primary commands, or a member of a mesh: {me_name} holds the fabric seat and carries {} down", req.op()) } };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("a mesh-primary the fabric-primary commands, or a member of a mesh: {me_name} holds the fabric seat and carries {} down", req.op()) });
         }
         if me.is_primary {
             // This admin is a mesh primary: it runs its mesh's round and reports to the fabric-primary.
@@ -935,12 +935,12 @@ impl FabricRounds {
             self.env.wake.addressed_by(sender.map(|n| &n.node_id), peer);
             if self.mesh_book.open(&key) {
                 self.spawn_mesh_driver(key, true, tracing::Span::current());
-                StatusReply::Applied
+                rdm_core::reply::applied()
             } else {
                 // The round is held: a successor fabric-primary asking again is owed the completion
                 // again by the declarer, which sees the seat moved.
                 self.env.wake.poke();
-                StatusReply::AlreadyApplied
+                rdm_core::reply::already_applied()
             }
         } else {
             // A member: it checks in with the primary that commanded it (fabric-state-commit.md, round
@@ -950,8 +950,8 @@ impl FabricRounds {
             let commander = sender.filter(|s| s.node_id != me.node_id).map(|s| s.node_id.clone()).or_else(|| view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone()));
             match (own, commander) {
                 (Some(own), Some(commander)) => own.serve(Some(&commander), None, req).await.expect("a round op"),
-                (None, _) => StatusReply::NotReady { reason: format!("{me_name} has not yet joined its mesh; {} is refused", req.op()) },
-                (Some(_), None) => StatusReply::NotReady { reason: format!("{me_name}: its view holds no caller and names no primary of {} to check {} in to", me.mesh, req.op()) },
+                (None, _) => rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; {} is refused", req.op())),
+                (Some(_), None) => rdm_core::reply::status::not_ready(format!("{me_name}: its view holds no caller and names no primary of {} to check {} in to", me.mesh, req.op())),
             }
         }
     }
@@ -961,11 +961,11 @@ impl FabricRounds {
     /// its mesh's primary.
     fn serve_up(&self, view: &Topology, req: &StatusRequest, op: &RoundOp<'_>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
         let me_name = self.held_name_in(view).to_string();
         let Some(subject) = view.births().find(|n| n.node_id == *op.node_id) else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
         };
         let held = Some((subject.incarnation_id.as_ref(), subject.name.to_string()));
         let held = held.as_ref().map(|(i, n)| (*i, n.as_str()));
@@ -976,7 +976,7 @@ impl FabricRounds {
         } else if me.is_primary && subject.mesh == me.mesh && subject.node_id != me.node_id {
             self.mesh_book.check_in(&me_name, held, req)
         } else {
-            StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) } }
+            rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the fabric-primary, or the mesh-primary of {}", subject.mesh) })
         }
     }
 }

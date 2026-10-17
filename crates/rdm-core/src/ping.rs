@@ -70,6 +70,18 @@ impl NodeProtocol for Ping {
     type Request = PingRequest;
     type Reply = PingReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            PingReply::Pong { .. } => "pong",
+            PingReply::PeerUnresolved { .. } => "peer-unresolved",
+            PingReply::NotReady { .. } => "not-ready",
+            PingReply::Busy { .. } => "busy",
+            PingReply::ConnectionsDeleting { .. } => "connections-deleting",
+            PingReply::Malformed { .. } => "malformed",
+            PingReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
+
     fn read_only(_req: &PingRequest) -> bool {
         true
     }

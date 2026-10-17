@@ -594,6 +594,37 @@ impl NodeProtocol for Build {
     type Request = BuildRequest;
     type Reply = BuildReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            BuildReply::Started { .. } => "started",
+            BuildReply::Step { .. } => "step",
+            BuildReply::Blocked { .. } => "blocked",
+            BuildReply::Steps { .. } => "steps",
+            BuildReply::Complete { .. } => "complete",
+            BuildReply::Failed { .. } => "failed",
+            BuildReply::HandedOff { .. } => "handed-off",
+            BuildReply::Got { .. } => "got",
+            BuildReply::Deleted { .. } => "deleted",
+            BuildReply::NotFabricPrimary { .. } => "not-fabric-primary",
+            BuildReply::NotExecutor { .. } => "not-executor",
+            BuildReply::StaleClaim { .. } => "stale-claim",
+            BuildReply::UnknownBuild { .. } => "unknown-build",
+            BuildReply::Rejected { .. } => "rejected",
+            BuildReply::BuildInProgress { .. } => "build-in-progress",
+            BuildReply::AttemptTaken { .. } => "attempt-taken",
+            BuildReply::SeatYielded { .. } => "seat-yielded",
+            BuildReply::CannotDelete { .. } => "cannot-delete",
+            BuildReply::PeerUnresolved { .. } => "peer-unresolved",
+            BuildReply::NotReady { .. } => "not-ready",
+            BuildReply::Busy { .. } => "busy",
+            BuildReply::ConnectionsDeleting { .. } => "connections-deleting",
+            BuildReply::Malformed { .. } => "malformed",
+            BuildReply::Unauthorized { .. } => "unauthorized",
+            BuildReply::SeatMoved { .. } => "seat-moved",
+            BuildReply::NotClaimant { .. } => "not-claimant",
+        }
+    }
+
     fn classify_reply(reply: &BuildReply) -> ReplyKind {
         match reply {
             BuildReply::Started { disposition: Disposition::AlreadyApplied, .. } => ReplyKind::new(crate::outcome::Code::AlreadyExists),

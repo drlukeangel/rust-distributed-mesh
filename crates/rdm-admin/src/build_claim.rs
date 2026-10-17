@@ -161,22 +161,22 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
         let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()) };
         match claims.take(mesh, &row).await {
             Ok(Taken::Won) => {}
-            Ok(Taken::Held(held)) => return BuildClaimReply::BuildInProgress { current_build_id: held.build_id.to_string(), mesh: mesh.to_string(), held_by: Some(held.claimant) },
-            Err(e) => return BuildClaimReply::NotReady { reason: format!("{me}: the in-flight row of mesh {mesh} could not be taken for attempt {} of {}: {e}", claim.attempt, claim.build_id) },
+            Ok(Taken::Held(held)) => return rdm_core::reply::build_claim::build_in_progress(held.build_id.to_string(), mesh.to_string(), Some(held.claimant)),
+            Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the in-flight row of mesh {mesh} could not be taken for attempt {} of {}: {e}", claim.attempt, claim.build_id)),
         }
         match builds.claim_attempt(claim).await {
             Ok(ClaimOutcome::Won) => match contexts.for_claim_lane(&claim.build_id, lane, claim.attempt).await {
                 Ok(context) => BuildClaimReply::Won { context },
-                Err(e) => BuildClaimReply::NotReady { reason: format!("{me}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id) },
+                Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id)),
             },
-            Ok(ClaimOutcome::Lost { holder }) => BuildClaimReply::Lost { holder },
+            Ok(ClaimOutcome::Lost { holder }) => rdm_core::reply::build_claim::lost(holder),
             Ok(ClaimOutcome::NotOpen { next }) => {
                 if let Err(e) = claims.release(mesh, &row).await {
-                    return BuildClaimReply::NotReady { reason: format!("{me}: attempt {} of {} is not open (next {next:?}) and the in-flight row of mesh {mesh} taken for it could not be released: {e}", claim.attempt, claim.build_id) };
+                    return rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is not open (next {next:?}) and the in-flight row of mesh {mesh} taken for it could not be released: {e}", claim.attempt, claim.build_id));
                 }
-                BuildClaimReply::NotOpen { next }
+                rdm_core::reply::build_claim::not_open(next)
             }
-            Err(e) => BuildClaimReply::NotReady { reason: format!("{me}: claiming attempt {} of {}: {e}", claim.attempt, claim.build_id) },
+            Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: claiming attempt {} of {}: {e}", claim.attempt, claim.build_id)),
         }
     }
     .instrument(span.clone())
@@ -228,11 +228,7 @@ impl ClaimDoor {
             None => t.holds_fabric_seat(&self.node_id),
             Some(lane) => t.holds_mesh_seat(lane, &self.node_id),
         };
-        (!claims).then(|| BuildClaimReply::NotClaimant {
-            mesh: mesh.map(str::to_string),
-            fabric_primary: t.fabric_primary().map(|n| n.name.to_string()),
-            mesh_primary: mesh.and_then(|m| t.cohort_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.name.to_string()),
-        })
+        (!claims).then(|| rdm_core::reply::build_claim::not_claimant(mesh.map(str::to_string), t.fabric_primary().map(|n| n.name.to_string()), mesh.and_then(|m| t.cohort_primary(m, crate::model::NodeKind::NodeAdmin)).map(|n| n.name.to_string())))
     }
 
     /// Decide the claim of the fabric lane's `attempt` of `build_id` for `executor` (a node-admin's
@@ -251,7 +247,7 @@ impl ClaimDoor {
             Some(mesh) => mesh.to_string(),
             None => match executor.parse::<PathName>() {
                 Ok(e) => e.mesh,
-                Err(e) => return BuildClaimReply::NotReady { reason: format!("{me}: the executor {executor:?} of attempt {attempt} of {build_id} is not a path.name: {e}") },
+                Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the executor {executor:?} of attempt {attempt} of {build_id} is not a path.name: {e}")),
             },
         };
         if let Some(refusal) = self.not_claimant(lane, Some(&mesh)).await {
@@ -276,19 +272,17 @@ impl ClaimDoor {
         let me = self.held_name().await;
         let executor = self.topology.read().await.births().find(|n| n.node_id == executor_node_id).cloned();
         let Some(executor) = executor else {
-            return BuildClaimReply::PeerUnresolved { reason: format!("{me}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", peer.0) };
+            return rdm_core::reply::build_claim::peer_unresolved(format!("{me}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", peer.0));
         };
         if executor.incarnation_id.as_ref() != Some(&executor_incarnation) {
-            return BuildClaimReply::PeerUnresolved {
-                reason: format!("{me}: the request names birth {} of {} and this view holds {:?}", executor_incarnation.as_str(), executor.name, executor.incarnation_id.as_ref().map(|i| i.as_str())),
-            };
+            return rdm_core::reply::build_claim::peer_unresolved(format!("{me}: the request names birth {} of {} and this view holds {:?}", executor_incarnation.as_str(), executor.name, executor.incarnation_id.as_ref().map(|i| i.as_str())));
         }
         let build_id = match BuildId::parse(&build_id) {
             Ok(build_id) => build_id,
             Err(e) => {
                 tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, executor = %executor.name, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the claim is refused: its Build id is not a Crockford id"));
-                return BuildClaimReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt };
+                return rdm_core::reply::build_claim::malformed(rdm_core::outcome::MalformedKind::Corrupt);
             }
         };
         self.claim_in(&executor.name.to_string(), &build_id, mesh.as_deref(), attempt).await
@@ -305,7 +299,7 @@ pub fn serve(b: ServerBuilder, slot: ClaimSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(BuildClaimReply::NotReady { reason: "this admin holds no view yet".into() });
+                return Ok(rdm_core::reply::build_claim::not_ready("this admin holds no view yet".into()));
             };
             Ok(door.serve(EndpointId(peer.endpoint_id.to_string()), req).await)
         }

@@ -58,7 +58,7 @@ impl BuildFactsDoor {
                     span.record("outcome", "malformed-build-id");
                     tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the facts read is refused: its Build id is not a Crockford id"));
-                    return BuildFactsReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt };
+                    return rdm_core::reply::build_facts::malformed(rdm_core::outcome::MalformedKind::Corrupt);
                 }
             };
             // One read of this admin's log: the stream is a snapshot of it.
@@ -66,12 +66,12 @@ impl BuildFactsDoor {
                 Ok(all) => all.into_iter().filter(|f| *f.build_id() == id).collect(),
                 Err(e) => {
                     span.record("outcome", "not-ready");
-                    return BuildFactsReply::NotReady { reason: format!("{me}: its Build log could not be read: {e}") };
+                    return rdm_core::reply::build_facts::not_ready(format!("{me}: its Build log could not be read: {e}"));
                 }
             };
             if held.is_empty() {
                 span.record("outcome", "unknown-build");
-                return BuildFactsReply::UnknownBuild { build_id };
+                return rdm_core::reply::build_facts::unknown_build(build_id);
             }
             let facts = held.len() as u32;
             let (messages, refused) = encode_chunks(held);
@@ -114,7 +114,7 @@ pub fn serve(b: ServerBuilder, slot: BuildFactsSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(BuildFactsReply::NotReady { reason: "this admin holds no Build state yet".into() });
+                return Ok(rdm_core::reply::build_facts::not_ready("this admin holds no Build state yet".into()));
             };
             Ok(door.serve(req, sink).await)
         }

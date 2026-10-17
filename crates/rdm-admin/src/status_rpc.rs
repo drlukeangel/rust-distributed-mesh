@@ -371,53 +371,53 @@ pub enum Effect {
 pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req: &StatusRequest) -> (StatusReply, Option<Effect>) {
     let me = match view.own(&auth.node_id) {
         Some(n) => n,
-        None => return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } }, None),
+        None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() }), None),
     };
     let me_name = auth.held_name_in(view);
     match req {
         StatusRequest::DeclareNodeState { node_id, incarnation, state, operation } => {
             // The subject, as this admin's view holds it.
             let Some(subject) = view.births().find(|n| n.node_id == *node_id) else {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None);
             };
             // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
             // which sets its status (node-status.md "Status report").
             if !(me.is_primary && me.mesh == subject.mesh) {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) } }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) }), None);
             }
             // The exact birth: a declaration for an incarnation the view no longer holds is stale.
             match subject.incarnation_id.as_ref() {
                 Some(held) if held == incarnation => {}
-                Some(held) => return (StatusReply::RejectedStaleIncarnation { held: held.clone() }, None),
-                None => return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None),
+                Some(held) => return (rdm_core::reply::stale(held.clone()), None),
+                None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None),
             }
             let current = declared.node(&subject.node_id, incarnation);
             match transition(current, *state) {
-                Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
-                Transition::Backward { current } => (StatusReply::RejectedInvalidNodeTransition { current }, None),
+                Transition::AlreadyApplied => (rdm_core::reply::already_applied(), None),
+                Transition::Backward { current } => (rdm_core::reply::status::rejected_invalid_node_transition(current), None),
                 Transition::Apply => {
                     let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
-                    (StatusReply::Applied, Some(Effect::Node(row, *state, operation.clone())))
+                    (rdm_core::reply::applied(), Some(Effect::Node(row, *state, operation.clone())))
                 }
             }
         }
         StatusRequest::DeclareMeshState { mesh_id, state } => {
             if !me.is_fabric_primary {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "fabric-primary".into() } }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "fabric-primary".into() }), None);
             }
             // The subject Mesh, as this holder knows it: an id its own Build created, else the id a
             // Mesh carries in the view. The fabric seat moves to whichever admin has the lowest node
             // id, which may hold a Mesh it never created.
             let held = (auth.mesh_ids)().values().any(|id| id == mesh_id) || view.meshes.iter().any(|m| m.id.as_ref() == Some(mesh_id));
             if !held {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None);
             }
             apply_mesh(declared, mesh_id, *state)
         }
         // Downward exact-node operations are answered by the birth they reach (`self_subject`), which
         // this admin answers as once its view holds it.
         StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeName { .. } => {
-            (StatusReply::NotReady { reason: format!("{me_name} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", req.op()) }, None)
+            (rdm_core::reply::status::not_ready(format!("{me_name} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", req.op())), None)
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`):
         // the decision has no handler for them, so not handled here (R24), decided by dispatch alone.
@@ -426,34 +426,34 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
             if me.mesh != *mesh_name {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") } }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") }), None);
             }
             // The mesh's primary writes its status (node-identity-and-state.md 4.3): an admin whose view
             // names another admin the mesh's primary is not the receiver. One whose view names none
             // yet is the admin the hand-off created, before its own seat shows in its view.
             if let Some(primary) = view.cohort_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) } }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {mesh_name}, which this admin's view names {} ({})", primary.name, primary.node_id) }), None);
             }
             // Never a replacement mesh id to satisfy the operation.
             if let Some(held) = (auth.mesh_ids)().get(mesh_name) {
                 if held != mesh_id {
-                    return (StatusReply::RejectedStaleMesh { held: held.clone() }, None);
+                    return (rdm_core::reply::status::rejected_stale_mesh(held.clone()), None);
                 }
             }
             apply_mesh(declared, mesh_id, *state)
         }
         StatusRequest::ApplyFabricEvent { fabric_id, event } => {
             if !me.is_primary {
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary".into() } }, None);
+                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "mesh-primary".into() }), None);
             }
             if *fabric_id != auth.fabric_id {
-                return (StatusReply::RejectedStaleFabric { held: auth.fabric_id.clone() }, None);
+                return (rdm_core::reply::status::rejected_stale_fabric(auth.fabric_id.clone()), None);
             }
             let key = event_key(event);
             if declared.fabric.get(fabric_id).is_some_and(|events| events.contains(&key)) {
-                return (StatusReply::AlreadyApplied, None);
+                return (rdm_core::reply::already_applied(), None);
             }
-            (StatusReply::Applied, Some(Effect::Fabric(fabric_id.clone(), key)))
+            (rdm_core::reply::applied(), Some(Effect::Fabric(fabric_id.clone(), key)))
         }
     }
 }
@@ -472,15 +472,15 @@ pub(crate) fn event_key(e: &FabricEvent) -> String {
 /// (`crate::fabric_rounds`), and an `ApplyFabricEvent` it sends a mesh primary commit here alike.
 pub(crate) async fn commit_fabric_event(storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
     if let Err(e) = storage.put_fabric_event(&crate::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.to_string() }).await {
-        return StatusReply::NotReady { reason: format!("status.storage refused the Fabric event row: {e}") };
+        return rdm_core::reply::status::not_ready(format!("status.storage refused the Fabric event row: {e}"));
     }
     let mut declared = declared.lock().unwrap();
     let events = declared.fabric.entry(fabric_id.clone()).or_default();
     if events.iter().any(|e| e == event) {
-        StatusReply::AlreadyApplied
+        rdm_core::reply::already_applied()
     } else {
         events.push(event.to_string());
-        StatusReply::Applied
+        rdm_core::reply::applied()
     }
 }
 
@@ -494,13 +494,13 @@ pub(crate) async fn commit_mesh_state(storage: &dyn crate::status_storage::Statu
         return decided;
     }
     if let Err(e) = storage.put_mesh_status(&crate::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state }).await {
-        return StatusReply::NotReady { reason: format!("status.storage refused the Mesh status row {mesh_id}-{state:?}: {e}") };
+        return rdm_core::reply::status::not_ready(format!("status.storage refused the Mesh status row {mesh_id}-{state:?}: {e}"));
     }
     let mut declared = declared.lock().unwrap();
     match apply_mesh(&declared, mesh_id, state) {
         (StatusReply::Applied, _) => {
             declared.meshes.insert(mesh_id.clone(), state);
-            StatusReply::Applied
+            rdm_core::reply::applied()
         }
         (other, _) => other,
     }
@@ -508,9 +508,9 @@ pub(crate) async fn commit_mesh_state(storage: &dyn crate::status_storage::Statu
 
 fn apply_mesh(declared: &Declared, mesh_id: &MeshId, state: MeshState) -> (StatusReply, Option<Effect>) {
     match transition(declared.meshes.get(mesh_id).copied(), state) {
-        Transition::AlreadyApplied => (StatusReply::AlreadyApplied, None),
-        Transition::Backward { current } => (StatusReply::RejectedInvalidMeshTransition { current }, None),
-        Transition::Apply => (StatusReply::Applied, Some(Effect::Mesh(mesh_id.clone(), state))),
+        Transition::AlreadyApplied => (rdm_core::reply::already_applied(), None),
+        Transition::Backward { current } => (rdm_core::reply::status::rejected_invalid_mesh_transition(current), None),
+        Transition::Apply => (rdm_core::reply::applied(), Some(Effect::Mesh(mesh_id.clone(), state))),
     }
 }
 
@@ -582,7 +582,7 @@ impl StatusAuthority {
             StatusRequest::DeleteConnections { node_id, incarnation, scope } => return self.carry_delete_connections(&view, sender.as_ref(), node_id, incarnation, scope).await.status_reply(),
             StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } => {
                 let Some(mesh_deleter) = self.mesh_deleter.get().cloned() else {
-                    return StatusReply::NotReady { reason: format!("{me_name} is still starting: it cannot serve {} yet", req.op()) };
+                    return rdm_core::reply::status::not_ready(format!("{me_name} is still starting: it cannot serve {} yet", req.op()));
                 };
                 let reply = if matches!(req, StatusRequest::DeleteMesh { .. }) { mesh_deleter.delete_mesh(peer, sender.as_ref(), req).await } else { mesh_deleter.mesh_deleted(sender.as_ref(), req).await };
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me_name, op = req.op(), sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
@@ -592,7 +592,7 @@ impl StatusAuthority {
             StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
                 return match self.rounds.get() {
                     Some(rounds) => rounds.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
-                    None => StatusReply::NotReady { reason: format!("{me_name} has not yet built its rounds; {} is refused", req.op()) },
+                    None => rdm_core::reply::status::not_ready(format!("{me_name} has not yet built its rounds; {} is refused", req.op())),
                 };
             }
             StatusRequest::UpdateName { .. } => return self.update_name(req, None).await,
@@ -609,7 +609,7 @@ impl StatusAuthority {
                 }
                 return match self.configs.get() {
                     Some(configs) => configs.update(&me_name, &self.node_id, &view, &*self.nodes_storage, req).await,
-                    None => StatusReply::NotReady { reason: format!("{me_name} has no node-RPC client yet; {} is refused", req.op()) },
+                    None => rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet; {} is refused", req.op())),
                 };
             }
             // The reads: answered from what this admin holds, changing nothing.
@@ -622,12 +622,12 @@ impl StatusAuthority {
                         };
                         crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), &planned, select).await
                     }
-                    None => StatusReply::NotReady { reason: format!("{me_name} reads no digest book; {} is refused", req.op()) },
+                    None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest book; {} is refused", req.op())),
                 };
             }
             StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
                 if self.loads.is_none() {
-                    return StatusReply::NotReady { reason: format!("{me_name} reads no digest book; {} is refused", req.op()) };
+                    return rdm_core::reply::status::not_ready(format!("{me_name} reads no digest book; {} is refused", req.op()));
                 }
                 if matches!(req, StatusRequest::GetFabric) {
                     // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
@@ -637,7 +637,7 @@ impl StatusAuthority {
                         Err(e) => StatusReply::source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
                 }
-                return crate::views::view_answer(&me_name, &view, req).unwrap_or_else(|| StatusReply::NotReady { reason: format!("{me_name} answers no {} from its view", req.op()) });
+                return crate::views::view_answer(&me_name, &view, req).unwrap_or_else(|| rdm_core::reply::status::not_ready(format!("{me_name} answers no {} from its view", req.op())));
             }
             StatusRequest::GetConnections { incarnation, .. } => return self.read_connections(&view, incarnation).await,
             _ => {}
@@ -692,16 +692,16 @@ impl StatusAuthority {
     /// node id it names); another incarnation is refused naming the one held.
     async fn read_connections(&self, view: &Topology, incarnation: &IncarnationId) -> StatusReply {
         let Some(me) = view.own(&self.node_id) else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() });
         };
         match me.incarnation_id.as_ref() {
-            None => return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
-            Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
+            None => return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown),
+            Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
             Some(_) => {}
         }
         match self.own.get() {
             Some(own) => own.connections_get().await,
-            None => StatusReply::NotReady { reason: format!("{} is still starting: it holds no connections writer yet, so node.connections.get is refused", me.name) },
+            None => rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections writer yet, so node.connections.get is refused", me.name)),
         }
     }
 }
@@ -804,23 +804,23 @@ impl StatusAuthority {
             // a peer that did not resolve.
             let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
                 tracing::Span::current().record("detail", format!("{me_name}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it").as_str());
-                return CarryEnd::Refused(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+                return CarryEnd::Refused(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
             };
             tracing::Span::current().record("subject", subject.name.to_string().as_str()).record("status_at_cut", format!("{:?}", subject.status).as_str());
             if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
-                return CarryEnd::Refused(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) } });
+                return CarryEnd::Refused(rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) }));
             }
             if subject.incarnation_id.as_ref() != Some(incarnation) {
                 return match subject.incarnation_id.clone() {
-                    Some(held) => CarryEnd::Refused(StatusReply::RejectedStaleIncarnation { held }),
+                    Some(held) => CarryEnd::Refused(rdm_core::reply::stale(held)),
                     None => {
                         tracing::Span::current().record("detail", format!("{me_name}: {} has no known birth; its connections cannot be deleted", subject.name).as_str());
-                        CarryEnd::Refused(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown })
+                        CarryEnd::Refused(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown))
                     }
                 };
             }
             if let Some(reason) = scope.refusal() {
-                return CarryEnd::Refused(StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", subject.name) });
+                return CarryEnd::Refused(rdm_core::reply::status::rejected_connection_scope(format!("{}: {reason}", subject.name)));
             }
             let all = matches!(scope, rdm_core::status::ConnectionScope::All);
             let command = NodeCommandRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: scope.clone() };
@@ -828,7 +828,7 @@ impl StatusAuthority {
                 // This mesh-primary is its own subject: an endpoint does not dial itself, so its own
                 // birth's command path runs in-process and its frames come back on a channel.
                 let Some(own) = self.own.get().cloned() else {
-                    return CarryEnd::Refused(StatusReply::NotReady { reason: format!("{me_name} has not yet joined its mesh; node.connections.delete of its own birth is refused and nothing is cut") });
+                    return CarryEnd::Refused(rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; node.connections.delete of its own birth is refused and nothing is cut")));
                 };
                 tracing::Span::current().record("carried", "in-process");
                 let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -843,7 +843,7 @@ impl StatusAuthority {
                 CarriedFrames::InProcess(rx)
             } else {
                 let Some(configs) = self.configs.get() else {
-                    return CarryEnd::Refused(StatusReply::NotReady { reason: format!("{me_name} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", subject.name) });
+                    return CarryEnd::Refused(rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry node.connections.delete to {}; nothing is cut", subject.name)));
                 };
                 tracing::Span::current().record("carried", "dialled");
                 let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
@@ -926,9 +926,9 @@ impl StatusAuthority {
         // node id it names); the exact birth it names is checked.
         let me = view.own(&self.node_id);
         let reply = match (me, self.own.get()) {
-            (Some(me), _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => StatusReply::RejectedStaleIncarnation { held: me.incarnation_id.clone().expect("checked") },
+            (Some(me), _) if me.incarnation_id.as_ref().is_some_and(|held| held != incarnation) => rdm_core::reply::stale(me.incarnation_id.clone().expect("checked")),
             (_, Some(own)) => own.serve(sender.map(|n| &n.node_id), peer, req).await.expect("a command"),
-            (_, None) => StatusReply::NotReady { reason: format!("{me_name} has not yet joined its mesh; {} is refused", req.op()) },
+            (_, None) => rdm_core::reply::status::not_ready(format!("{me_name} has not yet joined its mesh; {} is refused", req.op())),
         };
         tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me_name, op = req.op(), sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("a node command naming this admin was decided"));
@@ -958,7 +958,7 @@ impl StatusAuthority {
             Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
         };
         if let Err(reason) = put {
-            return StatusReply::NotReady { reason };
+            return rdm_core::reply::status::not_ready(reason);
         }
         let reply = {
             let mut declared = self.declared.lock().unwrap();
@@ -967,10 +967,10 @@ impl StatusAuthority {
                     Transition::Apply => {
                         declared.nodes.insert((row.node_id.clone(), row.incarnation_id.clone()), *state);
                         declared.names.insert((row.node_id.clone(), row.incarnation_id.clone()), row.name.clone());
-                        StatusReply::Applied
+                        rdm_core::reply::applied()
                     }
-                    Transition::AlreadyApplied => StatusReply::AlreadyApplied,
-                    Transition::Backward { current } => StatusReply::RejectedInvalidNodeTransition { current },
+                    Transition::AlreadyApplied => rdm_core::reply::already_applied(),
+                    Transition::Backward { current } => rdm_core::reply::status::rejected_invalid_node_transition(current),
                 },
                 Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
                 Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
@@ -1100,10 +1100,10 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
     // The exact birth the call names is checked, so a call that reached another birth is refused
     // naming the one held.
     let Some(held) = me.incarnation_id.as_ref() else {
-        return Some(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+        return Some(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
     };
     if held != incarnation {
-        return Some(StatusReply::RejectedStaleIncarnation { held: held.clone() });
+        return Some(rdm_core::reply::stale(held.clone()));
     }
     let sender_name = sender.map(|n| n.name.to_string()).unwrap_or_default();
     match req {
@@ -1145,17 +1145,17 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             let current = node_state_of(me.status);
             tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.name, sender = %sender_name, requested = ?state, current = ?current, reason = "node.connections.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state", "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("apply-node-state refused"));
-            Some(StatusReply::RejectedInvalidNodeTransition { current })
+            Some(rdm_core::reply::status::rejected_invalid_node_transition(current))
         }
         StatusRequest::ApplyNodeConfig { config, .. } => {
             // ops-naming "Node data": the node applies the config and carries it in its next digest.
             let Some(configure) = configure.get() else {
-                return Some(StatusReply::NotReady { reason: format!("{}: its digest does not exist yet; the config is not held", me.name) });
+                return Some(rdm_core::reply::status::not_ready(format!("{}: its digest does not exist yet; the config is not held", me.name)));
             };
             configure(config.clone()).await;
             tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this admin's digest"));
-            Some(StatusReply::Applied)
+            Some(rdm_core::reply::applied())
         }
         StatusRequest::ApplyNodeName { name, .. } => {
             // R12, R-CR1: the node owns its name and takes the row's name only while it holds no connection.
@@ -1164,11 +1164,11 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                 Err(e) => {
                     tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node = %me.name, sender = %sender_name, to = %name, reason = %format!("the name {name:?} is not a path.name: {e}"), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
-                    return Some(StatusReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt });
+                    return Some(rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt));
                 }
             };
             let Some(rename) = rename.get() else {
-                return Some(StatusReply::NotReady { reason: format!("{}: its digest does not exist yet; the name {asked} is not taken", me.name) });
+                return Some(rdm_core::reply::status::not_ready(format!("{}: its digest does not exist yet; the name {asked} is not taken", me.name)));
             };
             let (held, decision) = rename(asked.clone()).await;
             let routes = match &decision {
@@ -1191,7 +1191,7 @@ pub fn serve(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthority>>>) -
         let authority = authority.clone();
         async move {
             let Some(auth) = authority.get().cloned() else {
-                return Ok(StatusReply::NotReady { reason: "this admin holds no view yet".into() });
+                return Ok(rdm_core::reply::status::not_ready("this admin holds no view yet".into()));
             };
             let peer_id = EndpointId(peer.endpoint_id.to_string());
             let sender = auth.sender_of(&peer_id).await;
@@ -1214,10 +1214,10 @@ fn serve_node_command(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthor
         let authority = authority.clone();
         async move {
             let Some(auth) = authority.get().cloned() else {
-                return Ok(NodeCommandReply::NotReady { reason: "this admin holds no view yet".into() });
+                return Ok(rdm_core::reply::node_command::not_ready("this admin holds no view yet".into()));
             };
             let Some(own) = auth.own.get().cloned() else {
-                return Ok(NodeCommandReply::NotReady { reason: format!("{} has not yet joined its mesh; {} is refused", auth.me, req.op()) });
+                return Ok(rdm_core::reply::node_command::not_ready(format!("{} has not yet joined its mesh; {} is refused", auth.me, req.op())));
             };
             let sender = auth.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
             let reply = own.serve_node_command(sender.as_ref().map(|n| &n.node_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
@@ -1343,9 +1343,9 @@ impl CarryEnd {
         match self {
             Self::Refused(r) => r.clone(),
             Self::Deleted { closed, not_open, held, receipt } => StatusReply::ConnectionsDeleted { closed: closed.clone(), not_open: not_open.clone(), held: held.clone(), receipt: receipt.clone() },
-            Self::RefusedByNode(N::RejectedConnectionScope { reason }) => StatusReply::RejectedConnectionScope { reason: reason.clone() },
-            Self::RefusedByNode(N::RejectedStaleIncarnation { held }) => StatusReply::RejectedStaleIncarnation { held: held.clone() },
-            other => StatusReply::NotReady { reason: format!("node.connections.delete {}: {}", other.name(), other.detail()) },
+            Self::RefusedByNode(N::RejectedConnectionScope { reason }) => rdm_core::reply::status::rejected_connection_scope(reason.clone()),
+            Self::RefusedByNode(N::RejectedStaleIncarnation { held }) => rdm_core::reply::stale(held.clone()),
+            other => rdm_core::reply::status::not_ready(format!("node.connections.delete {}: {}", other.name(), other.detail())),
         }
     }
 }

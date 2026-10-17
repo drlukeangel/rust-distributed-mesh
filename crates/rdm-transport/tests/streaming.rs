@@ -58,6 +58,20 @@ impl NodeProtocol for Count {
     const REPLY_VARIANTS: u32 = 9;
     type Request = CountRequest;
     type Reply = CountFrame;
+
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            CountFrame::Started => "started",
+            CountFrame::Item { .. } => "item",
+            CountFrame::Done { .. } => "done",
+            CountFrame::PeerUnresolved { .. } => "peer-unresolved",
+            CountFrame::NotReady { .. } => "not-ready",
+            CountFrame::Busy { .. } => "busy",
+            CountFrame::ConnectionsDeleting { .. } => "connections-deleting",
+            CountFrame::Malformed { .. } => "malformed",
+            CountFrame::Unauthorized { .. } => "unauthorized",
+        }
+    }
     fn classify_reply(r: &CountFrame) -> ReplyKind {
         match r {
             CountFrame::Started | CountFrame::Item { .. } | CountFrame::Done { .. } => ReplyKind::Success,
@@ -336,6 +350,10 @@ async fn a_streams_terminal_is_named_under_its_serve_span_in_the_callers_trace()
     let serve = one(&spans, "rdm.node_rpc.stream.serve.via-direct");
     let terminal = one(&spans, "rdm.node_rpc.stream.serve.via-terminal");
     assert_eq!(terminal.parent_span_id, serve.span_context.span_id(), "the terminal is a child of the stream's serve span");
+    assert_eq!(attr(terminal, "code").as_deref(), Some("OK"));
+    assert_eq!(attr(terminal, "detail").as_deref(), Some("done"));
+    assert_eq!(attr(serve, "code").as_deref(), Some("OK"));
+    assert_eq!(attr(serve, "detail").as_deref(), Some("done"));
     assert_eq!(attr(terminal, "frames").as_deref(), Some("5"), "Started, three items and the terminal");
     assert!(terminal.end_time <= serve.end_time, "the serve span ends once its terminal is written");
 }

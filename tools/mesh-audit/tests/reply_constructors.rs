@@ -5,7 +5,7 @@ use std::path::Path;
 #[test]
 fn every_runtime_shared_reply_is_constructed_through_the_library() {
     let violations=replies::check(&rafka_mesh_audit::workspace_root());
-    assert!(violations.is_empty(), "shared reply variants constructed outside reply:::\n{}", violations.iter().map(|v| format!("{}:{}: {}", v.file.display(),v.line,v.constructor)).collect::<Vec<_>>().join("\n"));
+    assert!(violations.is_empty(), "shared reply variants constructed outside reply:::\n{}", violations.iter().map(|v| format!("{}:{}:{}: {}", v.file.display(),v.line,v.column,v.constructor)).collect::<Vec<_>>().join("\n"));
 }
 
 #[test]

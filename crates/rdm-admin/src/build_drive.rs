@@ -1272,7 +1272,7 @@ impl DriveEnv {
             _ => None,
         };
         let terminal = match &failed {
-            Some((step, why)) => BuildReply::Failed { build_id: id.to_string(), attempt, operation: op.key(), step: step.clone(), reason: crate::build_run::bounded_reason(why.clone()) },
+            Some((step, why)) => rdm_core::reply::build::failed(id.to_string(), attempt, op.key(), step.clone(), crate::build_run::bounded_reason(why.clone())),
             None => BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() },
         };
         // The verdict's writer releases the mesh's in-flight row the claim took (R-BI7 caveat 3), at
@@ -1439,7 +1439,7 @@ impl DriveEnv {
         self.replay(drive, &p.steps, 0, p.attempt).await;
         let named = p.executor.clone().unwrap_or_default();
         let Some(holder) = parse_path(&named) else {
-            drive.finish(BuildReply::NotReady { reason: format!("{me}: attempt {} of Build {id} completed on {named:?}, which is not a path.name", p.attempt) });
+            drive.finish(rdm_core::reply::build::not_ready(format!("{me}: attempt {} of Build {id} completed on {named:?}, which is not a path.name", p.attempt)));
             return Some(DriveEnd::Terminal);
         };
         drive.note_first_attempt(p.attempt);
@@ -1463,7 +1463,7 @@ impl DriveEnv {
         };
         span.record("outcome", "executor-lost");
         span.record("reason", why.as_str());
-        drive.finish(BuildReply::NotReady { reason: format!("{me}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", p.attempt) });
+        drive.finish(rdm_core::reply::build::not_ready(format!("{me}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", p.attempt)));
         Some(DriveEnd::Terminal)
     }
 

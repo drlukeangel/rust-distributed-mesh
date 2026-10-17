@@ -167,6 +167,22 @@ impl NodeProtocol for BuildClaim {
     type Request = BuildClaimRequest;
     type Reply = BuildClaimReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            BuildClaimReply::Won { .. } => "won",
+            BuildClaimReply::Lost { .. } => "lost",
+            BuildClaimReply::NotOpen { .. } => "not-open",
+            BuildClaimReply::NotClaimant { .. } => "not-claimant",
+            BuildClaimReply::PeerUnresolved { .. } => "peer-unresolved",
+            BuildClaimReply::NotReady { .. } => "not-ready",
+            BuildClaimReply::Busy { .. } => "busy",
+            BuildClaimReply::ConnectionsDeleting { .. } => "connections-deleting",
+            BuildClaimReply::Malformed { .. } => "malformed",
+            BuildClaimReply::Unauthorized { .. } => "unauthorized",
+            BuildClaimReply::BuildInProgress { .. } => "build-in-progress",
+        }
+    }
+
     fn classify_reply(reply: &BuildClaimReply) -> ReplyKind {
         match reply {
             BuildClaimReply::Won { .. } => ReplyKind::Success,

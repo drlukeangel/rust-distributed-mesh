@@ -99,7 +99,7 @@ async fn carry_once(
             caller = %peer.endpoint_id
         )
         .in_scope(|| tracing::info!("the inner protocol is not forwardable through this carrier"));
-        return ForwardReply::NotForwardable { op: inner_op };
+        return rdm_core::reply::forward::not_forwardable(inner_op);
     };
     // One inner call, bounded by what the origin has left minus the reserve for the reply's
     // way back. With nothing usable left no inner call is made.
@@ -118,7 +118,7 @@ async fn carry_once(
             crate::set_remote_parent(&refused, tp, peer.context.tracestate.as_deref());
         }
         refused.in_scope(|| tracing::info!("the origin's remaining budget does not exceed the reply reserve; no inner call"));
-        return ForwardReply::NoInnerBudget { remaining_ms, reserve_ms };
+        return rdm_core::reply::forward::no_inner_budget(remaining_ms, reserve_ms);
     }
     let node_id = target.clone();
     // The hop is a child span of the origin's trace; the inner call carries the origin's
@@ -129,7 +129,9 @@ async fn carry_once(
         target = %target,
         caller = %peer.endpoint_id,
         caller_system = peer.context.caller_system.as_deref().unwrap_or(""),
-        outcome = tracing::field::Empty
+        outcome = tracing::field::Empty,
+        code = tracing::field::Empty,
+        detail = tracing::field::Empty
     );
     if let Some(tp) = peer.context.traceparent.as_deref() {
         crate::set_remote_parent(&span, tp, peer.context.tracestate.as_deref());
@@ -150,6 +152,8 @@ async fn carry_once(
         })
         .await;
     span.record("outcome", out.name());
+    span.record("code", out.code().name());
+    span.record("detail", out.detail_name());
     span.in_scope(|| tracing::info!("one direct inner call"));
     match out {
         RpcOutcome::Reply(r) => r.into_value(),
@@ -178,17 +182,17 @@ async fn carry_once(
                         edge = %reason
                     )
                     .in_scope(|| tracing::info!("the carrier's own Direct edge to the final target is not Active"));
-                    ForwardReply::CarrierEdgeLost { reason }
+                    rdm_core::reply::forward::carrier_edge_lost(reason)
                 }
-                None => ForwardReply::InnerNotSent { cause: NotSentCause::from_reason(n.reason()), reason: format!("{:?}", n.reason()) },
+                None => rdm_core::reply::forward::inner_not_sent(format!("{:?}", n.reason()), NotSentCause::from_reason(n.reason())),
             }
         }
-        RpcOutcome::Unserved(u) => ForwardReply::InnerUnserved { op: u.op() },
+        RpcOutcome::Unserved(u) => rdm_core::reply::forward::inner_unserved(u.op()),
         RpcOutcome::RejectedStale(r) => match NodeId::parse(r.target_node_id()) {
-            Ok(target_node_id) => ForwardReply::InnerRejectedStale { target_node_id },
-            Err(e) => ForwardReply::InnerIndeterminate { cause: IndeterminateCause::ProtocolViolation, reason: format!("the stale target {:?} is not a NodeId: {e}", r.target_node_id()) },
+            Ok(target_node_id) => rdm_core::reply::forward::inner_rejected_stale(target_node_id),
+            Err(e) => rdm_core::reply::forward::inner_indeterminate(format!("the stale target {:?} is not a NodeId: {e}", r.target_node_id()), IndeterminateCause::ProtocolViolation),
         },
-        RpcOutcome::Indeterminate(i) => ForwardReply::InnerIndeterminate { cause: IndeterminateCause::from_reason(i.reason()), reason: format!("{:?}", i.reason()) },
+        RpcOutcome::Indeterminate(i) => rdm_core::reply::forward::inner_indeterminate(format!("{:?}", i.reason()), IndeterminateCause::from_reason(i.reason())),
     }
 }
 

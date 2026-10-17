@@ -96,6 +96,19 @@ impl NodeProtocol for BrokerData {
     type Request = BrokerDataRequest;
     type Reply = BrokerDataReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            BrokerDataReply::Appended { .. } => "appended",
+            BrokerDataReply::Value { .. } => "value",
+            BrokerDataReply::PeerUnresolved { .. } => "peer-unresolved",
+            BrokerDataReply::NotReady { .. } => "not-ready",
+            BrokerDataReply::Busy { .. } => "busy",
+            BrokerDataReply::ConnectionsDeleting { .. } => "connections-deleting",
+            BrokerDataReply::Malformed { .. } => "malformed",
+            BrokerDataReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
+
     fn classify_reply(reply: &Self::Reply) -> ReplyKind {
         match reply {
             BrokerDataReply::Appended { .. } | BrokerDataReply::Value { .. } => ReplyKind::Success,

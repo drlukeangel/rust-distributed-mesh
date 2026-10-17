@@ -193,6 +193,22 @@ impl NodeProtocol for NodeCommand {
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            NodeCommandReply::CommandAccepted { .. } => "command-accepted",
+            NodeCommandReply::ConnectionsDeleting { .. } => "connections-deleting",
+            NodeCommandReply::ConnectionsDeleted { .. } => "connections-deleted",
+            NodeCommandReply::RejectedConnectionScope { .. } => "rejected-connection-scope",
+            NodeCommandReply::RejectedStaleIncarnation { .. } => "rejected-stale-incarnation",
+            NodeCommandReply::NotReady { .. } => "not-ready",
+            NodeCommandReply::PeerUnresolved { .. } => "peer-unresolved",
+            NodeCommandReply::Busy { .. } => "busy",
+            NodeCommandReply::RejectedConnectionsDeleting { .. } => "rejected-connections-deleting",
+            NodeCommandReply::Malformed { .. } => "malformed",
+            NodeCommandReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
+
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
             NodeCommandReply::CommandAccepted { .. } => ReplyKind::Success,

@@ -226,6 +226,25 @@ impl NodeProtocol for Topology {
     type Request = TopologyRequest;
     type Reply = TopologyReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            TopologyReply::Snapshot { .. } => "snapshot",
+            TopologyReply::Unchanged { .. } => "unchanged",
+            TopologyReply::End { .. } => "end",
+            TopologyReply::NotReady { .. } => "not-ready",
+            TopologyReply::UnknownMesh { .. } => "unknown-mesh",
+            TopologyReply::PeerUnresolved { .. } => "peer-unresolved",
+            TopologyReply::Busy { .. } => "busy",
+            TopologyReply::ConnectionsDeleting { .. } => "connections-deleting",
+            TopologyReply::Malformed { .. } => "malformed",
+            TopologyReply::Unauthorized { .. } => "unauthorized",
+            TopologyReply::Started => "started",
+            TopologyReply::Stored { .. } => "stored",
+            TopologyReply::Seats { .. } => "seats",
+            TopologyReply::RafkaTime { .. } => "rafka-time",
+        }
+    }
+
     fn classify_reply(reply: &TopologyReply) -> ReplyKind {
         match reply {
             TopologyReply::Snapshot { .. } => ReplyKind::Success,

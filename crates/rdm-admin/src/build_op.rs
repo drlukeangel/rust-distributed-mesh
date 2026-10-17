@@ -105,17 +105,17 @@ fn counts(m: &MeshCounts) -> MeshDesired {
 /// The refusal reply a control-plane refusal is, with every non-leaking detail it carries.
 pub fn refusal_reply(r: Refusal) -> BuildReply {
     match r {
-        Refusal::Reject(r) => BuildReply::Rejected { reason: r.reason().to_string(), detail: r.to_string() },
-        Refusal::BadRequest(d) => BuildReply::Rejected { reason: "invalid-request".into(), detail: d },
-        Refusal::NotFound(d) => BuildReply::Rejected { reason: "not-found".into(), detail: d },
-        Refusal::Conflict(d) => BuildReply::Rejected { reason: "conflict".into(), detail: d },
-        Refusal::BuildInProgress(held) => BuildReply::BuildInProgress { current_build_id: held.current_build_id.to_string(), mesh: held.mesh, held_by: held.held_by },
-        Refusal::NotClaimant { mesh, fabric_primary, mesh_primary } => BuildReply::NotClaimant { mesh: Some(mesh), fabric_primary, mesh_primary },
-        Refusal::NotAuthority(p) => BuildReply::NotFabricPrimary { fabric_primary: p },
-        Refusal::AttemptTaken(d) => BuildReply::AttemptTaken { detail: d },
-        Refusal::Unavailable(d) => BuildReply::NotReady { reason: d },
-        Refusal::State(BuildStateError::SeatYielded { node, by, .. }) => BuildReply::SeatYielded { node, by },
-        Refusal::State(e) => BuildReply::NotReady { reason: format!("the Build state: {e}") },
+        Refusal::Reject(r) => rdm_core::reply::build::rejected(r.reason().to_string(), r.to_string()),
+        Refusal::BadRequest(d) => rdm_core::reply::build::rejected("invalid-request".into(), d),
+        Refusal::NotFound(d) => rdm_core::reply::build::rejected("not-found".into(), d),
+        Refusal::Conflict(d) => rdm_core::reply::build::rejected("conflict".into(), d),
+        Refusal::BuildInProgress(held) => rdm_core::reply::build::build_in_progress(held.current_build_id.to_string(), held.mesh, held.held_by),
+        Refusal::NotClaimant { mesh, fabric_primary, mesh_primary } => rdm_core::reply::build::not_claimant(Some(mesh), fabric_primary, mesh_primary),
+        Refusal::NotAuthority(p) => rdm_core::reply::build::not_fabric_primary(p),
+        Refusal::AttemptTaken(d) => rdm_core::reply::build::attempt_taken(d),
+        Refusal::Unavailable(d) => rdm_core::reply::build::not_ready(d),
+        Refusal::State(BuildStateError::SeatYielded { node, by, .. }) => rdm_core::reply::build::seat_yielded(node, by),
+        Refusal::State(e) => rdm_core::reply::build::not_ready(format!("the Build state: {e}")),
     }
 }
 
@@ -195,7 +195,7 @@ impl BuildDoor {
         let seat = self.control.topology.read().await.fabric_primary().map(|n| (n.name.clone(), n.node_id.clone()));
         match seat {
             Some((_, id)) if id == self.env.door.node_id => None,
-            other => Some(BuildReply::NotFabricPrimary { fabric_primary: other.map(|(n, _)| n.to_string()) }),
+            other => Some(rdm_core::reply::build::not_fabric_primary(other.map(|(n, _)| n.to_string()))),
         }
     }
 
@@ -299,7 +299,7 @@ impl BuildDoor {
                 Ok(p) => p,
                 Err(refusal) => return Ok(refusal),
             },
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: Build {id} could not be read: {e}") }),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
         };
         // The drive's own record answers a Build that ended: the frames it took off the calls it
         // made. A drive still running answers by streaming. A fabric-primary with no drive of the
@@ -313,8 +313,8 @@ impl BuildDoor {
         }
         match crate::build_state::drivable(&*self.control.builds, &p).await {
             Ok(true) => {}
-            Ok(false) => return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("{me}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", p.state) }),
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: the current Build could not be read to admit Build {id}: {e}") }),
+            Ok(false) => return Ok(rdm_core::reply::build::rejected("not-accepted".into(), format!("{me}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", p.state))),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: the current Build could not be read to admit Build {id}: {e}"))),
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
         // The drive is the one reader of the receipts: a drive this admin took up after a seat move
@@ -352,7 +352,7 @@ impl BuildDoor {
                 IncumbentRead::NoTransfer => {
                     span.record("outcome", "no-transfer");
                     span.in_scope(|| tracing::info!("this admin took its fabric seat by no transfer: its own log is the one it answers from"));
-                    return Err(BuildReply::UnknownBuild { build_id: id.to_string() });
+                    return Err(rdm_core::reply::build::unknown_build(id.to_string()));
                 }
                 IncumbentRead::Read { incumbent, read } => (incumbent, read),
             };
@@ -363,17 +363,17 @@ impl BuildDoor {
                     span.record("facts", f.facts.len() as u64);
                     span.record("outcome", "incomplete");
                     span.in_scope(|| tracing::info!("the incumbent says its holdings of the Build are not whole: nothing is absorbed"));
-                    return Err(BuildReply::NotReady { reason: format!("{me}: Build {id} is not in this admin's log, and {incumbent}, whose fabric seat this admin took, holds {} facts of it that it says are not whole: nothing is absorbed", f.facts.len()) });
+                    return Err(rdm_core::reply::build::not_ready(format!("{me}: Build {id} is not in this admin's log, and {incumbent}, whose fabric seat this admin took, holds {} facts of it that it says are not whole: nothing is absorbed", f.facts.len())));
                 }
                 Err(crate::build_facts_read::FetchFailure::UnknownBuild(_)) => {
                     span.record("outcome", "unknown-build");
                     span.in_scope(|| tracing::info!("the incumbent holds no fact of the Build either"));
-                    return Err(BuildReply::UnknownBuild { build_id: id.to_string() });
+                    return Err(rdm_core::reply::build::unknown_build(id.to_string()));
                 }
                 Err(e) => {
                     span.record("outcome", e.reason());
                     span.in_scope(|| tracing::info!(detail = %e, "the incumbent's facts of the Build could not be read"));
-                    return Err(BuildReply::NotReady { reason: format!("{me}: Build {id} is not in this admin's log, and its facts could not be read from {incumbent}, whose fabric seat this admin took: {e}") });
+                    return Err(rdm_core::reply::build::not_ready(format!("{me}: Build {id} is not in this admin's log, and its facts could not be read from {incumbent}, whose fabric seat this admin took: {e}")));
                 }
             };
             span.record("facts", fetched.facts.len() as u64);
@@ -387,7 +387,7 @@ impl BuildDoor {
                 }
                 Err(e) => {
                     span.record("outcome", "unreadable-after-absorb");
-                    Err(BuildReply::NotReady { reason: format!("{me}: the {} facts of Build {id} read from {incumbent} were absorbed, and this admin's own log still cannot read it: {e}", fetched.facts.len()) })
+                    Err(rdm_core::reply::build::not_ready(format!("{me}: the {} facts of Build {id} read from {incumbent} were absorbed, and this admin's own log still cannot read it: {e}", fetched.facts.len())))
                 }
             }
         }
@@ -399,8 +399,8 @@ impl BuildDoor {
         let me = self.held_name().await;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
-            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: Build {id} could not be read: {e}") }),
+            Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
         };
         let steps: Vec<StepReceipt> = p
             .steps
@@ -459,8 +459,8 @@ impl BuildDoor {
         let me = self.held_name().await;
         let attempt = match self.control.builds.read_build(&id).await {
             Ok(p) => p.attempt,
-            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: Build {id} could not be read: {e}") }),
+            Err(BuildStateError::UnknownBuild(_)) => return Ok(rdm_core::reply::build::unknown_build(id.to_string())),
+            Err(e) => return Ok(rdm_core::reply::build::not_ready(format!("{me}: Build {id} could not be read: {e}"))),
         };
         match self.control.forget_build(&id).await {
             Ok(()) => {
@@ -468,8 +468,8 @@ impl BuildDoor {
                 let _sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt, disposition: Disposition::Attached }).await?;
                 Ok(BuildReply::Deleted { build_id: id.to_string() })
             }
-            Err(Refusal::NotFound(_)) => Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
-            Err(Refusal::Conflict(reason)) => Ok(BuildReply::CannotDelete { build_id: id.to_string(), reason }),
+            Err(Refusal::NotFound(_)) => Ok(rdm_core::reply::build::unknown_build(id.to_string())),
+            Err(Refusal::Conflict(reason)) => Ok(rdm_core::reply::build::cannot_delete(id.to_string(), reason)),
             Err(other) => Ok(refusal_reply(other)),
         }
     }
@@ -488,7 +488,7 @@ impl BuildDoor {
         for (i, bytes) in operations.iter().enumerate() {
             match serde_json::from_slice::<BuildOperation>(bytes) {
                 Ok(op) => plan.operations.push(op),
-                Err(e) => return Ok(BuildReply::Rejected { reason: "operation-undecodable".into(), detail: format!("{me}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}") }),
+                Err(e) => return Ok(rdm_core::reply::build::rejected("operation-undecodable".into(), format!("{me}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}"))),
             }
         }
         match self.run.attempt_run(&id, attempt, &executor, &context, &intent, &plan).await {
@@ -556,7 +556,7 @@ pub fn serve(b: ServerBuilder, slot: BuildSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(BuildReply::NotReady { reason: "this admin holds no view yet".into() });
+                return Ok(rdm_core::reply::build::not_ready("this admin holds no view yet".into()));
             };
             door.serve(req, sink).await
         }
@@ -669,7 +669,7 @@ impl Dispatcher for RpcDispatcher {
             // frame is its recovery (node-rpc.md §43, a read-only consumer).
             Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream: stream.read_only() })),
             Err((RpcOutcome::Reply(r), _)) => Dispatched::Refused(r.value().clone()),
-            Err((RpcOutcome::Unserved(u), _)) => Dispatched::Refused(BuildReply::NotReady { reason: format!("{executor} does not serve the Build family: {u:?}") }),
+            Err((RpcOutcome::Unserved(u), _)) => Dispatched::Refused(rdm_core::reply::build::not_ready(format!("{executor} does not serve the Build family: {u:?}"))),
             Err((other, _)) => Dispatched::Unreached(format!("the call to {executor} ended {}: {other:?}", other.name())),
         }
     }
@@ -711,5 +711,5 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
 /// The Build id a request names, or the refusal that names the id and why it is none: every Build id
 /// is a Crockford id (R-BI5), so an id of any other form (a stored `bld-` id, hex) is refused here by name.
 fn build_id_of(id: &str) -> Result<BuildId, BuildReply> {
-    BuildId::parse(id).map_err(|e| BuildReply::Rejected { reason: "invalid-request".into(), detail: format!("the request names a Build id that is not a Crockford id: {e}") })
+    BuildId::parse(id).map_err(|e| rdm_core::reply::build::rejected("invalid-request".into(), format!("the request names a Build id that is not a Crockford id: {e}")))
 }

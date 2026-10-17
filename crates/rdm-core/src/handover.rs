@@ -348,6 +348,28 @@ impl NodeProtocol for NodePrimaryUpdate {
     type Request = NodePrimaryUpdateRequest;
     type Reply = NodePrimaryUpdateReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            NodePrimaryUpdateReply::PrimaryUpdated { .. } => "primary-updated",
+            NodePrimaryUpdateReply::RejectedConflict { .. } => "rejected-conflict",
+            NodePrimaryUpdateReply::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            NodePrimaryUpdateReply::RejectedNoSuccessor { .. } => "rejected-no-successor",
+            NodePrimaryUpdateReply::RejectedNotAuthority { .. } => "rejected-not-authority",
+            NodePrimaryUpdateReply::RejectedStaleSeat { .. } => "rejected-stale-seat",
+            NodePrimaryUpdateReply::RejectedRevisionOverflow { .. } => "rejected-revision-overflow",
+            NodePrimaryUpdateReply::RejectedSourceFailed { .. } => "rejected-source-failed",
+            NodePrimaryUpdateReply::RejectedRecordAbsent { .. } => "rejected-record-absent",
+            NodePrimaryUpdateReply::Incomplete { .. } => "incomplete",
+            NodePrimaryUpdateReply::NotReady { .. } => "not-ready",
+            NodePrimaryUpdateReply::Malformed { .. } => "malformed",
+            NodePrimaryUpdateReply::PeerUnresolved { .. } => "peer-unresolved",
+            NodePrimaryUpdateReply::Busy { .. } => "busy",
+            NodePrimaryUpdateReply::ConnectionsDeleting { .. } => "connections-deleting",
+            NodePrimaryUpdateReply::Unauthorized { .. } => "unauthorized",
+            NodePrimaryUpdateReply::Failed { .. } => "failed",
+        }
+    }
+
     fn classify_reply(reply: &NodePrimaryUpdateReply) -> ReplyKind {
         match reply {
             NodePrimaryUpdateReply::PrimaryUpdated { .. } => ReplyKind::Success,

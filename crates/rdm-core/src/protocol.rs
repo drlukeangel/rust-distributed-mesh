@@ -77,6 +77,9 @@ pub trait NodeProtocol: 'static + Send + Sync {
     /// How a reply is classified.
     fn classify_reply(reply: &Self::Reply) -> ReplyKind;
 
+    /// The typed result or refusal name recorded beside its standard code.
+    fn reply_detail(reply: &Self::Reply) -> &'static str;
+
     /// Whether `req` only reads (node-rpc.md §43): its acceptance needs no new write, so the runtime
     /// acknowledges it as it is dispatched. A request that changes anything is acknowledged once its
     /// handler has made the accepted work recoverable, or by its first response frame.

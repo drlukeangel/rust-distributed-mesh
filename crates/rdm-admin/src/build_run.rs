@@ -447,7 +447,7 @@ impl HeldRun {
                     at_verdict.await;
                     terminal
                 }
-                Err(e) => BuildReply::Failed { build_id: self.build_id.to_string(), attempt: self.attempt, operation: String::new(), step: "attempt".into(), reason: bounded_reason(format!("recording attempt {}: {e}", self.attempt)) },
+                Err(e) => rdm_core::reply::build::failed(self.build_id.to_string(), self.attempt, String::new(), "attempt".into(), bounded_reason(format!("recording attempt {}: {e}", self.attempt))),
             },
             None => terminal,
         };
@@ -463,7 +463,7 @@ impl Drop for HeldRun {
     /// starts it here.
     fn drop(&mut self) {
         if !self.finished {
-            self.log.finish(BuildReply::NotReady { reason: format!("attempt {} of Build {} was held by its run on this admin, which ended before it said the attempt's terminal", self.attempt, self.build_id) });
+            self.log.finish(rdm_core::reply::build::not_ready(format!("attempt {} of Build {} was held by its run on this admin, which ended before it said the attempt's terminal", self.attempt, self.build_id)));
             self.runs.end(&self.build_id, None, self.attempt);
         }
     }
@@ -584,7 +584,7 @@ impl RunDoor {
         if executor != me.to_string() {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %me, build_id = %build_id.log(), attempt, named = executor)
                 .in_scope(|| tracing::info!("the claim names another admin as the executor"));
-            return Attached::Refused(BuildReply::NotExecutor { named: executor.to_string(), recipient: me.to_string() });
+            return Attached::Refused(rdm_core::reply::build::not_executor(executor.to_string(), me.to_string()));
         }
         if let Some(log) = self.runs.get(build_id, lane, attempt) {
             let (replay, reader) = log.attach();
@@ -596,7 +596,7 @@ impl RunDoor {
         for (i, frame) in intent.iter().enumerate() {
             match crate::fabric_builds::BuildMessage::from_bytes(frame) {
                 Ok(m) => facts.extend(m.facts),
-                Err(e) => return Attached::Refused(BuildReply::Rejected { reason: "intent-undecodable".into(), detail: format!("{me}: intent frame {i} of Build {build_id} does not decode: {e}") }),
+                Err(e) => return Attached::Refused(rdm_core::reply::build::rejected("intent-undecodable".into(), format!("{me}: intent frame {i} of Build {build_id} does not decode: {e}"))),
             }
         }
         self.local.absorb_facts(&facts).await;
@@ -604,8 +604,8 @@ impl RunDoor {
         // mesh's lane's, never the fabric lane's.
         let p = match self.builds.read_build(build_id).await {
             Ok(p) => p.in_lane(lane),
-            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(BuildReply::UnknownBuild { build_id: build_id.to_string() }),
-            Err(e) => return Attached::Refused(BuildReply::NotReady { reason: format!("{me}: Build {build_id} could not be read: {e}") }),
+            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(rdm_core::reply::build::unknown_build(build_id.to_string())),
+            Err(e) => return Attached::Refused(rdm_core::reply::build::not_ready(format!("{me}: Build {build_id} could not be read: {e}"))),
         };
         let held = p.attempt == attempt && p.executor.as_deref() == Some(executor);
         let next = p.attempt + 1 == attempt && p.state != BuildState::Complete;
@@ -615,7 +615,7 @@ impl RunDoor {
         if !(held || next) {
             tracing::info_span!("rdm.node_admin.build.reject.via-stale-claim", node = %me, build_id = %build_id.log(), attempt, held_attempt = p.attempt, held_executor = p.executor.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("the claim is not the current folded attempt of this admin's projection"));
-            return Attached::Refused(BuildReply::StaleClaim { held_attempt: p.attempt, held_executor: p.executor.clone(), carried_attempt: attempt });
+            return Attached::Refused(rdm_core::reply::build::stale_claim(p.attempt, p.executor.clone(), attempt));
         }
         let (log, created) = self.runs.begin(build_id, lane, attempt);
         if !created {
@@ -663,7 +663,7 @@ impl RunDoor {
     async fn ended(&self, me: &PathName, build_id: &BuildId, lane: Option<&str>, attempt: u32, p: &BuildProjection) -> Attached {
         let facts = match self.builds.facts().await {
             Ok(f) => f,
-            Err(e) => return Attached::Refused(BuildReply::NotReady { reason: format!("{me}: the facts of Build {build_id} could not be read: {e}") }),
+            Err(e) => return Attached::Refused(rdm_core::reply::build::not_ready(format!("{me}: the facts of Build {build_id} could not be read: {e}"))),
         };
         let mut replay = Vec::new();
         let mut failed = None;
@@ -688,10 +688,10 @@ impl RunDoor {
             Some(AttemptOutcome::HandedOff { to }) => BuildReply::HandedOff { build_id: build_id.to_string(), attempt, to },
             Some(AttemptOutcome::Failed { reason }) => {
                 let (operation, step, _) = failed.unwrap_or_else(|| (String::new(), "attempt".into(), String::new()));
-                BuildReply::Failed { build_id: build_id.to_string(), attempt, operation, step, reason: bounded_reason(reason) }
+                rdm_core::reply::build::failed(build_id.to_string(), attempt, operation, step, bounded_reason(reason))
             }
             None => {
-                return Attached::Refused(BuildReply::NotReady { reason: format!("{me}: attempt {attempt} of Build {build_id} is {:?} with no verdict receipt and no run here", p.state) });
+                return Attached::Refused(rdm_core::reply::build::not_ready(format!("{me}: attempt {attempt} of Build {build_id} is {:?} with no verdict receipt and no run here", p.state)));
             }
         };
         Attached::Ended { replay, terminal }
@@ -801,7 +801,7 @@ pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, S
                 Some((op, step, _)) if operation.is_empty() || op == *operation => step,
                 _ => "attempt".to_string(),
             };
-            BuildReply::Failed { build_id: build_id.to_string(), attempt: *attempt, operation: operation.clone(), step, reason: bounded_reason(reason.clone()) }
+            rdm_core::reply::build::failed(build_id.to_string(), *attempt, operation.clone(), step, bounded_reason(reason.clone()))
         }
     }
 }

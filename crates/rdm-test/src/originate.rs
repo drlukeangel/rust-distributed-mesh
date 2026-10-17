@@ -243,6 +243,25 @@ impl NodeProtocol for Originate {
     const REPLY_VARIANTS: u32 = 14;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
+
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            OriginateReply::Called { .. } => "called",
+            OriginateReply::FaultArmed { .. } => "fault-armed",
+            OriginateReply::FaultReleased { .. } => "fault-released",
+            OriginateReply::Snapshot { .. } => "snapshot",
+            OriginateReply::BadDestination { .. } => "bad-destination",
+            OriginateReply::PeerUnresolved { .. } => "peer-unresolved",
+            OriginateReply::NotReady { .. } => "not-ready",
+            OriginateReply::Busy { .. } => "busy",
+            OriginateReply::ConnectionsDeleting { .. } => "connections-deleting",
+            OriginateReply::Malformed { .. } => "malformed",
+            OriginateReply::Unauthorized { .. } => "unauthorized",
+            OriginateReply::ProxyRecorded { .. } => "proxy-recorded",
+            OriginateReply::Dialed { .. } => "dialed",
+            OriginateReply::TransportStopMarked { .. } => "transport-stop-marked",
+        }
+    }
     fn classify_reply(reply: &OriginateReply) -> ReplyKind {
         match reply {
             OriginateReply::Called { .. } => ReplyKind::Success,

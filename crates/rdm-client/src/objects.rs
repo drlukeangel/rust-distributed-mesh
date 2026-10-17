@@ -303,7 +303,7 @@ impl Nodes {
             let span = NodeOp::ConnectionsDelete.span();
             span.record("outcome", "rejected-connection-scope");
             span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
-            return Ok(rdm_core::status::StatusReply::RejectedConnectionScope { reason: format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str()) });
+            return Ok(rdm_core::reply::status::rejected_connection_scope(format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str())));
         }
         crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, birth, scope, &rdm_transport::CallOptions::default()).await
     }

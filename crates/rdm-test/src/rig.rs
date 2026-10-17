@@ -480,7 +480,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                     use rdm_core::status::{NodeState, NotAuthority, StatusReply, StatusRequest as R};
                     if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
                         check_ins.send_modify(|held| held.push(req));
-                        return Ok(StatusReply::Applied);
+                        return Ok(rdm_core::reply::applied());
                     }
                     // A member's report to its mesh's primary sets its status (node-status.md "Status
                     // report": "A node reports to its mesh's primary, which sets its status"), as a
@@ -490,7 +490,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                     if let R::DeclareNodeState { node_id, incarnation, state, .. } = &req {
                         let held = book.get(node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == *incarnation);
                         if !held {
-                            return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+                            return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
                         }
                         use rdm_core::MemberStatus as M;
                         match state {
@@ -499,7 +499,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                             NodeState::Draining => book.reported(node_id, incarnation, M::Draining),
                             NodeState::Leaving => book.reported(node_id, incarnation, M::Leaving),
                         };
-                        return Ok(StatusReply::Applied);
+                        return Ok(rdm_core::reply::applied());
                     }
                     match &req {
                         R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rdm_admin::node_commands::refuse_reserved(&receiver, "", &req)),

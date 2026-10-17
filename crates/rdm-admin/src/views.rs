@@ -380,7 +380,7 @@ pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Optio
                     let mesh = mesh.clone().unwrap_or_default();
                     tracing::info_span!("rdm.node_admin.mesh.reject.via-unknown-mesh", node = %me, mesh = %mesh, held = %view.meshes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(","), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the view holds no mesh by that id or name"));
-                    StatusReply::UnknownMesh { mesh }
+                    rdm_core::reply::status::unknown_mesh(mesh)
                 }
                 Some(meshes) => {
                     let count = meshes.len();

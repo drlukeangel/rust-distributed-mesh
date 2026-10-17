@@ -162,6 +162,22 @@ impl NodeProtocol for Join {
     type Request = JoinRequest;
     type Reply = JoinReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            JoinReply::Joined { .. } => "joined",
+            JoinReply::JoinMismatch { .. } => "join-mismatch",
+            JoinReply::NotAuthority { .. } => "not-authority",
+            JoinReply::PeerUnresolved { .. } => "peer-unresolved",
+            JoinReply::NotReady { .. } => "not-ready",
+            JoinReply::Busy { .. } => "busy",
+            JoinReply::ConnectionsDeleting { .. } => "connections-deleting",
+            JoinReply::Malformed { .. } => "malformed",
+            JoinReply::Unauthorized { .. } => "unauthorized",
+            JoinReply::DeploymentAbandoned { .. } => "deployment-abandoned",
+            JoinReply::CertRefused { .. } => "cert-refused",
+        }
+    }
+
     fn classify_reply(reply: &JoinReply) -> ReplyKind {
         match reply {
             JoinReply::Joined { .. } => ReplyKind::Success,

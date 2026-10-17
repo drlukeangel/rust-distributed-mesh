@@ -109,6 +109,19 @@ impl NodeProtocol for DeclareProbe {
     type Request = DeclareRequest;
     type Reply = DeclareReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            DeclareReply::Answered { .. } => "answered",
+            DeclareReply::BadTarget { .. } => "bad-target",
+            DeclareReply::PeerUnresolved { .. } => "peer-unresolved",
+            DeclareReply::NotReady { .. } => "not-ready",
+            DeclareReply::Busy { .. } => "busy",
+            DeclareReply::ConnectionsDeleting { .. } => "connections-deleting",
+            DeclareReply::Malformed { .. } => "malformed",
+            DeclareReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
+
     fn classify_reply(reply: &DeclareReply) -> ReplyKind {
         match reply {
             DeclareReply::Answered { .. } => ReplyKind::Success,

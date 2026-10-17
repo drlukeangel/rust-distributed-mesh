@@ -61,8 +61,8 @@ pub fn decide(held: &PathName, asked: &PathName, routes: &[NodeConnection]) -> N
 /// id (`BusyHoldingConnections`), the routes on the decision's span.
 pub fn reply(decision: &NameApply) -> StatusReply {
     match decision {
-        NameApply::Applied => StatusReply::Applied,
-        NameApply::AlreadyApplied => StatusReply::AlreadyApplied,
+        NameApply::Applied => rdm_core::reply::applied(),
+        NameApply::AlreadyApplied => rdm_core::reply::already_applied(),
         NameApply::Busy { connections, .. } => StatusReply::busy_holding_connections(connections),
     }
 }

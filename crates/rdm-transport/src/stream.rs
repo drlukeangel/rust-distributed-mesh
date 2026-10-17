@@ -134,23 +134,29 @@ impl StreamOut {
         let (d, id) = g.gate.owed();
         let (d, id) = (d.clone(), id.clone());
         let ended = |c: ResetCode| {
+            tracing::Span::current().record("code", "INTERNAL");
+            tracing::Span::current().record("detail", if c == ResetCode::ProtocolViolation { "protocol-violation" } else { "handler-fault" });
             d.settle_request(&id, Settled::Ended(u64::from(c.code())));
             d.drop_response(&id);
         };
         match joined {
-            Ok(StreamEnd::Final { kind, payload }) if payload.len() > g.max => {
+            Ok(StreamEnd::Final { kind, payload, .. }) if payload.len() > g.max => {
                 stats.violations.fetch_add(1, Ordering::SeqCst);
                 g.out.reset(ResetCode::ProtocolViolation).await;
                 ended(ResetCode::ProtocolViolation);
-                tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = "final frame over the reply limit", ?kind)
+                tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", code = "INTERNAL", detail = "protocol-violation", reason = "final frame over the reply limit", ?kind)
                     .in_scope(|| tracing::info!("424"));
             }
-            Ok(StreamEnd::Final { kind, payload }) => match final_frame(&mut g.order, kind) {
+            Ok(StreamEnd::Final { kind, payload, code, detail }) => match final_frame(&mut g.order, kind) {
                 Ok(()) => {
+                    tracing::Span::current().record("code", code.name());
+                    tracing::Span::current().record("detail", detail);
                     let _ = Self::put(&mut g, payload, true).await;
                     g.out.finish().await;
                     tracing::info_span!(
                         "rdm.node_rpc.stream.serve.via-terminal",
+                        code = code.name(),
+                        detail,
                         frames = frames + 1,
                         bytes,
                         caller_cancelled = gone.is_some(),
@@ -162,7 +168,7 @@ impl StreamOut {
                     stats.violations.fetch_add(1, Ordering::SeqCst);
                     g.out.reset(ResetCode::ProtocolViolation).await;
                     ended(ResetCode::ProtocolViolation);
-                    tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", reason = %reason)
+                    tracing::info_span!("rdm.node_rpc.stream.reject.via-protocol-violation", code = "INTERNAL", detail = "protocol-violation", reason = %reason)
                         .in_scope(|| tracing::info!("424"));
                 }
             },
@@ -170,14 +176,14 @@ impl StreamOut {
                 stats.faults.fetch_add(1, Ordering::SeqCst);
                 g.out.reset(ResetCode::InternalRpcFailure).await;
                 ended(ResetCode::InternalRpcFailure);
-                tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
+                tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = fault.reason())
                     .in_scope(|| tracing::info!("423"));
             }
             Err(_panic) => {
                 stats.faults.fetch_add(1, Ordering::SeqCst);
                 g.out.reset(ResetCode::InternalRpcFailure).await;
                 ended(ResetCode::InternalRpcFailure);
-                tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
+                tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = "panic")
                     .in_scope(|| tracing::info!("423"));
             }
         }
@@ -196,7 +202,7 @@ fn final_frame(order: &mut FrameOrder, kind: FrameKind) -> Result<(), String> {
 /// How a streaming handler ended.
 pub(crate) enum StreamEnd {
     /// Its returned frame (terminal, or a refusal before `Started`), classified.
-    Final { kind: FrameKind, payload: Vec<u8> },
+    Final { kind: FrameKind, payload: Vec<u8>, code: rdm_core::outcome::Code, detail: &'static str },
     Fault(HandlerFault),
 }
 
@@ -228,6 +234,10 @@ impl<P: StreamingProtocol> ReplySink<P, Streaming> {
 
 async fn write_frame<P: StreamingProtocol>(out: &StreamOut, frame: &P::Reply) -> Result<(), SinkError> {
     let payload = P::encode_reply(frame).map_err(|e| SinkError::Order(format!("frame does not encode: {}", e.0)))?;
+    let code = P::classify_reply(frame).code();
+    let detail = P::reply_detail(frame);
+    tracing::info_span!("rdm.node_rpc.stream.update.via-frame", protocol = P::NAME, code = code.name(), detail)
+        .in_scope(|| tracing::debug!("the typed frame was classified"));
     out.write(P::frame_kind(frame), payload).await
 }
 
@@ -277,12 +287,14 @@ where
                     rdm_core::protocol::DecodeFailure::UnknownVariant => rdm_core::outcome::MalformedKind::UnknownVariant,
                     rdm_core::protocol::DecodeFailure::Corrupt => rdm_core::outcome::MalformedKind::Corrupt,
                 });
-                let end = StreamEnd::Final { kind: P::frame_kind(&refusal), payload: P::encode_reply(&refusal).unwrap_or_default() };
+                let end = StreamEnd::Final { kind: P::frame_kind(&refusal), payload: P::encode_reply(&refusal).unwrap_or_default(), code: P::classify_reply(&refusal).code(), detail: P::reply_detail(&refusal) };
                 return Some((tracing::Span::none(), Box::pin(async move { end })));
             }
         };
         let span = tracing::info_span!(
             "rdm.node_rpc.stream.serve.via-direct",
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
             protocol = P::NAME,
             op = P::OP,
             peer = %peer.endpoint_id,
@@ -297,7 +309,7 @@ where
         let handler = Box::pin(async move {
             let sink = ReplySink::<P, NotStarted> { out, _p: PhantomData };
             match tracing::Instrument::instrument(f(peer, req, sink), serve).await {
-                Ok(last) => StreamEnd::Final { kind: P::frame_kind(&last), payload: P::encode_reply(&last).unwrap_or_default() },
+                Ok(last) => StreamEnd::Final { kind: P::frame_kind(&last), payload: P::encode_reply(&last).unwrap_or_default(), code: P::classify_reply(&last).code(), detail: P::reply_detail(&last) },
                 Err(fault) => StreamEnd::Fault(fault),
             }
         });
@@ -473,6 +485,8 @@ impl NodeRpcClient {
             target = ?target,
             op = P::OP,
             outcome = tracing::field::Empty,
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
             delivery_id = tracing::field::Empty,
             attempts = tracing::field::Empty,
@@ -490,6 +504,8 @@ impl NodeRpcClient {
             Ok(o) => o,
             Err((out, ev)) => {
                 finish(out.name());
+                span.record("code", out.code().name());
+                span.record("detail", out.detail_name());
                 span.in_scope(|| tracing::info!("node rpc stream call finished"));
                 return Err((out.retyped().expect("no reply before anything is owed"), ev));
             }
@@ -544,6 +560,8 @@ impl NodeRpcClient {
             }
         };
         finish(ended.name());
+        span.record("code", ended.code().name());
+        span.record("detail", ended.detail_name());
         span.in_scope(|| tracing::info!("node rpc stream call finished"));
         let evidence = owed.evidence.lock().unwrap().clone();
         owed.close(true).await;

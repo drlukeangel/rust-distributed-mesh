@@ -44,6 +44,18 @@ impl NodeProtocol for Probe {
     const REPLY_VARIANTS: u32 = 7;
     type Request = ProbeRequest;
     type Reply = ProbeReply;
+
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            ProbeReply::Probed { .. } => "probed",
+            ProbeReply::PeerUnresolved { .. } => "peer-unresolved",
+            ProbeReply::NotReady { .. } => "not-ready",
+            ProbeReply::Busy { .. } => "busy",
+            ProbeReply::ConnectionsDeleting { .. } => "connections-deleting",
+            ProbeReply::Malformed { .. } => "malformed",
+            ProbeReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
     fn classify_reply(r: &ProbeReply) -> ReplyKind {
         match r {
             ProbeReply::Probed { .. } => ReplyKind::Success,

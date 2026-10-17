@@ -412,14 +412,14 @@ impl RoundBook {
     /// fact that is wrong, `NotReady` for a round this primary does not hold open (an unmatched round
     /// is never a check-in).
     pub fn check_in(&self, receiver: &str, subject: Option<(Option<&IncarnationId>, &str)>, req: &StatusRequest) -> StatusReply {
-        let Some(op) = RoundOp::of(req).filter(|o| !o.is_down) else { return StatusReply::NotReady { reason: format!("{receiver}: {} is not a completion call", req.op()) } };
+        let Some(op) = RoundOp::of(req).filter(|o| !o.is_down) else { return rdm_core::reply::status::not_ready(format!("{receiver}: {} is not a completion call", req.op())) };
         let completion = op.kind.completion();
         let Some((held, from_name)) = subject else {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
         };
         match held {
-            Some(held) if held != op.incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
-            None => return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
+            Some(held) if held != op.incarnation => return rdm_core::reply::stale(held.clone()),
+            None => return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown),
             Some(_) => {}
         }
         let key = op.key();
@@ -433,23 +433,23 @@ impl RoundBook {
                     Some((k, _)) if k.build_id != op.build_id => format!("{receiver}: {completion} from {from_name}: field build_id: round holds {}, reported {}", k.build_id, op.build_id),
                     Some((k, _)) => format!("{receiver}: {completion} from {from_name}: field attempt: round holds {}, reported {}", k.attempt, op.attempt),
                 };
-                StatusReply::NotReady { reason: why }
+                rdm_core::reply::status::not_ready(why)
             }
             Some(r) => {
                 let want = op.kind.operation(&key.fabric_id);
                 if op.operation != want {
-                    StatusReply::NotReady { reason: format!("{receiver}: {completion} from {from_name}: field operation: round holds {want}, reported {}", op.operation) }
+                    rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: field operation: round holds {want}, reported {}", op.operation))
                 } else {
                     match r.expected.get(op.node_id) {
-                        None => StatusReply::NotReady { reason: format!("{receiver}: {completion} from {from_name}: not on this round's checklist") },
+                        None => rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: not on this round's checklist")),
                         Some(e) if e.incarnation != *op.incarnation => {
-                            StatusReply::NotReady { reason: format!("{receiver}: {completion} from {from_name}: field incarnation: the checklist plans birth {}, reported {}", e.incarnation, op.incarnation) }
+                            rdm_core::reply::status::not_ready(format!("{receiver}: {completion} from {from_name}: field incarnation: the checklist plans birth {}, reported {}", e.incarnation, op.incarnation))
                         }
                         Some(_) => {
                             if r.checked.insert((op.node_id.clone(), op.incarnation.clone())) {
-                                StatusReply::Applied
+                                rdm_core::reply::applied()
                             } else {
-                                StatusReply::AlreadyApplied
+                                rdm_core::reply::already_applied()
                             }
                         }
                     }

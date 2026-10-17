@@ -122,7 +122,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // this receiver does not hold is the receiver's own fact, never a peer that did not resolve.
     let Some(subject) = view.own(node_id) else {
         span.record("detail", format!("{me}: node {node_id} holds no birth in this admin's view; its tags cannot be written").as_str());
-        return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+        return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
     };
     span.record("subject", subject.name.to_string().as_str());
     // The writer of the row is the mesh-primary of the node's mesh, and no other admin (R-OW1).
@@ -130,18 +130,18 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
         let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
         span.record("detail", needed.as_str());
-        return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };
+        return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
     }
     match subject.incarnation_id.as_ref() {
-        Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
+        Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
         None => {
             span.record("detail", format!("{me}: {} has no known birth; its tags cannot be written", subject.name).as_str());
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
         }
         Some(_) => {}
     }
     let Some(door) = configs else {
-        return StatusReply::NotReady { reason: format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the tags of {} are not written", subject.name) };
+        return rdm_core::reply::status::not_ready(format!("{me} has no node-RPC client yet, and so no door its record changes take turns at: the tags of {} are not written", subject.name));
     };
     // One change to a node record at a time, through the writer's held record: the row carries every
     // field the writer knows of it, the config included.

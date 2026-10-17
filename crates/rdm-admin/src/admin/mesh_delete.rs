@@ -533,16 +533,16 @@ impl AdminRunner {
         let me_name = self.held_name();
         let view = self.topology.read().await.clone();
         let Some(me) = view.own(&self.node_id).cloned() else {
-            return StatusReply::NotReady { reason: format!("{} holds no view of itself yet; delete-mesh for {mesh_id} is refused", me_name) };
+            return rdm_core::reply::status::not_ready(format!("{} holds no view of itself yet; delete-mesh for {mesh_id} is refused", me_name));
         };
         let held = self.records.meshes.lock().unwrap().get(&me.mesh).cloned().or_else(|| view.meshes.iter().find(|m| m.name == me.mesh).and_then(|m| m.id.clone()));
         match held {
-            Some(h) if &h != mesh_id => return StatusReply::RejectedStaleMesh { held: h },
-            None => return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("an admin of the mesh {mesh_id}") } },
+            Some(h) if &h != mesh_id => return rdm_core::reply::status::rejected_stale_mesh(h),
+            None => return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("an admin of the mesh {mesh_id}") }),
             Some(_) => {}
         }
         if !me.is_primary {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", me.mesh) } };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", me.mesh) });
         }
         // The handoff goes back to whoever owns the workflow: the admin whose call sent this command,
         // reached back over that call's endpoint and path with no record of it read, else the
@@ -554,7 +554,7 @@ impl AdminRunner {
             Err(e) => {
                 tracing::info_span!("rdm.node_admin.mesh.reject.via-malformed-build-id", node = %me_name, mesh_id = %mesh_id, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("delete-mesh refused: its Build id is not a Crockford id"));
-                return StatusReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt };
+                return rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt);
             }
         };
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build, attempt: *attempt, operation: operation.clone() };
@@ -586,7 +586,7 @@ impl AdminRunner {
             }
         }
         let resend = match admission {
-            crate::mesh_delete::MeshDeleteAdmission::Running => return StatusReply::AlreadyApplied,
+            crate::mesh_delete::MeshDeleteAdmission::Running => return rdm_core::reply::already_applied(),
             crate::mesh_delete::MeshDeleteAdmission::Resend { manifest, recorded } => Some((manifest, recorded)),
             crate::mesh_delete::MeshDeleteAdmission::Start => None,
             crate::mesh_delete::MeshDeleteAdmission::Refused(reply) => return reply,
@@ -599,11 +599,11 @@ impl AdminRunner {
             // The members all exited and the manifest is recorded: the handoff is what repeats.
             Some((manifest, recorded)) => {
                 tokio::spawn(async move { runner.hand_off(&key, &owner, &manifest, recorded).instrument(parent).await });
-                StatusReply::AlreadyApplied
+                rdm_core::reply::already_applied()
             }
             None => {
                 tokio::spawn(async move { runner.run_leave(key, parent).await });
-                StatusReply::Applied
+                rdm_core::reply::applied()
             }
         }
     }
@@ -780,7 +780,7 @@ impl AdminRunner {
     #[allow(clippy::too_many_arguments)]
     async fn validate_handoff_in(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, operation: &str, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rdm_core::RuntimeFact, receipt_manifest: &str) -> StatusReply {
         let me_name = self.held_name().to_string();
-        let unmatched = |field: &str, expected: String, reported: String| StatusReply::RejectedUnmatchedCompletion { field: field.into(), expected, reported };
+        let unmatched = |field: &str, expected: String, reported: String| rdm_core::reply::status::rejected_unmatched_completion(field.into(), expected, reported);
         let build = match crate::build::BuildId::parse(build_id) {
             Ok(build) => build,
             Err(e) => return unmatched("build_id", format!("a Crockford Build id ({e})"), build_id.to_string()),
@@ -837,9 +837,9 @@ impl AdminRunner {
             }
         };
         if self.leaves.resolve(&key, manifest) {
-            StatusReply::Applied
+            rdm_core::reply::applied()
         } else {
-            StatusReply::AlreadyApplied
+            rdm_core::reply::already_applied()
         }
     }
 }

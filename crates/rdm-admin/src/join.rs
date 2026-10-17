@@ -259,7 +259,7 @@ impl JoinDoor {
                 span.record("outcome", "mismatch");
                 tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                     .in_scope(|| tracing::warn!("the reported digest disagrees with the deployment"));
-                JoinReply::JoinMismatch { field: m.field.into(), deployed: m.deployed, reported: m.reported }
+                rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported)
             }
             Standing::Deployed { name, held } => {
                 // Canonicalized to the row's name before anything is issued or installed: the
@@ -284,11 +284,11 @@ impl JoinDoor {
                         let m = Mismatch { field: "name", deployed: format!("the row at {} holds node {}", row.name, row.node_id), reported: format!("node {} as {}", d.node.node_id, d.node.name) };
                         tracing::info_span!("rdm.node_admin.node.reject.via-join-mismatch", node = %d.node.name, field = m.field, deployed = %m.deployed, reported = %m.reported)
                             .in_scope(|| tracing::warn!("the row at the admitted name belongs to another node"));
-                        return JoinReply::JoinMismatch { field: m.field.into(), deployed: m.deployed, reported: m.reported };
+                        return rdm_core::reply::join::join_mismatch(m.field.into(), m.deployed, m.reported);
                     }
                     Err(why) => {
                         span.record("outcome", "not-ready");
-                        return JoinReply::NotReady { reason: format!("{}: the node row at {} could not be read: {why}", self.me, d.node.name) };
+                        return rdm_core::reply::join::not_ready(format!("{}: the node row at {} could not be read: {why}", self.me, d.node.name));
                     }
                 };
                 // The digest installed for the birth carries the config it is handed, as it carries the
@@ -305,11 +305,11 @@ impl JoinDoor {
                     Ok(c) => c,
                     Err(crate::certs::IssueFailure::NoRafkaTime(why)) => {
                         span.record("outcome", "not-ready");
-                        return JoinReply::NotReady { reason: format!("{}: {why}", self.me) };
+                        return rdm_core::reply::join::not_ready(format!("{}: {why}", self.me));
                     }
                     Err(crate::certs::IssueFailure::Refused(r)) => {
                         span.record("outcome", "cert-refused");
-                        return JoinReply::CertRefused { name: r.name, detail: r.detail };
+                        return rdm_core::reply::join::cert_refused(r.name, r.detail);
                     }
                 };
                 span.record("cert_len", cert.len() as u64);
@@ -325,14 +325,14 @@ impl JoinDoor {
                 span.record("build_id", a.build_id.as_str());
                 span.record("attempt", a.attempt);
                 tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.as_str(), "this admin ended the deployment of this birth before it reported");
-                JoinReply::DeploymentAbandoned { build_id: a.build_id, attempt: a.attempt, node_id: a.deployed.node_id, incarnation: a.deployed.incarnation }
+                rdm_core::reply::join::deployment_abandoned(a.build_id, a.attempt, a.deployed.node_id, a.deployed.incarnation)
             }
             Standing::Unknown => {
                 span.record("outcome", "not-authority");
                 let primary = (self.primary)();
                 tracing::info_span!("rdm.node_admin.node.reject.via-join-unknown", node = %d.node.name, node_id = %d.node.node_id, primary = ?primary)
                     .in_scope(|| tracing::warn!("this admin deployed no such birth and holds no member of it"));
-                JoinReply::NotAuthority { primary }
+                rdm_core::reply::join::not_authority(primary)
             }
         }
     }
@@ -345,13 +345,13 @@ impl JoinDoor {
                 a.control.config = config;
                 a
             }
-            Err(why) => return JoinReply::NotReady { reason: format!("{}: not ready to answer a join: {why}", self.me) },
+            Err(why) => return rdm_core::reply::join::not_ready(format!("{}: not ready to answer a join: {why}", self.me)),
         };
         tracing::info_span!("rdm.mesh.entry.serve.via-pull", node = %node, served_by = %answer.served_by, statuses = answer.statuses.len())
             .in_scope(|| tracing::info!("entry answered"));
         match crate::wire::answer_to_wire(&answer) {
             Ok(bytes) => JoinReply::Joined { answer: bytes },
-            Err(e) => JoinReply::NotReady { reason: format!("{}: its answer does not encode: {e}", self.me) },
+            Err(e) => rdm_core::reply::join::not_ready(format!("{}: its answer does not encode: {e}", self.me)),
         }
     }
 }
@@ -362,7 +362,7 @@ pub fn serve(b: ServerBuilder, slot: JoinSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(JoinReply::NotReady { reason: "this admin holds no view yet".into() });
+                return Ok(rdm_core::reply::join::not_ready("this admin holds no view yet".into()));
             };
             Ok(door.serve(EndpointId(peer.endpoint_id.to_string()), req).await)
         }

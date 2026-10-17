@@ -88,6 +88,18 @@ impl NodeProtocol for Command {
     const REPLY_VARIANTS: u32 = 7;
     type Request = CommandRequest;
     type Reply = CommandReply;
+
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            CommandReply::Ran { .. } => "ran",
+            CommandReply::PeerUnresolved { .. } => "peer-unresolved",
+            CommandReply::NotReady { .. } => "not-ready",
+            CommandReply::Busy { .. } => "busy",
+            CommandReply::ConnectionsDeleting { .. } => "connections-deleting",
+            CommandReply::Malformed { .. } => "malformed",
+            CommandReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
     fn read_only(req: &CommandRequest) -> bool {
         matches!(req, CommandRequest::Read { .. })
     }
@@ -152,6 +164,20 @@ impl NodeProtocol for Tick {
     const REPLY_VARIANTS: u32 = 9;
     type Request = TickRequest;
     type Reply = TickFrame;
+
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            TickFrame::Started => "started",
+            TickFrame::Item { .. } => "item",
+            TickFrame::Done => "done",
+            TickFrame::PeerUnresolved { .. } => "peer-unresolved",
+            TickFrame::NotReady { .. } => "not-ready",
+            TickFrame::Busy { .. } => "busy",
+            TickFrame::ConnectionsDeleting { .. } => "connections-deleting",
+            TickFrame::Malformed { .. } => "malformed",
+            TickFrame::Unauthorized { .. } => "unauthorized",
+        }
+    }
     fn classify_reply(r: &TickFrame) -> ReplyKind {
         match r {
             TickFrame::Started | TickFrame::Item { .. } | TickFrame::Done => ReplyKind::Success,

@@ -107,6 +107,8 @@ impl NodeRpcClient {
             route = route.token(),
             carrier = tracing::field::Empty,
             outcome = tracing::field::Empty,
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
         );
         let (out, evidence, leg) = match route {
             RouteChoice::Direct => {
@@ -121,6 +123,8 @@ impl NodeRpcClient {
             RouteChoice::NoActiveRoute => (PreCommit::begin(P::OP).not_sent(NotSentReason::NoActiveRoute), None, RouteLeg::None),
         };
         span.record("outcome", out.name());
+        span.record("code", out.code().name());
+        span.record("detail", out.detail_name());
         span.in_scope(|| tracing::info!(leg = leg.token(), "one exact target, one route, executed as chosen"));
         (out, evidence, leg)
     }

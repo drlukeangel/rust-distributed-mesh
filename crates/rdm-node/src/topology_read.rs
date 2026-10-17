@@ -122,7 +122,7 @@ impl TopologyDoor {
             // A node that holds no rafka-time has none to serve: it starts no stream and says why.
             let Some(time_ms) = self.time.try_now_ms() else {
                 span.record("outcome", "not-ready");
-                return TopologyReply::NotReady { reason: format!("{}: this node holds no rafka-time yet", me.node.name) };
+                return rdm_core::reply::topology::not_ready(format!("{}: this node holds no rafka-time yet", me.node.name));
             };
             let mut held = self.membership.held_topology(&me);
             if let Some(m) = &mesh {
@@ -137,7 +137,7 @@ impl TopologyDoor {
                     Ok(map) => map,
                     Err(reason) => {
                         span.record("outcome", "not-ready");
-                        return TopologyReply::NotReady { reason: format!("{}: the stored map could not be read: {reason}", me.node.name) };
+                        return rdm_core::reply::topology::not_ready(format!("{}: the stored map could not be read: {reason}", me.node.name));
                     }
                 };
                 stored_ids = map.mesh_ids;
@@ -151,7 +151,7 @@ impl TopologyDoor {
             if let Some(m) = &mesh {
                 if held.is_empty() && stored.is_empty() {
                     span.record("outcome", "unknown-mesh");
-                    return TopologyReply::UnknownMesh { mesh: m.clone() };
+                    return rdm_core::reply::topology::unknown_mesh(m.clone());
                 }
             }
             let mut sink = match sink.started(TopologyReply::Started).await {
@@ -241,7 +241,7 @@ pub fn serve(b: ServerBuilder, slot: TopologySlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(door) = slot.get().cloned() else {
-                return Ok(TopologyReply::NotReady { reason: "this node holds no membership yet".into() });
+                return Ok(rdm_core::reply::topology::not_ready("this node holds no membership yet".into()));
             };
             Ok(door.serve(req, sink).await)
         }

@@ -34,6 +34,7 @@ pub mod ping;
 pub mod protocol;
 pub mod publisher;
 pub mod reconnect;
+pub mod reply;
 pub mod runtime;
 pub mod seat;
 pub mod status;

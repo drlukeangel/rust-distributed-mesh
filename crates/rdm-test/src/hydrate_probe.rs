@@ -85,6 +85,18 @@ impl NodeProtocol for HydratePull {
     const REPLY_VARIANTS: u32 = 7;
     type Request = PullRequest;
     type Reply = PullReply;
+
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            PullReply::Rows { .. } => "rows",
+            PullReply::PeerUnresolved { .. } => "peer-unresolved",
+            PullReply::NotReady { .. } => "not-ready",
+            PullReply::Busy { .. } => "busy",
+            PullReply::ConnectionsDeleting { .. } => "connections-deleting",
+            PullReply::Malformed { .. } => "malformed",
+            PullReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
     fn classify_reply(reply: &PullReply) -> ReplyKind {
         match reply {
             PullReply::Rows { .. } => ReplyKind::Success,

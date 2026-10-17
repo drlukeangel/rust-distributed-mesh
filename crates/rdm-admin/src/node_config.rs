@@ -89,7 +89,7 @@ impl NodeConfigs {
     #[allow(clippy::too_many_arguments)]
     async fn put(&self, me: &crate::model::PathName, me_id: &rdm_core::NodeId, view: &Topology, storage: &dyn crate::storage::NodesStorage, node_id: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId, config: &std::collections::BTreeMap<String, String>, span: &tracing::Span) -> StatusReply {
         if let Err(over) = rdm_core::check_config(config) {
-            return StatusReply::RejectedConfig { over };
+            return rdm_core::reply::status::rejected_config(over);
         }
         // The subject is the exact birth the call names, wherever its row stands: a node whose row its
         // mesh-primary moved to `<path>.old` is still that birth (never found by path.name, its shape
@@ -98,7 +98,7 @@ impl NodeConfigs {
         // never a peer that did not resolve.
         let Some(subject) = view.own(node_id) else {
             span.record("detail", format!("{me}: node {node_id} holds no birth in this admin's view; its config cannot be put").as_str());
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
         };
         span.record("subject", subject.name.to_string().as_str());
         span.record("row_status", format!("{:?}", subject.status).as_str());
@@ -108,13 +108,13 @@ impl NodeConfigs {
             let held_by = view.cohort_primary(&subject.mesh, rdm_core::NodeKind::NodeAdmin).map_or_else(|| "held by no single live node-admin in this view".to_string(), |p| format!("held by {}", p.name));
             let needed = format!("{}'s primary node-admin, the writer of {}'s row ({held_by}; {me} does not hold it)", subject.mesh, subject.name);
             span.record("detail", needed.as_str());
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } };
+            return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
         }
         match subject.incarnation_id.as_ref() {
-            Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
+            Some(held) if held != incarnation => return rdm_core::reply::stale(held.clone()),
             None => {
                 span.record("detail", format!("{me}: {} has no known birth; its config cannot be put", subject.name).as_str());
-                return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
+                return rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown);
             }
             Some(_) => {}
         }
@@ -170,9 +170,9 @@ impl NodeConfigs {
             match self.own.get() {
                 Some(configure) => {
                     configure(config.clone()).await;
-                    Ok(StatusReply::Applied)
+                    Ok(rdm_core::reply::applied())
                 }
-                None => Ok(StatusReply::NotReady { reason: format!("{me}: its digest does not exist yet; the config is not held") }),
+                None => Ok(rdm_core::reply::status::not_ready(format!("{me}: its digest does not exist yet; the config is not held"))),
             }
         } else {
             span.record("apply", "direct");

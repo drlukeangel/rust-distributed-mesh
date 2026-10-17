@@ -118,6 +118,8 @@ where
         };
         let span = tracing::info_span!(
             "rdm.node_rpc.request.serve.via-direct",
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
             protocol = P::NAME,
             op = P::OP,
             peer = %peer.endpoint_id,
@@ -130,7 +132,16 @@ where
         apply_context(&span, &peer);
         let serve = span.clone();
         let handler = Box::pin(async move {
-            let reply = f(peer, req).instrument(serve).await?;
+            let reply = match f(peer, req).instrument(serve.clone()).await {
+                Ok(reply) => reply,
+                Err(fault) => {
+                    serve.record("code", "INTERNAL");
+                    serve.record("detail", "handler-fault");
+                    return Err(fault);
+                }
+            };
+            serve.record("code", P::classify_reply(&reply).code().name());
+            serve.record("detail", P::reply_detail(&reply));
             P::encode_reply(&reply).map_err(|e| HandlerFault::invariant_broken(e.0))
         });
         (span, handler)
@@ -916,10 +927,14 @@ impl NodeRpcServer {
                 .await;
                 drop(permit);
                 // A fault or a panic is the end of the serve: named under the serve span, which ends here.
+                if matches!(&joined, Ok(Err(_)) | Err(_)) {
+                    serve.record("code", "INTERNAL");
+                    serve.record("detail", "handler-fault");
+                }
                 serve.in_scope(|| match &joined {
-                    Ok(Err(fault)) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
+                    Ok(Err(fault)) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = fault.reason())
                         .in_scope(|| tracing::info!("handler fault: 423")),
-                    Err(_panic) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
+                    Err(_panic) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", code = "INTERNAL", detail = "handler-fault", fault = "panic")
                         .in_scope(|| tracing::info!("handler panicked: 423")),
                     Ok(Ok(_)) => {}
                 });

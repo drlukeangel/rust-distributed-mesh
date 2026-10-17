@@ -349,7 +349,7 @@ impl NodeSelf {
         let writer = self.connections.lock().unwrap().clone();
         match writer {
             Some(w) => connections_answer(&w.held_connections().await),
-            None => StatusReply::NotReady { reason: format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name()) },
+            None => rdm_core::reply::status::not_ready(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
         }
     }
 
@@ -520,18 +520,18 @@ impl NodeSelf {
         use tracing::Instrument;
         let NodeCommandRequest::DeleteConnections { incarnation, scope, .. } = req;
         if *incarnation != self.incarnation {
-            return NodeCommandReply::RejectedStaleIncarnation { held: self.incarnation.clone() };
+            return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
         if self.connections.lock().unwrap().is_none() {
-            return NodeCommandReply::NotReady { reason: format!("{}: this birth holds no connections writer yet; nothing is cut", self.held_name()) };
+            return rdm_core::reply::node_command::not_ready(format!("{}: this birth holds no connections writer yet; nothing is cut", self.held_name()));
         }
         if let Some(reason) = scope.refusal() {
-            return NodeCommandReply::RejectedConnectionScope { reason: format!("{}: {reason}", self.held_name()) };
+            return rdm_core::reply::node_command::rejected_connection_scope(format!("{}: {reason}", self.held_name()));
         }
         let accepted = NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() };
         if let Err(e) = frames.accepted(accepted).await {
             // Nothing was accepted: the caller is gone before the acceptance left, so nothing runs.
-            return NodeCommandReply::NotReady { reason: format!("{}: the command's caller is gone before its acceptance ({e}); nothing is cut", self.held_name()) };
+            return rdm_core::reply::node_command::not_ready(format!("{}: the command's caller is gone before its acceptance ({e}); nothing is cut", self.held_name()));
         }
         let sink = std::sync::Arc::new(tokio::sync::Mutex::new(frames));
         let (node, node_id, incarnation) = (self.held_name(), self.node_id.clone(), self.incarnation.clone());
@@ -542,7 +542,7 @@ impl NodeSelf {
                 // The span opens before the report leaves, so it starts before whatever the report causes
                 // (an in-process recorder may take it before the send returns).
                 let span = tracing::info_span!("rdm.node_admin.node.connections.delete.via-connections-deleting", node = %node, commander = %commander_name, outcome = tracing::field::Empty, "otel.kind" = "internal");
-                let sent = sink.lock().await.progress(NodeCommandReply::ConnectionsDeleting { node_id, incarnation }).instrument(span.clone()).await;
+                let sent = sink.lock().await.progress(rdm_core::reply::node_command::connections_deleting(node_id, incarnation)).instrument(span.clone()).await;
                 let outcome = match &sent {
                     Ok(()) => "sent".to_string(),
                     Err(e) => format!("caller gone: {e}"),
@@ -603,11 +603,11 @@ impl NodeSelf {
         // node id it names); the exact birth it names is checked, so a call that reached another
         // birth is refused naming the one held.
         if *op.incarnation != self.incarnation {
-            return StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() };
+            return rdm_core::reply::stale(self.incarnation.clone());
         }
         let want = op.kind.operation(op.fabric_id);
         if op.operation != want {
-            return StatusReply::NotReady { reason: format!("{}: {} names operation {}, the round's is {want}", self.held_name(), req.op(), op.operation) };
+            return rdm_core::reply::status::not_ready(format!("{}: {} names operation {}, the round's is {want}", self.held_name(), req.op(), op.operation));
         }
         let key = op.key();
         let parent = tracing::Span::current();
@@ -636,13 +636,13 @@ impl NodeSelf {
         match admit {
             Admit::Act => {
                 tokio::spawn(async move { me.round(commander, key, parent).await });
-                StatusReply::Applied
+                rdm_core::reply::applied()
             }
             Admit::CheckIn => {
                 tokio::spawn(async move { me.check_in_again(commander, key, parent).await });
-                StatusReply::AlreadyApplied
+                rdm_core::reply::already_applied()
             }
-            Admit::Joined => StatusReply::AlreadyApplied,
+            Admit::Joined => rdm_core::reply::already_applied(),
         }
     }
 
@@ -774,7 +774,7 @@ impl NodeSelf {
         if matches!(req, StatusRequest::CommitState { .. } | StatusRequest::OpenTraffic { .. }) {
             return Some(match commander {
                 Some(commander) => self.serve_round(commander, req),
-                None => StatusReply::NotReady { reason: format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op()) },
+                None => rdm_core::reply::status::not_ready(format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op())),
             });
         }
         if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. }) {
@@ -782,13 +782,13 @@ impl NodeSelf {
         }
         if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
             if *incarnation != self.incarnation {
-                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+                return Some(rdm_core::reply::stale(self.incarnation.clone()));
             }
             return Some(self.serve_leave_mesh(spare, operation).await);
         }
         if let StatusRequest::JoinMesh { incarnation, operation, .. } = req {
             if *incarnation != self.incarnation {
-                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+                return Some(rdm_core::reply::stale(self.incarnation.clone()));
             }
             return Some(self.serve_join_mesh(spare, operation).await);
         }
@@ -801,7 +801,7 @@ impl NodeSelf {
         // node id it names); the exact birth it names is checked, so a call that reached another
         // birth is refused naming the one held.
         if *incarnation != self.incarnation {
-            return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+            return Some(rdm_core::reply::stale(self.incarnation.clone()));
         }
         let op = LifecycleOp {
             build_id: build_id.clone(),
@@ -842,7 +842,7 @@ impl NodeSelf {
                     "otel.kind" = "internal"
                 )
                 .in_scope(|| tracing::info!("node.mesh.leave refused: this birth still holds open connections"));
-                return StatusReply::BusyHoldingConnections { connections };
+                return rdm_core::reply::status::busy_holding_connections(connections);
             }
         }
         let (_, left) = self.leave_mesh(spare, operation).await;
@@ -909,13 +909,13 @@ impl NodeSelf {
     /// mesh channel (`rdm.node.mesh.update.via-joined`), and answers `MeshJoined`.
     async fn serve_join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> StatusReply {
         let Some(session) = self.session.lock().unwrap().clone() else {
-            return StatusReply::NotReady { reason: format!("{}: this process holds no session to join its mesh with", self.held_name()) };
+            return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.held_name()));
         };
         self.server.resume();
         self.admit_new_connections();
         match session.join_mesh(spare, operation).await {
             Ok(joined) => StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined },
-            Err(reason) => StatusReply::NotReady { reason },
+            Err(reason) => rdm_core::reply::status::not_ready(reason),
         }
     }
 
@@ -936,7 +936,7 @@ impl NodeSelf {
                 Cycle::Stopped(r) => Next::Done(r.clone()),
                 // The start ends the stopped cycle: the receipt that parked the birth does not
                 // answer for a birth on its way out of Leaving, as a start does not run beside a stop.
-                Cycle::Starting { .. } => return StatusReply::NotReady { reason: format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()) },
+                Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name())),
                 Cycle::Stopping(rx) => Next::Wait(rx.clone()),
                 Cycle::Live(_) => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
@@ -949,7 +949,7 @@ impl NodeSelf {
             Next::Done(r) => r,
             Next::Wait(mut rx) => match rx.wait_for(|r| r.is_some()).await {
                 Ok(r) => r.clone().expect("waited for a receipt"),
-                Err(_) => return StatusReply::NotReady { reason: format!("{}: the stop that was under way ended without a receipt", self.held_name()) },
+                Err(_) => return rdm_core::reply::status::not_ready(format!("{}: the stop that was under way ended without a receipt", self.held_name())),
             },
             Next::Run(tx) => {
                 let span = tracing::info_span!(
@@ -1081,7 +1081,7 @@ impl NodeSelf {
                     Cycle::Stopped(r) => {
                         let receipt = r.clone();
                         let Some(session) = self.session.lock().unwrap().clone() else {
-                            return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
+                            return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to rejoin its mesh with", self.held_name()));
                         };
                         let (tx, rx) = tokio::sync::watch::channel(None);
                         let (commander, commanded) = match spare {
@@ -1103,10 +1103,10 @@ impl NodeSelf {
                         }
                         Next::Join(outcome.clone())
                     }
-                    Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
-                    Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return StatusReply::AlreadyApplied,
+                    Cycle::Stopping(_) => return rdm_core::reply::status::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name())),
+                    Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return rdm_core::reply::already_applied(),
                     Cycle::Live(_) => {
-                        return StatusReply::RejectedInvalidNodeTransition { current: crate::status::declared_of_member((self.status)()) };
+                        return rdm_core::reply::status::rejected_invalid_node_transition(crate::status::declared_of_member((self.status)()));
                     }
                 }
             };
@@ -1115,7 +1115,7 @@ impl NodeSelf {
                     tracing::Span::current().record("joined", true);
                     return match rx.wait_for(|r| r.is_some()).await {
                         Ok(r) => r.clone().expect("waited for an outcome"),
-                        Err(_) => StatusReply::NotReady { reason: format!("{}: the start that was under way ended without an outcome", self.held_name()) },
+                        Err(_) => rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.held_name())),
                     };
                 }
                 Next::Run(tx, receipt, session, commanded) => (tx, receipt, session, commanded),
@@ -1164,7 +1164,7 @@ impl NodeSelf {
                     let _ = session.cut(&calls).await;
                     *self.cycle.lock().unwrap() = Cycle::Stopped(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
-                    StatusReply::StartFailed { step: failed.step.to_string(), reason: failed.reason }
+                    rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason)
                 }
             };
             outcome.send_replace(Some(reply.clone()));
@@ -1220,7 +1220,7 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
         caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
     )
     .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
-    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: RETIRED_PAIR_IS_RESERVED.into(), reported }
+    rdm_core::reply::status::rejected_unmatched_completion("command".into(), RETIRED_PAIR_IS_RESERVED.into(), reported)
 }
 
 /// The answer of a Status door that has no handler for `req` (R24, Luke Q11): `RequestNotHandled`
@@ -1230,7 +1230,7 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
 pub fn request_not_handled(receiver: &str, req: &StatusRequest) -> StatusReply {
     tracing::info_span!("rdm.node.status.reject.via-request-not-handled", node = %receiver, request = req.op(), "otel.kind" = "internal")
         .in_scope(|| tracing::info!("this Status door has no handler for the request: not handled here, nothing done"));
-    StatusReply::RequestNotHandled { request: req.op().to_string() }
+    rdm_core::reply::not_handled(req.op().to_string())
 }
 
 /// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
@@ -1262,7 +1262,7 @@ pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRe
         "otel.kind" = "internal"
     )
     .in_scope(|| tracing::info!("a node-left call was refused by name: it is never a call, and it completes no command"));
-    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_IS_NEVER_A_CALL.into(), reported }
+    rdm_core::reply::status::rejected_unmatched_completion("command".into(), NODE_LEFT_IS_NEVER_A_CALL.into(), reported)
 }
 
 

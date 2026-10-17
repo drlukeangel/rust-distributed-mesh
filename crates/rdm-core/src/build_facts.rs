@@ -149,6 +149,21 @@ impl NodeProtocol for BuildFacts {
     type Request = BuildFactsRequest;
     type Reply = BuildFactsReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            BuildFactsReply::Facts { .. } => "facts",
+            BuildFactsReply::End { .. } => "end",
+            BuildFactsReply::NotReady { .. } => "not-ready",
+            BuildFactsReply::UnknownBuild { .. } => "unknown-build",
+            BuildFactsReply::PeerUnresolved { .. } => "peer-unresolved",
+            BuildFactsReply::Busy { .. } => "busy",
+            BuildFactsReply::ConnectionsDeleting { .. } => "connections-deleting",
+            BuildFactsReply::Malformed { .. } => "malformed",
+            BuildFactsReply::Unauthorized { .. } => "unauthorized",
+            BuildFactsReply::Started => "started",
+        }
+    }
+
     fn classify_reply(reply: &BuildFactsReply) -> ReplyKind {
         match reply {
             BuildFactsReply::Facts { .. } => ReplyKind::Success,

@@ -18,6 +18,8 @@ pub struct Violation {
     pub file: PathBuf,
     /// One-based line.
     pub line: usize,
+    /// Zero-based source column.
+    pub column: usize,
     /// The reply and variant.
     pub constructor: String,
 }
@@ -31,7 +33,7 @@ pub fn scan(file: &Path, source: &str) -> Vec<Violation> {
             if parts.len() < 2 { return; }
             let reply = &parts[parts.len()-2]; let variant = &parts[parts.len()-1];
             if REPLIES.contains(&reply.as_str()) && shared(variant) {
-                self.out.push(Violation { file: self.file.to_owned(), line: p.segments[parts.len()-2].ident.span().start().line, constructor: format!("{reply}::{variant}") });
+                self.out.push(Violation { file: self.file.to_owned(), line: p.segments[parts.len()-2].ident.span().start().line, column: p.segments[parts.len()-2].ident.span().start().column, constructor: format!("{reply}::{variant}") });
             }
         }
     }

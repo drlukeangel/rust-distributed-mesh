@@ -1283,7 +1283,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(me) = slot.get().cloned() else {
-                return Ok(NodeCommandReply::NotReady { reason: "this node has not joined its mesh yet".into() });
+                return Ok(rdm_core::reply::node_command::not_ready("this node has not joined its mesh yet".into()));
             };
             let sender = me.membership.projected_member_at(&peer.endpoint_id.to_string());
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
@@ -1319,7 +1319,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
         let slot = slot.clone();
         async move {
             let Some(me) = slot.get().cloned() else {
-                return Ok(StatusReply::NotReady { reason: "this node has not joined its mesh yet".into() });
+                return Ok(rdm_core::reply::status::not_ready("this node has not joined its mesh yet".into()));
             };
             // The hook's blocker as it stood when the call arrived, before this call addresses the
             // birth (a hook blocked on its authority's word runs again on it).
@@ -1348,7 +1348,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let mesh = me.digest.node.name.mesh.clone();
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone()).or_else(|| me.membership.seats().mesh(&mesh).map(|held| held.node_id));
                 let reply = match commander {
-                    None => StatusReply::NotReady { reason: format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.membership.held_name(&me.digest.node.name), peer.endpoint_id) },
+                    None => rdm_core::reply::status::not_ready(format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.membership.held_name(&me.digest.node.name), peer.endpoint_id)),
                     Some(commander) => me.own.serve(Some(&commander), None, &req).await.expect("a round op"),
                 };
                 tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
@@ -1369,7 +1369,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // birth it names is checked, so a call that reached another birth is refused naming the
             // one held.
             if *incarnation != me.digest.node.incarnation {
-                return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
+                return Ok(rdm_core::reply::stale(me.digest.node.incarnation.clone()));
             }
             match req {
                 // node.connections.get: what this birth holds, under the name it holds; a read.
@@ -1410,7 +1410,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let current = node_state_of(*me.status.lock().unwrap());
                     tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
-                    Ok(StatusReply::RejectedInvalidNodeTransition { current })
+                    Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
                 }
                 StatusRequest::ApplyNodeConfig { config, .. } => {
                     // ops-naming "Node data": the node applies the config and carries it in its next
@@ -1429,7 +1429,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     };
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this birth's digest"));
-                    Ok(StatusReply::Applied)
+                    Ok(rdm_core::reply::applied())
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {
                     // R12: the node owns its name and takes the row's name only with no traffic. It is
@@ -1441,14 +1441,14 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         Err(e) => {
                             tracing::info_span!("rdm.node_admin.node.reject.via-apply-node-name", node = %held, sender = %sender_name, to = %name, reason = %format!("the name {name:?} is not a path.name: {e}"), "otel.kind" = "internal")
                                 .in_scope(|| tracing::info!("apply-node-name refused: the name does not parse"));
-                            return Ok(StatusReply::Malformed { kind: rdm_core::outcome::MalformedKind::Corrupt });
+                            return Ok(rdm_core::reply::status::malformed(rdm_core::outcome::MalformedKind::Corrupt));
                         }
                     };
                     // R-CR1: the name moves only while the node holds no connection, read from its
                     // connections writer once every observation has landed.
                     let routes = match me.own.held_routes().await {
                         Ok(r) => r,
-                        Err(reason) => return Ok(StatusReply::NotReady { reason }),
+                        Err(reason) => return Ok(rdm_core::reply::status::not_ready(reason)),
                     };
                     let decision = crate::node_name::decide(&held, &asked, &routes);
                     let published = match decision {

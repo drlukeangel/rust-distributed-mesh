@@ -146,6 +146,22 @@ impl NodeProtocol for ResolveProbe {
     type Request = ResolveRequest;
     type Reply = ResolveReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            ResolveReply::Found { .. } => "found",
+            ResolveReply::Gone { .. } => "gone",
+            ResolveReply::Unknown { .. } => "unknown",
+            ResolveReply::Unavailable { .. } => "unavailable",
+            ResolveReply::BadTarget { .. } => "bad-target",
+            ResolveReply::PeerUnresolved { .. } => "peer-unresolved",
+            ResolveReply::NotReady { .. } => "not-ready",
+            ResolveReply::Busy { .. } => "busy",
+            ResolveReply::ConnectionsDeleting { .. } => "connections-deleting",
+            ResolveReply::Malformed { .. } => "malformed",
+            ResolveReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
+
 
     fn classify_reply(reply: &ResolveReply) -> ReplyKind {
         match reply {

@@ -695,6 +695,8 @@ impl NodeRpcClient {
             target = ?target,
             op,
             outcome = tracing::field::Empty,
+            code = tracing::field::Empty,
+            detail = tracing::field::Empty,
             reason = tracing::field::Empty,
             reused = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
@@ -705,6 +707,8 @@ impl NodeRpcClient {
         let started = Instant::now();
         let (out, evidence) = self.owe_steps(target, final_target, op, payload, max_reply, opts, decode, &span).instrument(span.clone()).await;
         span.record("outcome", out.name());
+        span.record("code", out.code().name());
+        span.record("detail", out.detail_name());
         let reason = match &out {
             RpcOutcome::NotSent(n) => format!("{:?}", n.reason()),
             RpcOutcome::Indeterminate(i) => format!("{:?}", i.reason()),

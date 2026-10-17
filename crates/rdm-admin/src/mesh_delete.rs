@@ -1054,7 +1054,7 @@ impl HandoffVerdict {
     pub fn refusal(&self) -> Option<StatusReply> {
         match self {
             HandoffVerdict::Accept(_) => None,
-            HandoffVerdict::Unmatched { field, expected, reported } => Some(StatusReply::RejectedUnmatchedCompletion { field: field.clone(), expected: expected.clone(), reported: reported.clone() }),
+            HandoffVerdict::Unmatched { field, expected, reported } => Some(rdm_core::reply::status::rejected_unmatched_completion(field.clone(), expected.clone(), reported.clone())),
             HandoffVerdict::Incomplete { reason, without_exit } => Some(StatusReply::incomplete_manifest(without_exit, reason)),
         }
     }
@@ -1198,13 +1198,13 @@ pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::Deploymen
 pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &MeshDeleteKey, final_node_id: &NodeId, final_incarnation: &str) -> Option<StatusReply> {
     let completion = match completion_of(steps, &key.operation)? {
         Ok(m) => m,
-        Err(reason) => return Some(StatusReply::NotReady { reason }),
+        Err(reason) => return Some(rdm_core::reply::status::not_ready(reason)),
     };
     let last = &completion.final_primary;
     let reply = if last.node_id == final_node_id.as_str() && last.incarnation_id == final_incarnation {
-        StatusReply::AlreadyApplied
+        rdm_core::reply::already_applied()
     } else {
-        StatusReply::RejectedUnmatchedCompletion { field: "final_primary".into(), expected: format!("{} {}", last.node_id, last.incarnation_id), reported: format!("{final_node_id} {final_incarnation}") }
+        rdm_core::reply::status::rejected_unmatched_completion("final_primary".into(), format!("{} {}", last.node_id, last.incarnation_id), format!("{final_node_id} {final_incarnation}"))
     };
     tracing::info_span!("rdm.node_admin.mesh.resolve.via-handoff-replayed", mesh_id = %key.mesh_id, build_id = %key.build_id.log(), attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", last.node, last.incarnation_id), outcome = reply.name())
         .in_scope(|| tracing::info!("a handoff after mesh.deleted's completion receipt: answered from the receipt, nothing is recorded again"));
@@ -1267,11 +1267,11 @@ pub fn refuse_round(call: &'static str, held: &MeshDeleteKey, offered: &MeshDele
     if round_order(held, offered) == RoundOrder::Earlier {
         tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
             .in_scope(|| tracing::info!("the call names an earlier attempt of the round held for the mesh: it is refused by name and nothing is admitted"));
-        StatusReply::RejectedStaleRound { held: h, offered: o }
+        rdm_core::reply::status::rejected_stale_round(h, o)
     } else {
         tracing::info_span!("rdm.node_admin.mesh.reject.via-conflicting-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
             .in_scope(|| tracing::info!("the call names a round of the mesh that is not the one held nor an attempt it admits: it is refused by name and nothing is admitted"));
-        StatusReply::RejectedConflictingRound { held: h, offered: o }
+        rdm_core::reply::status::rejected_conflicting_round(h, o)
     }
 }
 
@@ -1331,7 +1331,7 @@ impl MeshDeleteBook {
         drop(open);
         match held {
             Some(held) => Err(refuse_round("mesh-deleted", &held, key)),
-            None => Err(StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: format!("an open leave of mesh {}", key.mesh_id), reported: key.round().to_string() }),
+            None => Err(rdm_core::reply::status::rejected_unmatched_completion("command".into(), format!("an open leave of mesh {}", key.mesh_id), key.round().to_string())),
         }
     }
 

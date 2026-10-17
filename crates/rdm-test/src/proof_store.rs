@@ -242,6 +242,25 @@ impl NodeProtocol for ProofStore {
     type Request = ProofRequest;
     type Reply = ProofReply;
 
+    fn reply_detail(reply: &Self::Reply) -> &'static str {
+        match reply {
+            ProofReply::Value { .. } => "value",
+            ProofReply::Absent { .. } => "absent",
+            ProofReply::Stored { .. } => "stored",
+            ProofReply::Deleted { .. } => "deleted",
+            ProofReply::Swapped { .. } => "swapped",
+            ProofReply::Mismatch { .. } => "mismatch",
+            ProofReply::TooLarge { .. } => "too-large",
+            ProofReply::StoreFailed { .. } => "store-failed",
+            ProofReply::PeerUnresolved { .. } => "peer-unresolved",
+            ProofReply::NotReady { .. } => "not-ready",
+            ProofReply::Busy { .. } => "busy",
+            ProofReply::ConnectionsDeleting { .. } => "connections-deleting",
+            ProofReply::Malformed { .. } => "malformed",
+            ProofReply::Unauthorized { .. } => "unauthorized",
+        }
+    }
+
 
     fn classify_reply(reply: &ProofReply) -> ReplyKind {
         match reply {
