@@ -309,7 +309,7 @@ No new ruling question is raised by this comparison; R10 remains open and no e3 
 - **Page text.** gossip.md §3.1's catalog rows and the receive-rules table restated on the envelope's
   fields; exact old → new to Luke at e3's landing. A gossip change: Luke's permission is Q20.
 - **Sizing.** One seat, after the last e2 row.
-- **State.** a1 approved the mapping for the Q34 packet (Luke relayed the review, 2026-10-17); [the review and resolutions](proposal/gossip-envelope-mapping.md) record all six mappings, literal string binding cost, declared-content identity and PublisherId authorship. The publisher-birth prerequisite below lands first. Q34 is the packet number, not Q24. No CloudEvents implementation or architecture edit before Q34 is ruled; R10 remains open.
+- **State.** a1 approved the mapping for the Q34 packet (Luke relayed the review, 2026-10-17); [the review and resolutions](proposal/gossip-envelope-mapping.md) record all six mappings, literal string binding cost, declared-content identity and PublisherId authorship. The publisher-birth prerequisite below LANDED at `b07d9c14`. [Q34 packet](rulings/i147-q34-gossip-envelope.md) is ready for Luke, with the [exact binding, byte cost, 22 types and proposed §3.1 page lines](proposal/gossip-envelope-binding.md). a1 review is complete. No CloudEvents implementation or architecture edit before Q34 is ruled; R10 remains open.
 
 
 **Publisher-birth prerequisite (Luke/a1, 2026-10-17; separate from the envelope).** PublisherId
@@ -354,7 +354,7 @@ Outside-i147 read: `flood::a_flood_of_32_callers_for_10_seconds_round_trips_with
 Indeterminate / ReplyLost("the request's attempts ended") after 36 ms, attempts=1, reused=true;
 [trace](http://192.168.68.99:16687/trace/68bb6983973f33e7308763cff9fb8825). This is the pure Node RPC
 flood path, not publication receipt or PublisherId; cell untouched. Both traces retrieved and
-full gate stems saved under target/evidence/publisher-birth/gate-red/. The next land-script rebase found the cell owner had independently landed `78ddb2f1`: each surviving mesh applies the announcement on either channel, plus an explicit backbone receipt by a non-holder peer primary. That stronger upstream cell is retained byte-for-byte; the interim local test edit is discarded in the rebase. The final prerequisite changes no handover cell. Main also advances through `882abfe9` and `bac3a549`; the next gate measures that new baseline, not the recorded red source.
+full gate stems saved under target/evidence/publisher-birth/gate-red/. The next land-script rebase found the cell owner had independently landed `78ddb2f1`: each surviving mesh applies the announcement on either channel, plus an explicit backbone receipt by a non-holder peer primary. That stronger upstream cell is retained byte-for-byte; the interim local test edit is discarded in the rebase. The final prerequisite changes no handover cell. Main also advances through `882abfe9` and `bac3a549`; the next gate measures that new baseline, not the recorded red source. **LANDED `b07d9c14`**, land script rebased on `78ddb2f1`, 1761 passed, 0 failed, 0 ignored across 62 summaries, 256 s (build 86.1 s). Both previous red stems pass; flood and the stronger upstream handover cell are unchanged. Gate: /home/admin/rust-distributed-mesh-deploy/gates-e7s3-b07d9c14.log. Prerequisite GREEN receive code is `55d4e73b`, RED cell `e117d1ce`; the source history also records the pre-rebase SHAs and exact gate read above. Q34 remains a ruling request, not envelope implementation authorization.
 
 
 
@@ -362,7 +362,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 ## Verification
 
 - [x] e1 green in the RDM gate with both flames cited in its row; the approved gossip.md receive table is on main.
-- [ ] Every row of the table has a green cell; no frame kind is "taken as it arrives" without a stated rule.
+- [x] Every e2 row of the table has a green cell; no frame kind is "taken as it arrives" without a stated rule. e2 accepted at 7d00bb2e; publisher prerequisite preserves all 87 cells.
 - [ ] receive_order.rs has one shape per category and no contradictory check.
 
 ## Cross-references
