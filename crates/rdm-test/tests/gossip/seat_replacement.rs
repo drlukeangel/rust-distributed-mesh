@@ -30,9 +30,9 @@ impl Kind {
     }
     fn span(self) -> &'static str { match self { Self::Seated => "rdm.mesh.seat.update.via-announcement", Self::Updating => "rdm.mesh.seat.update.via-primary-updating", Self::Updated => "rdm.mesh.seat.update.via-primary-updated" } }
 }
-#[derive(Clone, Copy)] enum Story { Stale, Duplicate, Inconsistent, Newer, ReadFloor, Atomic, Stages, Scope }
+#[derive(Clone, Copy)] enum Story { Stale, Duplicate, Inconsistent, Newer, ReadFloor, Atomic, Stages, Scope, OperationContent, InstalledOperation }
 fn story(kind: Kind, story: Story) {
-    let suffix = match story { Story::Stale => "stale", Story::Duplicate => "duplicate", Story::Inconsistent => "inconsistent", Story::Newer => "newer", Story::ReadFloor => "read-floor", Story::Atomic => "atomic", Story::Stages => "stages", Story::Scope => "scope" };
+    let suffix = match story { Story::Stale => "stale", Story::Duplicate => "duplicate", Story::Inconsistent => "inconsistent", Story::Newer => "newer", Story::ReadFloor => "read-floor", Story::Atomic => "atomic", Story::Stages => "stages", Story::Scope => "scope", Story::OperationContent => "operation-content", Story::InstalledOperation => "installed-operation" };
     let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/gossip-conformance");
     std::fs::create_dir_all(&dir).unwrap();
     let capture = rdm_transport::EvidenceCapture::start(&dir, &format!("rdm-{}-{suffix}", kind.name())).unwrap();
@@ -50,10 +50,11 @@ fn story(kind: Kind, story: Story) {
         let (sender, _rx) = topic.split();
 
         let holder = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 10 };
-        let op = LifecycleOp { build_id: "seat-replacement".into(), attempt: 1, operation: "node.primary.update:mesh1.rpc.1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };
+        let mut op = LifecycleOp { build_id: "seat-replacement".into(), attempt: 1, operation: "node.primary.update:mesh1.rpc.1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 1 };
         let seat = Seat::Cohort(NodeKind::RpcNode);
         let first = CommittedSeat::of(seat, &holder);
-        if matches!(story, Story::ReadFloor) { receiver.learn_seats(&[(seat, holder.clone(), false)], "topology-read"); }
+        if matches!(story, Story::InstalledOperation) { receiver.seats().take_together(&op, &[first.clone()]); }
+        else if matches!(story, Story::ReadFloor) { receiver.learn_seats(&[(seat, holder.clone(), false)], "topology-read"); }
         else { send(&sender, &receiver, kind.frame(&op, vec![first.clone()]), 1).await; }
         let changes = receiver.seats().subscribe();
         let before = *changes.borrow();
@@ -61,6 +62,7 @@ fn story(kind: Kind, story: Story) {
         match story {
             Story::Stale | Story::ReadFloor => offered.revision = 9,
             Story::Duplicate => {},
+            Story::OperationContent | Story::InstalledOperation => { op.build_id = "another-seat-update".into(); },
             Story::Inconsistent => { offered.holder.incarnation = IncarnationId::mint(); },
             Story::Newer => { offered.revision = 11; offered.holder.incarnation = IncarnationId::mint(); },
             Story::Atomic => {
@@ -103,13 +105,13 @@ fn story(kind: Kind, story: Story) {
     });
     let spans = capture.spans().unwrap();
     for s in spans.iter().filter(|s| s["attributes"]["frame"] == kind.name() || s["name"] == kind.span()) { println!("{}", serde_json::to_string(s).unwrap()); }
-    let outcome = match story { Story::Stale | Story::ReadFloor | Story::Atomic | Story::Stages => "rdm.mesh.membership.reject.via-stale", Story::Duplicate => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent => "rdm.mesh.membership.reject.via-inconsistent", _ => "" };
+    let outcome = match story { Story::Stale | Story::ReadFloor | Story::Atomic | Story::Stages => "rdm.mesh.membership.reject.via-stale", Story::Duplicate => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent | Story::OperationContent | Story::InstalledOperation => "rdm.mesh.membership.reject.via-inconsistent", _ => "" };
     if !outcome.is_empty() {
         let refusal = spans.iter().find(|s| s["name"] == outcome && s["attributes"]["frame"] == kind.name()).expect("the receive framework names the outcome");
         if matches!(story, Story::Duplicate) { assert_eq!(refusal["attributes"]["outcome"], "ignored"); assert!(refusal["attributes"]["identity"].as_str().unwrap().contains("revision=10")); }
         else { assert!(refusal["attributes"]["subject"].as_str().unwrap().contains("primary")); }
     }
-    let expected = match story { Story::ReadFloor => 0, Story::Newer | Story::Atomic => 2, Story::Scope => 5, _ => 1 };
+    let expected = match story { Story::InstalledOperation => 0, Story::ReadFloor => usize::from(matches!(kind, Kind::Seated)), Story::Newer | Story::Atomic => 2, Story::Scope => 5, _ => 1 };
     assert_eq!(spans.iter().filter(|s| s["name"] == kind.span()).count(), expected, "only applied frames emit the ordinary span");
 }
 
@@ -169,3 +171,11 @@ fn story(kind: Kind, story: Story) {
 
 /// CONTRACT: updated at one revision follows updating; a delayed updating never replaces it.
 #[test] fn updating_after_updated_is_stale() { story(Kind::Updating, Story::Stages); }
+
+/// CONTRACT: changing the update operation at the same cohort revision is inconsistent content.
+#[test] fn updating_equal_revision_different_operation() { story(Kind::Updating, Story::OperationContent); }
+/// CONTRACT: changing the committed operation never rewrites the retained row at equal revision.
+#[test] fn updated_equal_revision_different_operation() { story(Kind::Updated, Story::OperationContent); }
+
+/// CONTRACT: the actual committed update installed locally retains its content for gossip comparison.
+#[test] fn updated_equal_revision_conflicts_with_locally_installed_operation() { story(Kind::Updated, Story::InstalledOperation); }

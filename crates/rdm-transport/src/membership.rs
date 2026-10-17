@@ -989,6 +989,7 @@ struct HeldSeats {
     gone: std::collections::HashSet<IncarnationId>,
     /// The last update held together: replayed as one `PrimaryUpdated` while its seats are the records held.
     together: Option<(LifecycleOp, Vec<CommittedSeat>)>,
+    receipts: crate::receive_order::SeatReceipts,
 }
 
 impl HeldSeats {
@@ -1046,6 +1047,7 @@ impl SeatBook {
             Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
             previous => {
                 held.put(seat, &holder.mesh, holder.clone());
+                held.receipts.installed_seat(seat, holder);
                 self.changed.send_modify(|v| *v += 1);
                 SeatTaken::Held { previous }
             }
@@ -1077,10 +1079,37 @@ impl SeatBook {
             held.put(seat, &mesh, c.record());
         }
         held.together = Some((op.clone(), seats.to_vec()));
+        held.receipts.installed_primary(op, seats);
         if decided.iter().any(|t| matches!(t, SeatTaken::Held { .. })) {
             self.changed.send_modify(|v| *v += 1);
         }
         decided
+    }
+
+    /// Classify and install a received seat publication under one lock. Only a settled publication
+    /// changes holder records; rejected rows change neither records nor retained publication data.
+    pub(crate) fn receive(&self, frame: &Frame) -> bool {
+        self.receive_records(frame).is_some()
+    }
+
+    fn receive_records(&self, frame: &Frame) -> Option<Vec<(CommittedSeat, Option<SeatHolder>)>> {
+        let mut held = self.inner.lock().unwrap();
+        let seats = match frame {
+            Frame::Seated { seat, holder } => vec![CommittedSeat::of(*seat, holder)],
+            Frame::PrimaryUpdating { seats, .. } | Frame::PrimaryUpdated { seats, .. } => seats.clone(),
+            _ => unreachable!("only seat publications use the seat book receive door"),
+        };
+        let current: Vec<_> = seats.iter().map(|c| { let (seat, mesh) = committed_key(c); (c.clone(), held.get(seat, &mesh)) }).collect();
+        if !held.receipts.admit(frame, &current) { return None; }
+        if !matches!(frame, Frame::PrimaryUpdating { .. }) {
+            for c in &seats {
+                let (seat, mesh) = committed_key(c);
+                held.put(seat, &mesh, c.record());
+            }
+            if let Frame::PrimaryUpdated { op, .. } = frame { held.together = Some((op.clone(), seats)); }
+            self.changed.send_modify(|v| *v += 1);
+        }
+        Some(current)
     }
 
     /// The fabric seat's held record.
@@ -2158,6 +2187,7 @@ impl View {
                 Vec::new()
             }
             Frame::PrimaryUpdating { op, seats } => {
+                if !self.book.seats.receive(f) { return Vec::new(); }
                 tracing::info_span!("rdm.mesh.seat.update.via-primary-updating", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, seats = %seats_named(seats), via)
                     .in_scope(|| tracing::info!("a seat holder said its seats are updating: receivers keep the current holder until the committed row names the next epoch"));
                 Vec::new()
@@ -2625,31 +2655,22 @@ impl View {
         self.via.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert(via);
     }
 
-    /// Hold a seat record this node heard, naming what it did with it. An older revision of the
-    /// same seat was already ignored by the receive path (R-RX3, [`crate::receive_order`]).
-    fn note_seat(&self, seat: Seat, holder: &SeatHolder, via: &'static str) -> SeatTaken {
-        let taken = self.book.seats.take(seat, holder);
-        if let SeatTaken::Held { previous } = &taken {
-            let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
-            tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
-                .in_scope(|| tracing::info!("a seat record was heard"));
-        }
-        taken
+    /// Classify a received or read-installed record against the actual held seat, then announce
+    /// only an installation. Local candidate selection uses SeatBook::take directly.
+    fn note_seat(&self, seat: Seat, holder: &SeatHolder, via: &'static str) -> bool {
+        let Some(current) = self.book.seats.receive_records(&Frame::Seated { seat, holder: holder.clone() }) else { return false };
+        let previous = current[0].1.as_ref().map(ToString::to_string).unwrap_or_default();
+        tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
+            .in_scope(|| tracing::info!("a seat record was heard"));
+        true
     }
 
-    /// Hold the seats of a committed update together, naming what it did with them: `held`, `same`
-    /// (the records were already held) or `refused-not-newer`.
+    /// The framework installs a complete admitted row before this ordinary apply span. A repeated
+    /// or conflicting row emits only its named receive outcome, and cannot rewrite retained data.
     fn note_primary_updated(&self, op: &LifecycleOp, seats: &[CommittedSeat], via: &'static str) {
-        let taken = self.book.seats.take_together(op, seats);
-        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
-            "refused-not-newer"
-        } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
-            "same"
-        } else {
-            "held"
-        };
+        if !self.book.seats.receive(&Frame::PrimaryUpdated { op: op.clone(), seats: seats.to_vec() }) { return; }
         let successor = seats.first().map(|c| c.record().to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.mesh.seat.update.via-primary-updated", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %seats_named(seats), via, outcome)
+        tracing::info_span!("rdm.mesh.seat.update.via-primary-updated", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %seats_named(seats), via, outcome = "held")
             .in_scope(|| tracing::info!("primary updated was heard: the seats one committed row moved"));
     }
 
@@ -7186,10 +7207,10 @@ mod tests {
 
     /// CONTRACT (docs/architecture/gossip.md, R-RX3, Luke 2026-10-13 Q2): a `Seated` record's revision
     /// per complete seat key is its order key in the one gossip receive path (`receive_order.rs`), and
-    /// `note_seat` stops comparing revisions. When a cohort's holder exits and the next holder is
+    /// the installed seat classifier names older records. When a cohort's holder exits and the next holder is
     /// announced at a higher revision, a late older `Seated` record naming the exited holder is ignored
-    /// by the receive path with `rdm.mesh.membership.reject.via-earlier-version` (`revision=<held>` vs
-    /// `revision=<offered>`), emits no `refused-not-newer` handler span, and cannot restore the exited
+    /// by the framework with `rdm.mesh.membership.reject.via-stale` and both revision/stage keys,
+    /// emits no second ordinary apply span, and cannot restore the exited
     /// holder; records for other cohorts (`mesh-primary`, `broker-primary`, `fabric-primary`) on the
     /// same channel never suppress each other, and neighbour-up replay carries every cohort's holder.
     #[test]
@@ -7220,10 +7241,10 @@ mod tests {
         assert_eq!(member.book.seats.cohort("mesh1", NodeKind::Broker), Some(seat_of(&broker, 1)));
         assert_eq!(member.book.seats.fabric(), Some(seat_of(&admin, 2)));
 
-        let ignored = spans.named("rdm.mesh.membership.reject.via-earlier-version");
+        let ignored = spans.named("rdm.mesh.membership.reject.via-stale");
         assert_eq!(
-            ignored.iter().map(|f| (f["frame"].as_str(), f["source"].as_str(), f["held"].as_str(), f["offered"].as_str())).collect::<Vec<_>>(),
-            vec![("seated", "rpc_node-primary mesh1", "revision=2", "revision=1")],
+            ignored.iter().map(|f| (f["frame"].as_str(), f["subject"].as_str(), f["held_key"].as_str(), f["frame_key"].as_str())).collect::<Vec<_>>(),
+            vec![("seated", "rpc_node-primary mesh1", "revision=2 updated", "revision=1 updated")],
             "{ignored:#?}"
         );
         let announced = spans.named("rdm.mesh.seat.update.via-announcement");
@@ -7511,6 +7532,9 @@ mod tests {
     fn hear(order: &mut crate::receive_order::ReceiveOrder, view: &View, f: &Frame, fabric: &FabricId, side: Side) -> bool {
         if !admitted(order, f, &view.node, side.name(), &"cell") {
             return false;
+        }
+        if let Frame::Seated { seat, holder } = f {
+            return view.note_seat(*seat, holder, side.name());
         }
         match f {
             Frame::Members { .. } | Frame::MembersDelta { .. } => {
