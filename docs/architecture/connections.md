@@ -138,6 +138,7 @@ NodeConnection {
     destination_incarnation_id
 
     kind: Direct | Proxy
+    alpn            // the registered ALPN this connection carries; a row is one transport connection on one protocol (i148)
     state: Connected | Disconnected | Failed
 
     // Proxy only
@@ -232,11 +233,12 @@ Conceptually:
 ```text
 by-source prefix      = hash(source)
 by-destination prefix = hash(destination)
-member                = hash(source, destination, kind)
+member                = hash(source, destination, alpn, kind)
 ```
 
 The exact hash helper may follow existing entity-framework conventions. What is normative is one latest
-member per `(source,destination,kind)`, never one member per connection-event id.
+member per `(source,destination,alpn,kind)`, never one member per connection-event id. Reachability is per
+protocol: a working ALPN proves nothing about another, and a reconnect on one never retires another's Proxy.
 
 ### 3.2 Virtual topics
 
@@ -404,6 +406,10 @@ Sequence:
 
 A post-commit answer timeout, reply loss, or other Indeterminate outcome does not prove a Proxy connection and
 must not create `Proxy Connected`.
+
+For a stream connection the conclusive answer is RDM's tunnel handshake: the destination's own `admitted`
+at the exact birth, written back through the carrier on the tunnel's control stream. No application byte,
+EOF or one-leg admission substitutes.
 
 ---
 

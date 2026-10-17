@@ -142,7 +142,7 @@ carriers per ALPN. P2 the i141 rows contradicted the cut → fixed in rafka-v2 (
 iroh-gossip; e12 drops iroh; the kind set is on JoinNode and `held_hash`, not a digest list).
 Accept ownership on repeated `connections(alpn)` → `AlreadyTaken` by name, rule 1.
 
-## Page deltas this initiative lands (connections.md; exact old → new for Luke's yes)
+## Page deltas (connections.md; §2, §3.1 and §7 applied 2026-10-17 on Luke's yes; §9 lands with e3)
 
 - §2 `NodeConnection` shape: a field `alpn: Vec<u8>` after `kind`; §3.1 declared index
   `(source, destination, kind)` → `(source, destination, alpn, kind)`.
