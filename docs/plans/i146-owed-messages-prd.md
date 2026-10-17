@@ -159,7 +159,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   `delivery_seq` at 1 and the receiver keeps the old birth's window until its proven exit or removal.
   RED first.
 - **Page text.** Landed 2026-10-16 (§43, §33, §41, the certainty paragraph, "Transport frames").
-  Q18 (Luke 2026-10-16, arm A): yes to all three, landing with e1, applied on its branch: the
+  Q18 (Luke 2026-10-16, arm A): yes to all three, landing with e1, applied (`add379d4`): the
   envelope's opening paragraph and frame diagram (:12-19; an invocation begins on the stream carrying
   its request frame, every frame begins with its transport header, FIN ends a stream never an
   invocation); the §1 context sentence (no delivery identity in the context, it is the transport
@@ -244,7 +244,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     durable records (each Build frame's receipt is recorded by its executor before the frame is sent,
     `build_run.rs` `append_step_receipt`, `HeldRun::finish`; Build facts are the responder's log) and
     are read-only, as are the topology client read, the probe and the test consumers. Cell 22, RED
-    first on `1922df2f` ("read, not yet recovered: neither frame is acked", left 0 right 2), GREEN in
+    first on `1b84e072` ("read, not yet recovered: neither frame is acked", left 0 right 2), GREEN in
     0.64 s.
   - A unary reply is acked as it is delivered to its owner's call (`delivery.rs` `on_response`): the
     call returns it to its owner in the owner's own process, with no reconnect between the two for a
@@ -254,9 +254,9 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     caller's acks (node-rpc.md §23, §24, §34, Q22).
 - **Sizing.** Two seats; `rdm-transport/src/{client,server,framer,wire,stream}.rs`,
   `rdm-core/src/{framing,outcome,codes}.rs`, `tools/mesh-audit`.
-- **State.** BUILT on `i146-e1-delivery-layer` (lane e4s8), not landed: it lands with Q18's page lines (applied `d29733f7`) and Q22's (node-rpc.md §23, §24, §27, §31, §34), after the stream ack follows the owner's recoverable acceptance. Commits: rdm-core header and rules `5ec825ea`; the runtime, cells and ratchet `91233112`; fixes `936ff10e`; the bounded cells after it; the forward cells' exit proof `af504e79`; the carrier's failed dial as its answer `a06f52cc`. Gate on `a06f52cc`: 67/67 units, 1685 passed, 0 failed, 204 s.
+- **State.** LANDED `ca27478f` (2026-10-16, through the land script on `i146-e1-delivery-layer`, lane e4s8; gate 67/67 units, 1690 passed, 0 failed, 376 s, `TIMINGS wall=101.2s units=476`), with Q18's page lines (`add379d4`) and Q22's (node-rpc.md §23, §24, §27, §31, §34, `bb447c5e`). Commits on main: the header and the rules `d530c07b`; the runtime, cells and ratchet `101b7b82`; fixes `9de62671`, `b6d1d30b`, `25627a4f`, `d639f4fd`; the bounded cells `90de16cb`, `71c4ab2c`; the forward cells' exit proof `aa910d8b`; the carrier's failed dial as its answer `277bd6e5`; the stream ack after the owner's recovery `522b7bf3`; the delivery layer's own names without a retired word `ca27478f`.
   - RED. The runtime was written before its cells, so each cell's RED is shown two ways. The first run of the 21 on the runtime: 6 red (5, 9, 10, 17, 20, 21) from three defects, fixed: a reply frame raced the end of the attempt task, a request frame that arrived whole skipped the ready gate, connections-deleting and admission checks, and a frame over the reply ceiling reached no invocation. Then each mechanism switched off in the tree, the cells run, the tree restored (`mutate.py`, the run's evidence in the lead's scratchpad): batch A (duplicate suppression, response order, completed invocations, ack-stream acks, read-only acceptance, the receiver-gone proof) turns 2, 3, 4, 5, 6, 7, 10, 12, 13, 14, 15, 16, 17, 18 red and the rdm-core order units; batch B (request resend, response resend, admission before the demultiplexer, sender-window retirement, the reorder bound and the reply ceiling, cancellation that stops the attempts) turns 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 19, 20, 21 red. Every cell fails under at least one; 8 and 20 hung under B until bounded (they now fail inside 4 s).
-  - GREEN. 21/21 in 2.3 s; rdm-transport main 137/137 (10.48 s; 19.98 s on main), rdm-core lib 108, main 61, rdm-mesh-audit 105, rdm-admin lib 439, main 410, rdm-node lib 21, rdm-test lib 38.
+  - GREEN. 22/22; rdm-transport main 138/138 (10.52 s; 19.98 s before e1), rdm-core lib 108, main 61, rdm-mesh-audit 105, rdm-admin lib 439, main 410, rdm-node lib 21, rdm-test lib 38.
   - Cells whose contract the pages moved, restated, never loosened: `pool::a_connection_closed_under_a_committed_call_is_evicted_and_reported_broken_once` (a lost stream ends no invocation: the call waits out its own reply budget); the withhold seam of `status_declarations` holds the reply before it becomes a frame (the request stays unaccepted until the release); `forward::a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone` and `forward::a_carrier_whose_exit_is_proven_after_the_inner_call_applied_leaves_the_origin_indeterminate_receiver_gone` (a node's shutdown proves nothing: its exit, published in the caller's view, ends the owed call `ReceiverGone`, and the carrier carries that reason; RED with the receiver-gone proof off, both `ReplyDeadline` at 10 s).
 
 #### e2 — the ordered stream: identity and sequence on every frame
