@@ -556,15 +556,13 @@ Per-protocol and per-peer admission remain the server execution safety boundary.
 
 ## 23. Complete-send certainty cut
 
-One Node RPC call is one attempt.
+One Node RPC call is one invocation: one delivery identity, sent and resent by the runtime until it is acked (§43).
 
-The request becomes committed for uncertainty purposes only after:
-1. the complete request frame has been sent; and
-2. the request direction finishes cleanly.
+The request becomes committed for uncertainty purposes once the complete request frame has been sent. The frame is self-delimited: the receiver dispatches it once it is complete, and the request direction stays open for the caller's acks of the response.
 
-If send/finish fails before that cut, the receiver must not dispatch a partial request and the caller returns NotSent/499 FRAME_NOT_SENT.
+If the send fails before that cut, the receiver must not dispatch a partial request and the caller returns NotSent/499 FRAME_NOT_SENT.
 
-After that cut, Node RPC never silently replays. Reply loss/timeout is Indeterminate absent stronger evidence.
+After that cut, a resend is the same invocation, never a new execution: the receiver suppresses it (§33). Reply loss/timeout is Indeterminate absent stronger evidence.
 
 A stronger explicit no-dispatch fact such as 421 UNSERVED_OP remains definitive even if bytes crossed the process boundary.
 
@@ -589,7 +587,7 @@ pub enum RpcOutcome<R> {
 
 NotSent is reserved for transport/certainty facts such as:
 - Resolve(Unknown | Gone);
-- connection/open failure before complete-send+finish;
+- connection/open failure before the complete request frame is sent;
 - stream budget/deadline/cancellation before the certainty cut.
 
 There is no NotSentReason::Superseded.
@@ -675,11 +673,7 @@ Busy
 Malformed(TooLarge)
 ```
 
-the server:
-
-1. writes the protocol's typed reply on the response/send half;
-2. finishes that half normally;
-3. stops only the request/receive half with `REQUEST_STOP`.
+the server answers with the protocol's typed reply as a response frame, owed until the caller acks it (§43), and finishes that half normally. `ConnectionsDeleting`, `NotReady` and `Busy` are decided on the target, before the body, and answered once the request frame is complete: the request half stays open for the caller's ack. `Malformed(TooLarge)` is answered without reading the body: the server stops only the request half with `REQUEST_STOP`, and the caller acks the refusal on an ack stream of the connection.
 
 `REQUEST_STOP` is flow-control hygiene, not an outcome signal.
 
@@ -799,11 +793,11 @@ The sink:
 - writes it serially;
 - records byte counts/timing;
 - waits directly on QUIC flow control;
-- has no Node RPC queue.
+- holds each frame it wrote until the caller acks it (§43), at most 64 unacked: the next waits for an ack.
 
-At most one encoded protocol frame exists in runtime memory per writer plus the bounded transport send window.
+The caller acks a frame once its owner can recover the accepted progress or result (§43). Reading a frame alone does not establish that boundary, so a slow consumer holds the producer at 64 frames plus the bounded transport send window.
 
-`data()` can return typed `CallerGone(reason)` when cancellation makes further delivery impossible.
+`data()` can return typed `CallerGone(reason)` when the caller ended the invocation or its response is owed no longer.
 
 ---
 
@@ -887,15 +881,15 @@ Split {
 }
 ```
 
-Overall is the default: one absolute deadline covers resolve -> route/pool -> dial/open -> complete request send + clean finish -> reply/stream. Node RPC does not quietly reset it between phases.
+Overall is the default: one absolute deadline covers resolve -> route/pool -> dial/open -> complete request frame sent, and resent until acked -> reply/stream. Node RPC does not quietly reset it between phases.
 
 Split exists for domains such as writer ingress that already have a stronger request-send certainty bound followed by a separate post-commit reply budget. The reply budget begins only after the complete-send certainty cut.
 
 The [Build carrier](node-rpc-envelope.md#build-op-0x20-rdm) runs its outer and inner streams with no overall deadline, bounded by the transport idle timeout and keepalive. A carried call's inner budget is the `remaining_ms` the source stamps ([Forward](node-rpc-envelope.md#forward-op-0x1a-core)).
 
-Before complete-send + clean finish, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence.
+Before the complete request frame is sent, deadline/cancellation/send failure is NotSent/499. After that cut, reply timeout is Indeterminate absent stronger no-dispatch evidence. A call's budget is its owner's bound: when it lapses the request is owed no longer (§43). For Budget::Stream, closure of the connection on which the request committed ends the invocation as Indeterminate and ends its delivery obligation: the owner of such a call (the Build carrier, build.get's watch, the handover) declared the connection its bound and reattaches by its own rule, above this layer. For other budgets, connection loss alone does not cancel the invocation; owed delivery continues within the owner's bound.
 
-The caller budget is not a generic remote execution deadline. After dispatch, the handler receives cancellation when the caller/connection/runtime disappears. The owning protocol decides whether to stop, finish or detach durable work.
+The caller budget is not a generic remote execution deadline. After dispatch, a streaming handler's sink answers `CallerGone` when the caller ends the invocation or the runtime disappears; a lost connection is no cancellation: the response is owed (§43). The owning protocol decides whether to stop, finish or detach durable work.
 
 Node RPC never rolls back domain mutations and never pretends cancellation proves non-execution.
 
