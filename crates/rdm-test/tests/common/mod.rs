@@ -461,7 +461,7 @@ pub fn serve_ping(b: rdm_transport::ServerBuilder) -> rdm_transport::ServerBuild
 pub async fn node_command(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::node_command::NodeCommandRequest, opts: &rdm_transport::CallOptions) -> Result<Vec<rdm_core::node_command::NodeCommandReply>, String> {
     use rdm_core::outcome::RpcOutcome;
     use rdm_transport::stream::StreamItem;
-    let (mut stream, _) = match client.call_stream::<rdm_core::node_command::NodeCommand>(target, req, opts).await {
+    let (mut stream, _) = match client.call_stream::<rdm_core::node_command::NodeCommand>(target, req, opts).await.map(|(s, e)| (s.read_only(), e)) {
         Ok(s) => s,
         Err((RpcOutcome::Reply(r), _)) => return Ok(vec![r.into_value()]),
         Err((other, _)) => return Err(format!("{} ended {}: {other:?}", req.op(), other.name())),

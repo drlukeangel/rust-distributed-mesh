@@ -847,7 +847,10 @@ impl StatusAuthority {
             let mut reported = false;
             while let Some(item) = frames.next().await {
                 match item {
-                    Ok(NodeCommandReply::CommandAccepted { .. }) => accepted = true,
+                    Ok(NodeCommandReply::CommandAccepted { .. }) => {
+                        accepted = true;
+                        frames.accepted().await;
+                    }
                     Ok(NodeCommandReply::ConnectionsDeleting { .. }) => {
                         // The node reported it: this mesh-primary records and publishes the state the
                         // node entered (states.md "Who sets each state"), never before.
@@ -855,6 +858,7 @@ impl StatusAuthority {
                         let recorded = self.book.as_ref().is_some_and(|book| book.reported(node_id, incarnation, rdm_core::MemberStatus::Draining));
                         tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("the node reported connections-deleting on its command's stream: this mesh-primary records it, and its projection carries it from its next round"));
+                        frames.accepted().await;
                     }
                     Ok(NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }) => {
                         tracing::Span::current().record("closed", closed.len()).record("held", held.len());
@@ -866,11 +870,13 @@ impl StatusAuthority {
                             tracing::info_span!("rdm.node_admin.node.update.via-connections-deleted", node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, receipt = r.name(), held = held.len(), "otel.kind" = "internal")
                                 .in_scope(|| tracing::info!("the node's node.connections.deleted is held as the birth's receipt"));
                         }
+                        frames.accepted().await;
                         return CarryEnd::Deleted { closed, not_open, held, receipt };
                     }
                     Ok(other) => {
                         let reason = format!("{} answered {} on its command's stream after {}", subject.name, other.name(), if accepted { "accepting it" } else { "nothing" });
                         tracing::Span::current().record("detail", reason.as_str());
+                        frames.accepted().await;
                         return if accepted { CarryEnd::Incomplete { reported, reason } } else { CarryEnd::RefusedByNode(other) };
                     }
                     Err(f) => {
@@ -1190,6 +1196,14 @@ enum CarriedFrames {
 }
 
 impl CarriedFrames {
+    /// This mesh-primary holds every frame handed over so far (recorded, or in the end it returns):
+    /// the dialled node's frames are acked (node-rpc.md §31). In process there is nothing to ack.
+    async fn accepted(&mut self) {
+        if let Self::Dialled(stream) = self {
+            stream.accepted().await;
+        }
+    }
+
     /// The next frame, or why the frames broke; `None` once they ended.
     async fn next(&mut self) -> Option<Result<rdm_core::node_command::NodeCommandReply, String>> {
         use rdm_transport::stream::StreamItem;

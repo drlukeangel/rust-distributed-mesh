@@ -1488,7 +1488,7 @@ async fn ask(e: &Estate, admin: &str, change: BuildChange) -> Value {
     let carrier = e.carrier_at(&path_of(admin)).await;
     let req = BuildRequest::Create { submit: BuildSubmit::Change(change) };
     let opts = CallOptions { budget: Budget::Stream { send: SEND }, ..CallOptions::default() };
-    let first = match carrier.client().call_stream::<Build>(&NodeTarget::CurrentPath(path_of(admin)), &req, &opts).await {
+    let first = match carrier.client().call_stream::<Build>(&NodeTarget::CurrentPath(path_of(admin)), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
         Err((RpcOutcome::Reply(r), _)) => Ok(r.into_value()),
         Err((other, _)) => Err(format!("{other:?}")),
         Ok((mut stream, _)) => match stream.next().await {

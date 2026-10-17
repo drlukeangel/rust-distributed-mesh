@@ -218,7 +218,7 @@ async fn in_flight_drains(stats: &ServerStats) -> bool {
 #[tokio::test]
 async fn a_stream_delivers_started_then_data_then_its_terminal_in_order() {
     let r = rig().await;
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(5, 8, Mode::Normal), &CallOptions::default()).await.map_err(|e| e.0).unwrap();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(5, 8, Mode::Normal), &CallOptions::default()).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     let mut kinds = Vec::new();
     let mut items = Vec::new();
     while let Some(item) = s.next().await {
@@ -243,7 +243,7 @@ async fn a_stream_delivers_started_then_data_then_its_terminal_in_order() {
 #[tokio::test]
 async fn a_refusal_before_started_is_the_only_frame() {
     let r = rig().await;
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(5, 8, Mode::Refuse), &CallOptions::default()).await.map_err(|e| e.0).unwrap();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(5, 8, Mode::Refuse), &CallOptions::default()).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     assert!(matches!(s.next().await, Some(StreamItem::Frame(FrameKind::Refusal(ReplyKind::Busy), _))));
     assert!(s.next().await.is_none());
 }
@@ -252,7 +252,7 @@ async fn a_refusal_before_started_is_the_only_frame() {
 async fn cancelling_mid_stream_tells_the_handler_and_releases_the_invocation() {
     let r = rig().await;
     let (mut s, _) =
-        r.client.call_stream::<Count>(&r.target, &count(100_000, 32 * 1024, Mode::Normal), &CallOptions::default()).await.map_err(|e| e.0).unwrap();
+        r.client.call_stream::<Count>(&r.target, &count(100_000, 32 * 1024, Mode::Normal), &CallOptions::default()).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     for _ in 0..3 {
         assert!(matches!(s.next().await, Some(StreamItem::Frame(_, _))));
     }
@@ -270,7 +270,7 @@ async fn a_slow_consumer_holds_the_producer_without_unbounded_buffering() {
     // The whole 128 MiB is read at the end: the budget covers that transfer (this cell proves the
     // producer is held, not a throughput), so the default unary reply bound does not apply.
     let budget = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(120) }, ..Default::default() };
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(n, size, Mode::Normal), &budget).await.map_err(|e| e.0).unwrap();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(n, size, Mode::Normal), &budget).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     assert!(matches!(s.next().await, Some(StreamItem::Frame(FrameKind::Started, _))));
     tokio::time::sleep(Duration::from_millis(800)).await;
     let ahead = r.produced.load(Ordering::SeqCst);
@@ -290,7 +290,7 @@ async fn a_slow_consumer_holds_the_producer_without_unbounded_buffering() {
 #[tokio::test]
 async fn a_final_frame_that_breaks_the_order_is_refused_and_the_caller_sees_indeterminate() {
     let r = rig().await;
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, Mode::BadFinal), &CallOptions::default()).await.map_err(|e| e.0).unwrap();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, Mode::BadFinal), &CallOptions::default()).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     let mut last = None;
     while let Some(item) = s.next().await {
         last = Some(item);
@@ -304,7 +304,7 @@ async fn a_final_frame_that_breaks_the_order_is_refused_and_the_caller_sees_inde
 #[tokio::test]
 async fn a_handler_that_panics_after_started_leaves_the_caller_indeterminate() {
     let r = rig().await;
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, Mode::Panic), &CallOptions::default()).await.map_err(|e| e.0).unwrap();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, Mode::Panic), &CallOptions::default()).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     let mut last = None;
     while let Some(item) = s.next().await {
         last = Some(item);
@@ -324,7 +324,7 @@ async fn a_streams_terminal_is_named_under_its_serve_span_in_the_callers_trace()
     let r = rig().await;
     let (trace, opts) = traced();
     let _left = crate::common::TraceArtifact::new(&trace);
-    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(3, 8, Mode::Normal), &opts).await.map_err(|e| e.0).unwrap();
+    let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(3, 8, Mode::Normal), &opts).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
     while let Some(item) = s.next().await {
         if let StreamItem::Failed(f) = item {
             panic!("{f:?}");
@@ -355,7 +355,7 @@ async fn a_stream_that_panics_or_ends_without_its_terminal_is_refused_under_its_
     ] {
         let (trace, opts) = traced();
         let _left = crate::common::TraceArtifact::new(&trace);
-        let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, mode), &opts).await.map_err(|e| e.0).unwrap();
+        let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, mode), &opts).await.map(|(s, e)| (s.read_only(), e)).map_err(|e| e.0).unwrap();
         while s.next().await.is_some() {}
         r.server.settled().await;
         let spans = spans_of(&trace);

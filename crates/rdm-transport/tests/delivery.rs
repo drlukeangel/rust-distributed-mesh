@@ -992,3 +992,46 @@ async fn a_new_sender_birth_starts_at_one_and_the_old_window_stays_until_its_end
     eventually("the old birth's window is forgotten", Duration::from_secs(2), || s.delivery.window_of(&old).0 == 0).await;
     assert_eq!(s.delivery.window_of(&new).0, 1, "the live birth's window stays");
 }
+
+/// Cell 22. CONTRACT (node-rpc.md §31, §43): a response frame its consumer has read but not yet
+/// recovered is not acked: the responder still owes it, and after a reconnect it is resent. The
+/// consumer, which holds it, is not handed it again; its acceptance acks it on the stream it now
+/// arrives on, and the responder settles.
+#[tokio::test]
+async fn a_frame_its_consumer_has_not_recovered_is_not_acked_and_is_resent_after_a_reconnect() {
+    let hold = Arc::new(Semaphore::new(0));
+    let h = hold.clone();
+    let s = served_with(move |b| {
+        b.serve_stream::<Tick, _, _>(OpOwner::Product("test".into()), move |_peer, _req: TickRequest, sink| {
+            let h = h.clone();
+            async move {
+                let Ok(mut sink) = sink.started(TickFrame::Started).await else { return Ok(TickFrame::Done) };
+                if sink.data(TickFrame::Item { i: 1 }).await.is_err() {
+                    return Ok(TickFrame::Done);
+                }
+                h.acquire().await.unwrap().forget();
+                Ok::<_, HandlerFault>(TickFrame::Done)
+            }
+        })
+    })
+    .await;
+    let (client, _) = client_of(&[&s.node]).await;
+    let (mut stream, _) = client.call_stream::<Tick>(&s.target(), &TickRequest::Tick, &budget(Duration::from_secs(8))).await.map_err(|(o, _)| o).expect("the stream opens");
+    assert!(matches!(stream.next().await, Some(StreamItem::Frame(FrameKind::Started, TickFrame::Started))));
+    assert!(matches!(stream.next().await, Some(StreamItem::Frame(FrameKind::Data, TickFrame::Item { i: 1 }))));
+    tokio::time::sleep(CADENCE * 3).await;
+    assert_eq!(s.delivery.owed_frames(), 2, "read, not yet recovered: neither frame is acked");
+    assert!(s.server.close_connections_except(&[], "the cell cuts the connection") >= 1);
+    eventually("the frames still owed are resent after the reconnect", Duration::from_secs(3), || get(&s.delivery.stats().responses_resent) >= 1).await;
+    tokio::time::sleep(CADENCE * 3).await;
+    assert_eq!(s.delivery.owed_frames(), 2, "resent and still owed: the consumer has not recovered them");
+    stream.accepted().await;
+    eventually("the consumer's recovery acks both, on the stream the copies came on", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
+    hold.add_permits(1);
+    // The consumer holds both frames: the resent copies are never handed to it again.
+    let next = stream.next().await;
+    assert!(matches!(next, Some(StreamItem::Frame(FrameKind::Terminal, TickFrame::Done))), "the next frame is the terminal: {next:?}");
+    stream.accepted().await;
+    assert!(stream.next().await.is_none());
+    eventually("the terminal is recovered and acked", Duration::from_secs(3), || s.delivery.owed_frames() == 0).await;
+}

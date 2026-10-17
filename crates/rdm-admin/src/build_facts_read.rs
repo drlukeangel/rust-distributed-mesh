@@ -185,7 +185,9 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
     let req = BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() };
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
     let mut stream = match client.call_stream::<BuildFacts>(target, &req, &opts).await {
-        Ok((s, _)) => s,
+        // The facts are the responder's durable Build log, absorbed by the caller only from a whole
+        // read and recovered by reading them again: reading a frame is its recovery (node-rpc.md §43).
+        Ok((s, _)) => s.read_only(),
         Err((RpcOutcome::Reply(r), _)) => return Err(refusal_of(r.value().clone())),
         Err((RpcOutcome::Unserved(u), _)) => return Err(FetchFailure::Refused(format!("the node does not serve Build facts: {u:?}"))),
         Err((other, _)) => return Err(FetchFailure::Unreached(format!("the call ended {}", other.name()))),

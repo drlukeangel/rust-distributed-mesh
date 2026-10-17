@@ -492,6 +492,8 @@ async fn read_with(
             StreamItem::Frame(_, other) => return Err(TopologyFailure::Refused(format!("an unexpected frame in the stream: {}", other.name()))),
             StreamItem::Failed(f) => return Err(TopologyFailure::Unreached(format!("the stream failed before its end: {f:?}"))),
         }
+        // The frame is taken into this birth's view and read result: recovered, it is acked.
+        stream.accepted().await;
     }
     let Some(meshes) = served_meshes else {
         return Err(TopologyFailure::Unreached("the stream ended without its End frame".into()));

@@ -231,10 +231,23 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     server share one `Delivery` of its exact birth (`rdm-node` node.rs, `rdm-admin` boot.rs).
   - A caller that drops its invocation stops the stream (code 0): the responder drops what it owes
     for it, and a streaming handler's next `data()` answers `CallerGone`. A responder owes at most 64
-    unacked frames of one stream; past that `data()` answers `CallerGone`.
+    unacked frames of one stream; past that `data()` waits for an ack, and answers `CallerGone` only
+    once the response is owed no longer.
+  - A stream frame is acked once its owner can recover it (Q22; node-rpc.md §31), never on the read:
+    `ReplyStream::next` keeps each frame's ack, `ReplyStream::accepted` writes them in order (the
+    terminal's last, and only then is the invocation complete), and `ReplyStream::read_only` declares
+    an owner that records nothing of the frames, whose reading is its recovery. A copy of a frame its
+    owner holds unrecovered (resent after a reconnect) is never handed over again and moves the
+    frame's ack to the stream it arrived on (`delivery.rs` `AckOnRecovery`). The owners: the topology
+    read and the NodeCommand carrier accept once the frame is taken into the birth's view or the
+    mesh-primary's records; the Build drive, `rdm-client`'s Build stream and `fetch_build_facts` read
+    durable records (each Build frame's receipt is recorded by its executor before the frame is sent,
+    `build_run.rs` `append_step_receipt`, `HeldRun::finish`; Build facts are the responder's log) and
+    are read-only, as are the topology client read, the probe and the test consumers. Cell 22, RED
+    first on `1922df2f` ("read, not yet recovered: neither frame is acked", left 0 right 2), GREEN in
+    0.64 s.
   - The commit cut is the complete request frame written; the request direction stays open for the
-    caller's acks. node-rpc.md §23 still says "the request direction finishes cleanly" and "never
-    silently replays": exact old → new to Luke before e1 lands.
+    caller's acks (node-rpc.md §23, §24, §34, Q22).
 - **Sizing.** Two seats; `rdm-transport/src/{client,server,framer,wire,stream}.rs`,
   `rdm-core/src/{framing,outcome,codes}.rs`, `tools/mesh-audit`.
 - **State.** BUILT on `i146-e1-delivery-layer` (lane e4s8), not landed: it lands with Q18's page lines (applied `d29733f7`) and Q22's (node-rpc.md §23, §24, §27, §31, §34), after the stream ack follows the owner's recoverable acceptance. Commits: rdm-core header and rules `5ec825ea`; the runtime, cells and ratchet `91233112`; fixes `936ff10e`; the bounded cells after it; the forward cells' exit proof `af504e79`; the carrier's failed dial as its answer `a06f52cc`. Gate on `a06f52cc`: 67/67 units, 1685 passed, 0 failed, 204 s.

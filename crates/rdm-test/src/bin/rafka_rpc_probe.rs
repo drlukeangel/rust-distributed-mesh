@@ -516,7 +516,8 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     };
     let (client, _) = enter(&a.admin_birth).await?;
     let req = TopologyRequest::GetTopology { mesh: a.mesh.clone(), since };
-    let started = client.call_stream::<Topology>(target, &req, &CallOptions::default()).await;
+    // The probe records nothing of the frames it prints: reading one is its recovery.
+    let started = client.call_stream::<Topology>(target, &req, &CallOptions::default()).await.map(|(s, e)| (s.read_only(), e));
     let mut frames = Vec::new();
     let result = match started {
         Err((out, _)) => json!({"outcome": out.name()}),

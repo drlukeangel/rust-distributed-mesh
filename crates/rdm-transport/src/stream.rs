@@ -17,7 +17,7 @@
 //! gone.
 
 use crate::client::{Attempted, Budget, CallEvidence, CallOptions, NodeRpcClient, OwedCall, Payload};
-use crate::delivery::{FrameOut, Settled, SlotEvent, Written};
+use crate::delivery::{AckOnRecovery, FrameOut, Settled, SlotEvent, Written};
 use crate::resolve::NodeTarget;
 use crate::server::{Accepting, BoxFut, Erased, HandlerFault, PeerContext, Refusal, ServerBuilder, ServerStats};
 use rdm_core::catalog::{CatalogEntry, Shape, OpOwner};
@@ -104,8 +104,8 @@ impl StreamOut {
         if payload.len() > g.max {
             return Err(SinkError::TooLarge { size: payload.len(), max: g.max });
         }
-        // At most 64 frames unacked: the caller acks a frame as its owner reads it, so a slow consumer
-        // holds the producer here. A response owed no longer (its caller's birth ended, or it dropped
+        // At most 64 frames unacked: the caller acks a frame once its owner can recover it, so a
+        // consumer that has not recovered them holds the producer here. A response owed no longer (its caller's birth ended, or it dropped
         // the invocation) ends the wait.
         loop {
             let (d, id) = g.gate.owed();
@@ -339,11 +339,22 @@ pub enum StreamItem<R> {
 
 /// The caller side of one committed stream: its invocation's frames, in position order, from
 /// whatever stream they arrive on. Dropped, the invocation ends.
+///
+/// A frame [`Self::next`] hands over is acked once its owner can recover it (node-rpc.md §31, §43):
+/// the owner says so with [`Self::accepted`] after it recorded the frames, or declares at the start
+/// that it records nothing of them ([`Self::read_only`]), when reading a frame is its recovery.
+/// Until then the responder owes the frame: it holds the producer (at most 64 frames unacked), and a
+/// reconnect has it resent, never handed to the owner twice.
 pub struct ReplyStream<P: StreamingProtocol> {
     owed: OwedCall,
     order: FrameOrder,
     deadline: Option<Instant>,
     done: bool,
+    /// The acks of the frames handed over and not yet recovered by the owner, in order.
+    unrecovered: Vec<AckOnRecovery>,
+    /// The terminal was handed over: the invocation completes once the owner recovers it.
+    terminal_handed: bool,
+    read_only: bool,
     _p: PhantomData<fn() -> P>,
 }
 
@@ -373,17 +384,16 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                         if let Err(reason) = self.order.admit(kind) {
                             return Some(self.fail(StreamFailure::Violation(reason)));
                         }
-                        // Read by its owner: the frame is acked now, the terminal's before the
-                        // invocation completes.
+                        // Handed over, not yet recovered: its ack waits for the owner.
                         if let Some(ack) = ack {
-                            ack.write().await;
+                            self.unrecovered.push(ack);
                         }
                         if self.order.state() == OrderState::Done {
                             self.done = true;
-                            self.owed.guard.complete();
-                            // The attempt task ends once the invocation is complete: nothing of the
-                            // call outlives its terminal.
-                            self.owed.close(false).await;
+                            self.terminal_handed = true;
+                        }
+                        if self.read_only {
+                            self.accepted().await;
                         }
                         return Some(StreamItem::Frame(kind, frame));
                     }
@@ -402,6 +412,27 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                 () = wait => return Some(self.fail(StreamFailure::Indeterminate(IndeterminateReason::ReplyDeadline))),
             }
         }
+    }
+
+    /// The owner can recover every frame handed over so far (it recorded them): their acks are
+    /// written in order, and once the terminal is among them the invocation is complete.
+    pub async fn accepted(&mut self) {
+        for ack in self.unrecovered.drain(..) {
+            ack.write().await;
+        }
+        if std::mem::take(&mut self.terminal_handed) {
+            self.owed.guard.complete();
+            // The attempt task ends once the invocation is complete: nothing of the call outlives
+            // its terminal.
+            self.owed.close(false).await;
+        }
+    }
+
+    /// The owner records nothing of the frames (a read-only consumer, node-rpc.md §43): reading a
+    /// frame is its recovery, and each is acked as it is handed over.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 
     fn fail(&mut self, f: StreamFailure) -> StreamItem<P::Reply> {
@@ -472,7 +503,7 @@ impl NodeRpcClient {
                             _ => None,
                         };
                         let evidence = owed.evidence.lock().unwrap().clone();
-                        return Ok((ReplyStream { owed, order: FrameOrder::new(), deadline, done: false, _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), terminal_handed: false, read_only: false, _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::SendDeadline(r)) => {

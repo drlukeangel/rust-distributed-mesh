@@ -155,9 +155,9 @@ enum Seen {
 
 /// An event on a caller's open invocation.
 pub(crate) enum SlotEvent {
-    /// A response frame, in order: its reply bytes and, for a stream's frame, the ack
-    /// its owner writes once it has read it.
-    Frame(Vec<u8>, Option<AckOnRead>),
+    /// A response frame, in order: its reply bytes and, for a stream's frame, the ack its owner
+    /// writes once it can recover the frame.
+    Frame(Vec<u8>, Option<AckOnRecovery>),
     /// The invocation's response broke its order: `424`.
     Violation(String),
 }
@@ -169,22 +169,25 @@ pub(crate) enum AckTo {
     NewStream(Connection),
 }
 
-/// A stream frame's ack, written when its owner reads the frame (node-rpc-envelope.md "Transport
-/// frames": the caller acknowledges a response frame once its owner can recover it).
-pub(crate) struct AckOnRead {
+/// A stream frame's ack, written once its owner can recover the frame (node-rpc.md §31, §43): never
+/// on the read alone. Until then the frame is owed: a copy the responder resends after a reconnect
+/// is not handed to the owner again, and moves the ack to the stream that copy arrived on.
+pub(crate) struct AckOnRecovery {
     d: Delivery,
-    ack: TransportHeader,
-    to: AckTo,
+    invocation: DeliveryId,
+    delivery_seq: u64,
 }
 
-impl AckOnRead {
-    /// The owner has read the frame: ack it.
+impl AckOnRecovery {
+    /// The owner can recover the frame: ack it on the stream its latest copy arrived on.
     pub(crate) async fn write(self) {
-        match &self.to {
+        let held = self.d.inner.st.lock().unwrap().calls.get_mut(&self.invocation).and_then(|s| s.unrecovered.remove(&self.delivery_seq));
+        let Some((ack, to)) = held else { return };
+        match &to {
             AckTo::Stream(out) => {
-                self.d.write_ack(out, &self.ack, AckOf::Response).await;
+                self.d.write_ack(out, &ack, AckOf::Response).await;
             }
-            AckTo::NewStream(conn) => self.d.ack_on_new_stream(conn, &self.ack, AckOf::Response).await,
+            AckTo::NewStream(conn) => self.d.ack_on_new_stream(conn, &ack, AckOf::Response).await,
         }
     }
 }
@@ -195,6 +198,9 @@ struct Slot {
     max_reply: usize,
     unary: bool,
     state: watch::Sender<SlotState>,
+    /// A stream's frames delivered to its owner and not yet recovered by it, by `delivery_seq`:
+    /// each frame's ack and the stream its latest copy arrived on.
+    unrecovered: HashMap<u64, (TransportHeader, AckTo)>,
 }
 
 /// Where a caller's open invocation stands.
@@ -440,7 +446,7 @@ impl Delivery {
         let (state, state_rx) = watch::channel(SlotState::default());
         let mut st = self.inner.st.lock().unwrap();
         st.sent.insert(id.clone(), Sent::Request);
-        st.calls.insert(id.clone(), Slot { tx, order: ResponseOrder::new(), max_reply, unary, state });
+        st.calls.insert(id.clone(), Slot { tx, order: ResponseOrder::new(), max_reply, unary, state, unrecovered: HashMap::new() });
         drop(st);
         (CallGuard { d: self.clone(), id }, rx, state_rx)
     }
@@ -476,8 +482,9 @@ impl Delivery {
 
     /// A response frame arrived (on whatever stream, `to` its way back): deliver it to its open
     /// invocation in order. Returns the acks to write now: a unary invocation's frame is acked as it
-    /// is delivered; a stream's frames carry their acks to their owner, which writes each once it has
-    /// read the frame.
+    /// is delivered; a stream's frames carry their acks to their owner, which writes each once it can
+    /// recover the frame. A copy of a frame its owner holds unrecovered is not delivered again and is
+    /// not acked: its ack goes, once the owner recovers it, to the stream this copy arrived on.
     pub(crate) fn on_response(&self, h: &TransportHeader, body: Vec<u8>, to: AckTo) -> ResponseVerdict {
         let TransportHeader::Response { sender, invocation_id, seq, delivery_seq, .. } = h else { return ResponseVerdict::Violation("not a response frame".into()) };
         let mut st = self.inner.st.lock().unwrap();
@@ -503,7 +510,8 @@ impl Delivery {
                         now.push(ack);
                         None
                     } else {
-                        Some(AckOnRead { d: self.clone(), ack, to: to.clone() })
+                        slot.unrecovered.insert(d, (ack, to.clone()));
+                        Some(AckOnRecovery { d: self.clone(), invocation: invocation_id.clone(), delivery_seq: d })
                     };
                     let _ = slot.tx.send(SlotEvent::Frame(b, later));
                 }
@@ -512,7 +520,13 @@ impl Delivery {
                 }
                 ResponseVerdict::Ack(now)
             }
-            Ok(Admitted::Duplicate) => ResponseVerdict::Ack(vec![h.ack()]),
+            Ok(Admitted::Duplicate) => match slot.unrecovered.get_mut(delivery_seq) {
+                Some(held) => {
+                    held.1 = to;
+                    ResponseVerdict::Held
+                }
+                None => ResponseVerdict::Ack(vec![h.ack()]),
+            },
             // A frame held only in the reorder buffer is not acknowledged.
             Ok(Admitted::Held) => ResponseVerdict::Held,
             Err(v) => {

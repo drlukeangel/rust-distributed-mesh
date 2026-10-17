@@ -437,7 +437,8 @@ impl<'a> NodeRpc<'a> {
     }
 
     async fn read_topology(&self, target: &NodeTarget, req: TopologyRequest, opts: &CallOptions) -> Result<Vec<TopologyReply>, CallEnd> {
-        let (mut stream, _) = match self.client.call_stream::<Topology>(target, &req, opts).await {
+        // A read of the target's view, recorded nowhere here: reading a frame is its recovery.
+        let (mut stream, _) = match self.client.call_stream::<Topology>(target, &req, opts).await.map(|(s, e)| (s.read_only(), e)) {
             Ok(s) => s,
             Err((out, _)) => {
                 return match ended(out) {

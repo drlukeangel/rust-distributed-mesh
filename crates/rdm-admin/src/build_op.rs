@@ -663,7 +663,11 @@ impl Dispatcher for RpcDispatcher {
         let req = BuildRequest::AttemptRun { build_id: build_id.to_string(), attempt, executor: executor.to_string(), context: context.clone(), intent, operations, hand_off_to: plan.hand_off_to };
         let opts = CallOptions { budget: Budget::Stream { send: DISPATCH_SEND }, context: Some(context), ..CallOptions::default() };
         match self.client.call_stream::<Build>(&NodeTarget::ExactNode(node_id), &req, &opts).await {
-            Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream })),
+            // The executor records each frame's receipt before it sends the frame (a step's receipt
+            // before its Step, the verdict before the terminal: `build_run.rs` `append_step_receipt`,
+            // `HeldRun::finish`): the drive records nothing it needs to recover them, and reading a
+            // frame is its recovery (node-rpc.md §43, a read-only consumer).
+            Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream: stream.read_only() })),
             Err((RpcOutcome::Reply(r), _)) => Dispatched::Refused(r.value().clone()),
             Err((RpcOutcome::Unserved(u), _)) => Dispatched::Refused(BuildReply::NotReady { reason: format!("{executor} does not serve the Build family: {u:?}") }),
             Err((other, _)) => Dispatched::Unreached(format!("the call to {executor} ended {}: {other:?}", other.name())),

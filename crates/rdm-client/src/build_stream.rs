@@ -266,7 +266,9 @@ impl BuildCarrier {
             let opts = CallOptions { budget: Budget::Stream { send: SEND }, ..CallOptions::default() };
             // The first reply of the call: an early refusal of the receiving node, or the first frame
             // of the stream (`Started`, or the handler's own refusal).
-            let (first, stream) = match self.client.call_stream::<Build>(&NodeTarget::CurrentPath(target.clone()), &req, &opts).await {
+            // The frames are the executor's receipts, recorded before they are sent; this client records
+            // nothing of them: reading a frame is its recovery (node-rpc.md §43).
+            let (first, stream) = match self.client.call_stream::<Build>(&NodeTarget::CurrentPath(target.clone()), &req, &opts).await.map(|(s, e)| (s.read_only(), e)) {
                 Err((RpcOutcome::Reply(r), _)) => (r.into_value(), None),
                 Err((other, _)) => return Err(ended(other).err().unwrap_or_else(|| CallEnd::Indeterminate { reason: "an early reply that is no refusal".into() })),
                 Ok((mut stream, _)) => match stream.next().await {
