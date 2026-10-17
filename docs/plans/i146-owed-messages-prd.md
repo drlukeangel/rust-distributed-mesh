@@ -382,9 +382,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   so no connection lives and the call is never sent). The SIGSTOP form of Q29's case (a committed
   stop-node whose bound lapses) cannot be held deterministic from a cell: the commit needs a live
   mesh-primary → node connection inside the idle timeout at the send (two runs `not-sent`, the dial
-  failing at 3001 ms; the gates' `indeterminate` landed inside it). Open: a node-admin's own
-  declarations stay `None` (its declarer, `status_declare.rs`, reports states from its view); a
-  re-declaration that reaches a new mesh-primary between its seat and its seat fold would apply again.
+  failing at 3001 ms; the gates' `indeterminate` landed inside it).
 - **Q37 (Luke 2026-10-17, A).** The four page lines landed with the code (node-rpc-envelope.md's
   `DeclareNodeState` schema and `DeclaredOperation`, node-stop.md steps 4-5, node-status.md's
   declaration). Next landing of e3: a node-admin's own declarations name their operation too
@@ -393,6 +391,29 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   NodeStopped ever published twice, i147's receive rule makes the repeat of an operation fact do
   nothing at every receiver. Cell, same landing: a parked birth whose mesh seat moves re-declares its
   Leaving to the new holder, which publishes NodeStopped once across the move.
+  Built: a node-admin's own declarations name their operation. Its declarer holds the operation of
+  each own state of its current cycle (`Declarer::own_operations`): `begin_own_cycle` takes the start's
+  operation, so its node.started names the start; its NodeSelf declares (`boot.rs`), so its stop's
+  Leaving names the stop, owed in the declarer and sent before the stop's reply (the declarer's own
+  turns are held while it is stopped); a state it measured itself (its birth's node.started, a
+  Draining) names none; `via-declare` carries `operation`. Cells:
+  `status_declare::a_node_admins_own_declarations_name_the_operation_that_produced_them`;
+  `node_stop`'s stop-then-start asserts, for the rpc node and the node-admin alike, that the stop's
+  Leaving names the stop and the start's applied node.started names the start (RED against main's
+  rdm-admin: "mesh1.admin.2's stop declared its Leaving naming the stop"). Seat-move cell
+  `node_stop::a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat` (two meshes;
+  mesh2's non-primary rpc node stopped, then mesh2's primary, whose Build moves the seat first):
+  NodeStopped for the stopped birth once, before the move; the new holder's seat fold holds it
+  (`stopped`); the old holder's own Leaving names its stop, applied by the new holder, its NodeStopped
+  once (flame `ca58d36f579bae426b20cf6db5055c32`). The stopped birth re-declares nothing across the
+  move: its gossip was cut at its stop, so it hears no "primary updated" until its start rejoins (its
+  `via-authority-moved` comes at the start, state Pending). The re-sent Leaving of the note does not
+  occur; the new holder holds the row through its seat fold. The stop's transport-cut span ends with the cut now
+  (`node_self.rs` step 5): with the admin's declaration after the cut, the span had stayed open across
+  the declaration's round trip, and
+  `node_stop::a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_it_stops` read the
+  successor's "primary updated" (its holder-stopped at +196.9 ms) as inside a cut that ended at
+  +198.4 ms, after the declaration.
   The landing's gate on `4c8c3cb7` red three times, read: the declaration then went out after the
   reply, unawaited, so a restart's start (`begin_cycle`, `session.rs`) cleared the declared row and the
   late Leaving applied over it, refusing the start's ReadyForTraffic as backward

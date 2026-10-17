@@ -337,14 +337,12 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    // `_operation`: a node-admin's own state is reported by its declarer from its view (`status_declare`),
-    // as a state it measured; the start's operation rides no declaration of it.
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, _operation: rdm_core::status::DeclaredOperation) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows };
+        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation };
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
     }
 
@@ -433,6 +431,8 @@ pub(crate) struct AdminAfterStop<'a> {
     pub(crate) retire: Option<rdm_transport::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
     pub(crate) rows: Option<crate::connections_writer::RowsHeld>,
+    /// The start's operation: the node.started this cycle reports names it (node-status.md "Status report").
+    pub(crate) operation: rdm_core::status::DeclaredOperation,
 }
 
 #[async_trait::async_trait]
@@ -509,9 +509,9 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         if let Some(joined) = joined {
             take_entry_control(joined, &s.accepted, &s.entry_floor).await;
         }
-        // node.joined begins this birth's next cycle: the node.started it reports is owed afresh to its
-        // mesh's primary, before its declarer runs again.
-        s.declarer.begin_own_cycle(&me, &s.incarnation.as_str());
+        // node.joined begins this birth's next cycle: the node.started it reports, naming this start,
+        // is owed afresh to its mesh's primary, before its declarer runs again.
+        s.declarer.begin_own_cycle(&me, &s.incarnation.as_str(), &self.operation);
         // Back on the topic means a neighbour: only then does this admin say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;

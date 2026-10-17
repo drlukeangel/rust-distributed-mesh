@@ -34,7 +34,7 @@ use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
-use rdm_core::status::{FabricEvent, MeshState, NodeState, Status, StatusReply, StatusRequest};
+use rdm_core::status::{DeclaredOperation, FabricEvent, MeshState, NodeState, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -184,6 +184,10 @@ pub(crate) struct Declarer {
     done: Mutex<BTreeMap<Key, (String, NodeId, Option<IncarnationId>)>>,
     /// Every declaration ever owed, by key: what is re-owed when the authority moves.
     requests: Mutex<BTreeMap<Key, (Authority, StatusRequest, Option<String>)>>,
+    /// The operation that produced each own state of this birth's current cycle (node-status.md
+    /// "Status report", i146 Q37): a start's ReadyForTraffic names the start, a stop's Leaving the
+    /// stop; a state this admin measured itself names none.
+    own_operations: Mutex<BTreeMap<NodeState, DeclaredOperation>>,
 }
 
 impl Declarer {
@@ -226,15 +230,40 @@ impl Declarer {
     /// A start of this admin's birth `incarnation` begins its next cycle: the own-state declarations
     /// its last cycle owed or had answered are forgotten whole, so the node.started this start reports
     /// is owed afresh to its mesh's primary (states.md: node ReadyForTraffic is set from "the node's
-    /// node.started report, after every start gate"), never stood for by the last cycle's answer.
-    pub(crate) fn begin_own_cycle(&self, me: &PathName, incarnation: &str) {
+    /// node.started report, after every start gate"), never stood for by the last cycle's answer. The
+    /// cycle's ReadyForTraffic names `start`, the operation that began it (node-status.md "Status
+    /// report").
+    pub(crate) fn begin_own_cycle(&self, me: &PathName, incarnation: &str, start: &DeclaredOperation) {
         let own = |k: &Key| matches!(k, Key::OwnState(inc, _) if inc == incarnation);
         let forgotten: Vec<Key> = self.requests.lock().unwrap().keys().filter(|k| own(k)).cloned().collect();
         self.requests.lock().unwrap().retain(|k, _| !own(k));
         self.done.lock().unwrap().retain(|k, _| !own(k));
         self.pending.lock().unwrap().retain(|k, _| !own(k));
-        tracing::info_span!("rdm.node_admin.status.remove.via-cycle-begun", node = %me, incarnation_id = incarnation, forgotten = ?forgotten)
+        {
+            let mut ops = self.own_operations.lock().unwrap();
+            ops.clear();
+            ops.insert(NodeState::ReadyForTraffic, start.clone());
+        }
+        tracing::info_span!("rdm.node_admin.status.remove.via-cycle-begun", node = %me, incarnation_id = incarnation, operation = %start.operation, forgotten = ?forgotten)
             .in_scope(|| tracing::info!("a start begins this birth's next cycle: its own state is owed afresh at node.started"));
+    }
+
+    /// The operation that produced this birth's own `state` in its current cycle, if one did.
+    pub(crate) fn own_operation(&self, state: NodeState) -> Option<DeclaredOperation> {
+        self.own_operations.lock().unwrap().get(&state).cloned()
+    }
+
+    /// Owe this admin's own `state` to its mesh's primary, naming `operation` (a stop's Leaving names
+    /// the stop, node-stop.md step 4): the declaration [`Declarer::round`] sends.
+    pub(crate) fn owe_own(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, state: NodeState, operation: Option<DeclaredOperation>) {
+        if let Some(op) = &operation {
+            self.own_operations.lock().unwrap().insert(state, op.clone());
+        }
+        self.owe(
+            Key::OwnState(incarnation.to_string(), state),
+            Authority::MeshPrimaryOf(me.mesh.clone()),
+            StatusRequest::DeclareNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state, operation },
+        );
     }
 
     #[cfg(test)]
@@ -358,10 +387,15 @@ impl Declarer {
                     other => (format!("{}: {other:?}", other.name()), false, false, "node-rpc"),
                 }
             };
+            let operation = match &p.request {
+                StatusRequest::DeclareNodeState { operation: Some(op), .. } => op.operation.as_str(),
+                _ => "",
+            };
             tracing::info_span!(
                 "rdm.node_admin.status.update.via-declare",
                 node = %me,
                 key = ?p.key,
+                operation,
                 to = %target.name,
                 via,
                 attempt = p.attempts + 1,
@@ -479,7 +513,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
             d.owe(
                 Key::OwnState(me_incarnation.to_string(), *state),
                 Authority::MeshPrimaryOf(me.mesh.clone()),
-                StatusRequest::DeclareNodeState { node_id: my.node_id.clone(), incarnation: me_incarnation.clone(), state: *state, operation: None },
+                StatusRequest::DeclareNodeState { node_id: my.node_id.clone(), incarnation: me_incarnation.clone(), state: *state, operation: d.own_operation(*state) },
             );
         }
     }
@@ -859,6 +893,45 @@ mod tests {
         let moved = Topology { nodes: moved.nodes.into_iter().map(|mut n| { if n.name == mesh1_primary.name { n.incarnation_id = mesh1_primary.incarnation_id.clone(); } n }).collect(), ..moved };
         d.reowe_moved(&me, &moved);
         assert!(d.pending.lock().unwrap().is_empty(), "the fabric seat moved, its own mesh's primary did not: nothing is owed again");
+    }
+
+    /// CONTRACT (node-status.md "Status report": a report "names the operation that produced the
+    /// state when one did": a stop's, a start's; i146 Q37, one rule for every node): a node-admin's
+    /// stop owes its Leaving naming the stop, the next start's node.started names that start and
+    /// nothing of the stopped cycle stays owed, and a state the admin measured itself (its birth's
+    /// node.started, a Draining) names none. Must NOT happen: an admin's start or stop declared as a
+    /// state it measured, or a cycle's declaration naming the last cycle's operation.
+    #[test]
+    fn a_node_admins_own_declarations_name_the_operation_that_produced_them() {
+        use rdm_core::MemberStatus as M;
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let me_id = id_of(&me.to_string());
+        let inc = IncarnationId::parse(INC).unwrap();
+        let v = view("mesh1.admin.1", "mesh2.admin.1");
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let op = |operation: &str, attempt: u32| DeclaredOperation { build_id: "b".into(), attempt, operation: operation.into() };
+        let operation_of = |d: &Declarer, state: NodeState| match d.requests.lock().unwrap().get(&Key::OwnState(INC.into(), state)) {
+            Some((_, StatusRequest::DeclareNodeState { operation, .. }, _)) => operation.clone(),
+            other => panic!("no own {state:?} declaration: {other:?}"),
+        };
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &me_id, &inc, M::ReadyForTraffic, false, None, &v, &ids);
+        assert_eq!(operation_of(&d, NodeState::ReadyForTraffic), None, "its birth's node.started is a state it measured");
+
+        let stop = op("node.stop:mesh1.admin.2", 1);
+        d.owe_own(&me, &me_id, &inc, NodeState::Leaving, Some(stop.clone()));
+        assert_eq!(operation_of(&d, NodeState::Leaving), Some(stop), "its stop's Leaving names the stop");
+        let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
+        assert!(due.contains(&(Key::OwnState(INC.into(), NodeState::Leaving), "mesh1.admin.1".to_string())), "owed to its mesh's primary: {due:?}");
+
+        let start = op("node.start:mesh1.admin.2", 2);
+        d.begin_own_cycle(&me, INC, &start);
+        owed_from_view(&d, &me, &me_id, &inc, M::ReadyForTraffic, false, None, &v, &ids);
+        assert_eq!(operation_of(&d, NodeState::ReadyForTraffic), Some(start), "the start's node.started names the start");
+        assert!(!d.requests.lock().unwrap().contains_key(&Key::OwnState(INC.into(), NodeState::Leaving)), "the stop's Leaving belongs to the stopped cycle");
+
+        owed_from_view(&d, &me, &me_id, &inc, M::Draining, false, None, &v, &ids);
+        assert_eq!(operation_of(&d, NodeState::Draining), None, "a Draining it measured names none");
     }
 
     /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets

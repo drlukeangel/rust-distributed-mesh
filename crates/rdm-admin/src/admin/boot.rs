@@ -1740,7 +1740,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             d.clone()
                                         });
                                         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, None, cfg.connections_delete_deadline).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+                                        // Its stop's Leaving names the stop, as every node's does (node-status.md "Status
+                                        // report", node-stop.md step 4; i146 Q37): owed in its declarer and sent at once,
+                                        // before the stop's reply, since the declarer's own turns are held while it is stopped.
+                                        let declare: crate::node_self::Declare = {
+                                            let (declarer, topology, client, authority, digest, me_id, incarnation) =
+                                                (declarer.clone(), control.topology.clone(), node_rpc.client.clone(), authority.clone(), digest.clone(), node_id.clone(), incarnation.clone());
+                                            Arc::new(move |state, operation| {
+                                                let me = digest.lock().unwrap().node.name.clone();
+                                                declarer.owe_own(&me, &me_id, &incarnation, state, operation);
+                                                let (declarer, topology, client, authority, me_id) = (declarer.clone(), topology.clone(), client.clone(), authority.clone(), me_id.clone());
+                                                Box::pin(async move {
+                                                    let view = topology.read().await.clone();
+                                                    declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &BTreeSet::new()).await;
+                                                })
+                                            })
+                                        };
+                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
                                         own.set_connections(connections.clone());
                                         own.set_session(Arc::new(AdminSession {
                                             gate: park_gate.clone(),

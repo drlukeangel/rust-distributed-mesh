@@ -144,12 +144,25 @@ async fn stop_then_start(test: &str, node: &str) {
     // the mesh primary first; the other finds it held and publishes nothing.
     let received = of_node("rdm.node_admin.node.update.via-stop-received");
     assert_eq!(received.len(), 1, "the stop stream's stopped is recorded once: {received:#?}");
-    let declared: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["state"] == "Leaving" && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("node.stop:"))).collect();
+    // A node's own declaration of `state` naming an operation of `kind`, whichever kind of node made it:
+    // an rpc node's `via-declare-own`, a node-admin's declarer's `via-declare` (i146 Q37: one rule for
+    // every node, node-status.md "Status report").
+    let declared_of = |state: &str, kind: &str| -> Vec<&Value> {
+        let own = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().filter(move |sp| sp["attributes"]["state"] == state);
+        let admin = named(&spans, "rdm.node_admin.status.update.via-declare").into_iter().filter(move |sp| sp["attributes"]["key"].as_str().is_some_and(|k| k.starts_with("OwnState(") && k.ends_with(&format!(", {state})"))));
+        own.chain(admin).filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with(kind))).collect()
+    };
+    let declared = declared_of("Leaving", "node.stop:");
+    assert!(!declared.is_empty(), "{node}'s stop declared its Leaving naming the stop");
     let applied = received.iter().chain(declared.iter()).filter(|sp| sp["attributes"]["outcome"] == "applied").count();
     assert_eq!(applied, 1, "exactly one of the declaration and the stop stream's stopped applied the birth's Leaving: received {received:#?}, declared {declared:#?}");
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
+    // The start's node.started names the start (node-status.md "Status report": "a start's Pending and
+    // ReadyForTraffic"), applied by the mesh primary.
+    let ready = declared_of("ReadyForTraffic", "node.start:");
+    assert!(ready.iter().any(|sp| sp["attributes"]["outcome"] == "applied"), "{node}'s node.started after the start names the start and was applied: {ready:#?}");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["node"] == node && sp["attributes"]["command"] == "start-node").expect("the start command was sent");
     let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && sp["attributes"]["reused"].is_string()).expect("the start call was made");
     // The stop's transport cut closed its connection, so the start dials afresh or rides a connection
@@ -1010,4 +1023,79 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
     let to_none: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-hand-over").into_iter().filter(|sp| attr(sp, "to") == "none").collect();
     assert!(to_none.is_empty(), "an admin handed its seat to nobody: {to_none:#?}");
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (i146 Q37; node-status.md "Status report"; node-stop.md steps 4-5; node-primary-update.md
+/// steps 5-8; the seat taker's SeatFold, R14): a stopped birth's stop is published NodeStopped once,
+/// by the mesh primary that applied its Leaving, and a move of its mesh's seat publishes it no second
+/// time. In a fabric of two meshes, mesh2's rpc node that is not its cohort's primary is stopped: it stops, declares its Leaving naming the
+/// stop, and mesh2's primary publishes NodeStopped. Then mesh2's primary is stopped: its Build moves
+/// mesh2's seat to mesh2's other admin first, which folds the mesh's status rows (the stopped birth's
+/// Leaving among them), and the old holder's own stop declares its Leaving naming that stop to the new
+/// holder, which applies it and publishes the old holder's NodeStopped once. The stopped birth hears no
+/// seat move (its gossip was cut at its stop, node-stop.md step 3): it re-declares nothing to the new
+/// holder, whose SeatFold already holds its row. The new holder starts the stopped birth, which rejoins
+/// as the same birth. Must NOT happen: NodeStopped for the stopped birth twice (once per holder), or
+/// the old holder's stop declared as a state it measured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat() {
+    let test = "a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    estate.until_fabric_ready(SETTLE).await;
+    let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary == primary).map(|n| n.name.clone()).expect("mesh2 has two admins");
+    let (holder, successor) = (admin_of(true), admin_of(false));
+    assert!(!views.iter().any(|n| n.name == holder && n.is_fabric_primary), "mesh2's primary is not the fabric primary: the entry admin stays put");
+    // The rpc node that is not its cohort's primary: its stop moves no seat of its own.
+    let stopped_birth = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary).cloned().expect("mesh2 has an rpc node that is not its cohort's primary");
+    let stopped_node = stopped_birth.name.clone();
+    let nodes = estate.nodes_obj().await;
+
+    let stopped = frames(nodes.stop(&stopped_node).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    let moved = frames(nodes.stop(&holder).await.expect("the stop of mesh2's primary was accepted")).await;
+    assert_eq!(moved.last(), Some(&Frame::Complete), "{moved:?}");
+    let now = estate.mesh_node_views("mesh2").await;
+    assert!(now.iter().any(|n| n.name == successor && n.is_primary), "{successor} holds mesh2's seat: {now:?}");
+    let started = frames(nodes.start(&stopped_node).await.expect("the start was accepted")).await;
+    assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
+    let after = view_of(&nodes, &stopped_node).await;
+    assert_eq!((&after.node_id, &after.incarnation_id, after.status), (&stopped_birth.node_id, &stopped_birth.incarnation_id, NodeStatus::ReadyForTraffic), "the same birth rejoined: {after:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let (stopped_s, holder_s, successor_s) = (stopped_node.to_string(), holder.to_string(), successor.to_string());
+    let stopped_of = |node: &str| -> Vec<&Value> { named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == node).collect() };
+    let stopped_published = stopped_of(&stopped_s);
+    assert_eq!(stopped_published.len(), 1, "NodeStopped for the stopped birth is published once across the seat move: {stopped_published:#?}");
+    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == successor_s).collect();
+    assert!(!installed.is_empty(), "{successor_s} installed itself as mesh2's primary");
+    assert!(start_ns(stopped_published[0]) < start_ns(installed[0]), "the stopped birth's NodeStopped came from the holder before the move");
+    let folded: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-seat-fold").into_iter().filter(|sp| attr(sp, "node") == successor_s && attr(sp, "member") == stopped_s).collect();
+    // The stopped birth's Leaving naming its stop, declared to the new holder (the estate's teardown
+    // declares every node's own Leaving too, naming no operation).
+    let stopped_operation = format!("node.stop:{stopped_s}");
+    let redeclared: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == stopped_s && attr(sp, "state") == "Leaving" && attr(sp, "operation") == stopped_operation && attr(sp, "to") == successor_s)
+        .collect();
+    assert!(redeclared.is_empty(), "a stopped birth hears no seat move, so it re-declares nothing to the new holder: {redeclared:#?}");
+    assert!(folded.iter().any(|sp| attr(sp, "outcome") == "stopped"), "the new holder's SeatFold holds the stopped birth stopped: {folded:#?}");
+    // The old holder's own stop: its Leaving names the stop, applied by the new holder, published once.
+    let holder_stop = format!("node.stop:{holder_s}");
+    let holder_declared: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declare")
+        .into_iter()
+        .filter(|sp| attr(sp, "node") == holder_s && attr(sp, "key").ends_with(", Leaving)") && attr(sp, "operation") == holder_stop)
+        .collect();
+    assert!(holder_declared.iter().any(|sp| attr(sp, "to") == successor_s && attr(sp, "outcome") == "applied"), "{holder_s}'s stop declared its Leaving naming the stop to {successor_s}: {holder_declared:#?}");
+    let holder_stopped = stopped_of(&holder_s);
+    assert_eq!(holder_stopped.len(), 1, "NodeStopped for the old holder is published once: {holder_stopped:#?}");
+    println!(
+        "seat move: the new holder folded {} row(s) of the stopped birth ({:?}); flame {}",
+        folded.len(),
+        folded.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(),
+        stopped_published[0]["trace_id"].as_str().unwrap_or("")
+    );
+    estate.record_trace_url(holder_stopped[0]["trace_id"].as_str().unwrap_or(""));
 }
