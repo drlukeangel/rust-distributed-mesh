@@ -359,6 +359,23 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 
 
 
+#### e4 — the envelope carries the author's trace context (Luke, 2026-10-17)
+
+- **Goal → gap.** gossip.md §3.4 (landed `f16e9993`): the CloudEvents Distributed Tracing extension,
+  `traceparent` and `tracestate`, the author's W3C trace context; observability only, never dispatch,
+  routing or execution; a malformed value dropped by name and the frame continues (the Node RPC
+  context rule). The landed envelope (e3, `08dfc3a5`) carries no trace context, so a receive span
+  cannot parent to the author's.
+- **Build.** Two more optional `(name, value)` pairs in the metadata vector; the receive spans
+  (`via-stale`, `via-duplicate`, `via-gap`, `via-inconsistent`, `via-reserved`, the apply spans)
+  parent to the author's trace; wire format moved, the envelope reseal, goldens and size ceilings
+  re-checked (the largest golden was 3979/4032 before this).
+- **Acceptance cells.** `a_received_frames_span_shares_its_authors_trace_id`;
+  `a_malformed_traceparent_is_dropped_by_name_and_the_frame_applies`; every e2 cell green unchanged;
+  the largest golden still within the ceiling.
+- **Order.** After i144 e5.2; one seat.
+- **State.** not started.
+
 ## Verification
 
 - [x] e1 green in the RDM gate with both flames cited in its row; the approved gossip.md receive table is on main.
