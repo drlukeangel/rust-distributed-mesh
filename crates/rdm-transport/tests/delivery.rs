@@ -1305,3 +1305,121 @@ async fn an_owed_dial_superseded_by_a_new_incarnation_ends_receiver_gone_unavail
 
 #[tokio::test]
 async fn an_owed_dial_on_a_stale_slot_of_a_living_birth_still_ends_aborted() { owed_dial_superseded(false).await; }
+
+
+// i146 e2: the existing delivery contract, on the production 0x22 stream.
+async fn node_command_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, DeliveryId, SendStream, RecvStream, Connection) {
+    use rdm_core::node_command::{NodeCommand, NodeCommandRequest};
+    let target = NodeTarget::ExactNode(r.node.node_id.clone());
+    let request = NodeCommandRequest::DeleteConnections { node_id: r.me.node_id.clone(), incarnation: r.me.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
+    let opening = {
+        let client = client.clone();
+        tokio::spawn(async move { client.call_stream::<NodeCommand>(&target, &request, &CallOptions { budget: Budget::Stream { send: Duration::from_secs(5) }, ..CallOptions::default() }).await })
+    };
+    let (conn, mut send, recv, h) = tokio::time::timeout(Duration::from_secs(5), async {
+        let conn = r.conns.recv().await.unwrap();
+        loop {
+            let (send, mut recv) = conn.accept_bi().await.unwrap();
+            let h = read_header(&mut recv, &mut Vec::new()).await.unwrap();
+            if matches!(h, TransportHeader::Request { .. }) {
+                break (conn, send, recv, h);
+            }
+            assert!(matches!(h, TransportHeader::Ack { .. }), "only an earlier frame's ack may precede the invocation");
+        }
+    }).await.expect("the 0x22 invocation arrives within its send bound");
+    let id = h.delivery_id();
+    write(&mut send, &encode_ack_frame(&h.ack())).await;
+    let (stream, _) = opening.await.unwrap().map_err(|(o, _)| format!("{o:?}")).unwrap();
+    (stream, id, send, recv, conn)
+}
+
+fn node_command_frames(me: &Birth) -> Vec<rdm_core::node_command::NodeCommandReply> {
+    use rdm_core::node_command::NodeCommandReply as N;
+    vec![N::CommandAccepted { node_id: me.node_id.clone(), incarnation: me.incarnation.clone() },
+         N::ConnectionsDeleting { node_id: me.node_id.clone(), incarnation: me.incarnation.clone() },
+         N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: None }]
+}
+
+fn node_response(me: &Birth, id: &DeliveryId, seq: u32, reply: &rdm_core::node_command::NodeCommandReply) -> Vec<u8> {
+    let header = TransportHeader::Response { sender: me.clone(), delivery_seq: u64::from(seq) + 1, forget_below: 1, invocation_id: id.clone(), seq };
+    encode_response_frame(&header, &rdm_core::node_command::NodeCommand::encode_reply(reply).unwrap())
+}
+
+#[test]
+fn every_frame_of_a_stream_carries_its_stream_id_and_sequence() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-node-command-positions").unwrap();
+    let id = capture.run(4, async {
+        let mut r = raw().await;
+        let (client, _) = client_of(&[&r.node]).await;
+        let (mut stream, id, mut send, _recv, _conn) = node_command_stream(&mut r, &client).await;
+        for (seq, reply) in node_command_frames(&r.me).into_iter().enumerate() {
+            write(&mut send, &node_response(&r.me, &id, seq as u32, &reply)).await;
+            assert_eq!(stream.next().await, Some(StreamItem::Frame([FrameKind::Started, FrameKind::Data, FrameKind::Terminal][seq], reply)));
+            stream.accepted().await;
+        }
+        assert!(stream.next().await.is_none());
+        id.to_string()
+    });
+    let spans = capture.spans().unwrap();
+    let received: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.stream.update.via-received-frame").collect();
+    assert_eq!(received.len(), 3);
+    for (seq, span) in received.iter().enumerate() {
+        assert_eq!(span["attributes"]["invocation_id"], id, "the owner sees the authoritative stream identity: {span}");
+        assert_eq!(span["attributes"]["seq"].as_str(), Some(seq.to_string().as_str()), "the header's position: {span}");
+    }
+}
+
+#[tokio::test]
+async fn a_node_command_progress_repeat_is_suppressed_before_its_owner_recovers_it() {
+    let mut r = raw().await;
+    let (client, _) = client_of(&[&r.node]).await;
+    let (mut stream, id, mut send, _recv, _conn) = node_command_stream(&mut r, &client).await;
+    let frames = node_command_frames(&r.me);
+    write(&mut send, &node_response(&r.me, &id, 0, &frames[0])).await;
+    assert_eq!(stream.next().await, Some(StreamItem::Frame(FrameKind::Started, frames[0].clone())));
+    stream.accepted().await;
+    write(&mut send, &node_response(&r.me, &id, 1, &frames[1])).await;
+    assert_eq!(stream.next().await, Some(StreamItem::Frame(FrameKind::Data, frames[1].clone())));
+    // The owner holds the progress record; no ack yet. Replay that SAME invocation and position,
+    // rather than publishing another progress frame at a new position.
+    let mut records = vec![frames[1].clone()];
+    write(&mut send, &node_response(&r.me, &id, 1, &frames[1])).await;
+    write(&mut send, &node_response(&r.me, &id, 2, &frames[2])).await;
+    while let Some(item) = stream.next().await {
+        match item {
+            StreamItem::Frame(FrameKind::Data, frame) => records.push(frame),
+            StreamItem::Frame(FrameKind::Terminal, frame) => assert_eq!(frame, frames[2]),
+            other => panic!("no second admission or failure: {other:?}"),
+        }
+    }
+    stream.accepted().await;
+    assert_eq!(records, vec![frames[1].clone()], "the owner records one progress frame before recovery acknowledges it");
+}
+
+#[tokio::test]
+async fn a_reconnect_after_the_terminal_frame_delivers_no_old_admission() {
+    let mut r = raw().await;
+    let (client, _) = client_of(&[&r.node]).await;
+    let (mut stream, id, mut send, _recv, conn) = node_command_stream(&mut r, &client).await;
+    let frames = node_command_frames(&r.me);
+    for (seq, reply) in frames.iter().enumerate() {
+        write(&mut send, &node_response(&r.me, &id, seq as u32, reply)).await;
+        assert!(matches!(stream.next().await, Some(StreamItem::Frame(_, _))));
+        stream.accepted().await;
+    }
+    conn.close(0u32.into(), b"completed invocation reconnect");
+    // Reconnect the same sending birth and its completed-invocation memory on a fresh endpoint.
+    let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(r.node.clone());
+    let reconnected = NodeRpcClient::new(ep, resolver).with_delivery(client.delivery().clone());
+    let (mut fresh, new_id, mut send, mut recv, _conn) = node_command_stream(&mut r, &reconnected).await;
+    assert_ne!(new_id, id);
+    write(&mut send, &node_response(&r.me, &id, 0, &frames[0])).await;
+    let ack = read_header(&mut recv, &mut Vec::new()).await.expect("old frame is acknowledged without admission");
+    assert_eq!(ack, TransportHeader::Ack { sender: r.me.clone(), delivery_seq: 1 });
+    write(&mut send, &node_response(&r.me, &new_id, 0, &frames[0])).await;
+    assert_eq!(fresh.next().await, Some(StreamItem::Frame(FrameKind::Started, frames[0].clone())));
+    assert!(stream.next().await.is_none());
+    assert_eq!(get(&client.delivery().stats().responses_of_completed), 1);
+}

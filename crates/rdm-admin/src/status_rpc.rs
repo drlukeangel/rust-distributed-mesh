@@ -874,8 +874,12 @@ impl StatusAuthority {
                         // node entered (states.md "Who sets each state"), never before.
                         reported = true;
                         let recorded = self.book.as_ref().is_some_and(|book| book.reported(node_id, incarnation, rdm_core::MemberStatus::Draining));
-                        tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!("the node reported connections-deleting on its command's stream: this mesh-primary records it, and its projection carries it from its next round"));
+                        let position = frames.position();
+                        let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", invocation_id = tracing::field::Empty, seq = tracing::field::Empty, node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal");
+                        if let Some((invocation, seq)) = position {
+                            span.record("invocation_id", invocation.to_string()).record("seq", seq);
+                        }
+                        span.in_scope(|| tracing::info!("the node reported connections-deleting on its command's stream: this mesh-primary records it, and its projection carries it from its next round"));
                         frames.accepted().await;
                     }
                     Ok(NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }) => {
@@ -1241,6 +1245,15 @@ enum CarriedFrames {
 }
 
 impl CarriedFrames {
+    /// Transport deduplication hands each position to this owner once. A local execution has no
+    /// transport header, reconnect or replay; it reports through its one in-process channel.
+    fn position(&self) -> Option<(&rdm_core::framing::DeliveryId, u32)> {
+        match self {
+            Self::Dialled(stream) => stream.position(),
+            Self::InProcess(_) => None,
+        }
+    }
+
     /// This mesh-primary holds every frame handed over so far (recorded, or in the end it returns):
     /// the dialled node's frames are acked (node-rpc.md §31). In process there is nothing to ack.
     async fn accepted(&mut self) {

@@ -373,6 +373,8 @@ pub struct ReplyStream<P: StreamingProtocol> {
     done: bool,
     /// The acks of the frames handed over and not yet recovered by the owner, in order.
     unrecovered: Vec<AckOnRecovery>,
+    /// The authoritative transport position of the last frame handed to this owner.
+    position: Option<(rdm_core::framing::DeliveryId, u32)>,
     /// The terminal was handed over: the invocation completes once the owner recovers it.
     terminal_handed: bool,
     read_only: bool,
@@ -383,6 +385,12 @@ pub struct ReplyStream<P: StreamingProtocol> {
 }
 
 impl<P: StreamingProtocol> ReplyStream<P> {
+    /// The invocation and sequence from the last handed-over frame's transport header. Owners
+    /// record this identity with progress before calling `accepted`; no protocol body supplies it.
+    pub fn position(&self) -> Option<(&rdm_core::framing::DeliveryId, u32)> {
+        self.position.as_ref().map(|(invocation, seq)| (invocation, *seq))
+    }
+
     /// The next frame in order, a failure, or `None` once the stream has ended.
     pub async fn next(&mut self) -> Option<StreamItem<P::Reply>> {
         if self.done {
@@ -404,10 +412,15 @@ impl<P: StreamingProtocol> ReplyStream<P> {
                             Ok(f) => f,
                             Err(e) => return Some(self.fail(StreamFailure::Violation(format!("a frame does not decode: {e:?}")))),
                         };
+                        self.position = ack.as_ref().map(|a| {
+                            let (invocation, seq) = a.position();
+                            (invocation.clone(), seq)
+                        });
+                        let (invocation_id, seq) = self.position.as_ref().map(|(id, seq)| (id.to_string(), *seq)).expect("stream response carries its transport position");
                         let kind = P::frame_kind(&frame);
                         let code = P::classify_reply(&frame).code();
                         let detail = P::reply_detail(&frame);
-                        self.span.in_scope(|| tracing::info_span!("rdm.node_rpc.stream.update.via-received-frame", protocol = P::NAME, code = code.name(), detail).in_scope(|| {}));
+                        self.span.in_scope(|| tracing::info_span!("rdm.node_rpc.stream.update.via-received-frame", protocol = P::NAME, invocation_id, seq, code = code.name(), detail).in_scope(|| {}));
                         if let Err(reason) = self.order.admit(kind) {
                             return Some(self.fail(StreamFailure::Violation(reason)));
                         }
@@ -545,7 +558,7 @@ impl NodeRpcClient {
                             _ => None,
                         };
                         let evidence = owed.evidence.lock().unwrap().clone();
-                        return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
+                        return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,
                     Some(Attempted::SendDeadline(r)) => {

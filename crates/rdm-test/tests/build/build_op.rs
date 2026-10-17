@@ -858,3 +858,59 @@ async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_co
     estate.record_trace_url(hashes[0]["trace_id"].as_str().unwrap_or(""));
     println!("executable hash flame: http://192.168.68.99:16687/trace/{}", s(&hashes[0]["trace_id"]));
 }
+
+
+/// i146 e2b: an uncertain closure is a new invocation on resumption; a closure with its Build
+/// receipt is reused. Neither case depends on a receipt on the subject node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it() {
+    async fn at_cut(cut: &str) {
+        let test = format!("an_interrupted_connections_delete_resumes_from_the_builds_receipts_and_its_reissue_settles_it_{cut}");
+        let sha = candidate_sha();
+        let mut estate = Estate::bootstrap_external(owner(&test), FABRIC, "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.unwrap();
+        let caller = Caller::of(&estate).await;
+        let carrier = born(&estate, &caller, &SHAPE).await;
+        let node = seatless_node(&estate).await;
+        let before = estate.node_value(&node.to_string()).await;
+        let door = Door::at(&estate, "mesh2.admin.1").await;
+        door.arm("closure", json!({"kind": "receipt", "step": cut, "operation": "node.connections.delete", "node": node.to_string()})).await;
+        let mut stream = caller.nodes(&carrier).delete_connections(&node).await.expect("the Build accepts the closure");
+        let accepted = stream.accepted().clone();
+        let held = door.wait_held("closure").await;
+        assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.to_string());
+        // The surviving executor has heard all receipts that precede this cut.
+        let operation = format!("node.connections.delete:{node}");
+        if cut == "Complete" {
+            crate::build_log::build_fact(&estate.carrier_at(&path("mesh2.admin.2")).await, accepted.build_id.as_str(), "the completed closure is recoverable on the successor before its executor is lost", Duration::from_secs(30), |b| {
+                b.steps.iter().any(|r| r.operation == operation && r.step == "DeleteConnections" && serde_json::to_value(r).unwrap()["outcome"] == "complete")
+            }).await.unwrap_or_else(|e| panic!("{e}"));
+        }
+        wait_for("the held executor exported the progress record before it is killed", Duration::from_secs(30), || async {
+            named(&estate.spans(), "rdm.node_admin.node.update.via-connections-deleting").into_iter().find(|s| s["attributes"]["node"] == node.to_string()).cloned()
+        }).await;
+        estate.kill_node("mesh2.admin.1").await;
+        let frames = frames_of(&mut stream).await;
+        assert_eq!(frames.last(), Some(&Frame::Complete), "the successor settles the closure at {cut}: {frames:?}");
+        let receipts = Builds::new(carrier).get(&accepted.build_id).await.expect("Build receipts");
+        let closure: Vec<_> = receipts.steps.iter().filter(|r| r.operation == operation && r.step == "DeleteConnections" && matches!(r.result, StepResult::Complete)).collect();
+        assert_eq!(closure.len(), 1, "one durable completed step across attempts: {closure:?}");
+        let after = estate.node_value(&node.to_string()).await;
+        assert_eq!((after["node_id"].clone(), after["incarnation_id"].clone()), (before["node_id"].clone(), before["incarnation_id"].clone()), "the same subject birth executes the reissue");
+        assert_eq!(after["status"], "draining", "a completed closure leaves connections-deleting");
+        estate.stop().await;
+        let spans = estate.spans();
+        let executions: Vec<_> = named(&spans, "rdm.node_admin.node.connections.delete.via-delete-connections").into_iter().filter(|s| s["attributes"]["node"] == node.to_string()).collect();
+        assert_eq!(executions.len(), if cut == "DeleteConnections" { 2 } else { 1 }, "an uncertain closure runs again; a receipted closure never runs again: {executions:?}");
+        let records: Vec<_> = named(&spans, "rdm.node_admin.node.update.via-connections-deleting").into_iter().filter(|s| s["attributes"]["node"] == node.to_string()).collect();
+        assert_eq!(records.len(), executions.len());
+        let ids: std::collections::BTreeSet<_> = records.iter().map(|s| s["attributes"]["invocation_id"].as_str().expect("every record names its invocation")).collect();
+        assert_eq!(ids.len(), executions.len(), "every reissue is a fresh invocation");
+        if cut == "Complete" {
+            assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|s| s["attributes"]["node"] == node.to_string() && s["attributes"]["step"] == "DeleteConnections" && s["attributes"]["outcome"] == "reused"), "the successor reads the completed step receipt");
+        }
+        let trace = executions.last().unwrap()["trace_id"].as_str().unwrap();
+        estate.record_trace_url(trace);
+        println!("connections.delete {cut} recovery: http://192.168.68.99:16687/trace/{trace}");
+    }
+    tokio::join!(at_cut("DeleteConnections"), at_cut("Complete"));
+}

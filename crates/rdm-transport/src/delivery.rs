@@ -175,10 +175,15 @@ pub(crate) enum AckTo {
 pub(crate) struct AckOnRecovery {
     d: Delivery,
     invocation: DeliveryId,
+    seq: u32,
     delivery_seq: u64,
 }
 
 impl AckOnRecovery {
+    pub(crate) fn position(&self) -> (&DeliveryId, u32) {
+        (&self.invocation, self.seq)
+    }
+
     /// The owner can recover the frame: ack it on the stream its latest copy arrived on.
     pub(crate) async fn write(self) {
         let held = self.d.inner.st.lock().unwrap().calls.get_mut(&self.invocation).and_then(|s| s.unrecovered.remove(&self.delivery_seq));
@@ -504,14 +509,14 @@ impl Delivery {
                 let unary = slot.unary;
                 let ends = unary && frames.iter().any(|(s, _, _)| *s == 0);
                 let mut now = Vec::new();
-                for (_, d, b) in frames {
+                for (seq, d, b) in frames {
                     let ack = TransportHeader::Ack { sender: sender.clone(), delivery_seq: d };
                     let later = if unary {
                         now.push(ack);
                         None
                     } else {
                         slot.unrecovered.insert(d, (ack, to.clone()));
-                        Some(AckOnRecovery { d: self.clone(), invocation: invocation_id.clone(), delivery_seq: d })
+                        Some(AckOnRecovery { d: self.clone(), invocation: invocation_id.clone(), seq, delivery_seq: d })
                     };
                     let _ = slot.tx.send(SlotEvent::Frame(b, later));
                 }

@@ -128,6 +128,10 @@ impl Rig {
 /// mesh1: admin.1 (this authority: mesh-primary and fabric-primary), admin.2, rpc.1, rpc.2;
 /// mesh2: admin.1 (mesh2's primary).
 async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
+    rig_with_book(None).await
+}
+
+async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (Rig, BTreeMap<&'static str, Birth>) {
     let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let mut others = BTreeMap::new();
     others.insert("admin2", birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false));
@@ -172,7 +176,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
-        book: None,
+        book,
         first_ready: Default::default(),
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     });
@@ -2248,4 +2252,67 @@ fn a_forwarded_callers_connections_delete_of_named_ids_is_carried_to_the_birth_o
     assert_eq!(leg.len(), 1, "the caller's one carried leg is in the primary's carrying trace: {routes:?}");
     assert_eq!((leg[0].1.get("carrier").map(String::as_str), leg[0].1.get("protocol").map(String::as_str)), (Some("mesh2.admin.1"), Some("status")), "{leg:?}");
     eprintln!("trace {trace_id}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh2.admin.1 > rdm.node_admin.node.connections.delete.via-mesh-primary node=mesh1.admin.1 carried=dialled outcome=connections-deleted");
+}
+
+
+/// i146 e2: lose the progress ack after the mesh-primary recorded it. The responder resends that
+/// very frame on a new stream, not a new ConnectionsDeleting at another sequence position.
+#[test]
+fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once() {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
+    let cap = capture();
+    cap.run(async {
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _gossip_router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let fabric = FabricId::mint();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![]).await.unwrap();
+        membership.set_mesh_primary(true);
+        let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
+        let rpc = &b["rpc2"];
+        assert!(membership.book.record(rdm_core::MeshDigest {
+            fabric_id: fabric,
+            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
+        }));
+        let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
+        let (sd, cd) = (server_delivery.clone(), caller_delivery.clone());
+        let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: NodeCommandRequest, sink| {
+            let (sd, cd) = (sd.clone(), cd.clone());
+            async move {
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, .. } = req;
+                let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while rdm_transport::DeliveryStats::get(&sd.get().unwrap().stats().acks_received) == 0 { tokio::task::yield_now().await; }
+                }).await.expect("Started recovered before the progress fault is armed");
+                cd.get().unwrap().seams().drop_next_response_ack();
+                sink.data(N::ConnectionsDeleting { node_id, incarnation }).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while rdm_transport::DeliveryStats::get(&sd.get().unwrap().stats().responses_resent) == 0 || sd.get().unwrap().owed_frames() != 0 { tokio::task::yield_now().await; }
+                }).await.expect("the unrecovered progress is resent on a new stream and acknowledged");
+                Ok(N::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: None })
+            }
+        }).seal(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: rpc.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        server_delivery.set(server.delivery().clone()).unwrap_or_else(|_| panic!("one responder"));
+        let ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: rpc.node.incarnation_id.clone().unwrap() });
+        let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
+        caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
+        assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, rig.authority.configure.clone(), Default::default()))).is_ok());
+        let answer = call(&rig, &b["rpc1"], &StatusRequest::DeleteConnections { node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation_id.clone().unwrap(), scope: rdm_core::status::ConnectionScope::All }).await;
+        assert!(matches!(reply(&answer), StatusReply::ConnectionsDeleted { .. }), "{answer:?}");
+        assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
+    });
+    let records = cap.spans("rdm.node_admin.node.update.via-connections-deleting");
+    assert_eq!(records.len(), 1, "the mesh-primary records the repeated progress once: {records:?}");
+    assert_eq!(records[0].1.get("recorded").map(String::as_str), Some("true"), "the progress changed the actual book: {records:?}");
+    assert_eq!(cap.spans("rdm.mesh.membership.update.from-status-report").len(), 1, "one status write, not just one carrier span");
+    assert!(!records[0].1.get("invocation_id").unwrap_or(&String::new()).is_empty(), "the record names the invocation: {records:?}");
+    assert_eq!(records[0].1.get("seq").map(String::as_str), Some("1"), "the progress position: {records:?}");
 }

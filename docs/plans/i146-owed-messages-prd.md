@@ -283,7 +283,23 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   invocation's response frames by `seq` after that layer has deduplicated and ordered them") and §31
   the ack after the owner's recovery (Q22): nothing left to ask.
 - **Sizing.** One seat; `rdm-transport/src/stream.rs`, `rdm-core/src/node_command.rs`.
-- **State.** not started. This row's landing (with Q27's `forget_below` rename): its gate on tree
+- **State (2026-10-17).** Implemented in e7s3, pending the concurrent landing gate. The transport
+  hands its authoritative `(invocation_id, seq)` through `ReplyStream::position` to the mesh-primary's
+  progress record, before `accepted()` acknowledges recovery. The existing e1 classifier remains the
+  sole delivery dedupe; no owner retry, node receipt, body field, wire or durable format change.
+  RED: the 0x22 receive span lacked the header identity (`/tmp/i146-e2-red.log`, trace
+  `7e04c3aec55aa321f06dec640681e442`); the real mesh-primary recorded the replayed progress once but
+  omitted that identity (`/tmp/i146-e2-owner-red.log`, trace `a72884f48029744b184bae94c27f62f5`).
+  GREEN: 33 delivery cells; the owner cell loses the progress ack, observes its resend on a new
+  stream and proves exactly one actual book write, with the invocation and position recorded;
+  three existing live 0x22 controls unchanged. The live recovery cell holds the executor at the
+  DeleteConnections receipt, then at Complete in its control, waits for its exported progress record
+  before killing it, and proves respectively two fresh invocations of the same birth and one execution
+  with the successor reusing the durable step receipt. The closure remains connections-deleting;
+  there is one completed DeleteConnections receipt across attempts. Flames:
+  `0a64d8ad0690d9c6d365a698867181a1` (uncertain closure reissued) and
+  `2b691ca66a129d1b9c676a9178086c2c` (completed closure reused). No question or page line.
+- **Earlier gate history.** This row's landing (with Q27's `forget_below` rename): its gate on tree
   `804af94f` red at `rdm-transport:main`, `collector_outage::an_unroutable_collector_changes_nothing`
   ("the child took 8.850569956s to end against http://10.255.255.1:4317: spawn to test entry 7 ms,
   telemetry init 5279 ms, test entry to exit begun 6820 ms, exit begun to process ended 2038 ms",

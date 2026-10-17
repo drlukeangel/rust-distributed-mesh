@@ -21,7 +21,11 @@
 //! `CommandAccepted` is neither a transport envelope nor node.start's `Started`; only
 //! `ConnectionsDeleting` makes the mesh-primary record that state. A stream that breaks after
 //! `CommandAccepted` is incomplete: whatever the frames before the break reported stands, and no
-//! completion is claimed.
+//! completion is claimed. The record is of the transport header's `(invocation_id, seq)`: delivery
+//! orders and suppresses repeats before handing progress to the mesh-primary, which records it
+//! before acknowledging recovery. This adds no identity to the body and no receipt on the node.
+//! A Build reissuing an uncertain DeleteConnections step opens a new invocation: the node executes
+//! the naturally idempotent closure again. Completed steps come from the Build's step receipts.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
