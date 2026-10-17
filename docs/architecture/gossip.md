@@ -907,7 +907,7 @@ Sequence: [node.mesh.join](lifecycles/node-mesh-join.md) and [node.start](lifecy
 the fabric and mesh identities, its held node-admin peers with their endpoint and address data,
 current birth facts with RuntimeFacts and runtime metadata for the births it may manage, the
 current Build (LIFO read) and the Build floor the join answer names, and its provider domain's
-reachability. It joins its gossip topics before or while it reads, so concurrent frames converge
+reachability. It joins its gossip channels before or while it reads, so concurrent frames converge
 through the ordinary ordering (§3.1). A late node-admin needs no completed Build history to manage
 current runtimes or to know the current accepted topology.
 
