@@ -91,3 +91,13 @@ A packet with a §5 delta on each; arms only after.
   row and the seal, the successor does not append and the next fold completes the seal; an
   old-authority writer meeting the seal refused stale and nothing past it readable; the lane
   reconstructed in order from its keys.
+
+## Q48 — the seat-move fold's revision check (Luke 2026-10-17): A, strict; every seat change is a row
+
+- A seat-move row's `from_revision` must equal the seat's revision at `T-1` as the fold holds it (a
+  seat with no row is at 0). "At least" would let a move computed against a stale view commit.
+- Every seat change is one row in `seat-moves/`: kind `election | takeover | handover`. The ordinary
+  rule's fill after a proven exit, a takeover and day 0's first seating included; the winner writes
+  the row. A seat's revision never advances except by a row.
+- e6.1 carries the election-fill row and its cell: a vacancy filled by the rule writes
+  `seat-moves/<T>`; a move computed against the pre-fill revision is refused by the fold.

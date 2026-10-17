@@ -294,7 +294,7 @@ impl ControlPlane {
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt could not be ended: the mesh stays held by it"));
             return Err(Refusal::State(e));
         }
-        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string() };
+        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string(), lane_key: None };
         if let Err(e) = self.claims.release(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
@@ -762,62 +762,55 @@ impl ControlPlane {
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
             }
-            // The mesh's in-flight row decides first, on the store root: whichever claims first on the
-            // mesh's rows wins (R-BI7 caveat 3). Nothing of the attempt is written before it.
+            // The mesh's in-flight row decides, on the store root: whichever claims first on the
+            // mesh's rows wins (R-BI7 caveat 3). The row names its claim's lane key (Q35), so it is
+            // taken in the claim's own writer's turn; a row standing for another attempt that still
+            // holds the mesh refuses here, before anything of this attempt is written.
             let lane = Some(path.mesh.as_str());
             // The lane's attempt opened with this very recovery and claimed by no one is claimed as
             // it stands; otherwise the lane's next attempt is opened for it.
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
-            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string() };
-            let mut taken = self.claims.take(&path.mesh, &row).await;
-            // A row a departed claimant took for a drift attempt that holds no lane in this admin's
-            // fold (its run ended and the row was never released, or nothing of it was written before
-            // the claimant was lost) is released on that departure's exact proof, and taken again.
-            if let Ok(crate::mesh_claims::Taken::Held(held)) = &taken {
+            let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), lane_key: None };
+            let standing = match self.claims.held(&path.mesh).await {
+                Ok(standing) => standing.filter(|held| !held.same_attempt(&row)),
+                Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),
+            };
+            if let Some(held) = standing {
+                // A row a departed claimant took for a drift attempt that holds no lane in this admin's
+                // fold (its run ended and the row was never released, or nothing of it was written
+                // before the claimant was lost) is released on that departure's exact proof.
                 let departed = match held.claimant.parse::<PathName>() {
                     Ok(c) if held.lane.as_deref() == Some(path.mesh.as_str()) && c != me && c != self.me => self.departure_of(&c, &path.mesh).await?.map(|(n, row)| (c, n, row)),
                     _ => None,
                 };
                 if let Some((claimant, n, exit)) = departed {
                     let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %exit.incarnation_id.as_str(), exit_proof = %exit.proof, node = %me, outcome = tracing::field::Empty);
-                    if let Err(e) = self.claims.release(&path.mesh, held).await {
+                    if let Err(e) = self.claims.release(&path.mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
                         return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
                     }
                     release.record("outcome", "row-released");
                     release.in_scope(|| tracing::info!("the mesh's in-flight row of a departed claimant's attempt that holds no lane is released"));
-                    taken = self.claims.take(&path.mesh, &row).await;
+                } else if self.builds.in_flight_live(&held).await.map_err(Refusal::State)? {
+                    return Err(in_progress(route, &outer, &path, held.build_id, Some(held.claimant)));
                 }
-            }
-            match taken {
-                Ok(crate::mesh_claims::Taken::Won) => {}
-                Ok(crate::mesh_claims::Taken::Held(held)) => {
-                    let held = InProgress { current_build_id: held.build_id, mesh: Some(path.mesh.clone()), held_by: Some(held.claimant) };
-                    outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
-                            .in_scope(|| tracing::info!("the mesh's in-flight row names another attempt: one attempt in flight per mesh"))
-                    });
-                    return Err(Refusal::BuildInProgress(held));
-                }
-                Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be taken for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),
             }
             let node_name = path.to_string();
             let opened = match open {
                 // Its open is on the Build log already, whoever wrote it: nothing is written again.
                 Some(attempt) => Opened { build_id: current.build_id.clone(), attempt, mesh: lane.map(str::to_string) },
-                None => match self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await {
-                    Ok(o) => o,
-                    Err(e) => {
-                        // Nothing of the attempt was written: the row taken for it goes.
-                        let _ = self.claims.release(&path.mesh, &row).await;
-                        return Err(e);
-                    }
-                },
+                None => self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await?,
             };
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
             match crate::build_claim::decide_claim(&me, &*self.builds, &self.claims, &self.contexts, &claim, &path.mesh).await {
                 rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
+                // Another attempt took the mesh's row between the read above and this claim: the
+                // attempt stays open, claimed by no one, and the next recovery claims it as it stands.
+                rdm_core::build_claim::BuildClaimReply::BuildInProgress { current_build_id, held_by, .. } => match BuildId::parse(&current_build_id) {
+                    Ok(id) => Err(in_progress(route, &outer, &path, id, held_by)),
+                    Err(e) => Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names a Build id that does not parse ({current_build_id:?}: {e})", path.mesh))),
+                },
                 other => Err(Refusal::Unavailable(format!("{me}: attempt {} of {} in mesh {}'s lane was opened and its claim not won: {other:?}", opened.attempt, opened.build_id, path.mesh))),
             }
         }
@@ -851,6 +844,17 @@ impl ControlPlane {
         }
         self.builds.forget(id).await.map_err(Refusal::State)
     }
+}
+
+/// The refusal of a recovery while another attempt's in-flight row holds `path`'s mesh (R-BI7 caveat
+/// 3), spanned under `outer`: the Build and the claimant the row names.
+fn in_progress(route: &'static str, outer: &tracing::Span, path: &PathName, current_build_id: BuildId, held_by: Option<String>) -> Refusal {
+    let held = InProgress { current_build_id, mesh: Some(path.mesh.clone()), held_by };
+    outer.in_scope(|| {
+        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, build_id = %held.current_build_id.log(), mesh = %path.mesh, held_by = %held.held_by.as_deref().unwrap_or(""), node = %path)
+            .in_scope(|| tracing::info!("the mesh's in-flight row names another attempt: one attempt in flight per mesh"))
+    });
+    Refusal::BuildInProgress(held)
 }
 
 /// What an attempt opened at a node route does to the exact birth it is fenced to.

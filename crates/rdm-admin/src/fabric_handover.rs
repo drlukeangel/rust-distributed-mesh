@@ -550,20 +550,20 @@ impl HandoverDoor {
         if let Some(refusal) = self.refused_before_first_ready("successor", &of).await {
             return refusal;
         }
-        let Some(holder_mesh) = named_holder.as_ref().map(|h| h.mesh.clone()) else {
+        if named_holder.is_none() {
             refused("successor", "conflict", &format!("{me}: the call names no seat, so it is no committed row's content"), &of, None);
             return rdm_core::reply::handover::rejected_conflict(operation);
-        };
-        let row = match self.storage.seat_transfer(&holder_mesh, &operation).await {
+        }
+        let row = match self.storage.seat_transfer(&operation).await {
             Ok(r) => r,
             Err(e) => {
-                let failed = SourceFailure { source: format!("fabric.storage of {me}, seat-transfer row {operation} under mesh {holder_mesh}"), op: format!("read the seat-transfer row of {operation}"), cause: e.to_string() };
+                let failed = SourceFailure { source: format!("fabric.storage of {me}, the seat move of {operation}"), op: format!("read the seat move of {operation}"), cause: e.to_string() };
                 refused("successor", "source-failed", &failed.to_string(), &of, Some(&failed));
                 return failed.reply();
             }
         };
         let Some(row) = row else {
-            let record = format!("the seat-transfer row {operation} under mesh {holder_mesh}");
+            let record = format!("the seat move of {operation}");
             refused("successor", "record-absent", &format!("{me}: the store root holds no {record}: no row was committed for this call"), &of, None);
             return rdm_core::reply::handover::bounded_record_absent(&record, &me.to_string());
         };
@@ -626,7 +626,7 @@ impl HandoverDoor {
         tracing::info_span!(
             "rdm.node_admin.seat.update.via-primary-updated",
             node = %me,
-            fabric = %row.fabric,
+            fabric = %self.fabric,
             operation = %row.operation,
             build_id = %row.build_id,
             attempt,
@@ -803,7 +803,7 @@ impl HandoverDoor {
             return Err(refusal);
         }
         // A retry or a later attempt after the row: the row stands, and the update completes from it.
-        match self.storage.seat_transfer(&self.me.mesh, operation).await {
+        match self.storage.seat_transfer(operation).await {
             Ok(Some(row)) if row.holder == me => return self.complete_from_row(&row).await,
             Ok(Some(row)) => {
                 let detail = format!("operation {operation} committed another update (holder {}, successor {})", births(&row.holder), births(&row.successor));
@@ -812,7 +812,7 @@ impl HandoverDoor {
             }
             Ok(None) => {}
             Err(e) => {
-                let failed = SourceFailure { source: format!("fabric.storage of {me_name}, seat-transfer row {operation} under mesh {}", self.me.mesh), op: format!("read the seat-transfer row of {operation}"), cause: e.to_string() };
+                let failed = SourceFailure { source: format!("fabric.storage of {me_name}, the seat move of {operation}"), op: format!("read the seat move of {operation}"), cause: e.to_string() };
                 refused("holder", "source-failed", &failed.to_string(), &of, Some(&failed));
                 return Err(failed.reply());
             }
@@ -871,13 +871,13 @@ impl HandoverDoor {
         let seats: Vec<CommittedSeat> = held.iter().map(|(seat, h)| CommittedSeat { seat: seat.clone(), holder: to.clone(), revision: h.revision + 1 }).collect();
         let row = SeatTransferRow {
             operation: operation.to_string(),
-            fabric: self.fabric.clone(),
             build_id: build_id.to_string(),
             attempt,
             holder: me.clone(),
             successor: to.clone(),
             expected: held.iter().map(|(seat, h)| SeatRevision { seat: seat.clone(), expected_revision: h.revision }).collect(),
             seats: seats.clone(),
+            by: me.clone(),
         };
         let op = self.op_of(&me, me_name.clone(), build_id, attempt, operation);
         // Step 3: "primary updating", intent only.
@@ -890,20 +890,40 @@ impl HandoverDoor {
         (self.cut_off_writes)(WriteCutOff::Set { reason: reason.clone(), mesh_seat, fabric_seat }).await;
         tracing::info_span!("rdm.node_admin.seat.update.via-writes-cut-off", node = %me_name, fabric = %self.fabric, operation, build_id, attempt, holder = %births(&me), successor = %births(&to), mesh_seat, fabric_seat)
             .in_scope(|| tracing::info!("the holder cut off the writes its seats authorize and every issued one finished before its row"));
-        // Step 5: the ONE row, the commit, under the Build-log decision lock; from it this holder is no
-        // longer primary.
-        {
+        // Step 5: the ONE row, the commit (the fabric's next seat move), under the Build-log decision
+        // lock; from it this holder is no longer primary.
+        let moved = {
             let _decisions = self.decisions.clone().lock_owned().await;
-            if let Err(e) = self.storage.put_seat_transfer(&row).await {
-                drop(_decisions);
-                // A named error is a confirmed non-commit: the writes are this holder's again under the
-                // unchanged revision.
-                (self.cut_off_writes)(WriteCutOff::Lift).await;
-                let failed = SourceFailure { source: format!("fabric.storage of {me_name}, seat-transfer row {operation} under mesh {}", self.me.mesh), op: format!("put the seat-transfer row of {operation} moving {} seat(s) to {}", seats.len(), births(&to)), cause: e.to_string() };
-                refused("holder", "source-failed", &failed.to_string(), &Refusing { successor: Some(&to), ..of }, Some(&failed));
-                return Err(failed.reply());
-            }
+            let committed = match self.storage.commit_seat_move(&row.seat_move()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    drop(_decisions);
+                    // A named error is a confirmed non-commit: the writes are this holder's again under
+                    // the unchanged revision.
+                    (self.cut_off_writes)(WriteCutOff::Lift).await;
+                    let failed = SourceFailure { source: format!("fabric.storage of {me_name}, the fabric's seat moves"), op: format!("commit the seat move of {operation} moving {} seat(s) to {}", seats.len(), births(&to)), cause: e.to_string() };
+                    refused("holder", "source-failed", &failed.to_string(), &Refusing { successor: Some(&to), ..of }, Some(&failed));
+                    return Err(failed.reply());
+                }
+            };
+            let moved = match committed {
+                crate::fabric_storage::MoveCommit::Committed(m) => m,
+                crate::fabric_storage::MoveCommit::Refused(why) => {
+                    drop(_decisions);
+                    (self.cut_off_writes)(WriteCutOff::Lift).await;
+                    refused("holder", "seat-moved", &format!("{me_name}: the fabric's seat moves refuse the move of {operation}: {why}"), &Refusing { successor: Some(&to), ..of }, None);
+                    return Err(rdm_core::reply::handover::rejected_conflict(operation.to_string()));
+                }
+            };
             book.take_together(&op, &seats);
+            moved
+        };
+        // The holder, which committed the move, seals the Build lanes of the seats it moved (Q35):
+        // nothing of its revision commits past the seal. A seal not written is completed by the
+        // successor's next fold before it appends.
+        if let Err(e) = self.builds.seal_moved(&moved, &me).await {
+            tracing::info_span!("rdm.node_admin.build.reject.via-lane-unsealed", node = %me_name, operation, t = moved.t, error = %e)
+                .in_scope(|| tracing::info!("the moved seats' Build lanes could not be sealed here: the successor's next fold seals them before it appends"));
         }
         (self.cut_off_writes)(WriteCutOff::Committed { reason, mesh_seat, fabric_seat }).await;
         tracing::info_span!(
@@ -1086,7 +1106,9 @@ impl HandoverDoor {
         }
         let decided = self.incumbency();
         let mut installed = Vec::new();
-        for (seat, holder) in crate::admin::seat_announcements(&view, true, &self.me.mesh, (&self.node_id, &self.incarnation), &decided) {
+        let said = crate::admin::seat_announcements(&view, true, &self.me.mesh, (&self.node_id, &self.incarnation), &decided);
+        let said = said.into_iter().filter(|(seat, _)| (*seat == Seat::MeshPrimary && mesh_seat) || (*seat == Seat::FabricPrimary && fabric_seat)).collect();
+        for (seat, holder) in elect(&*self.storage, self.membership.seats(), &self.me_birth(), &decided, said).instrument(span.clone()).await {
             if (seat == Seat::MeshPrimary && mesh_seat) || (seat == Seat::FabricPrimary && fabric_seat) {
                 installed.push(format!("{} {}:{}@{} (revision {})", seat.name(), holder.mesh, holder.node_id, holder.incarnation, holder.revision));
                 self.backbone.announce_seat(seat, holder).instrument(span.clone()).await;
@@ -1221,7 +1243,7 @@ impl HandoverDoor {
         use crate::build_drive::SeatMoveEnd;
         let me = self.held_name();
         let span = |outcome: &str, successor: &str| tracing::info_span!("rdm.node_admin.seat.update.via-committed-row", node = %me, operation, build_id, attempt, holder = %births(hb), successor, outcome);
-        match self.storage.seat_transfer(&holder.mesh, operation).await {
+        match self.storage.seat_transfer(operation).await {
             Ok(Some(row)) if row.holder == *hb && !row.seats.is_empty() => {
                 let read = span("held", &births(&row.successor));
                 read.in_scope(|| tracing::info!("the fabric-primary read the committed row of a holder proven gone: it obtains the successor's node.primary.updated before it installs"));
@@ -1295,7 +1317,7 @@ impl HandoverDoor {
             _ => {}
         }
         let me = self.held_name();
-        let row = self.storage.seat_transfer(mesh, operation).await.map_err(|e| format!("{me}: fabric.storage, the seat-transfer row {operation} under mesh {mesh} could not be read: {e}"))?;
+        let row = self.storage.seat_transfer(operation).await.map_err(|e| format!("{me}: fabric.storage, the seat move of {operation} could not be read: {e}"))?;
         let Some(row) = row.filter(|r| !r.seats.is_empty()) else { return Ok(false) };
         let span = tracing::info_span!(
             "rdm.node_admin.seat.update.via-row-acknowledged",
@@ -1361,7 +1383,7 @@ impl HandoverDoor {
     /// No row: the departing mesh did not hold the fabric seat, and nothing moved.
     pub async fn fabric_seat_updated(&self, departing: &str, operation: &str) -> Result<(), String> {
         let me = self.held_name();
-        let row = self.storage.seat_transfer(departing, operation).await.map_err(|e| format!("{me}: fabric.storage, the seat-transfer row {operation} under mesh {departing} could not be read: {e}"))?;
+        let row = self.storage.seat_transfer(operation).await.map_err(|e| format!("{me}: fabric.storage, the seat move of {operation} could not be read: {e}"))?;
         let Some(row) = row else { return Ok(()) };
         let revisions = if row.successor == self.me_birth() {
             let name = self.topology.read().await.births().find(|n| n.node_id == row.holder.node_id).map(|n| n.name.clone()).unwrap_or_else(|| me.clone());
@@ -1458,7 +1480,7 @@ impl HandoverDoor {
             return Err(rdm_core::reply::handover::bounded_not_authority(&reason));
         }
         // A retry or a later attempt after the row: the row stands, and the update completes from it.
-        match self.storage.seat_transfer(&mesh, operation).await {
+        match self.storage.seat_transfer(operation).await {
             Ok(Some(row)) if row.holder == hb => return self.command_holder(&row, &holder.name).await,
             Ok(Some(row)) => {
                 let detail = format!("operation {operation} committed another update (holder {}, successor {})", births(&row.holder), births(&row.successor));
@@ -1509,13 +1531,13 @@ impl HandoverDoor {
         let seats = vec![CommittedSeat { seat: wire.clone(), holder: to.clone(), revision: revision + 1 }];
         let row = SeatTransferRow {
             operation: operation.to_string(),
-            fabric: self.fabric.clone(),
             build_id: build_id.to_string(),
             attempt,
             holder: hb.clone(),
             successor: to.clone(),
             expected: vec![SeatRevision { seat: wire.clone(), expected_revision: revision }],
             seats: seats.clone(),
+            by: self.me_birth(),
         };
         let op = self.op_of(&hb, holder.name.clone(), build_id, attempt, operation);
         // Step 3: "primary updating", intent only, said by the mesh-primary, sole author of member status.
@@ -1523,11 +1545,19 @@ impl HandoverDoor {
         // Step 5: the ONE row, the commit; from it the holder is no longer primary.
         {
             let _decisions = self.decisions.clone().lock_owned().await;
-            if let Err(e) = self.storage.put_seat_transfer(&row).await {
-                drop(_decisions);
-                let failed = SourceFailure { source: format!("fabric.storage of {me}, seat-transfer row {operation} under mesh {mesh}"), op: format!("put the seat-transfer row of {operation} moving the {} seat to {}", kind.name(), births(&to)), cause: e.to_string() };
-                refused("writer", "source-failed", &failed.to_string(), &Refusing { successor: Some(&to), ..of }, Some(&failed));
-                return Err(failed.reply());
+            match self.storage.commit_seat_move(&row.seat_move()).await {
+                Ok(crate::fabric_storage::MoveCommit::Committed(_)) => {}
+                Ok(crate::fabric_storage::MoveCommit::Refused(why)) => {
+                    drop(_decisions);
+                    refused("writer", "seat-moved", &format!("{me}: the fabric's seat moves refuse the move of {operation}: {why}"), &Refusing { successor: Some(&to), ..of }, None);
+                    return Err(rdm_core::reply::handover::rejected_conflict(operation.to_string()));
+                }
+                Err(e) => {
+                    drop(_decisions);
+                    let failed = SourceFailure { source: format!("fabric.storage of {me}, the fabric's seat moves"), op: format!("commit the seat move of {operation} moving the {} seat of mesh {mesh} to {}", kind.name(), births(&to)), cause: e.to_string() };
+                    refused("writer", "source-failed", &failed.to_string(), &Refusing { successor: Some(&to), ..of }, Some(&failed));
+                    return Err(failed.reply());
+                }
             }
             book.take_together(&op, &seats);
         }
@@ -1549,7 +1579,7 @@ impl HandoverDoor {
         let revisions = if self.incumbency().lost.contains(&row.holder.incarnation) {
             self.call_successor(row, "writer").await?
         } else {
-            let req = Request::UpdatePrimaryFromRow { fabric: row.fabric.clone(), seats: call_seats(row), build_id: row.build_id.clone(), attempt: row.attempt, operation: row.operation.clone() };
+            let req = Request::UpdatePrimaryFromRow { fabric: self.fabric.clone(), seats: call_seats(row), build_id: row.build_id.clone(), attempt: row.attempt, operation: row.operation.clone() };
             match self.call_once(&row.holder.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
                 Called::Reply(Reply::PrimaryUpdated { revisions }) if !revisions.is_empty() => revisions,
                 other => {
@@ -1627,13 +1657,59 @@ pub async fn hydrate_seats(storage: &dyn FabricStorage, seats: &SeatBook) -> Res
 
 /// [`hydrate_seats`], returning the rows it read.
 async fn hydrated(storage: &dyn FabricStorage, seats: &SeatBook) -> Result<Vec<SeatTransferRow>, String> {
-    let rows = storage.seat_transfers().await.map_err(|e| format!("fabric.storage, the seat-transfer rows could not be read: {e}"))?;
-    for row in &rows {
-        for c in &row.seats {
-            seats.take(c.seat.kind(), &c.record());
+    let moves = storage.seat_moves().await.map_err(|e| format!("fabric.storage, the fabric's seat moves could not be read: {e}"))?;
+    for m in &moves {
+        for s in &m.row.seats {
+            let committed = rdm_core::seat::transfer::CommittedSeat { seat: s.seat.clone(), holder: s.holder.clone(), revision: s.revision };
+            seats.take(committed.seat.kind(), &committed.record());
         }
     }
-    Ok(rows)
+    Ok(moves.iter().filter_map(|m| SeatTransferRow::of_move(&m.row)).collect())
+}
+
+/// The seats one election round of this admin takes (`said`, [`crate::admin::seat_announcements`],
+/// decided against `decided`), committed as ONE seat move of kind `election` before any is announced
+/// (Q48 A: every seat change is a row, written by the winner; a seat's revision never advances except
+/// by a row). Returns the seats the row committed, to announce. A row the fold refuses (a seat moved
+/// since `decided` was read) commits nothing: the moves on the store are folded into `seats`, and the
+/// next round decides against them. A store that cannot be written commits nothing either: the seats
+/// stay as their records hold them.
+pub async fn elect(storage: &dyn FabricStorage, seats: &SeatBook, by: &HandoverBirth, decided: &crate::election::Incumbency, said: Vec<(Seat, rdm_core::SeatHolder)>) -> Vec<(Seat, rdm_core::SeatHolder)> {
+    if said.is_empty() {
+        return said;
+    }
+    let birth = |h: &rdm_core::SeatHolder| HandoverBirth { mesh: h.mesh.clone(), node_id: h.node_id.clone(), incarnation: h.incarnation.clone() };
+    let moved = said
+        .iter()
+        .map(|(seat, holder)| {
+            let held = match seat {
+                Seat::FabricPrimary => decided.fabric.as_ref(),
+                Seat::MeshPrimary => decided.meshes.get(&holder.mesh),
+                Seat::Cohort(kind) => decided.cohorts.get(&(holder.mesh.clone(), *kind)),
+            };
+            crate::fabric_storage::MovedSeat { seat: WireSeat::of(*seat, &holder.mesh), from_revision: held.map(|h| h.revision).unwrap_or(0), revision: holder.revision, holder: birth(holder), from: held.map(birth) }
+        })
+        .collect::<Vec<_>>();
+    let names = moved.iter().map(|m| format!("{} {} -> {}", m.seat.name(), m.from_revision, m.revision)).collect::<Vec<_>>().join(", ");
+    let row = crate::fabric_storage::SeatMoveRow { seats: moved, cause: crate::fabric_storage::MoveCause::Election, by: by.clone() };
+    match storage.commit_seat_move(&row).await {
+        Ok(crate::fabric_storage::MoveCommit::Committed(m)) => {
+            tracing::info_span!("rdm.node_admin.seat.update.via-election-row", by = %births(by), t = m.t, seats = %names)
+                .in_scope(|| tracing::info!("the election's winner wrote the seat move before announcing it"));
+            said
+        }
+        Ok(crate::fabric_storage::MoveCommit::Refused(why)) => {
+            let folded = hydrated(storage, seats).await.err();
+            tracing::info_span!("rdm.node_admin.seat.reject.via-election-refused", by = %births(by), seats = %names, why = %why, folded = folded.as_deref().unwrap_or("ok"))
+                .in_scope(|| tracing::info!("the fold refuses the election's seat move: a seat moved since the round read it; the moves are folded and the next round decides again"));
+            Vec::new()
+        }
+        Err(e) => {
+            tracing::info_span!("rdm.node_admin.seat.reject.via-election-unwritten", by = %births(by), seats = %names, error = %e)
+                .in_scope(|| tracing::info!("the election's seat move could not be written: nothing is announced, and the seats stay as their records hold them"));
+            Vec::new()
+        }
+    }
 }
 
 /// The read of the store root's seat-transfer rows an admin makes as it enters the fabric, its
@@ -1661,7 +1737,6 @@ pub async fn enter_seats(storage: &dyn FabricStorage, membership: &Membership, b
         let span = tracing::info_span!(
             "rdm.node_admin.seat.update.via-entered-own-row",
             node = %me,
-            fabric = %row.fabric,
             operation = %row.operation,
             build_id = %row.build_id,
             attempt = row.attempt,

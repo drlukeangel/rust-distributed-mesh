@@ -977,7 +977,7 @@ mesh-primary's exit; a separate node.delete, with the fabric-primary as executor
 
 Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_claim.rs::BuildClaimRequest`.
 
-Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail) and claims by insert-and-fail on `(build_id, mesh, attempt)`; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
+Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail), which names the lane key its claim takes, and claims by insert-and-fail on that key; a row whose key holds another entry is void and is released; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
 
 ```rust
 pub enum BuildClaimRequest {
@@ -1516,7 +1516,7 @@ There is no RejectedWrongBirth (R-UC1a, R-RX5: a receiver never refuses a call f
 names), no RejectedStaleSeat and no RejectedNotEligible on the receiver: eligibility is the writer's
 pre-check before the row.
 
-`operation` identifies one update and keys its committed row (`meshes/<holder mesh>/seat-transfers/<operation>`)
+`operation` identifies one update and names its committed row (the seat move `seat-moves/<T>` that carries it)
 by (build_id, run): `node.primary.update:<build_id>:<run>:<op>`. The run is the first attempt of the series a
 submission opened: a resume continues it and replays that run's row; a resubmit after Failed opens a new run,
 so a new transfer.

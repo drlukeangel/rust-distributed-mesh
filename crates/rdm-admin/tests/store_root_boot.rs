@@ -360,7 +360,7 @@ impl Prepared {
                 let status = rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &incarnation).await.unwrap();
                 status.put_fabric_event(&rdm_admin::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
             }
-            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, "mesh1").await.unwrap();
+            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, "mesh1", &incarnation).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
@@ -373,8 +373,8 @@ impl Prepared {
         let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
         assert!(prepared.fabric_row().exists(), "the Fabric row stands on the root");
-        assert!(prepared.store.join(prepared.fabric_id.to_string()).join("fabric/builds/build-journal.jsonl").exists(), "the Build journal stands on the shared store root under fabric/builds/");
-        assert!(!prepared.data_dir.join("build-journal.jsonl").exists(), "no per-admin Build journal in data_dir");
+        assert!(prepared.store.join(prepared.fabric_id.to_string()).join("fabric/builds/rev-00000000000000000000/00000000000000000001.json").exists(), "the accepted Build stands on the shared store root as the fabric lane's first key");
+        assert!(!prepared.data_dir.join("fabric").exists(), "no per-admin Build lane in data_dir");
         assert_eq!(prepared.ready_rows().len(), usize::from(history == History::ReadyForTraffic), "{history:?}: the ready-for-traffic rows on the root");
         prepared
     }

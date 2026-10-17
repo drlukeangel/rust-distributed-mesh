@@ -158,7 +158,7 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
     // The verdict releases mesh1's in-flight row attempt 4 held, as the drive does at a hand-off
     // (R-BI7 caveat 3: one attempt in flight per mesh).
-    p_seat.door.claims.release("mesh1", &InFlight { build_id: id.clone(), lane: None, attempt: 4, claimant: "mesh1.admin.1".into() }).await.unwrap();
+    p_seat.door.claims.release("mesh1", &InFlight { build_id: id.clone(), lane: None, attempt: 4, claimant: "mesh1.admin.1".into(), lane_key: None }).await.unwrap();
     assert_eq!(contexts.get(&id, 5).await.unwrap(), None);
     assert_eq!(p_seat.door.claim("mesh2.admin.1", &id, 5).await, BuildClaimReply::Won { context: rest.clone() }, "the hand-off continues the trace");
     assert_eq!(contexts.get(&id, 5).await.unwrap(), Some(rest), "and keeps it under its own attempt");

@@ -486,6 +486,19 @@ impl BuildStateAdapter for FaultedBuilds {
         }
         Ok(outcome)
     }
+    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &rdm_admin::mesh_claims::MeshClaims, mesh: &str, row: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::build_state::InFlightClaim, BuildStateError> {
+        let decided = self.inner.claim_in_flight(claim, claims, mesh, row).await?;
+        if decided == rdm_admin::build_state::InFlightClaim::Decided(ClaimOutcome::Won) {
+            self.faults.hold(Probe::Claimed { build_id: claim.build_id.to_string(), attempt: claim.attempt, executor: claim.executor.clone() }).await;
+        }
+        Ok(decided)
+    }
+    async fn in_flight_live(&self, held: &rdm_admin::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
+        self.inner.in_flight_live(held).await
+    }
+    async fn seal_moved(&self, moved: &rdm_admin::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+        self.inner.seal_moved(moved, by).await
+    }
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
         self.inner.adopt_claim(claim).await
     }

@@ -854,7 +854,7 @@ impl DriveEnv {
     /// next claim on it is refused naming this attempt.
     async fn release_mesh(&self, id: &BuildId, attempt: u32, executor: &PathName) {
         let me = self.held_name().await;
-        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string() };
+        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string(), lane_key: None };
         if let Err(e) = self.door.claims.release(&executor.mesh, &row).await {
             tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id.log(), attempt, mesh = %executor.mesh, node = %me, error = %e)
                 .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));

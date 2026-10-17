@@ -81,6 +81,18 @@ pub fn mesh_seat_record(mesh: &str, record: Option<&SeatHolder>, me: &Birth, los
     seat_record(&format!("mesh {mesh}'s primary seat record"), record, me, lost, name_of)
 }
 
+/// The seat `me` writes a Build lane under (Q28: "`N` is the committed fabric seat revision the
+/// writer holds"), from the lane's seat `record` (`which`, in words): the record's revision (0 when
+/// none is held); held when the record names `me`, none, or a birth proven gone (`lost`), and not
+/// held, naming the record, when it names another live birth.
+pub fn lane_seat(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>) -> crate::build_state::LaneSeat {
+    let holds = match record {
+        Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => Err(format!("{which} names {} {} (birth {}) at revision {}", h.mesh, h.node_id, h.incarnation.as_str(), h.revision)),
+        _ => Ok(()),
+    };
+    crate::build_state::LaneSeat { revision: record.map(|h| h.revision).unwrap_or(0), holds }
+}
+
 fn seat_record(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {

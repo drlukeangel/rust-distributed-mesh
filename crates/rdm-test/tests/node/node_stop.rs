@@ -969,15 +969,15 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
 }
 
-/// The seat-transfer rows on the fabric's store root, `meshes/<mesh>/seat-transfers/`, each as its
-/// file name and bytes: what a seat move commits, compared whole.
+/// The fabric's seat moves on its store root, `seat-moves/<T>`, each as its file name and bytes: what
+/// a seat move commits, compared whole.
 fn seat_transfer_rows(estate: &Estate) -> Vec<(String, Vec<u8>)> {
-    let meshes = estate.fabric_store_root().join("meshes");
-    let mut rows: Vec<(String, Vec<u8>)> = std::fs::read_dir(&meshes)
+    let moves = estate.fabric_store_root().join("seat-moves");
+    let mut rows: Vec<(String, Vec<u8>)> = std::fs::read_dir(&moves)
         .into_iter()
         .flatten()
         .flatten()
-        .flat_map(|m| std::fs::read_dir(m.path().join("seat-transfers")).into_iter().flatten().flatten())
+        .filter(|r| r.path().extension().is_some_and(|x| x == "json"))
         .map(|r| (r.path().display().to_string(), std::fs::read(r.path()).unwrap_or_default()))
         .collect();
     rows.sort();
@@ -996,7 +996,7 @@ fn seat_transfer_rows(estate: &Estate) -> Vec<(String, Vec<u8>)> {
 /// `last-admin` with exactly `cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh
 /// mesh1, no other mesh-primary ReadyForTraffic`, one `rdm.node_admin.build.reject.via-last-admin` per
 /// call. Leadership is intact: every node keeps its
-/// birth and its seats (node.get), and the store root's seat-transfer rows are byte for byte what they
+/// birth and its seats (node.get), and the store root's seat moves are byte for byte what they
 /// were. The stop is not run: no stop-node served, no node.connections.delete, no seat move commanded,
 /// no row written. Through the whole run, the estate's teardown included, no admin hands its seat to
 /// nobody (`rdm.node_admin.build.update.via-seat-hand-over` with `to = none`).
@@ -1024,7 +1024,7 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
         let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{} was there before", now.name));
         assert_eq!((&now.incarnation_id, now.is_primary, now.is_fabric_primary), (&was.incarnation_id, was.is_primary, was.is_fabric_primary), "{} is untouched", now.name);
     }
-    assert_eq!(seat_transfer_rows(&estate), rows, "the seat-transfer rows are unchanged");
+    assert_eq!(seat_transfer_rows(&estate), rows, "the seat moves are unchanged");
     estate.stop().await;
     let spans = estate.spans();
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == q7).collect();

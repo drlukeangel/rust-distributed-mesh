@@ -21,8 +21,8 @@
 //! has no context of its own inherits the previous attempt's at claim time.
 
 use crate::build::BuildId;
-use crate::mesh_claims::{InFlight, MeshClaims, Taken};
-use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome};
+use crate::mesh_claims::{InFlight, MeshClaims};
+use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome, InFlightClaim};
 use crate::model::{EndpointId, NodeId, PathName};
 use crate::record_store::{FileRecords, StorageError};
 use crate::topology::Topology;
@@ -138,9 +138,10 @@ impl AttemptContexts {
 
 /// Decide the claim `claim` (its Build, lane, attempt, executor and claimant), the attempt acting in
 /// `mesh`, on this admin `me` (R-BI7 caveats 2, 3), under the one claim-decision span. The mesh's
-/// in-flight row is taken first: another attempt holding it refuses `BuildInProgress` naming it and
-/// its claimant, and nothing is written. Then the claim key `(build_id, lane, attempt)` is an
-/// insert-and-fail on `builds`: `Won` carries the attempt's context. An attempt that is not open
+/// in-flight row is taken first, naming the claim's lane key (Q35), in the same writer's turn as the
+/// claim ([`BuildStateAdapter::claim_in_flight`]): another attempt holding it refuses
+/// `BuildInProgress` naming it and its claimant, and nothing is written. Then the claim key
+/// `(build_id, lane, attempt)` is an insert-and-fail on `builds`: `Won` carries the attempt's context. An attempt that is not open
 /// releases the row taken for it; a claim `Lost` to another executor of the same attempt leaves the
 /// row, which names the attempt, to its verdict. Who may claim is the caller's rule
 /// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this.
@@ -158,13 +159,13 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
         detail = tracing::field::Empty,
     );
     let reply = async {
-        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()) };
-        match claims.take(mesh, &row).await {
-            Ok(Taken::Won) => {}
-            Ok(Taken::Held(held)) => return rdm_core::reply::build_claim::build_in_progress(held.build_id.to_string(), mesh.to_string(), Some(held.claimant)),
-            Err(e) => return rdm_core::reply::build_claim::not_ready(format!("{me}: the in-flight row of mesh {mesh} could not be taken for attempt {} of {}: {e}", claim.attempt, claim.build_id)),
-        }
-        match builds.claim_attempt(claim).await {
+        let row = InFlight { build_id: claim.build_id.clone(), lane: claim.mesh.clone(), attempt: claim.attempt, claimant: claim.claimant.clone().unwrap_or_else(|| me.to_string()), lane_key: None };
+        let decided = match builds.claim_in_flight(claim, claims, mesh, &row).await {
+            Ok(InFlightClaim::Held(held)) => return rdm_core::reply::build_claim::build_in_progress(held.build_id.to_string(), mesh.to_string(), Some(held.claimant)),
+            Ok(InFlightClaim::Decided(outcome)) => Ok(outcome),
+            Err(e) => Err(e),
+        };
+        match decided {
             Ok(ClaimOutcome::Won) => match contexts.for_claim_lane(&claim.build_id, lane, claim.attempt).await {
                 Ok(context) => BuildClaimReply::Won { context },
                 Err(e) => rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is claimed, its context record is unreadable: {e}", claim.attempt, claim.build_id)),

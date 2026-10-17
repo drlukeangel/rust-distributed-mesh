@@ -279,6 +279,32 @@ impl FileRecords {
         }
     }
 
+    /// [`Self::read`] of a key one of several formats may hold (a lane's fact or its seal): the
+    /// format the row was written in and its record, or `None` when none was ever written. A row in a
+    /// format outside `formats` is refused by name, never read as no row.
+    pub async fn read_tagged(&self, key: &str, formats: &[&str]) -> Result<Option<(String, serde_json::Value)>, StorageError> {
+        let path = self.path(key);
+        let bytes = match self.held_row(key) {
+            Some(row) => match row.bytes() {
+                Some(b) => b.to_vec(),
+                None => return Ok(None),
+            },
+            None => {
+                let file = path.clone();
+                match blocking_io(move || std::fs::read(&file)).await {
+                    Ok(b) => b,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(e) => return Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+                }
+            }
+        };
+        let stored: Stored<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|e| StorageError::Unrecognised { file: path.display().to_string(), reason: e.to_string() })?;
+        if !formats.contains(&stored.format.as_str()) {
+            return Err(StorageError::Unrecognised { file: path.display().to_string(), reason: format!("format {:?}, this build reads {formats:?} here", stored.format) });
+        }
+        Ok(Some((stored.format, stored.record)))
+    }
+
     /// Every record in the store, in key order: while the store holds its writes, the rows it holds
     /// over the files on the disk (a row it holds removed hides the file); after, the disk's alone.
     /// The directory and its files are read on the blocking pool, as a point read is, so no worker

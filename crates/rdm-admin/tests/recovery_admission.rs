@@ -836,7 +836,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     // What mesh2's primary wrote before it was lost: mesh2's in-flight row for attempt 1, then the
     // attempt's open carrying the member's recovery. Its claim was never written.
     let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap() };
-    let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() };
+    let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), lane_key: None };
     assert_eq!(claims.take("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
         .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 1, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 1, mesh: Some("mesh2".into()) })
@@ -966,13 +966,13 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     }
     let failed = "node.create:mesh2.rpc.1 step PrepareStorage: node-key is missing in the inherited data dir";
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: failed.into() , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
-    claims.release("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() }).await.unwrap();
+    claims.release("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), lane_key: None }).await.unwrap();
     assert_eq!(builds.exits_owed(&b0, "mesh2").await.unwrap().iter().map(|o| (o.path.clone(), o.attempt)).collect::<Vec<_>>(), vec![(member.clone(), 1)], "after attempt 1's Failed verdict the member is owed a submit");
 
     // The resubmit: mesh2's in-flight row for attempt 2, then attempt 2's open carrying the same
     // recovery. Its claim was never written: the primary was lost between the two.
     let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone() };
-    let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into() };
+    let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into(), lane_key: None };
     assert_eq!(claims.take("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
         .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 2, mesh: Some("mesh2".into()) })

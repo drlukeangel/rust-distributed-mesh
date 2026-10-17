@@ -36,6 +36,10 @@ pub struct InFlight {
     pub attempt: u32,
     /// The admin that claimed it (a node-admin's path.name): the holder a refusal names.
     pub claimant: String,
+    /// The lane key of the attempt's claim (Q35, `crate::build_lanes::LaneKey`): the row is void when
+    /// that key holds another entry. `None` for rows held in one process, where no lane is keyed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane_key: Option<String>,
 }
 
 impl InFlight {
@@ -54,8 +58,9 @@ pub enum Taken {
     Held(InFlight),
 }
 
-/// The format of a mesh's in-flight row.
-const FORMAT: &str = "mesh-in-flight/1";
+/// The format of a mesh's in-flight row. A row in the retired `mesh-in-flight/1` (no lane key) is
+/// refused by name.
+const FORMAT: &str = "mesh-in-flight/2";
 
 enum Backing {
     /// `meshes/<mesh>/claims/` on the store root, one store per mesh, opened on its first use.
@@ -143,6 +148,32 @@ impl MeshClaims {
         store.remove_released::<InFlight>(IN_FLIGHT, FORMAT, move |held| held.same_attempt(&attempt)).await
     }
 
+    /// Point `mesh`'s in-flight row, standing for `row`'s attempt, at `row`'s lane key when it names
+    /// another (Q35: the row names its claim's lane key): the standing row goes while it is that exact
+    /// row, and `row` is inserted. Nothing when the row names `row`'s key already or another attempt.
+    /// A row another attempt inserts between the two is refused by name: this attempt holds the mesh
+    /// no more.
+    pub async fn repoint(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError> {
+        let Some(store) = self.store(mesh).await? else {
+            let Backing::Memory(rows) = &self.backing else { unreachable!("a store-root backing opens a store") };
+            let mut rows = rows.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(held) = rows.get_mut(mesh).filter(|h| h.same_attempt(row)) {
+                held.lane_key = row.lane_key.clone();
+            }
+            return Ok(());
+        };
+        let Some(standing) = store.read::<InFlight>(IN_FLIGHT, FORMAT).await?.filter(|h| h.same_attempt(row) && h.lane_key != row.lane_key) else { return Ok(()) };
+        let exact = standing.clone();
+        store.remove_released::<InFlight>(IN_FLIGHT, FORMAT, move |held| *held == exact).await?;
+        if store.insert(IN_FLIGHT, FORMAT, row).await? {
+            return Ok(());
+        }
+        Err(StorageError::Io {
+            file: format!("{}/{IN_FLIGHT}.json", store.store_name()),
+            reason: format!("mesh {mesh}'s in-flight row for attempt {} of {} was moved from lane key {} to {} and another attempt took the mesh between the two: this attempt holds it no more", row.attempt, row.build_id, standing.lane_key.as_deref().unwrap_or("none"), row.lane_key.as_deref().unwrap_or("none")),
+        })
+    }
+
     /// The attempt holding `mesh`, when one does: a point read of its row.
     pub async fn held(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
         match self.store(mesh).await? {
@@ -162,7 +193,7 @@ mod tests {
     use crate::store_root::StoreRoot;
 
     fn attempt(build_id: &BuildId, lane: Option<&str>, attempt: u32, claimant: &str) -> InFlight {
-        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into() }
+        InFlight { build_id: build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: claimant.into(), lane_key: None }
     }
 
     /// The same script against two claimants: whatever backs them, one attempt holds a mesh at a time.

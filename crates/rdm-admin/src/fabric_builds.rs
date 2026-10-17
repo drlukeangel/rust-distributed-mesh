@@ -585,6 +585,28 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         Ok(outcome)
     }
 
+    /// [`Self::claim_attempt`] with the mesh's in-flight row taken in the local log's own turn.
+    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &crate::mesh_claims::MeshClaims, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
+        let _gate = match claim.mesh {
+            None => self.authority.enter().await?,
+            Some(_) => self.mesh_seat_gate.enter().await?,
+        };
+        let fact = BuildFact::Claim(claim.clone());
+        let bytes = encode(vec![fact.clone()])?;
+        let decided = self.local.claim_in_flight(claim, claims, mesh, row).await?;
+        if decided == crate::build_state::InFlightClaim::Decided(ClaimOutcome::Won) {
+            self.publish(&fact, bytes).await;
+        }
+        Ok(decided)
+    }
+
+    async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
+        self.local.in_flight_live(held).await
+    }
+    async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+        self.local.seal_moved(moved, by).await
+    }
+
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
         self.local.adopt_claim(claim).await
     }

@@ -151,10 +151,14 @@ The ordinary election is untouched by this search: on a proven loss the seat wai
 admins of the mesh survive and leaves the mesh only when every node-admin birth of the mesh is proven gone
 or has left. The search above is for the commanded transfer only.
 
-**Where the row lives.** The one committed row is the holder's transfer row under its own mesh on the
-fabric's shared store root, `meshes/<holder mesh>/seat-transfers/<operation>`, which the holder writes as
-that mesh's writer whether one seat or both move; an outside successor of the fabric seat reads it there.
-The leadership view is folded from the transfer rows.
+**Where the row lives.** The one committed row is the fabric's next seat move, `seat-moves/<T>` on the
+fabric's shared store root (`seat-move/1`: each seat it moves with its revision before and after, the
+operation, and the exact birth that wrote it), inserted at the next `T` once the writer has folded every
+earlier move, whether one seat or both move. The row writer writes it: the holder for the `node-admin`
+cohort, the mesh-primary for every other. An outside successor of the fabric seat reads it there, and the
+leadership view is folded from the seat moves. After the row the writer seals the Build lane of each seat
+it moved at the revision it moved from (`lane-seal/1`); the successor appends to that lane only once the
+seal stands, and writes the seal itself when the writer was lost before it.
 
 **Both seats on one holder:** when the mesh-seat successor is in the same mesh (search step 1), the one row
 commits both seats to the successor at their next revisions, which makes it mesh-primary and
