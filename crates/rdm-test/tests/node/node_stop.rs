@@ -1072,7 +1072,14 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
     assert!(now.iter().any(|n| n.name == successor && n.is_primary), "{successor} holds mesh2's seat: {now:?}");
     let started = frames(nodes.start(&stopped_node).await.expect("the start was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
-    let after = view_of(&nodes, &stopped_node).await;
+    // Start completes at the mesh-primary's ready apply. This entry admin is in another mesh:
+    // wait for its projection, as the other stop/start cells wait for each admin's held row.
+    let entry = estate.entry().await;
+    let after = estate
+        .until_view_at(&entry, "the entry holds the rejoined birth ready", Duration::from_secs(10), |view| {
+            view.iter().find(|n| n.name == stopped_node && n.status == NodeStatus::ReadyForTraffic).cloned()
+        })
+        .await;
     assert_eq!((&after.node_id, &after.incarnation_id, after.status), (&stopped_birth.node_id, &stopped_birth.incarnation_id, NodeStatus::ReadyForTraffic), "the same birth rejoined: {after:?}");
 
     estate.stop().await;
