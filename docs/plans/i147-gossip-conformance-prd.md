@@ -496,7 +496,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   encoding, the `ChunkAssembler`, the membership digest loop and the six direct iroh-gossip
   dependencies go; the entity frame becomes an `Event` with the row's version as `sequence`.
   Not here.
-- **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144).
+- **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144). Sibling: `i148-data-plane-connections-prd.md`, the connections half, after this.
 - **State.** Recorded 2026-10-17; gossip.md and node-rpc-envelope.md text on main; packet sent to Codex; not started.
 
 ## Verification
