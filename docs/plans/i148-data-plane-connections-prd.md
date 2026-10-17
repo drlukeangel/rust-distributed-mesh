@@ -109,10 +109,21 @@ execution (a closed connection) exactly as Rafka distinguishes them today.
    the source, any number, concurrently, 1:1; finish, reset and stop cross the pair with the same
    code; a leg closing closes the tunnel and every paired stream with `CarrierGone` or `PeerLeft`.
    The carrier never reads an app byte. Forward (`forward.rs`, the control plane's one inner call)
-   is unchanged and separate.
-6. **Direct restoration retires the row, not the tunnel** (§10). A new `Direct Connected` retires
-   the Proxy row, so the next `open` goes Direct; a tunnel already open and its in-flight streams
-   run to their own end.
+   is unchanged and separate. **One control exchange on the first bi-stream, Direct and tunnel
+   alike:** the dialer writes its member cert, the acceptor writes the verdict (the admit step as
+   the page states it); after `admitted` the dialer writes its intent on the same stream, `Direct`
+   or `Tunnel { origin, destination }`, and the acceptor answers `Opened { peer: Birth }` or
+   `Refused { reason }`; for a tunnel the carrier answers only after its own dial to the destination
+   has run the same exchange with intent `Tunnel` and the destination, being that exact birth, has
+   answered `Opened`. Application streams are admissible on either end only after `Opened`; the
+   control stream stays open for the connection's life and its close is the connection's. On both
+   ends of a tunnel `peer()` is the far end (source ↔ destination) and `kind()` is
+   `Proxy { via: carrier }`; the carrier is the only party that sees two legs.
+6. **Direct restoration retires the route, not the tunnel** (§10). `Proxy Disconnected(direct-
+   restored)` lands as §10 says, so the next `open` goes Direct; a tunnel already open and its
+   streams run to their own end, and until then it is a held connection: `node.connections.get`
+   lists it by its row id with `route: retired`, `node.connections.delete` closes it by that id,
+   its end writes no second row and is spanned `rdm.node.connections.delete.via-tunnel-ended`.
 7. **The rows are RDM's.** `Direct Failed` with its recovery round, `Proxy Connected`, `Connected`,
    `Disconnected`, `Refused`: all through the one `ConnectionsWriter`; `node.connections.get` lists
    them, `node.connections.delete { All | [ids] }` closes them by id and `closed()` says so by name.
@@ -138,11 +149,20 @@ rule 5: a tunnel is a connection; streams pair 1:1 in both directions, concurren
 `open` and on the tunnel; close propagates by name; rule 6 for Direct restoration. P1 stream
 controls → finish/reset/stop with codes, `StreamError`, carried through the pair. P1 evidence per
 ALPN → rule 3: rows carry `alpn`, the index is `(source, destination, alpn, kind)`, reconnect and
-carriers per ALPN. P2 the i141 rows contradicted the cut → fixed in rafka-v2 (e11 drops only
+carriers per ALPN. Second pass, same day: the ALPN correction finished on §3, §9.4 and §10;
+admission-then-intent as one control exchange (rule 5); a retired tunnel stays held, listed and
+closable by id (rule 6, §10). P2 the i141 rows contradicted the cut → fixed in rafka-v2 (e11 drops only
 iroh-gossip; e12 drops iroh; the kind set is on JoinNode and `held_hash`, not a digest list).
 Accept ownership on repeated `connections(alpn)` → `AlreadyTaken` by name, rule 1.
 
-## Page deltas (connections.md; §2, §3.1 and §7 applied 2026-10-17 on Luke's yes; §9 lands with e3)
+## Page deltas (connections.md; §2, §3, §3.1, §7, §9.4 and §10 applied 2026-10-17 on Luke's yes; §9 lands with e3)
+
+- node-connections-admit.md, Exchange row, one added sentence (i145's page; awaits Luke's yes):
+  "After the verdict the dialer writes its intent on the same stream, `Direct` or
+  `Tunnel { origin, destination }` (i148), and the acceptor answers `Opened { peer }` or
+  `Refused { reason }`; application streams are admissible only after `Opened`, and the control
+  stream stays open for the connection's life."
+
 
 - §2 `NodeConnection` shape: a field `alpn: Vec<u8>` after `kind`; §3.1 declared index
   `(source, destination, kind)` → `(source, destination, alpn, kind)`.
@@ -212,6 +232,21 @@ rafka-node-transport deleted; `start_accept_loop`, the `rafka-mesh-v1` dials, `r
 `effective`/`select_carrier`/`ReachHooks`, `connection_reconnect.rs` and the last direct `iroh`
 dependency go; `which_broker`, `route_ack_writes`, `route_acks` and the `rafka-mesh-v1` frames stay.
 The i142 `epoch` rename shrinks to what stays. Recorded in rafka-v2 `docs/plans/i141-node-rpc-substrate-prd.md`.
+
+## Demo acceptance (arch, 2026-10-17): proof through RDM's public API
+
+Run in the separately built, pinned demo consumer (`demo/Cargo.toml`), with no direct iroh access
+and no private RDM hook. RED evidence retained; the three-node flame accompanies the assertions on
+rows, outcomes and payloads and never replaces them.
+
+| hazard | required proof | epic |
+|---|---|---|
+| false Proxy establishment | carrier admission alone, application bytes, EOF, a wrong birth and a handshake lapse each create **no** `Proxy Connected`; the destination's `Opened` at the exact birth does | e2 |
+| application outcome confused with transport success | establish the tunnel, apply a counter mutation, lose its reply: RDM reports no application success and replays nothing; the counter shows one execution | e2 |
+| ALPN interference | register A and B between the same births; restore A while B uses its Proxy: B's route and streams are unchanged | e1 (rows), e2 (route) |
+| incomplete connection abstraction | concurrent streams from both ends with distinct payloads: pairing, finish, reset and stop codes hold through the carrier | e2 |
+| retirement breaks lifecycle control | restore Direct during a long Proxy stream: that stream continues, the next `open` is Direct, `node.connections.delete` by the tunnel's id still closes it | e2 |
+| restart resets reconnect | restart the source before its persisted `next_due`: no early attempt; the right ALPN resumes its obligation with no duplicate attempt | e3 |
 
 ## Verification
 

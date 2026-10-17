@@ -181,14 +181,14 @@ every attempt as a separate member.
 The index identity is:
 
 ```text
-(source, destination, kind)
+(source, destination, alpn, kind)
 ```
 
-For one source/destination pair there are therefore at most two current indexed members:
+For one source/destination/alpn triple there are therefore at most two current indexed members:
 
 ```text
-(source, destination, Direct) -> latest Direct record
-(source, destination, Proxy)  -> latest Proxy record
+(source, destination, alpn, Direct) -> latest Direct record
+(source, destination, alpn, Proxy)  -> latest Proxy record
 ```
 
 A later event of the same kind replaces that kind's index row. The raw log still contains the older
@@ -524,11 +524,11 @@ relevant. A restart before `next_due` must not trigger an early attempt.
 Node-base runs one scheduler/reconciler per node process, with at most one pending direct-reconnect item per:
 
 ```text
-(destination, destination_incarnation)
+(destination, destination_incarnation, alpn)
 ```
 
-It is not one sleeping task per topic, request, or protocol. Broker topics sharing the same destination all
-benefit from the same node-to-node connection state.
+It is not one sleeping task per topic or request. Broker topics sharing the same destination and protocol all
+benefit from the same node-to-node connection state; a reconnect on one ALPN never touches another's rows.
 
 Two paths arm that one reconciler and that one pending item: the destination falling due under its durable
 Failed rows (§9.5), and a connection accepted from the destination, which is a recovery trigger (§10, §13 G).
@@ -564,11 +564,11 @@ another permitted direct-connection establishment path
 
 All are equivalent evidence.
 
-Whenever node-base observes:
+Whenever node-base observes, for one ALPN:
 
 ```text
-Direct(S,D) == Connected
-Proxy(S,D)  == Connected
+Direct(S,D,alpn) == Connected
+Proxy(S,D,alpn)  == Connected
 ```
 
 it owes:
@@ -594,6 +594,12 @@ Proxy Disconnected durably lands
         v
 Direct becomes effective for new invocations
 ```
+
+A stream Proxy (i148, a tunnel) outlives its retirement. `Proxy Disconnected(reason=direct-restored)` retires
+the route, so the next `open` goes Direct; the tunnel that is already open and its streams run to their own
+end. Until then it is a held connection (§4.2): `node.connections.get` lists it by its row id with
+`route: retired`, and `node.connections.delete { All | [ids] }` closes it by that id like any other. Its end
+writes no second row; it is spanned `rdm.node.connections.delete.via-tunnel-ended`.
 
 ---
 
