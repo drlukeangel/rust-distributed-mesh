@@ -38,7 +38,7 @@ pub struct PeerContext {
     /// The observability context the request carried, already sanitized: what a carrier
     /// hands into its inner call unchanged.
     pub context: CallContext,
-    /// The request's delivery identity and its sender's `retire_below`: what a carrier's inner call
+    /// The request's delivery identity and its sender's `forget_below`: what a carrier's inner call
     /// keeps, so the final target suppresses a resend through any carrier.
     pub delivery: Option<CarriedIdentity>,
     /// The request's acceptance boundary (node-rpc.md §43): a handler that records the accepted
@@ -741,8 +741,8 @@ impl NodeRpcServer {
         let stats = self.inner.stats.clone();
         let d = self.inner.delivery.clone();
         let id = header.delivery_id();
-        let TransportHeader::Request { retire_below, .. } = &header else { unreachable!("an invocation begins with a request header") };
-        let retire_below = *retire_below;
+        let TransportHeader::Request { forget_below, .. } = &header else { unreachable!("an invocation begins with a request header") };
+        let forget_below = *forget_below;
         let out = FrameOut::new(send);
         let arrival = d.arrive_request(&header);
         if !matches!(arrival, RequestArrival::New) {
@@ -885,7 +885,7 @@ impl NodeRpcServer {
                         acceptance.accepted();
                     }
                 }
-                let ctx = PeerContext { endpoint_id: peer, context, delivery: Some(CarriedIdentity { id: id.clone(), retire_below }), acceptance };
+                let ctx = PeerContext { endpoint_id: peer, context, delivery: Some(CarriedIdentity { id: id.clone(), forget_below }), acceptance };
                 let acks = tokio::spawn(Self::read_acks(d.clone(), id.clone(), acks));
                 if h.is_stream() {
                     let stream_out = crate::stream::StreamOut::new(out.clone(), h.max_reply(), gate.clone());

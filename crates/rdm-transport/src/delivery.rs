@@ -424,7 +424,7 @@ impl Delivery {
         DeliveryId { sender: self.inner.me.clone(), delivery_seq: seq }
     }
 
-    /// The `retire_below` a frame toward `receivers` carries: the lowest over them.
+    /// The `forget_below` a frame toward `receivers` carries: the lowest over them.
     pub(crate) fn lowest_unacked(&self, receivers: &[iroh::PublicKey]) -> u64 {
         let st = self.inner.st.lock().unwrap();
         receivers.iter().map(|r| st.send.lowest_unacked(r)).min().unwrap_or(1)
@@ -621,10 +621,10 @@ impl Delivery {
 
     /// A request frame `h` arrived: is it new, or a repeat of one held?
     pub(crate) fn arrive_request(&self, h: &TransportHeader) -> RequestArrival {
-        let TransportHeader::Request { sender, delivery_seq, retire_below } = h else { unreachable!("arrive_request takes a request header") };
+        let TransportHeader::Request { sender, delivery_seq, forget_below } = h else { unreachable!("arrive_request takes a request header") };
         let mut st = self.inner.st.lock().unwrap();
         let window = st.recv.entry(sender.clone()).or_default();
-        let arrival = match window.arrive(*delivery_seq, *retire_below) {
+        let arrival = match window.arrive(*delivery_seq, *forget_below) {
             Arrival::New => {
                 window.insert(*delivery_seq, Seen::Pending(Vec::new()));
                 RequestArrival::New
@@ -710,9 +710,9 @@ impl Delivery {
         let delivery_seq = st.send.mint(&[reply_to]);
         let mine = DeliveryId { sender: self.inner.me.clone(), delivery_seq };
         st.sent.insert(mine, Sent::Response { invocation: id.clone(), seq });
-        let retire_below = st.send.lowest_unacked(&reply_to);
+        let forget_below = st.send.lowest_unacked(&reply_to);
         let o = st.owed.get_mut(id).expect("checked above");
-        let h = TransportHeader::Response { sender: self.inner.me.clone(), delivery_seq, retire_below, invocation_id: id.clone(), seq };
+        let h = TransportHeader::Response { sender: self.inner.me.clone(), delivery_seq, forget_below, invocation_id: id.clone(), seq };
         let frame = encode_response_frame(&h, &body);
         o.frames.insert(seq, (delivery_seq, body));
         o.complete |= terminal;
@@ -847,8 +847,8 @@ impl Delivery {
         let out = FrameOut::new(send);
         let sent: Vec<u32> = frames.iter().map(|(s, _, _)| *s).collect();
         for (seq, delivery_seq, body) in frames {
-            let retire_below = self.lowest_unacked(&[conn.remote_id()]);
-            let h = TransportHeader::Response { sender: self.inner.me.clone(), delivery_seq, retire_below, invocation_id: id.clone(), seq };
+            let forget_below = self.lowest_unacked(&[conn.remote_id()]);
+            let h = TransportHeader::Response { sender: self.inner.me.clone(), delivery_seq, forget_below, invocation_id: id.clone(), seq };
             if !out.write(&encode_response_frame(&h, &body)).await {
                 return;
             }

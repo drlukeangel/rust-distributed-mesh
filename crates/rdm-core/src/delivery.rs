@@ -61,7 +61,7 @@ impl<R: Eq + Hash + Clone> SendWindow<R> {
         held
     }
 
-    /// The `retire_below` a frame toward `receiver` carries: the lowest `delivery_seq` still held
+    /// The `forget_below` a frame toward `receiver` carries: the lowest `delivery_seq` still held
     /// unacked toward it, or the next to be minted. Nothing below it is ever resent to `receiver`.
     pub fn lowest_unacked(&self, receiver: &R) -> u64 {
         self.unacked.get(receiver).and_then(|s| s.first().copied()).unwrap_or(self.next)
@@ -91,7 +91,7 @@ pub enum Arrival<'a, S> {
 }
 
 /// One sending birth's duplicate window at a receiver: the state of every frame it sent that the
-/// receiver still holds, forgotten only below the sender's `retire_below`, never by time.
+/// receiver still holds, forgotten only below the sender's `forget_below`, never by time.
 #[derive(Debug)]
 pub struct RecvWindow<S> {
     below: u64,
@@ -110,12 +110,12 @@ impl<S> RecvWindow<S> {
         Self::default()
     }
 
-    /// A frame `seq` arrived carrying the sender's `retire_below`: forget everything below the
+    /// A frame `seq` arrived carrying the sender's `forget_below`: forget everything below the
     /// watermark, then say what the frame is.
-    pub fn arrive(&mut self, seq: u64, retire_below: u64) -> Arrival<'_, S> {
-        if retire_below > self.below {
-            self.below = retire_below;
-            self.held = self.held.split_off(&retire_below);
+    pub fn arrive(&mut self, seq: u64, forget_below: u64) -> Arrival<'_, S> {
+        if forget_below > self.below {
+            self.below = forget_below;
+            self.held = self.held.split_off(&forget_below);
         }
         if seq < self.below {
             return Arrival::BelowWatermark;

@@ -390,12 +390,12 @@ async fn read_header(recv: &mut RecvStream, pending: &mut Vec<u8>) -> Option<Tra
 }
 
 fn response(from: &Birth, delivery_seq: u64, invocation: &DeliveryId, seq: u32, frame: &TickFrame) -> Vec<u8> {
-    let h = TransportHeader::Response { sender: from.clone(), delivery_seq, retire_below: 1, invocation_id: invocation.clone(), seq };
+    let h = TransportHeader::Response { sender: from.clone(), delivery_seq, forget_below: 1, invocation_id: invocation.clone(), seq };
     encode_response_frame(&h, &Tick::encode_reply(frame).unwrap())
 }
 
 fn command_response(from: &Birth, delivery_seq: u64, invocation: &DeliveryId, reply: &CommandReply) -> Vec<u8> {
-    let h = TransportHeader::Response { sender: from.clone(), delivery_seq, retire_below: 1, invocation_id: invocation.clone(), seq: 0 };
+    let h = TransportHeader::Response { sender: from.clone(), delivery_seq, forget_below: 1, invocation_id: invocation.clone(), seq: 0 };
     encode_response_frame(&h, &Command::encode_reply(reply).unwrap())
 }
 
@@ -781,15 +781,15 @@ async fn a_response_of_a_completed_invocation_is_acked_and_one_never_held_is_not
 }
 
 /// Cell 16. CONTRACT: a request's duplicate state outlives the staleness floor, forgotten only when
-/// the sender's `retire_below` passes it.
+/// the sender's `forget_below` passes it.
 #[tokio::test]
 async fn duplicate_state_outlives_the_floor_until_the_senders_watermark_passes_it() {
     let s = served().await;
     let me = birth();
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let conn = ep.connect(iroh::EndpointAddr::new(s.node.endpoint_id).with_ip_addr(s.node.transport_addr), rdm_transport::ALPN).await.unwrap();
-    let request = |seq: u64, retire_below: u64| {
-        let h = TransportHeader::Request { sender: me.clone(), delivery_seq: seq, retire_below };
+    let request = |seq: u64, forget_below: u64| {
+        let h = TransportHeader::Request { sender: me.clone(), delivery_seq: seq, forget_below };
         let target = RequestHeader::target(Target { node_id: s.node.node_id.to_string(), op: Command::OP });
         encode_request_frame(&h, &target, &Command::encode_request(&run(16, Mode::Apply)).unwrap())
     };
@@ -852,7 +852,7 @@ async fn a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_ori
         carriers.push((router, ResolvedNode { node_id: b.node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: b.incarnation }));
     }
     let (origin, _) = client_of(&[&target.node, &carriers[0].1, &carriers[1].1]).await;
-    let identity = CarriedIdentity { id: DeliveryId { sender: origin.delivery().me().clone(), delivery_seq: 7 }, retire_below: 7 };
+    let identity = CarriedIdentity { id: DeliveryId { sender: origin.delivery().me().clone(), delivery_seq: 7 }, forget_below: 7 };
     let opts = |d: Duration| CallOptions { budget: Budget::Overall(d), carried: Some(identity.clone()), ..CallOptions::default() };
     let via = |i: usize| NodeTarget::ExactNode(carriers[i].1.node_id.clone());
     let (first, _) = origin.call_via::<Command>(&via(0), &target.node.node_id, &run(17, Mode::Apply), &opts(Duration::from_secs(2))).await;

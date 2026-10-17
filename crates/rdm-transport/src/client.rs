@@ -85,8 +85,8 @@ pub struct CallOptions {
 pub struct CarriedIdentity {
     /// The origin's identity of the request.
     pub id: DeliveryId,
-    /// The origin's `retire_below`, valid for the final target too.
-    pub retire_below: u64,
+    /// The origin's `forget_below`, valid for the final target too.
+    pub forget_below: u64,
 }
 
 impl Default for CallOptions {
@@ -688,7 +688,7 @@ impl NodeRpcClient {
             }
         }
         let (id, carried_floor) = match &opts.carried {
-            Some(c) => (c.id.clone(), Some(c.retire_below)),
+            Some(c) => (c.id.clone(), Some(c.forget_below)),
             None => (self.delivery.mint(&receivers), None),
         };
         span.record("delivery_id", tracing::field::display(&id));
@@ -1123,7 +1123,7 @@ impl Attempts {
                     continue;
                 }
             };
-            let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, retire_below: self.lowest_unacked() };
+            let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
             let phase = self.client.attempt(&self.target, &node, self.op, &header, &mut self.payload, &self.opts, deadline, &self.evidence).await;
             match phase {
                 Phase::Done(out) => {

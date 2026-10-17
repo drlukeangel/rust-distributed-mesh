@@ -65,7 +65,7 @@ pub enum TransportHeader {
         delivery_seq: u64,
         /// The lowest `delivery_seq` the sender still holds unacked toward this receiver: it never
         /// resends anything below it.
-        retire_below: u64,
+        forget_below: u64,
     },
     /// A response frame: `reply_len | reply` follows.
     Response {
@@ -74,7 +74,7 @@ pub enum TransportHeader {
         /// The frame's own sequence.
         delivery_seq: u64,
         /// As in `Request`.
-        retire_below: u64,
+        forget_below: u64,
         /// The request this frame answers.
         invocation_id: DeliveryId,
         /// The frame's position in the invocation's response: `0` for a unary reply; `Started` is
@@ -592,16 +592,16 @@ mod tests {
 
     #[test]
     fn the_three_transport_headers_are_frozen_byte_for_byte() {
-        let request = TransportHeader::Request { sender: birth(), delivery_seq: 1, retire_below: 1 };
-        assert_eq!(section(&request), format!("1d00{BIRTH}0101"), "Request: kind 0, the birth, delivery_seq, retire_below");
+        let request = TransportHeader::Request { sender: birth(), delivery_seq: 1, forget_below: 1 };
+        assert_eq!(section(&request), format!("1d00{BIRTH}0101"), "Request: kind 0, the birth, delivery_seq, forget_below");
         let response = TransportHeader::Response {
             sender: birth(),
             delivery_seq: 2,
-            retire_below: 1,
+            forget_below: 1,
             invocation_id: DeliveryId { sender: birth(), delivery_seq: 1 },
             seq: 0,
         };
-        assert_eq!(section(&response), format!("3901{BIRTH}0201{BIRTH}0100"), "Response: kind 1, its identity, retire_below, invocation_id, seq");
+        assert_eq!(section(&response), format!("3901{BIRTH}0201{BIRTH}0100"), "Response: kind 1, its identity, forget_below, invocation_id, seq");
         let ack = TransportHeader::Ack { sender: birth(), delivery_seq: 1 };
         assert_eq!(section(&ack), format!("1c02{BIRTH}01"), "Ack: kind 2, the acknowledged frame's identity");
         assert_eq!(request.ack(), ack, "a frame's ack names its identity");
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn a_frame_is_its_header_section_then_its_protocol_sections() {
-        let request = TransportHeader::Request { sender: birth(), delivery_seq: 1, retire_below: 1 };
+        let request = TransportHeader::Request { sender: birth(), delivery_seq: 1, forget_below: 1 };
         let frame = encode_request_frame(&request, &t(), b"hi");
         assert_eq!(hex::encode(&frame), format!("1d00{BIRTH}0101" ) + "04026e3101" + "0400000000" + "026869");
         let HeaderRead::Read(h, at) = decode_header(&frame) else { panic!("the header reads") };
@@ -623,7 +623,7 @@ mod tests {
         let response = TransportHeader::Response {
             sender: birth(),
             delivery_seq: 2,
-            retire_below: 1,
+            forget_below: 1,
             invocation_id: DeliveryId { sender: birth(), delivery_seq: 1 },
             seq: 0,
         };
@@ -636,11 +636,11 @@ mod tests {
 
     #[test]
     fn transport_headers_encode_within_their_bound() {
-        let request = TransportHeader::Request { sender: birth(), delivery_seq: u64::MAX, retire_below: u64::MAX };
+        let request = TransportHeader::Request { sender: birth(), delivery_seq: u64::MAX, forget_below: u64::MAX };
         let response = TransportHeader::Response {
             sender: birth(),
             delivery_seq: u64::MAX,
-            retire_below: u64::MAX,
+            forget_below: u64::MAX,
             invocation_id: DeliveryId { sender: birth(), delivery_seq: u64::MAX },
             seq: u32::MAX,
         };
