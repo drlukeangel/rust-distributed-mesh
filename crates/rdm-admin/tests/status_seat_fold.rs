@@ -215,7 +215,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 let after_take = status(&rpc1);
                 assert!(membership.book.record(heartbeat(&fabric_id, &rpc2)), "rpc.2's heartbeat is held after the seat take");
                 let rpc2_heard = status(&rpc2);
-                let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.2", b.incarnation_id.clone().unwrap(), vec![]).await.unwrap();
+                let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone() }, vec![]).await.unwrap();
                 let mut projected: Vec<(String, MemberStatus)> = backbone.own_members(&membership).into_iter().filter(|d| d.node.name.kind == rdm_core::NodeKind::RpcNode).map(|d| (d.node.name.to_string(), d.status)).collect();
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.

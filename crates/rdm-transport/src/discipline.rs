@@ -63,7 +63,7 @@ pub(crate) fn from_fabric_primary_members(me: &str, i_am_mesh_primary: bool, sea
         return Verdict::NotTheAuthority;
     }
     let Some(holder) = seats.fabric() else { return Verdict::NotTheAuthority };
-    if holder.incarnation != publisher.incarnation {
+    if holder.node_id != publisher.node_id || holder.incarnation != publisher.incarnation {
         return Verdict::NotTheAuthority;
     }
     let authority = publisher.node.clone();
@@ -214,8 +214,8 @@ mod tests {
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.admin.1", false, &seats, &d, true), Verdict::NotTheAuthority);
     }
 
-    fn publisher(name: &str, inc: &IncarnationId) -> PublisherId {
-        PublisherId { node: name.into(), incarnation: inc.clone() }
+    fn publisher(name: &str, id: &NodeId, inc: &IncarnationId) -> PublisherId {
+        PublisherId { node: name.into(), incarnation: inc.clone(), node_id: id.clone() }
     }
 
     /// CONTRACT: a mesh primary takes the stamp of the aggregate its fabric-primary published,
@@ -225,7 +225,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let seats = seated(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
         let auth = digest("mesh2.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 1);
-        let p = publisher("mesh2.admin.1", &inc);
+        let p = publisher("mesh2.admin.1", &id, &inc);
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 12_000), Verdict::Sample { authority: "mesh2.admin.1".into(), stamp_ms: 12_000 });
         // Pre-adoption fabric-primary: still pending in its own aggregate.
         let pending = digest("mesh2.admin.1", &id, &inc, MemberStatus::Pending, 1);
@@ -241,12 +241,12 @@ mod tests {
         let seats = seated(Seat::FabricPrimary, "mesh2", &id, &inc, 3);
         let auth = digest("mesh2.admin.1", &id, &inc, MemberStatus::ReadyForTraffic, 1);
         let other_inc = IncarnationId::mint();
-        let other = publisher("mesh3.admin.1", &other_inc);
+        let other = publisher("mesh3.admin.1", &NodeId::mint(), &other_inc);
         let other_digest = digest("mesh3.admin.1", &NodeId::mint(), &other_inc, MemberStatus::ReadyForTraffic, 1);
         // A follower mesh primary's aggregate.
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &other, Some(&other_digest), 5), Verdict::NotTheAuthority);
         // The fabric-primary itself, and a node that is not a mesh primary.
-        let p = publisher("mesh2.admin.1", &inc);
+        let p = publisher("mesh2.admin.1", &id, &inc);
         assert_eq!(from_fabric_primary_members("mesh2.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
         assert_eq!(from_fabric_primary_members("mesh1.admin.2", false, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
         // A superseded fabric-primary's aggregate once the seat moved.

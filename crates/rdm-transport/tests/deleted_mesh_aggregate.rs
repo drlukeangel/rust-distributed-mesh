@@ -52,7 +52,7 @@ fn deleted_meshs_last_admin_publishes_its_final_aggregate_with_leaving_and_node_
     let pub_id = PublisherId {
         node: m3_a1.node.name.to_string(),
         incarnation: m3_a1.node.incarnation.clone(),
-    };
+     node_id: m3_a1.node.node_id.clone(), };
     let mut rx = SnapshotReceiver::default();
     let chunk = rdm_transport::snapshot::Chunk {
         mesh: "mesh3".into(),

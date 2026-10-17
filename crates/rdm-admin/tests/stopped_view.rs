@@ -77,7 +77,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
         let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &mesh1, MP, Arc::new(crate::adopted_time()), vec![]).await.unwrap();
         let own = digest(&fabric, MP, &mesh1);
         let succ = digest(&fabric, SUCCESSOR, &mesh1);
-        let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", MP, own.node.incarnation.clone(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: MP.to_string(), incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         assert!(membership.book.record(own.clone()) && membership.book.record(succ.clone()), "the book holds the admin and the successor");

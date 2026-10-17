@@ -44,7 +44,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         assert_eq!(Frame::Digest { digest: digest(status) }.encode(), bytes(&heartbeat), "a {status} heartbeat");
     }
 
-    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap() };
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("p")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
     let members = Frame::Members {
         mesh: "mesh1".into(),
         publisher: publisher.clone(),
@@ -58,7 +58,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         departed: vec![],
     };
-    let members_hex = format!("01 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
+    let members_hex = format!("01 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 0c 303132333435363738396162 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
     assert_eq!(members.encode(), bytes(&members_hex), "Members: one projection entry, digest then status");
     let Frame::Members { digests, .. } = Frame::decode(&bytes(&members_hex)).expect("the Members frame decodes") else { panic!("not Members") };
     assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
@@ -74,7 +74,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         departed: vec![],
     };
-    let delta_hex = format!("02 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
+    let delta_hex = format!("02 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 0c 303132333435363738396162 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
     assert_eq!(delta.encode(), bytes(&delta_hex), "MembersDelta: one changed projection entry, digest then status");
     let Frame::MembersDelta { changed, .. } = Frame::decode(&bytes(&delta_hex)).expect("the MembersDelta frame decodes") else { panic!("not MembersDelta") };
     assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");

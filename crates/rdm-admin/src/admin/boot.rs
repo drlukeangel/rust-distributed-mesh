@@ -720,7 +720,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             .map_err(|e| format!("refusing to start: {e}"))?;
                     }
                 }
-                let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
+                let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, rdm_core::PublisherId { node: name.to_string(), incarnation: incarnation.clone(), node_id: node_id.clone() }, seed_addrs.clone())
                     .await
                     .map_err(|e| format!("backbone: {e}"))?;
                 tracing::info_span!(

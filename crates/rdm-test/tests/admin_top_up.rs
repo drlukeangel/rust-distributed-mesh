@@ -156,7 +156,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
         let root_name = root_digest.node.name.to_string();
-        let root_publisher = PublisherId { node: root_name.clone(), incarnation: root_digest.node.incarnation.clone() };
+        let root_publisher = PublisherId { node: root_name.clone(), incarnation: root_digest.node.incarnation.clone(), node_id: root_digest.node.node_id.clone() };
 
         // mesh1.admin.2: launched by the root, a node-admin that is not its mesh's primary.
         let launch = launch_by(&root, "mesh1.admin.2", &admin_dir);

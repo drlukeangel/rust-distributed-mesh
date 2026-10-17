@@ -57,7 +57,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
     let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
-    let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
+    let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None };
 
@@ -158,7 +158,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "its node.started sets it ready-for-traffic");
     assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::Draining)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::Draining), "its reported Draining sets it Draining");
-    let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.1", me.incarnation_id.clone().unwrap(), vec![]).await.unwrap();
+    let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
     assert_eq!(backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::Draining), "its projection carries it");
     assert!(matches!(authority.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
     assert_eq!(status(), Some(MemberStatus::Draining), "and sets nothing");

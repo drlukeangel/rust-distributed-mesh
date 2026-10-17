@@ -297,7 +297,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     time.adopt(5_000_000);
     let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
     let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), path, Arc::new(time), vec![]).await.unwrap();
-    let backbone = Backbone::join(&gossip, &ep, &membership, mesh, path, incarnation.clone(), vec![]).await.unwrap();
+    let backbone = Backbone::join(&gossip, &ep, &membership, mesh, rdm_core::PublisherId { node: path.to_string(), incarnation: incarnation.clone(), node_id: node_id.clone() }, vec![]).await.unwrap();
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: HandoverSlot = Arc::new(OnceLock::new());

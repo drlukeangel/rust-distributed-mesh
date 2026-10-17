@@ -170,7 +170,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         // Nothing rides inside Members: its fields are digests and overlays only.
         let members = Frame::Members {
             mesh: "mesh1".into(),
-            publisher: PublisherId { node: me.into(), incarnation: IncarnationId::mint() },
+            publisher: PublisherId { node: me.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() },
             forwarded_by: None,
             topology_version: 1,
             published_at_rafka_ms: 1,
@@ -196,7 +196,7 @@ fn status_publisher_reinforces_changed_state_five_times_then_stops() {
             (ep, g)
         };
         let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", me, IncarnationId::mint(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &endpoint, &membership, "mesh1", rdm_core::PublisherId { node: me.to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         backbone.announce_statuses("pending", "pending", true, true).await;
         assert!(membership.mesh_status("mesh1").is_none() && membership.fabric_status().is_none(), "a node holding no role publishes no status");
         backbone.set_mesh_primary(true);

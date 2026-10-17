@@ -684,7 +684,7 @@ mod tests {
     }
 
     fn publisher(path: &str) -> PublisherId {
-        PublisherId { node: path.into(), incarnation: IncarnationId::mint() }
+        PublisherId { node: path.into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
     }
 
     fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {

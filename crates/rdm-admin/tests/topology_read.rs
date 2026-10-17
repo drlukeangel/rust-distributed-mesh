@@ -87,7 +87,7 @@ fn open(n: &Node, fabric: &FabricId) {
 }
 
 fn publisher(node: &str) -> PublisherId {
-    PublisherId { node: node.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-1")).unwrap() }
+    PublisherId { node: node.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-1")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() }
 }
 
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
@@ -170,7 +170,7 @@ async fn a_mesh_primary_that_has_published_nothing_serves_the_members_its_book_h
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
-    let backbone = rdm_transport::membership::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", "mesh1.rpc.1", server.resolved.incarnation.clone(), vec![]).await.unwrap();
+    let backbone = rdm_transport::membership::Backbone::join(&server.gossip, &server.ep, &server.membership, "mesh1", rdm_core::PublisherId { node: "mesh1.rpc.1".to_string(), incarnation: server.resolved.incarnation.clone(), node_id: server.resolved.node_id.clone() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     server.membership.book.record(member_of(&fabric, "mesh1", "rpc", 2));
     let t = target_of(&caller, &server);
@@ -386,7 +386,7 @@ fn a_since_from_another_publisher_epoch_is_answered_with_the_snapshot_not_unchan
         let epoch1 = publisher("mesh2.admin.1");
         hold(&server.membership, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
         let t = target_of(&caller, &server);
-        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-2")).unwrap() };
+        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth-2")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
         let other_epoch = SourceVersion { publisher: epoch2, topology_version: 7 };
         let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
         assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");

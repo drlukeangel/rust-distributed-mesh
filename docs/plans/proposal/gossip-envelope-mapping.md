@@ -1,9 +1,8 @@
-# Gossip envelope mapping for a1 review — i147 Q24 preparation
+# Gossip envelope mapping for a1 review — i147 Q34 preparation
 
-**DRAFT, 2026-10-17. Awaiting a1's review; not a ruling packet or an approved wire schema.**
+**Reviewed by a1, approved for the Q34 packet, 2026-10-17. No envelope implementation authorized before Q34 is ruled.**
 Luke accepted e2 at `7d00bb2e`. The gap outcome correction is a separate landing.
-No e3 code, architecture text, schema seal or golden has changed. After a1's review, Q24's
-packet will freeze this mapping against gossip.md §3.4 and the PRD's e2 envelope notes.
+No envelope code, architecture text, envelope seal or envelope golden has changed. Q34's packet will freeze this reviewed mapping against gossip.md §3.4 and the PRD's e2 envelope notes.
 
 ## Contract and ownership
 
@@ -132,7 +131,7 @@ installing a body. Type validation and undecodable-envelope outcomes need explic
 
 ## a1 review must resolve these mappings before the packet freezes bytes
 
-These are parts of Q24 preparation, not new independent rulings or implementation choices.
+These are parts of Q34 preparation, not new independent rulings or implementation choices.
 
 1. **Operation sequence (O).** e2 has identity, not an ordered counter, for lifecycle facts and
    round hooks. Should these events omit Sequence (the extension is optional at the event level),
@@ -188,7 +187,7 @@ below are that baseline (verify/rebase them again when a1's review arrives).
   versus [exact repeat ignored](http://localhost:16686/trace/0e5a602e6588596d2c738324b259a8f5)
   is the e2 guard against collapsing material sequence and publication identity.
 
-The Q24 packet will paste the two or three original span records verbatim, identify the reviewed
+The Q34 packet will paste the two or three original span records verbatim, identify the reviewed
 commit, give the exact old → new page lines, and put the delta before arms. No envelope flame or
 R10 GREEN is claimed before implementation.
 
@@ -205,3 +204,44 @@ data decode, malformed header/type/source/sequence controls, byte goldens and fu
 checks. Keep atomic chunks, cross-channel/read floors, fresh publication hearing and exact-repeat
 suppression. Re-run the real topology-read recovery cell as the live flame. R10 stays open until
 that revision-carrying status path and its refusal cell actually pass.
+
+## a1 disposition supplied by Luke, 2026-10-17
+
+The binding and the 22 type strings above are accepted for Q34. This section resolves the review
+items above; those questions remain as the record of what was reviewed, not open alternatives.
+
+- Literal standard attributes in the postcard metadata/body tuple are a conformant binary-mode
+  protocol binding. Record **no JSON binding on the gossip wire**. Attribute decode is independent
+  of order, duplicate attributes refused, type validated before data.
+- String metadata cost is accepted as is: approximately 150 B per digest frame against a body of
+  comparable size. This is a1's estimate, not a new measurement. The packet states actual per-kind
+  encoded overhead and goldens cover the complete message ceiling; revisit only on measured cost.
+- An id derived from the frame's declared identity is conformant; source+id must be unique and a
+  resend retains its id. Gossip has no delivery layer. The declared fact supplies dedupe.
+- PublisherId first gains node_id in its own landing. The publishing API takes the author's exact
+  birth and retains it through receipt, install, replay and forwarding, with no lookup by name.
+- O: operation events omit sequence. Their subject is the operation; id repeats are duplicate;
+  local completion/later exact-birth lifecycle evidence prevents reopening. No synthetic counter.
+- The lifecycle event's carried topology_version remains data. The envelope classifies the fact;
+  the handler applies the independent per-projection floor check as its data-validity rule (R-RX1).
+- M: PrimaryUpdating and PrimaryUpdated are operation facts. Their subject is
+  handover/<build_id>/<attempt>/<operation>; type carries stage; sequence is absent. Cohort revisions
+  stay in data; the handler checks every cohort atomically, preserving no partial install, stale
+  refusal, same-revision stage ordering, duplicate and inconsistent-content behavior. Q34's exact
+  page lines change the catalog category accordingly; gossip is an announcement, never authority.
+- R10: status sequence is P(committed seat revision) + "." + P(changed_at_rafka_ms), sequencetype
+  absent. The holder supplies the revision of its own held seat row to its status publisher.
+  A predecessor with a later timestamp loses to a successor's higher revision; within a holder,
+  change time orders changes. Equal sequence is duplicate or, for different content, inconsistent.
+- A forwarded publication retains the original author as source. Its snapshot identity in data is
+  the forwarder's exact birth plus its counter; concurrent forwarders differ, resends retain id,
+  and new publications at equal material sequence remain admissible as hearing.
+- A real-node cell supplies its author birth from its own digest. A synthetic probe mints its own
+  node id/incarnation; neither is derived from a path or endpoint. Assertions, sequencing and bounds
+  stay unchanged. Reserved types are refused before decoding bodies, unknown types distinctly;
+  both have cells. specversion, birth URI, subject grammar, RFC3339 ms time and octet-stream content
+  type stand as drafted.
+
+After the publisher-birth prerequisite, Q34 carries exact page lines, the one envelope wire-format
+move/reseal, all unchanged e2 behavioral cells, R10's delayed-predecessor cell, byte goldens and full
+size ceilings, and the real read-recovery flame. No dual decoder. No envelope code before Q34 ruling.

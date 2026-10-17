@@ -214,10 +214,11 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
         let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr]).await.unwrap();
         let p_birth = IncarnationId::mint();
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", "mesh1.admin.1", p_birth.clone(), vec![]).await.unwrap();
+        let p_node_id = NodeId::mint();
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone() };
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let round = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 
@@ -345,10 +346,11 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
         let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr]).await.unwrap();
         let p_birth = IncarnationId::mint();
-        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", "mesh1.admin.1", p_birth.clone(), vec![]).await.unwrap();
+        let p_node_id = NodeId::mint();
+        let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p_birth.clone(), node_id: p_node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         m.wait_for_neighbour().await;
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone() };
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone(), node_id: p_node_id.clone() };
         let round = || async { bb.publish(&p, bb.own_members(&p)).await };
         let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
 

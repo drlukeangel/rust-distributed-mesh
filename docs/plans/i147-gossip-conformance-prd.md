@@ -309,7 +309,37 @@ No new ruling question is raised by this comparison; R10 remains open and no e3 
 - **Page text.** gossip.md §3.1's catalog rows and the receive-rules table restated on the envelope's
   fields; exact old → new to Luke at e3's landing. A gossip change: Luke's permission is Q20.
 - **Sizing.** One seat, after the last e2 row.
-- **State.** Mapping review preparation only, 2026-10-17. [Draft for a1](proposal/gossip-envelope-mapping.md) records the proposed postcard binary binding, exact source URI and scalar sequence encoding, all 22 proposed type strings and six reserved types, and the e2 invariants the mapping must preserve. a1 review has not been found or received. The formal Q24 packet is held for that review, as Luke directed; no envelope code, architecture edit, seal or golden change has started. Review must settle operation/projection composition, multi-cohort revision/stage atomicity, status committed-revision provenance and within-author changes, transformed publication identity, and the unchanged-cell authorship seam before bytes can be frozen. R10 remains open.
+- **State.** a1 approved the mapping for the Q34 packet (Luke relayed the review, 2026-10-17); [the review and resolutions](proposal/gossip-envelope-mapping.md) record all six mappings, literal string binding cost, declared-content identity and PublisherId authorship. The publisher-birth prerequisite below lands first. Q34 is the packet number, not Q24. No CloudEvents implementation or architecture edit before Q34 is ruled; R10 remains open.
+
+
+**Publisher-birth prerequisite (Luke/a1, 2026-10-17; separate from the envelope).** PublisherId
+requires the author's NodeId, name and incarnation. Backbone::join takes that complete author;
+production boot and the rig pass the already-owned birth, synthetic probes supply their own
+identity, and PublisherId::from copies a node's own digest fields without a name lookup. Receipt,
+retained source state, forwarded full/delta, neighbour replay and topology-read install retain the
+same PublisherId. The clock's author match now checks node id plus incarnation, never name alone.
+The topology probe's since argument and output carry node_id explicitly; its two cells retain all
+original assertions/bounds and pass. **wire format moved:** PublisherId appends its NodeId after
+incarnation (13 B for a canonical 12-character id); Members, MembersDelta, carried lifecycle facts,
+and topology request/reply literals are updated by hand together; no dual decoder. Existing enum
+positions and chunk-size bounds stand. Generated frame, wire and span references regenerated.
+RED: distinct supplied node ids with the same name/incarnation collapse to one PublisherId,
+0 passed/1 failed (0.00 s); RED source is the accepted pre-prerequisite with just that unit cell.
+GREEN: core units 109/109 (0.05 s), topology byte goldens 5/5, transport units 143/143 (1.27 s),
+live publisher controls plus digest/lifecycle byte goldens 6/6 (0.23 s), all e2 cells 87/87
+(0.48 s), topology probe 2/2 (15.39 s). The new live cell publishes an empty source despite an
+unrelated same-name member in the forwarding book, then joins a new neighbour to exercise the
+forwarded replay, serves/installs the empty source via the topology read install door, and follows
+with a material change/delta. Flames carry the same node id xr5b1seak43n in publisher throughout:
+[backbone receipt](http://localhost:16686/trace/98284e918223efcc1922d5ad3583728d),
+[forwarded replay](http://localhost:16686/trace/a6d50212447cd47bf652df7e14fa4a31),
+[read install](http://localhost:16686/trace/4baf18caae13a47b0c87f2c80c53c308).
+All retrieved; RED output and GREEN spans/Jaeger JSON in target/evidence/publisher-birth/.
+The existing real Node RPC recovery cell is also GREEN. The new cell initially inspected the
+mesh-channel floor for a backbone receipt; it now uses Backbone::held_source and waits for the
+backbone subscription to join before the single send, with the same 20 s bound. No envelope
+attribute, type string, status revision, catalog category, publication-id rule or classifier
+behavior from Q34 is implemented here; R10 remains open. Separate land-script gate follows.
 
 
 

@@ -131,8 +131,8 @@ fn round_hook_story(kind: &'static str, story: HookStory) {
         let sender = Membership::join(&sender_gossip, &sender_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address(&sender_ep)]).await.unwrap();
         let peer = Membership::join(&peer_gossip, &peer_ep, &fabric, "mesh2", &MeshId::mint(), "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
-        let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![address(&peer_ep)]).await.unwrap();
+        let _peer_backbone = Backbone::join(&peer_gossip, &peer_ep, &peer, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
+        let backbone = Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![address(&peer_ep)]).await.unwrap();
         let key = RoundKey { kind: if kind.starts_with("state-") { RoundKind::StateCommit } else { RoundKind::OpenTraffic }, fabric_id: fabric.clone(), build_id: "held-round-build".into(), attempt: 1 };
         let (subject_id, subject_incarnation) = (NodeId::mint(), IncarnationId::mint());
         let book = Arc::new(RoundBook::default());

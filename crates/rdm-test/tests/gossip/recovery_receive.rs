@@ -38,7 +38,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let server_addr=server_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap();
         let mut own=birth(&fabric,&mesh,"mesh1.admin.1",10);
         own.node.endpoint_id=EndpointId(server_ep.id().to_string());own.node.transport_addr=server_addr;
-        let publisher=PublisherId{node:own.node.name.to_string(),incarnation:own.node.incarnation.clone()};
+        let publisher=PublisherId::from(&own.node);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
         let server_membership=Membership::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());

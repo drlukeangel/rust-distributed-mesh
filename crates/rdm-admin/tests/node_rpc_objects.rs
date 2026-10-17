@@ -86,7 +86,7 @@ async fn serve(reply: StatusReply, delay: Duration) -> Served {
             async move {
                 t.lock().unwrap().push(req);
                 let mut sink = sink.started(TopologyReply::Started).await.map_err(|_| rdm_transport::HandlerFault::invariant_broken("the sink refused Started"))?;
-                sink.data(TopologyReply::Unchanged { mesh: "mesh1".into(), publisher: rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }, topology_version: 3 }).await.map_err(|_| rdm_transport::HandlerFault::invariant_broken("the sink refused Data"))?;
+                sink.data(TopologyReply::Unchanged { mesh: "mesh1".into(), publisher: rdm_core::PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, topology_version: 3 }).await.map_err(|_| rdm_transport::HandlerFault::invariant_broken("the sink refused Data"))?;
                 Ok(TopologyReply::End { meshes: 1 })
             }
         })

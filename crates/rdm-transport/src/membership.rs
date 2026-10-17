@@ -2405,7 +2405,7 @@ impl View {
         let publication = (side == Side::Backbone && i.full.member_count() > 0).then(|| Publication {
             publisher: i.publisher.clone(),
             published_at_rafka_ms,
-            publisher_digest: i.full.digests().into_iter().find(|d| d.node.incarnation == i.publisher.incarnation),
+            publisher_digest: i.full.digests().into_iter().find(|d| d.node.node_id == i.publisher.node_id && d.node.incarnation == i.publisher.incarnation),
         });
         SnapshotTaken { carried, source, publication }
     }
@@ -2987,7 +2987,7 @@ impl Membership {
         if self.view.primary.load(Ordering::Relaxed) && held.iter().all(|s| &s.mesh != mesh) {
             held.push(SourceSnapshot {
                 mesh: mesh.clone(),
-                publisher: PublisherId { node: own.node.name.to_string(), incarnation: own.node.incarnation.clone() },
+                publisher: PublisherId::from(&own.node),
                 topology_version: 0,
                 digests: Vec::new(),
                 in_flight: Vec::new(),
@@ -3295,7 +3295,7 @@ impl Backbone {
     }
 
     fn current_publisher(&self) -> PublisherId {
-        PublisherId { node: self.current_name(), incarnation: self.publisher.incarnation.clone() }
+        PublisherId { node: self.current_name(), ..self.publisher.clone() }
     }
 
     /// Test seam: hand this backbone the [`Withhold`] it asks before each announcement it covers
@@ -3326,9 +3326,10 @@ impl Backbone {
         self.channel.unpark().await;
     }
 
-    /// Join the backbone as `node`, whose current birth is `incarnation`: the exact identity every
-    /// aggregate this admin publishes names as its publisher.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, incarnation: IncarnationId, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    /// Join the backbone with the author's exact birth. Every publication retains this supplied
+    /// node id and incarnation; no receiver or forwarder reconstructs them from a name.
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, author: PublisherId, seeds: Vec<EndpointAddr>) -> Result<Self> {
+        let node = author.node.as_str();
         let (m, own) = (membership.clone(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
             let me = m.view.current_name();
@@ -3392,7 +3393,7 @@ impl Backbone {
             mesh_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Mesh(mesh.to_string())))),
             fabric_status: Arc::new(Mutex::new(StatusPublisher::new(node, StatusScope::Fabric(membership.fabric.clone())))),
             wake: Arc::default(),
-            publisher: PublisherId { node: node.to_string(), incarnation },
+            publisher: author,
             full_due: membership.forward_path.owes_full(),
             version: Arc::default(),
             own: Arc::default(),
@@ -5740,7 +5741,7 @@ mod tests {
     fn members(mesh: &str, publisher: &str, forwarded_by: Option<&str>, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Frame {
         Frame::Members {
             mesh: mesh.into(),
-            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() },
+            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() },
             forwarded_by: forwarded_by.map(String::from),
             topology_version: 1,
             published_at_rafka_ms: 1,
@@ -6081,7 +6082,7 @@ mod tests {
         let _capture = crate::test_span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = View::new("mesh1", "mesh1.admin.2");
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest(&id, &inc, None, status, seq);
         let stop = op(&id, &inc, "node.stop:mesh1.rpc.1");
@@ -6143,7 +6144,7 @@ mod tests {
     fn a_node_takes_no_status_of_itself_from_its_primarys_projection() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = View::new("mesh1", "mesh1.rpc.1");
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let itself = |status, seq| digest(&id, &inc, None, status, seq);
         let members = |version: u64, d: MeshDigest| Frame::Members { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], departed: vec![] };
@@ -6173,7 +6174,7 @@ mod tests {
     fn an_admin_holds_an_own_mesh_birth_its_primarys_projection_lists_unheard_since_it_first_held_it() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = View::new("mesh1", "mesh1.admin.2");
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let members = |version: u64, digests: Vec<MeshDigest>, departed: Vec<LifecycleOp>| Frame::Members {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
@@ -6224,7 +6225,7 @@ mod tests {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = View::new("mesh1", "mesh1.admin.2");
         view.primary.store(true, Ordering::Relaxed);
-        let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(view.book.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.book.started(&id, &inc), "and sets it ready-for-traffic from its node.started");
@@ -6774,7 +6775,7 @@ mod tests {
             d.node.name = "mesh2.rpc.1".parse().unwrap();
             d
         };
-        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap() };
+        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rdm_core::fixture_crockford60("birth")).unwrap(), node_id: rdm_core::NodeId::parse("0123456789ab").unwrap() };
         let first = Frame::Members {
             mesh: "mesh2".into(),
             publisher: publisher.clone(),
@@ -6961,7 +6962,7 @@ mod tests {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
         let (admin, draining, leaving) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh1", "rpc.2", None, 1));
-        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: admin.node.incarnation.clone() };
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() };
         let members = |version: u64, digests: Vec<MeshDigest>| Frame::Members {
             mesh: "mesh1".into(),
             publisher: publisher.clone(),
@@ -7421,7 +7422,7 @@ mod tests {
     }
 
     fn publisher_of(d: &MeshDigest) -> PublisherId {
-        PublisherId { node: d.node.name.to_string(), incarnation: d.node.incarnation.clone() }
+        PublisherId { node: d.node.name.to_string(), incarnation: d.node.incarnation.clone(), node_id: d.node.node_id.clone() }
     }
 
     /// `f`, a `Members` or `MembersDelta`, stamped `published_at_rafka_ms`.
@@ -7972,7 +7973,7 @@ mod tests {
         });
         let clock: SharedClock = racing.clone();
         let m = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![]).await.unwrap();
-        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", "mesh1.admin.1", admin.node.incarnation.clone(), vec![]).await.unwrap();
+        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         // Clear `full_due` after initial seat take so round 1 is a normal source full and round 2 is a delta.
         bb.full_due.store(false, Ordering::Relaxed);

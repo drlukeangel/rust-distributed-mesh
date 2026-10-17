@@ -90,7 +90,7 @@ fn round_hook(verb: &str) -> rdm_core::RoundHook {
 }
 
 fn publisher() -> PublisherId {
-    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() }
+    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
 }
 
 /// Every `Frame` variant, each digest shape (absent and present optionals, both runtime locators).

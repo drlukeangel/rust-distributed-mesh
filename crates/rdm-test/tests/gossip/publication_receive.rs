@@ -46,11 +46,11 @@ fn story(story: Story) {
         if matches!(story, Story::CrossReadRefresh | Story::CrossReadConflict | Story::CrossDeltaBase | Story::NewPublication | Story::CrossRepeat) {
             let address = iroh::EndpointAddr::new(sender_ep.id()).with_ip_addr(sender_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
             let mut backbone_topic = gossip.subscribe(backbone_topic(&fabric), vec![]).await.unwrap();
-            role = Some(Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![address]).await.unwrap());
+            role = Some(Backbone::join(&receiver_gossip, &receiver_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![address]).await.unwrap());
             tokio::time::timeout(Duration::from_secs(5), backbone_topic.joined()).await.unwrap().unwrap();
             backbone_sender = Some(backbone_topic.split().0);
         }
-        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint() };
+        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let id = NodeId::mint();
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { node_id: id.clone(), name: "mesh2.rpc.1".parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(MeshId::mint()), in_flight: None, config: Default::default(), load: None, gossip: None };
         let snapshot = |version, publication, index, count, digests: Vec<MeshDigest>, stamp| Frame::Members { mesh: "mesh2".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.2".into()), topology_version: version, published_at_rafka_ms: stamp, snapshot_id: publication, chunk_index: index, chunk_count: count, digests, in_flight: vec![], departed: vec![] };

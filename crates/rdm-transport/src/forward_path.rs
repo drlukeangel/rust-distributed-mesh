@@ -372,7 +372,7 @@ mod tests {
     }
 
     fn publisher() -> PublisherId {
-        PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint() }
+        PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }
     }
 
     /// Every frame the sink was handed, in the order it was handed it. The send of the first

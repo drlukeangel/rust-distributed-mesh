@@ -93,7 +93,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let fab = fabric();
         let fp_m = Membership::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
         let fp_own = digest("mesh1.admin.1", 41_001);
-        let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", "mesh1.admin.1", fp_own.node.incarnation.clone(), vec![]).await.unwrap();
+        let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: fp_own.node.incarnation.clone(), node_id: fp_own.node.node_id.clone() }, vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
         // The view a node-admin hands its backbone at each install: it names mesh2 live, for the
         // accepted Build names it (rafka-node-admin-core admin.rs `project_decided_at`); a live mesh

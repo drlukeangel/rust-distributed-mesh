@@ -86,7 +86,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let membership = Membership::join(&gossip, &ep, &fabric, "mesh3", &mesh3, FP, Arc::new(crate::adopted_time()), vec![]).await.unwrap();
         let own = digest(&fabric, FP, &mesh3);
         let last = digest(&fabric, LAST, &mesh1);
-        let backbone = Backbone::join(&gossip, &ep, &membership, "mesh3", FP, own.node.incarnation.clone(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&gossip, &ep, &membership, "mesh3", rdm_core::PublisherId { node: FP.to_string(), incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
         backbone.set_fabric_primary(true);
         assert!(membership.book.record(own.clone()) && membership.book.record(last.clone()), "the book holds both admins");

@@ -447,7 +447,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let own_digest_slot: Arc<std::sync::OnceLock<rdm_core::digest::MeshDigest>> = Arc::new(std::sync::OnceLock::new());
     // The admin side holds its own mesh at a version its primary put into the mesh, as a running
     // admin does; it serves the topology it holds like every node.
-    let admin_publisher = rdm_core::PublisherId { node: name.into(), incarnation: admin_incarnation.clone() };
+    let admin_publisher = rdm_core::PublisherId { node: name.into(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() };
     let held = rdm_transport::snapshot::Chunk {
         mesh: "mesh1".into(),
         publisher: admin_publisher,
@@ -555,7 +555,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     // from that projection.
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
     let (rounds, publisher) = if primary {
-        let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", name, admin_incarnation.clone(), vec![]).await.expect("the launcher joins the backbone");
+        let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", rdm_core::PublisherId { node: name.to_string(), incarnation: admin_incarnation.clone(), node_id: admin_node_id.clone() }, vec![]).await.expect("the launcher joins the backbone");
         backbone.set_mesh_primary(true);
         if name == "mesh1.admin.1" {
             backbone.announce_seat(rdm_core::Seat::MeshPrimary, rdm_core::SeatHolder { mesh: "mesh1".into(), node_id: admin_node_id.clone(), incarnation: admin_incarnation.clone(), revision: 1 }).await;

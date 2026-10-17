@@ -893,7 +893,7 @@ mod tests {
     /// that source. Repeated gossip of its held version does nothing.
     #[test]
     fn a_receiver_keeps_the_material_floor_and_requires_a_new_publication_or_read_to_resume() {
-        let p = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let p = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let mut rx = SnapshotReceiver::default();
         assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
         assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));

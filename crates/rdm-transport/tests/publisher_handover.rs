@@ -129,11 +129,11 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let m1 = Membership::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
         let m2 = Membership::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()]).await.unwrap();
         let m = Membership::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()]).await.unwrap();
-        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", "mesh1.admin.1", p1_d.node.incarnation.clone(), vec![]).await.unwrap();
-        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", "mesh1.admin.2", p2_d.node.incarnation.clone(), vec![a1.clone()]).await.unwrap();
+        let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
+        let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
         m2.wait_for_neighbour().await;
         m.wait_for_neighbour().await;
-        let (pub1, pub2) = (PublisherId { node: "mesh1.admin.1".into(), incarnation: p1_d.node.incarnation.clone() }, PublisherId { node: "mesh1.admin.2".into(), incarnation: p2_d.node.incarnation.clone() });
+        let (pub1, pub2) = (PublisherId { node: "mesh1.admin.1".into(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, PublisherId { node: "mesh1.admin.2".into(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() });
         let held_at_member = || m.held_source_version("mesh1");
         let seq_at_member = |d: &MeshDigest| m.book.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
         for book in [&m1.book, &m2.book] {
@@ -242,5 +242,57 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             lines.push_str(&format!("ignored {} {} frame={} source={} held={} offered={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "frame"), fields(s).2, fields(s).3, fields(s).4));
         }
         std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
+    });
+}
+
+/// A supplied author survives an empty publication, receipt, forwarding, neighbour replay and
+/// topology-read install. A same-name member in the forwarder's book supplies no author identity.
+#[test]
+fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-publisher-birth").unwrap();
+    capture.run(4, async {
+        let (source, forwarder, member, reader) = (node().await, node().await, node().await, node().await);
+        let (source_addr, forwarder_addr) = (addr_of(&source.ep), addr_of(&forwarder.ep));
+        learn_addresses(&forwarder.ep, &[source_addr.clone()]).unwrap();
+        learn_addresses(&member.ep, &[forwarder_addr.clone()]).unwrap();
+        let (source_mesh, own_mesh) = (MeshId::mint(), MeshId::mint());
+        let source_birth = digest("mesh2.admin.1", 42001);
+        let forwarder_birth = digest("mesh1.admin.1", 42002);
+        let author = PublisherId::from(&source_birth.node);
+        let src = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let fwd = Membership::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        // Deliberately a different exact birth at the author's descriptive path.
+        let impostor = digest("mesh2.admin.1", 42003);
+        assert_ne!(impostor.node.node_id, author.node_id);
+        fwd.book.record(impostor);
+        let source_bb = Backbone::join(&source.gossip, &source.ep, &src, "mesh2", author.clone(), vec![]).await.unwrap();
+        let fwd_bb = Backbone::join(&forwarder.gossip, &forwarder.ep, &fwd, "mesh1", PublisherId::from(&forwarder_birth.node), vec![source_addr]).await.unwrap();
+        source_bb.set_mesh_primary(true);
+        fwd_bb.set_mesh_primary(true);
+        let mut linked = source.gossip.subscribe(rdm_transport::membership::backbone_topic(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(20), linked.joined()).await.unwrap().unwrap();
+        assert!(source_bb.publish(&src, vec![]).await);
+        until("the forwarder to install the empty source", || fwd_bb.held_source("mesh2").is_some()).await;
+        let (held_author, version) = fwd_bb.held_source("mesh2").unwrap();
+        assert_eq!(held_author, author, "receipt keeps the supplied author, not the same-name member");
+
+        // This neighbour joins after the empty source installed: its baseline is a replayed full.
+        let mem = Membership::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![forwarder_addr]).await.unwrap();
+        until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
+        assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
+        let own = digest("mesh1.rpc.1", 42004);
+        let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
+        assert_eq!(served.publisher, author);
+        assert!(served.digests.is_empty(), "the author is carried even without an author digest");
+        let read = Membership::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let chunk = rdm_transport::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, departed: served.departed };
+        assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)));
+        assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
+
+        // A subsequent material change uses the same author through the delta path.
+        source_bb.publish(&src, vec![digest("mesh2.rpc.1", 42005)]).await;
+        until("the member to apply the next source version", || mem.held_source_version("mesh2").is_some_and(|(_, v)| v > version)).await;
+        assert_eq!(mem.held_source_version("mesh2").unwrap().0, author);
+        for n in [&source, &forwarder, &member, &reader] { n.ep.close().await; }
     });
 }

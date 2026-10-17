@@ -31,7 +31,7 @@ fn reserved(kind: Kind) {
         let mut mesh_topic = gossip.subscribe(mesh_topic(&fabric, &mesh), vec![]).await.unwrap();
         let mut backbone_topic = gossip.subscribe(backbone_topic(&fabric), vec![]).await.unwrap();
         let receiver = Membership::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![addr.clone()]).await.unwrap();
-        let _backbone = Backbone::join(&recv_gossip, &recv_ep, &receiver, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![addr]).await.unwrap();
+        let _backbone = Backbone::join(&recv_gossip, &recv_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![addr]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), mesh_topic.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), backbone_topic.joined()).await.unwrap().unwrap();
         let (mesh_sender, _mesh_rx) = mesh_topic.split();

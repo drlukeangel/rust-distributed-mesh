@@ -6,7 +6,7 @@
 //! rafka-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
 //! rafka-rpc-probe --admin-birth <birth> delete --target ... --key <k>
 //! rafka-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
-//! rafka-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<incarnation>|<version>]
+//! rafka-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]
 //! ```
 //!
 //! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
@@ -497,7 +497,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     })
 }
 
-/// `topology --target <node> [--mesh <name>] [--since <node>|<incarnation>|<version>]`: one
+/// `topology --target <node> [--mesh <name>] [--since <node>|<node_id>|<incarnation>|<version>]`: one
 /// `GetTopology` (op `0x1E`) read, every frame of the stream reported in order. The probe installs
 /// nothing: it has no membership.
 async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
@@ -507,9 +507,9 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         None => None,
         Some(s) => {
             let parts: Vec<&str> = s.split('|').collect();
-            let [node, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<incarnation>|<version>")) };
+            let [node, node_id, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<node_id>|<incarnation>|<version>")) };
             Some(SourceVersion {
-                publisher: rdm_core::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))? },
+                publisher: rdm_core::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))?, node_id: rdm_core::NodeId::parse(node_id).map_err(|e| format!("--since node_id: {e}"))? },
                 topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
             })
         }
@@ -526,12 +526,12 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
                         TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => json!({
-                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
+                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": digests.into_iter().map(|d| rdm_core::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
                             "in_flight": in_flight.len(), "departed": departed.len(),
                         }),
-                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
+                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_node_id": publisher.node_id.as_str(), "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
                         TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),
                         other => json!({"frame": other.name(), "detail": format!("{other:?}")}),
                     }),

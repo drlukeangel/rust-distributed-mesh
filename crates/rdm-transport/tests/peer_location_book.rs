@@ -157,7 +157,7 @@ fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_nev
         let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
         let member = node_with(iroh::SecretKey::generate(), None).await;
         let m_admin = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
-        let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let m_member = Membership::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![]).await.unwrap();
 
         // The peer admin's first birth at X: known to the admin's mesh channel and its backbone, known

@@ -2501,14 +2501,15 @@ serde: `rename_all = "snake_case"`
 
 ### `PublisherId`
 
-`crates/rdm-core/src/publisher.rs` · struct · 2 fields · rdm-core
+`crates/rdm-core/src/publisher.rs` · struct · 3 fields · rdm-core
 
-A publisher's EXACT identity: its path name AND the birth that holds the seat. It is the epoch
+The author of a versioned topology: its descriptive name and exact node/incarnation birth.
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `node` | `String` |  | The publisher's node name. |
 | 1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The incarnation of the birth that holds the seat. |
+| 2 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The author's logical node, supplied at publication, never resolved from its name. |
 
 <a id="t-rdm_core-build-RecipeStep"></a>
 
