@@ -667,6 +667,11 @@ fact is a subject whose latest value is its completion, so a late or repeated on
 Gossip stays best-effort (§7): no acknowledgement and no delivery identity beyond `id`'s duplicate
 suppression.
 
+A declared app type (§8, `rafka.entity.<kind>`) rides this same envelope on its own topic (§4).
+Its receiver is the app: RDM authors `id`, `source`, `time` and the trace context, carries
+`subject`, `sequence` and `data` opaque, and decides nothing on the frame. The receive rules above
+apply to the `rdm.*` types only.
+
 Until the envelope lands ([i147 e3](../plans/i147-gossip-conformance-prd.md)) the frames carry the
 same values under the catalog's field names; the receive rules are the same either way.
 
@@ -827,27 +832,33 @@ Projection kind enrolment remains explicit. Provisioning/writing an entity kind 
 
 Message ordering/version rules remain owned by the entity/projection framework, not by the leadership or recovery layer.
 
-**Only projected kinds gossip, and each goes only to the nodes that project it.** A node's
-kind set is the set of entity kinds whose stores registered a projection in that process
-(`crates/rafka-node-base/src/kind_scope.rs::own_kind_set`). It rides the node's own gossip
-digest (`crates/rafka-node-base/src/lib.rs::GossipDigest`, `kind_set`). Each kind rides its own
-iroh-gossip topic, and a node joins the topic of every kind it enrolled
-(`crates/rafka-node-base/src/kind_topics.rs`); a write is
-broadcast once on its kind's topic (`crates/rafka-node-base/src/entity_gossip.rs`
-`fn broadcast_on_kind_topic`). So a compute node never receives a gateway-only kind
-(`principal`, `service_account`, `path_config` and the rest).
+**Only projected kinds gossip, and each goes only to the nodes that project it.** A kind is a
+declared type, `rafka.entity.<kind>`: the role declares its types once at boot, beside its
+hydration hook, and they ride the node's own digest as `types` (bounded like `config`: at most 64
+types and 2048 bytes, refused by name as `TypesOverCap`). A node joins the topic of every type it
+declared through `Membership::join_topic` (`rdm_transport::gossip`); the topic id is
+`f(fabric_id, type)` (§4), so two fabrics on one network never share a kind; its bootstrap peers
+are the members whose digest names the type, its own mesh's node-admin first. A write is one
+`Event { subject, sequence, data }` published once on its kind's topic. So a compute node never
+receives a gateway-only kind (`principal`, `service_account`, `path_config` and the rest).
 
-**The projection frame names its org.** Every sender builds
-`MeshControlMessage::EntityProjectionUpdateV2` (`crates/rafka-topology/src/mesh_control.rs`),
-which carries `entity_kind`, `org_id`, `key`, `offset`, `version` and `value` (`None` is a
-tombstone). The receive seam holds the row under the frame's org and refuses an empty org by
-name (`crates/rafka-entity-framework/src/gossip.rs::entity_projection_gossip_in_org`,
-`rafka.entity_store.projection.reject.via-org-unstamped`). `version` is the row's own ordering
-(`crates/rafka-entity-framework/src/traits.rs::Entity::gossip_version`). It is `0` for a kind
-ordered by offset, and compiled ACL cells carry their generation stamp.
+**The event rides the envelope (§3.4) and RDM decides nothing on it.** `subject` is the row key,
+`<org>/<kind>/<key>`; `sequence` is the row's own version
+(`crates/rafka-entity-framework/src/traits.rs::Entity::gossip_version`: `0` for a kind ordered by
+offset, the generation stamp for a compiled ACL cell); `data` is the row, `offset`, `order_key`
+and `value` (`None` is a tombstone), opaque to RDM. RDM authors `id`, `source` and `time`, takes
+`traceparent` and `tracestate` from the span the publisher is in (the write is the author; RDM
+starts no trace of its own and no byte of `data` enters a span), chunks `data` over
+`MAX_MESSAGE_BYTES` under one `id`, and hands the receiver the whole event with a span parented
+to the author's. Stale, duplicate and gap for a row are the framework's comparator over
+`sequence` and `order_key`, across authors (`crates/rafka-entity-framework/src/types.rs`,
+`OrderKey`), never RDM's. The receive seam holds the row under the subject's org and refuses an
+empty org by name (`crates/rafka-entity-framework/src/gossip.rs::entity_projection_gossip_in_org`,
+`rafka.entity_store.projection.reject.via-org-unstamped`). An undeclared type is refused by name
+on publish and dropped by name on receive.
 
-**node-admin holds every channel raw.** node-admin publishes the union of its peers' kind sets
-as its own, so every projected kind reaches it. It keeps each kind's current rows undecoded in
+**node-admin holds every channel raw.** node-admin publishes the union of its peers' declared
+types as its own, so every projected kind reaches it. It keeps each kind's current rows undecoded in
 a `RawProjectionStore` (`crates/rafka-entity-framework/src/raw_projection.rs`): one row per
 `(org, key)`, where a higher `version` wins, then a higher `offset`. Tombstones and
 clear-projection apply to it like any other row.

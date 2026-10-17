@@ -1,7 +1,7 @@
 # i147 — gossip conformance: no stale frame undoes a newer fact, no required fact is lost to arrival order
 
 **Status:** approved 2026-10-16 (Luke, Q17 of the i144/i146 stream, arm A on the a1 architect's shape).
-e1 and e2 landed; Luke accepted the e2 batch at 7d00bb2e. R10 and e3 remain open. **Tracking issue:** [drlukeangel/rafka-v2#3130](https://github.com/drlukeangel/rafka-v2/issues/3130). **Record:** this file; every state or
+e1–e4 landed; Luke accepted the e2 batch at 7d00bb2e. e5 (app types on the envelope) recorded 2026-10-17, not started. **Tracking issue:** [drlukeangel/rafka-v2#3130](https://github.com/drlukeangel/rafka-v2/issues/3130). **Record:** this file; every state or
 remaining-work update goes in an epic's row below. **Owner:** the i143 lead; an RDM engineer in a pool
 lane. **Separate from i146:** gossip stays best-effort (gossip.md §7, R-NS2); this unit fixes what
 receivers do with the frames they receive. No global counter, no acknowledgements, no reliable-gossip
@@ -387,6 +387,77 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 
 - **Luke reassignment — Owed receiver socket.** The collision was a released socket, not an insufficient wait: the old rig closed its OS-assigned endpoint and later attempted the same fixed address. The corrected rig binds `127.0.0.1:0` once, reads the assigned address and keeps that endpoint while Node RPC is not served; when the receiver comes it installs the router on that same endpoint. All ordinary responder rigs use the same `served_on` helper with an already-bound endpoint. The receiver cell is GREEN 1/1 (3.22 s): the bounded control lapses, the Owed call remains pending past it and is resent, then one handler runs when the receiver comes. Every bound and assertion stands; no port search, fixed-port reservation or retry was added. This is a second, separate test-only correction after runtime commit `039d8c0a` and before e4’s land-script gate.
 
+
+#### e5 — app types on the envelope: `Topic`, `Event`, `Received` (Luke, 2026-10-17: "that's clean, I'm into it")
+
+- **Goal → gap.** Rafka links iroh-gossip itself (six crates), builds a raw `GossipSender` per
+  entity kind (`crates/rafka-node-base/src/kind_topics.rs`) and broadcasts its own frame bytes
+  outside the §3.4 envelope; RDM has no publish surface for an app at all (`Frame` is a closed
+  enum of 22 `rdm.*` types, every publisher internal). After absorption that is two gossips and
+  two wire formats on one endpoint. Luke, 2026-10-17: RDM exposes the publish, Rafka drops
+  iroh-gossip.
+- **The API** (`rdm_transport::gossip`, re-exported by rdm-node; names approved):
+
+  ```rust
+  impl Membership { pub async fn join_topic(&self, r#type: &str) -> Result<Topic, TopicError>; }
+  pub struct Topic;                                     // one joined topic, one declared type
+  impl Topic {
+      pub async fn publish(&self, event: Event) -> Result<(), TopicError>;
+      pub fn received(&self) -> tokio::sync::mpsc::Receiver<Received>;
+      pub async fn leave(self);
+  }
+  pub struct Event    { pub subject: String, pub sequence: Option<u64>, pub data: bytes::Bytes }
+  pub struct Received { pub source: Birth, pub subject: String, pub sequence: Option<u64>,
+                        pub time_ms: u64, pub data: bytes::Bytes, pub span: tracing::Span }
+  pub enum TopicError { UndeclaredType { r#type: String }, Oversize { bytes: usize, max: usize }, Left }
+  ```
+
+  The role's `run` takes its declared types once, `types: &[&str]`, beside its hydration hook.
+- **The rules.** (1) Declared at boot: an undeclared type is refused by name on publish and
+  dropped by name on receive; no free-form `type` on the wire. (2) The carrier decides nothing:
+  RDM encodes, decodes, chunks `data` over `MAX_MESSAGE_BYTES` under one `id`, reassembles, and
+  hands the whole event over; §3.1 stale/duplicate/gap stay on the 22 `rdm.*` types; for an app
+  type, ordering is the app's (gossip.md §8: the entity framework's comparator over `sequence`
+  and `order_key`, across authors; its `OrderKey` lets a foreign-WAL offset displace a higher
+  version, so "higher sequence installs" would be wrong). (3) `sequence` is the app's: the row's
+  own version, never minted by RDM, like `digest_seq` and `revision`. (4) Trace: `publish` takes
+  the current span's W3C context as `traceparent`/`tracestate`, so the app's write is the
+  author and RDM starts no trace of its own; receive opens `rdm.mesh.membership.update.via-frame`
+  parented to it and returns that span in `Received.span` for the app to apply in; no byte of
+  `data` enters a span (attributes: type, subject, sequence, source, bytes); a malformed context
+  is dropped by name and the event continues (§3.4). No explicit context argument: a different
+  parent is a span the app enters first. (5) Topic id `f(fabric_id, type)` per §4 (Rafka's
+  `blake3("rafka.entity.<kind>")` has no fabric in it, so two fabrics on one network share entity
+  gossip today). (6) Nobody creates a topic: it is an id every subscriber derives; bootstrap peers
+  are the members whose digest names the type, own mesh's node-admin first; node-admin joins the
+  union of its members' declared types, as Rafka's node-admin does today; the fabric-primary has
+  no part.
+- **The digest delta (a gossip change; Luke's yes 2026-10-17 by "update gossip.md").**
+  `MeshDigest.types: Vec<String>`, the node's declared types, bounded like `config` (at most 64
+  types, 2048 bytes, refused by name as `TypesOverCap`). Wire format moved; the digest goldens
+  reseal; the frames page regenerates.
+- **Page text (applied 2026-10-17 on Luke's instruction, this landing carries it).** gossip.md
+  §3.4: one paragraph after the best-effort sentence, "A declared app type (§8) rides this same
+  envelope on its own topic; its receiver is the app ... the receive rules above apply to the
+  `rdm.*` types only." §8: the "Only projected kinds gossip" paragraph now says a kind is a
+  declared type riding the digest as `types`, joined through `Membership::join_topic`, topic id
+  `f(fabric_id, type)`, one `Event` per write; the "projection frame names its org" paragraph is
+  now "The event rides the envelope (§3.4) and RDM decides nothing on it" with subject, sequence,
+  data, the trace rule and the framework's comparator; "kind sets" → "declared types" in the
+  node-admin paragraph.
+- **Acceptance cells (RED first).** `an_undeclared_type_is_refused_by_name_on_publish_and_dropped_by_name_on_receive`;
+  `a_published_event_arrives_whole_with_its_subject_sequence_and_data_untouched` (over the chunk
+  bound, two chunks, one `id`); `a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped`
+  (the carrier decides nothing); `the_receive_span_parents_to_the_publishers_span_and_carries_no_data`;
+  `a_digest_over_the_types_bound_is_refused_by_name`; `the_topic_id_differs_across_fabrics_for_one_type`;
+  `node_admin_joins_the_union_of_its_members_declared_types`. The envelope ratchet gains the app
+  branch; the digest golden reseals.
+- **The Rafka side** is rafka-v2 i141 e11: `kind_topics`, `entity_gossip`'s broadcast and frame
+  encoding, the `ChunkAssembler`, the membership digest loop and the six direct iroh-gossip
+  dependencies go; the entity frame becomes an `Event` with the row's version as `sequence`.
+  Not here.
+- **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144).
+- **State.** Recorded 2026-10-17; page text on main with this record; not started.
 
 ## Verification
 
