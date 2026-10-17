@@ -88,6 +88,10 @@ async fn a_target_the_carrier_cannot_resolve_is_not_sent() {
 /// `Indeterminate(ReceiverGone)`, and the carrier hands that reason to the origin as `Carried`.
 #[tokio::test]
 async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone() {
+    if crate::own_process::delegated(module_path!(), "a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone") { return; }
+    use tracing::Instrument;
+    let _telemetry = rdm_transport::init_evidence_telemetry("rdm-outcome-carried");
+    async {
     let r = rig().await;
     let target = r.target.resolved.node_id.clone();
     let carrier = carrier_of(&r);
@@ -103,6 +107,10 @@ async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carri
         "the carrier learned the target's proven exit and carried it: {out:?}"
     );
     assert_eq!(r.handled.load(Ordering::SeqCst), 1);
+    assert_eq!(match &out { RpcOutcome::Indeterminate(i) => i.code(), other => panic!("expected indeterminate: {other:?}") }, rdm_core::outcome::Code::Unavailable, "Q40: proven receiver-gone is unavailable, including through a carrier");
+    }.instrument(tracing::info_span!("rdm.test.outcome.serve.via-carried-exit")).await;
+    rdm_transport::flush_before_exit();
+
 }
 
 /// A carrier's own account of its Direct edge to the final target.

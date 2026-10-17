@@ -24,6 +24,77 @@
 use crate::codes::ResetCode;
 use crate::protocol::{DecodeFailure, NodeProtocol};
 
+/// The standard gRPC outcome codes. Derived locally; never serialized into a Node RPC reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Code {
+    /// Standard code 0: `OK`.
+    Ok = 0,
+    /// Standard code 1: `CANCELLED`.
+    Cancelled = 1,
+    /// Standard code 2: `UNKNOWN`.
+    Unknown = 2,
+    /// Standard code 3: `INVALID_ARGUMENT`.
+    InvalidArgument = 3,
+    /// Standard code 4: `DEADLINE_EXCEEDED`.
+    DeadlineExceeded = 4,
+    /// Standard code 5: `NOT_FOUND`.
+    NotFound = 5,
+    /// Standard code 6: `ALREADY_EXISTS`.
+    AlreadyExists = 6,
+    /// Standard code 7: `PERMISSION_DENIED`.
+    PermissionDenied = 7,
+    /// Standard code 8: `RESOURCE_EXHAUSTED`.
+    ResourceExhausted = 8,
+    /// Standard code 9: `FAILED_PRECONDITION`.
+    FailedPrecondition = 9,
+    /// Standard code 10: `ABORTED`.
+    Aborted = 10,
+    /// Standard code 11: `OUT_OF_RANGE`.
+    OutOfRange = 11,
+    /// Standard code 12: `UNIMPLEMENTED`.
+    Unimplemented = 12,
+    /// Standard code 13: `INTERNAL`.
+    Internal = 13,
+    /// Standard code 14: `UNAVAILABLE`.
+    Unavailable = 14,
+    /// Standard code 15: `DATA_LOSS`.
+    DataLoss = 15,
+    /// Standard code 16: `UNAUTHENTICATED`.
+    Unauthenticated = 16,
+}
+
+impl Code {
+    /// All 17 standard codes, in numeric order.
+    pub const ALL: [Self; 17] = [Self::Ok, Self::Cancelled, Self::Unknown, Self::InvalidArgument, Self::DeadlineExceeded, Self::NotFound, Self::AlreadyExists, Self::PermissionDenied, Self::ResourceExhausted, Self::FailedPrecondition, Self::Aborted, Self::OutOfRange, Self::Unimplemented, Self::Internal, Self::Unavailable, Self::DataLoss, Self::Unauthenticated];
+    /// Standard numeric value.
+    pub const fn number(self) -> u8 { self as u8 }
+    /// Standard spelling.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Cancelled => "CANCELLED",
+            Self::Unknown => "UNKNOWN",
+            Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::DeadlineExceeded => "DEADLINE_EXCEEDED",
+            Self::NotFound => "NOT_FOUND",
+            Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::PermissionDenied => "PERMISSION_DENIED",
+            Self::ResourceExhausted => "RESOURCE_EXHAUSTED",
+            Self::FailedPrecondition => "FAILED_PRECONDITION",
+            Self::Aborted => "ABORTED",
+            Self::OutOfRange => "OUT_OF_RANGE",
+            Self::Unimplemented => "UNIMPLEMENTED",
+            Self::Internal => "INTERNAL",
+            Self::Unavailable => "UNAVAILABLE",
+            Self::DataLoss => "DATA_LOSS",
+            Self::Unauthenticated => "UNAUTHENTICATED",
+        }
+    }
+    /// Decode a standard numeric value; no extra top-level code exists.
+    pub fn from_number(n: u8) -> Option<Self> { Self::ALL.into_iter().find(|c| c.number() == n) }
+}
+
 /// Shared reply semantics; the bytes stay protocol-owned (node-rpc.md §25).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReplyKind {
@@ -132,6 +203,22 @@ pub enum IndeterminateReason {
     ReceiverGone(String),
 }
 
+impl IndeterminateReason {
+    /// Standard code derived from the typed cause, never the explanation.
+    pub fn code(&self) -> Code {
+        match self {
+            Self::ReceiverGone(_) => Code::Unavailable,
+            Self::ReplyDeadline => Code::DeadlineExceeded,
+            Self::ReplyLost(_) | Self::Carried(_) => Code::Unknown,
+            Self::Reset(n) if *n == u64::from(ResetCode::InternalRpcFailure.code()) => Code::Internal,
+            Self::Reset(_) => Code::Unknown,
+            Self::UnsupportedReplyVariant => Code::InvalidArgument,
+            Self::CorruptReply => Code::DataLoss,
+            Self::ProtocolViolation(_) => Code::Internal,
+        }
+    }
+}
+
 /// A decoded reply and how its protocol classified it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Replied<R> {
@@ -202,6 +289,9 @@ pub struct Indeterminate {
 }
 
 impl Indeterminate {
+    /// Standard code derived from the typed cause; certainty remains Indeterminate.
+    pub fn code(&self) -> Code { self.reason.code() }
+
     /// Why no stronger proof exists.
     pub fn reason(&self) -> &IndeterminateReason {
         &self.reason
