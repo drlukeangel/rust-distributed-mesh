@@ -144,7 +144,19 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["node"] == node && sp["attributes"]["command"] == "start-node").expect("the start command was sent");
     let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && sp["attributes"]["reused"].is_string()).expect("the start call was made");
-    assert_eq!(call["attributes"]["reused"], "false", "the start dialled afresh: the stop's connection was closed");
+    // The stop's transport cut closed its connection, so the start dials afresh or rides a connection
+    // its caller dialled to this birth after the cut: a response the caller owed the node (node-rpc.md
+    // §43) may dial the same live birth between the two (i146 e1, the read of this cell's reds).
+    if attr(call, "reused") != "false" {
+        let cut = start_ns(of_node("rdm.node_admin.node.update.via-stop-transport-cut")[0]);
+        let caller = attr(call, "delivery_id").split('/').next().unwrap_or_default().to_string();
+        let caller_addr = mesh.iter().find(|n| n.node_id.as_str() == caller).and_then(|n| n.transport_addr).unwrap_or_else(|| panic!("the start's caller {caller} is a node of mesh1")).to_string();
+        let incarnation = before.incarnation_id.as_ref().unwrap().as_str().to_string();
+        let dialled = named(&spans, "rdm.node_rpc.connection.create.via-dial").into_iter().any(|sp| {
+            attr(sp, "outcome") == "connected" && attr(sp, "incarnation_id") == incarnation && attr(sp, "local").contains(&caller_addr) && (cut..=start_ns(call)).contains(&start_ns(sp))
+        });
+        assert!(dialled, "the start rode a connection {caller} dialled to {node}'s birth after the stop's transport cut: {call}");
+    }
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a parked node is not drift");
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
