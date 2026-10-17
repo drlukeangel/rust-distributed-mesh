@@ -275,9 +275,25 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 #### e3 — the owners move onto it, one at a time, each after its reconstruction cells
 
 - **Goal → gap.** R7, R8. Three loops, one missing; none demonstrates reconstruction.
-- **Order.** (1) the member → mesh-primary round check-in (`node_self::check_in`: the failing case);
-  (2) the mesh-primary → fabric-primary check-in; (3) the owed declaration (`node.rs:651-670`,
-  `declare_once`). For each, first the owner's cells: reconstruction of its pending messages from its
+- **Q29 (Luke 2026-10-16, arm C).** A node that parks declares `stopped` to its mesh-primary as its
+  owed declaration, whether or not any command's stream is still open; the mesh-primary records it and
+  publishes NodeStopped from the declaration, exactly as from the stop call's own `node.stopped`. The
+  response drop at `delivery.rs:493-496` is correct and stays: the node's state does not travel on that
+  response, it travels on the node's report. The Build side needs nothing new: the attempt ended
+  Indeterminate at its step; the next resubmission reads the birth's recorded state (stopped) and
+  resumes at start (Q2's rule: a completed stop is never run again). Cells: a stop committed, its
+  owner's bound lapsing, the node continued, the stop run, the node declaring `stopped`, NodeStopped
+  published, the resubmitted restart resuming at start, no person; its control, a stop answered within
+  the bound publishes NodeStopped once, never twice from the reply and the declaration (the declaration
+  of a state the row already holds is `AlreadyApplied`); and
+  `node_stop::a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth`
+  green on it (its gate red, `d58a7975`, trace `0bed69226abd2aa867c36bb7f2b0899d`, is this case).
+  Page lines, exact old → new to Luke before landing: node-stop.md steps 4-5 gain that the mesh-primary
+  records `stopped` from the node's declaration as well as from the stop stream; node-status.md's
+  declaration section cites §43 for how the declaration is delivered.
+- **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
+  being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
+  (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
   durable state after a restart of the same birth, with operation identity; regeneration of a lost
   reply's result; the already-applied answer by operation identity on a resend that outlived the
   duplicate table. Then the loop deleted and the message handed to the layer. Then the control: the
