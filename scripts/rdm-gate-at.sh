@@ -59,7 +59,7 @@ ROLES=""
 # transport, node-rpc and node-admin-core compiled in each of the invocations; 87 + 188 + 96 s).
 step build "cargo build --timings --message-format=json --tests --bins $PKGS $ROLES > $D/artifacts.json" || { echo DONE | tee -a $O; exit 1; }
 # The timings row (Luke 2026-10-12, layout proposal §5): wall, units, max concurrency, the unit-time sum and the five longest units.
-python3 scripts/gate/timings_row.py target/cargo-timings/cargo-timing.html 2>&1 | tee -a $O
+python3 scripts/timings_row.py target/cargo-timings/cargo-timing.html 2>&1 | tee -a $O
 # One build, one set of test binaries: every job runs an executable this build produced, and any
 # test executable in the lane this build did not produce (an older SHA's, another selection's) is
 # deleted, so a lane holds one set, never one per gate.

@@ -24,11 +24,11 @@ fi
 echo "rebased $B -> $(git rev-parse --short HEAD) on $(git rev-parse --short origin/main)"
 # The name check (rdm-crate-and-test-layout.md §4): a diff that ADDS a retired word in an identifier or a file
 # name, or an id-named test file, is refused before any gate runs.
-NC=$(python3 scripts/gate/name-check.py origin/main HEAD 2>&1); [ -n "$NC" ] && { echo "REFUSED: name check"; echo "$NC"; exit 5; }
+NC=$(python3 scripts/name-check.py origin/main HEAD 2>&1); [ -n "$NC" ] && { echo "REFUSED: name check"; echo "$NC"; exit 5; }
 # A tree whose gate went red is never gated again: a red is a defect to fix, not a roll to repeat.
 TREE=$(git rev-parse HEAD^{tree}); RED=$DEPLOY/red-trees
 if grep -q "^$TREE " "$RED" 2>/dev/null; then echo "REFUSED: this exact tree was red ($(grep "^$TREE " "$RED" | tail -1 | cut -d' ' -f2-)); fix the red, do not re-gate it"; exit 4; fi
-OUT=$(bash $L/scripts/gate/rdm-gate-at.sh $L fast 9>&- 2>&1); echo "$OUT" | grep -E "FAIL|DONE" | tail -6
+OUT=$(bash $L/scripts/rdm-gate-at.sh $L fast 9>&- 2>&1); echo "$OUT" | grep -E "FAIL|DONE" | tail -6
 # The landing's timings row goes to the ledger whatever the gate's verdict, with the tree it measured.
 TROW=$(echo "$OUT" | grep "^TIMINGS" | tail -1); echo "$TROW"; echo "$(date -Is) $B $(git rev-parse --short HEAD) $TROW" >> $DEPLOY/timings-ledger.txt
 if echo "$OUT" | grep -q FAIL; then echo "$TREE $(date -Is) $B $(echo "$OUT" | grep FAIL | head -3 | tr '\n' ' ')" >> "$RED"; echo "NOT LANDED: gate red; this tree is recorded and will not be gated again"; exit 2; fi

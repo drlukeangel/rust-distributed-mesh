@@ -4,13 +4,13 @@
 # Cargo keeps one copy of a workspace crate per package selection: each `-p` set resolves its own
 # features (the tools add serde_core, hyper-util, rustix and proc-macro2 features under rdm-transport),
 # so a different selection compiles the whole stack again. This script builds exactly the gate's
-# selection (every workspace member, `--tests --bins`, scripts/gate/rdm-gate-at.sh), so a lane holds one
+# selection (every workspace member, `--tests --bins`, scripts/rdm-gate-at.sh), so a lane holds one
 # copy and an edit is paid once, then runs the test executable you name from that build.
 #
 # usage: cells.sh <package> [<test target>|lib] [-- <libtest args: filter, --nocapture, --exact ...>]
-#   scripts/gate/cells.sh rdm-transport main -- delivery::
-#   scripts/gate/cells.sh rdm-admin lib -- status_declare::
-#   scripts/gate/cells.sh rdm-test main -- node_stop::      (every cell runs at the gate cadence)
+#   scripts/cells.sh rdm-transport main -- delivery::
+#   scripts/cells.sh rdm-admin lib -- status_declare::
+#   scripts/cells.sh rdm-test main -- node_stop::      (every cell runs at the gate cadence)
 # Run it from the lane's root.
 set -u
 pkg=${1:?usage: cells.sh <package> [<test target>|lib] [-- args]}; shift
