@@ -1755,11 +1755,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // An admin that is its own mesh's primary has no primary to report to, and after its
                                         // cut it publishes nothing (node-stop.md step 4): its stop is its commander's to publish.
                                         let declare: crate::node_self::Declare = {
-                                            let (declarer, topology, client, authority, digest, me_id, incarnation) =
-                                                (declarer.clone(), control.topology.clone(), node_rpc.client.clone(), authority.clone(), digest.clone(), node_id.clone(), incarnation.clone());
+                                            let (declarer, topology, client, authority, digest, me_id, incarnation, wake) =
+                                                (declarer.clone(), control.topology.clone(), node_rpc.client.clone(), authority.clone(), digest.clone(), node_id.clone(), incarnation.clone(), records.wake.clone());
                                             Arc::new(move |state, operation| {
                                                 let me = digest.lock().unwrap().node.name.clone();
-                                                let (declarer, topology, client, authority, me_id, incarnation) = (declarer.clone(), topology.clone(), client.clone(), authority.clone(), me_id.clone(), incarnation.clone());
+                                                let (declarer, topology, client, authority, me_id, incarnation, wake) = (declarer.clone(), topology.clone(), client.clone(), authority.clone(), me_id.clone(), incarnation.clone(), wake.clone());
                                                 Box::pin(async move {
                                                     let view = topology.read().await.clone();
                                                     if view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == me_id) {
@@ -1768,7 +1768,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         return;
                                                     }
                                                     declarer.owe_own(&me, &me_id, &incarnation, state, operation);
-                                                    declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &BTreeSet::new()).await;
+                                                    declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &BTreeSet::new(), &wake).await;
                                                 })
                                             })
                                         };
@@ -1865,7 +1865,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     rounds.withdraw_superseded().await;
                                                 }
                                                 rdm_node::node_rpc::feed_once(&book, &resolver, &me.to_string());
-                                                declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
+                                                declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed, &records.wake).await;
                                                 drop(turn);
                                                 // One coalesced wake from the inputs, never a timer: a poke during the round is
                                                 // the stored permit, so the next round runs at once; a burst runs one.

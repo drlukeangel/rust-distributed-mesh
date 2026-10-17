@@ -23,16 +23,22 @@
 //! sends): the completion of a superseded round is never sent.
 //! RejectedStaleBirth               this birth is superseded in the authority's view: done, named
 //! RejectedInvalidTransition        the authority holds a later state: done, named
-//! NotSent | Indeterminate          failed delivery: sent again when the route is viable again
-//!                                  (never a negative state)
+//! no answer                        the receiver's exit or removal is proven: owed to the birth the
+//!                                  view names next (never a negative state)
 //! ```
+//!
+//! Delivery is Node RPC's (node-rpc.md §43, i146 Q44): each declaration sent is one `Budget::Owed`
+//! call held by the declarer, resent by the layer until the authority answers. The declarer never
+//! sends a key again because a delivery failed: a call in flight to the destination the view names
+//! is left to run, and is dropped and owed to the new destination when the view names another birth
+//! or the key is withdrawn.
 //!
 //! Nothing here gates gossip or readiness: the admin's own `ReadyForTraffic` is published by
 //! membership as before; the declaration is certainty on top of it.
 
 use crate::model::{IncarnationId, NodeId, NodeKind, PathName};
 use crate::topology::Topology;
-use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{DeclaredOperation, FabricEvent, MeshState, NodeState, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, BTreeSet};
@@ -103,19 +109,18 @@ impl Destination {
     }
 }
 
-/// The last send of one declaration.
+/// The last send of one declaration that ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sent {
     pub to: Destination,
     /// A typed reply came back: terminal until an eligible event.
     pub typed: bool,
-    /// The view showed the target unreachable after an untyped failure: a viable route is a gain.
-    pub route_lost: bool,
 }
 
 /// Is a declaration due (R-S2)? Sent when it becomes owed, and again only when the authority
-/// addressed this admin, or the destination changed to a deliverable birth, or a failed delivery
-/// gained a viable route. A target that is not deliverable is sent nothing.
+/// addressed this admin or the destination changed to a deliverable birth. A failed delivery is never
+/// a reason: the Owed call is the layer's to deliver (node-rpc.md §43). A target that is not
+/// deliverable is sent nothing.
 pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
     if addressed {
         return true;
@@ -125,8 +130,30 @@ pub fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addre
     }
     match sent {
         None => true,
-        Some(s) => &s.to != now || (!s.typed && s.route_lost),
+        Some(s) => &s.to != now,
     }
+}
+
+/// How a reply ends a declaration: its name, and whether it finishes the key (applied, or refused for
+/// a fact the authority holds that this declaration can never move past).
+fn classify(reply: &StatusReply) -> (String, bool) {
+    match reply {
+        StatusReply::Applied | StatusReply::AlreadyApplied => (reply.name().to_string(), true),
+        StatusReply::RejectedStaleIncarnation { .. }
+        | StatusReply::RejectedStaleMesh { .. }
+        | StatusReply::RejectedStaleFabric { .. }
+        | StatusReply::RejectedInvalidNodeTransition { .. }
+        | StatusReply::RejectedInvalidMeshTransition { .. } => (format!("{reply:?}"), true),
+        other => (format!("{other:?}"), false),
+    }
+}
+
+/// A declaration's Owed call in flight to `to`: dropped (its task aborted, the request owed no
+/// longer) when the key is sent to another destination or withdrawn.
+#[derive(Debug)]
+struct Inflight {
+    to: Destination,
+    task: tokio::task::JoinHandle<()>,
 }
 
 /// One declaration this admin owes, by natural key.
@@ -188,6 +215,8 @@ pub(crate) struct Declarer {
     /// "Status report", i146 Q37): a start's ReadyForTraffic names the start, a stop's Leaving the
     /// stop; a state this admin measured itself names none.
     own_operations: Mutex<BTreeMap<NodeState, DeclaredOperation>>,
+    /// The Owed call in flight for each key sent and not yet answered.
+    inflight: Mutex<BTreeMap<Key, Inflight>>,
 }
 
 impl Declarer {
@@ -338,19 +367,10 @@ impl Declarer {
             };
             let Some(target) = target else {
                 p.last = Some("no authority in view".into());
-                // The seat names no deliverable holder: a failed delivery has lost its route.
-                if let Some(s) = p.sent.as_mut().filter(|s| !s.typed) {
-                    s.route_lost = true;
-                }
                 continue;
             };
             let now = Destination::of(target);
             let deliverable = &target.node_id == me_id || (target.status.is_live() && target.incarnation_id.is_some());
-            if let Some(s) = p.sent.as_mut() {
-                if !s.typed && !deliverable {
-                    s.route_lost = true;
-                }
-            }
             if eligible(p.sent.as_ref(), &now, deliverable, addressed.contains(&target.node_id)) {
                 due.push((p.clone(), target.clone()));
             }
@@ -362,68 +382,92 @@ impl Declarer {
     /// When the view names this admin, the declaration goes through this admin's own door
     /// (`authority`), decided exactly as a peer's would be; no seat is assumed. `addressed` is
     /// the authorities that sent this admin their down op since the last round.
-    pub async fn round(&self, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>, addressed: &BTreeSet<NodeId>) {
+    pub async fn round(self: &Arc<Self>, me: &PathName, me_id: &NodeId, view: &Topology, client: &NodeRpcClient, authority: Option<&crate::status_rpc::StatusAuthority>, addressed: &BTreeSet<NodeId>, wake: &Arc<DeclareWake>) {
         self.withdraw_unowned(me, me_id, view);
         self.reowe_moved(me, view);
         for (p, target) in self.due(me_id, view, addressed) {
-            let classify = |reply: &StatusReply| match reply {
-                StatusReply::Applied | StatusReply::AlreadyApplied => (reply.name().to_string(), true),
-                StatusReply::RejectedStaleIncarnation { .. }
-                | StatusReply::RejectedStaleMesh { .. }
-                | StatusReply::RejectedStaleFabric { .. }
-                | StatusReply::RejectedInvalidNodeTransition { .. }
-                | StatusReply::RejectedInvalidMeshTransition { .. } => (format!("{reply:?}"), true),
-                other => (format!("{other:?}"), false),
-            };
-            let (outcome, finished, typed, via) = if &target.node_id == me_id {
+            let addressed_now = addressed.contains(&target.node_id);
+            if &target.node_id == me_id {
                 match authority {
                     Some(auth) => {
                         let reply = auth.apply(Some(target.clone()), &p.request).await;
                         let (o, f) = classify(&reply);
-                        (o, f, true, "self")
+                        self.declared(me, &p, &target, "self", addressed_now, o, f, true);
                     }
                     None => {
                         // Unreachable: the declarer starts after the authority is filled.
                         tracing::error!(node = %me, key = ?p.key, "authority is self, but the Status authority is not filled: unreachable, the declarer starts after it is filled");
                         debug_assert!(false, "authority is self, but the Status authority is not filled");
                         self.note(&p.key, 0, "authority is self, but this admin holds no view yet");
-                        continue;
                     }
                 }
-            } else {
-                let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &CallOptions::default()).instrument(completion_span(&p, &target)).await;
-                match &out {
+                continue;
+            }
+            // One Owed call per key (node-rpc.md §43, i146 Q44): the layer resends it until the
+            // authority answers; the declarer only retargets it.
+            let to = Destination::of(&target);
+            let mut inflight = self.inflight.lock().unwrap();
+            if inflight.get(&p.key).is_some_and(|f| f.to == to) {
+                continue;
+            }
+            if let Some(old) = inflight.remove(&p.key) {
+                old.task.abort();
+                tracing::info_span!("rdm.node_admin.status.update.via-declare-retargeted", node = %me, key = ?p.key, to = %target.name, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the view names another birth for this declaration's authority: the call in flight is dropped and the declaration is owed to it"));
+            }
+            let (this, client, wake, me, key) = (self.clone(), client.clone(), wake.clone(), me.clone(), p.key.clone());
+            let sent_to = to.clone();
+            // Spawned under the lock: the call's own end, which takes the lock, never runs ahead of its record.
+            let task = tokio::spawn(async move {
+                let owed = CallOptions { budget: Budget::Owed, ..CallOptions::default() };
+                let (out, _) = client.call::<Status>(&NodeTarget::ExactNode(target.node_id.clone()), &p.request, &owed).instrument(completion_span(&p, &target)).await;
+                let (outcome, finished, typed) = match &out {
                     RpcOutcome::Reply(r) => {
                         let (o, f) = classify(r.value());
-                        (o, f, true, "node-rpc")
+                        (o, f, true)
                     }
-                    other => (format!("{}: {other:?}", other.name()), false, false, "node-rpc"),
+                    other => (format!("{}: {}", other.name(), other.code().name()), false, false),
+                };
+                {
+                    let mut inflight = this.inflight.lock().unwrap();
+                    if inflight.get(&p.key).is_some_and(|f| f.to == sent_to) {
+                        inflight.remove(&p.key);
+                    }
                 }
-            };
-            let operation = match &p.request {
-                StatusRequest::DeclareNodeState { operation: Some(op), .. } => op.operation.as_str(),
-                _ => "",
-            };
-            tracing::info_span!(
-                "rdm.node_admin.status.update.via-declare",
-                node = %me,
-                key = ?p.key,
-                operation,
-                to = %target.name,
-                via,
-                attempt = p.attempts + 1,
-                outcome = %outcome,
-                finished,
-                addressed = addressed.contains(&target.node_id),
-            )
-            .in_scope(|| tracing::info!("declared to the authority"));
-            if finished {
-                self.pending.lock().unwrap().remove(&p.key);
-                self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone(), target.incarnation_id.clone()));
-            } else {
-                self.note(&p.key, 1, &outcome);
-                self.record_sent(&p.key, &target, typed);
-            }
+                this.declared(&me, &p, &target, "node-rpc", addressed_now, outcome, finished, typed);
+                wake.poke();
+            });
+            inflight.insert(key, Inflight { to, task });
+        }
+    }
+
+    /// The end of one send of `p` to `target`, spanned: an answer that finishes it records the key done
+    /// by that authority; any other end is the key's last send.
+    #[allow(clippy::too_many_arguments)]
+    fn declared(&self, me: &PathName, p: &Pending, target: &crate::model::Node, via: &'static str, addressed: bool, outcome: String, finished: bool, typed: bool) {
+        let operation = match &p.request {
+            StatusRequest::DeclareNodeState { operation: Some(op), .. } => op.operation.as_str(),
+            _ => "",
+        };
+        tracing::info_span!(
+            "rdm.node_admin.status.update.via-declare",
+            node = %me,
+            key = ?p.key,
+            operation,
+            to = %target.name,
+            via,
+            attempt = p.attempts + 1,
+            outcome = %outcome,
+            finished,
+            addressed,
+        )
+        .in_scope(|| tracing::info!("declared to the authority"));
+        if finished {
+            self.pending.lock().unwrap().remove(&p.key);
+            self.done.lock().unwrap().insert(p.key.clone(), (outcome, target.node_id.clone(), target.incarnation_id.clone()));
+        } else {
+            self.note(&p.key, 1, &outcome);
+            self.record_sent(&p.key, target, typed);
         }
     }
 
@@ -451,6 +495,9 @@ impl Declarer {
             self.requests.lock().unwrap().remove(&key);
             self.done.lock().unwrap().remove(&key);
             self.pending.lock().unwrap().remove(&key);
+            if let Some(f) = self.inflight.lock().unwrap().remove(&key) {
+                f.task.abort();
+            }
             tracing::info_span!("rdm.node_admin.status.remove.via-seat-moved", node = %me, key = ?key, held_by = %held_by)
                 .in_scope(|| tracing::info!("the seat that owes this declaration is another admin's: withdrawn"));
         }
@@ -463,6 +510,9 @@ impl Declarer {
         self.requests.lock().unwrap().remove(key);
         self.done.lock().unwrap().remove(key);
         self.pending.lock().unwrap().remove(key);
+        if let Some(f) = self.inflight.lock().unwrap().remove(key) {
+            f.task.abort();
+        }
         tracing::info_span!("rdm.node_admin.status.remove.via-round-superseded", node = %me, key = ?key, superseded_by = %superseded_by)
             .in_scope(|| tracing::info!("the accepted Build moved past the round this completion belongs to: withdrawn"));
     }
@@ -481,7 +531,7 @@ impl Declarer {
     /// The send of `key` to `target` ended without finishing it; `typed` says a typed reply came back.
     pub(crate) fn record_sent(&self, key: &Key, target: &crate::model::Node, typed: bool) {
         if let Some(held) = self.pending.lock().unwrap().get_mut(key) {
-            held.sent = Some(Sent { to: Destination::of(target), typed, route_lost: false });
+            held.sent = Some(Sent { to: Destination::of(target), typed });
         }
     }
 
@@ -831,10 +881,13 @@ mod tests {
         assert!(!d.due(&me_id, &v, &other).iter().any(|(p, _)| p.key == mesh_key()), "a down op from a node that is not the key's authority re-sends nothing");
     }
 
-    /// CONTRACT: a target that goes live -> unreachable is sent nothing; an untyped failure is
-    /// sent again when the route is viable again, a typed reply is not.
+    /// CONTRACT (i146 e3 owner 3, the control; node-rpc.md §43): a failed delivery is the delivery
+    /// layer's. A target that goes unreachable is sent nothing new, and when it is reachable again the
+    /// declarer sends nothing again either: a key is sent again only when its authority addresses
+    /// this admin or the view names another birth. Must NOT happen: the declarer resending a key
+    /// because its route returned (the retry loop the Owed call replaced).
     #[test]
-    fn a_target_going_unreachable_sends_nothing_and_a_failed_delivery_resends_when_it_returns() {
+    fn a_failed_delivery_is_the_layers_and_the_declarer_sends_it_again_only_to_a_new_destination() {
         let me_id = NodeId::mint();
         let mut v = view("mesh2.admin.1", "mesh1.admin.1");
         let none = BTreeSet::new();
@@ -859,8 +912,10 @@ mod tests {
             }
         }
         let back: Vec<Key> = d.due(&me_id, &v, &none).into_iter().map(|(p, _)| p.key).collect();
-        assert!(back.contains(&mesh_key()), "the failed delivery gained a viable route: {back:?}");
-        assert!(!back.contains(&typed_key), "a typed reply stays terminal when the route returns: {back:?}");
+        assert!(!back.contains(&mesh_key()) && !back.contains(&typed_key), "a returned route sends nothing again: the layer owns the failed delivery: {back:?}");
+        let addressed: BTreeSet<NodeId> = [fp.node_id.clone()].into();
+        let asked: Vec<Key> = d.due(&me_id, &v, &addressed).into_iter().map(|(p, _)| p.key).collect();
+        assert!(asked.contains(&mesh_key()), "the fabric-primary addressing this admin sends the key owed to it again: {asked:?}");
     }
 
     /// CONTRACT: a destination that changes to a deliverable birth is sent to once.

@@ -11,7 +11,35 @@
 //! Nothing leaves a checklist by a timer.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
-use crate::status_declare::{eligible, Destination, Sent};
+use crate::status_declare::Destination;
+
+/// The last send of one round command. A round command still rides a bounded call, so a failed
+/// delivery waits here for a viable route (the declarer's declarations ride Owed calls and keep no
+/// route state, i146 e3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Sent {
+    pub to: Destination,
+    /// A typed reply came back: terminal until an eligible event.
+    pub typed: bool,
+    /// The view showed the target unreachable after an untyped failure: a viable route is a gain.
+    pub route_lost: bool,
+}
+
+/// Is a round command due again? When the birth addressed this admin, the destination changed to a
+/// deliverable birth, or a failed delivery gained a viable route. A target that is not deliverable is
+/// sent nothing.
+fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
+    if addressed {
+        return true;
+    }
+    if !deliverable {
+        return false;
+    }
+    match sent {
+        None => true,
+        Some(s) => &s.to != now || (!s.typed && s.route_lost),
+    }
+}
 use crate::topology::Topology;
 use crate::round::Missing;
 use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};

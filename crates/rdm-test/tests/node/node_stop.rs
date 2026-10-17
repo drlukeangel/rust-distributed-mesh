@@ -1100,7 +1100,12 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
         .into_iter()
         .filter(|sp| attr(sp, "node") == holder_s && attr(sp, "key").ends_with(", Leaving)") && attr(sp, "operation") == holder_stop)
         .collect();
-    assert!(holder_declared.iter().any(|sp| attr(sp, "to") == successor_s && attr(sp, "outcome") == "applied"), "{holder_s}'s stop declared its Leaving naming the stop to {successor_s}: {holder_declared:#?}");
+    // The declaration rides an Owed call (i146 e3 owner 3): the new holder takes it applied, or already
+    // applied when the stop stream's `stopped` reached it first (Q36: "from whichever arrives first").
+    assert!(
+        holder_declared.iter().any(|sp| attr(sp, "to") == successor_s && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied")),
+        "{holder_s}'s stop declared its Leaving naming the stop to {successor_s}: {holder_declared:#?}"
+    );
     let holder_stopped = stopped_of(&holder_s);
     assert_eq!(holder_stopped.len(), 1, "NodeStopped for the old holder is published once: {holder_stopped:#?}");
     println!(

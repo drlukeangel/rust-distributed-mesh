@@ -649,6 +649,23 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   `TerminateRuntime` with `stage=unproven` 74 ms in ("mesh1.admin.1.old still runs after the stop
   ladder"), the old holder being the estate's adopted Day-0 runtime; Q45 changes no termination. Open,
   to be read (trace `b241a08f397cdc549c10970b44268948`).
+  Owner 3 moved onto the layer: each declaration the declarer sends (a mesh primary's round
+  completion and Mesh report, an admin's own state, the fabric-primary's events) is one `Budget::Owed`
+  call the declarer holds per key (`status_declare.rs` `round`, `Inflight`); a key whose call is in
+  flight to the destination the view names is not sent again, a new destination drops the call and
+  owes the key there (`rdm.node_admin.status.update.via-declare-retargeted`), and a withdrawn key aborts
+  its call. The loop is deleted: `Sent.route_lost` and the eligibility it gave a failed delivery whose
+  route returned. Control `status_declare::tests::a_failed_delivery_is_the_layers_and_the_declarer_sends_it_again_only_to_a_new_destination`
+  (a returned route sends nothing again; the authority addressing this admin does). Lost-result proof:
+  `owed_check_ins::a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready`
+  green on the Owed call (the release stem 5/5). The round book's down commands keep their own record and
+  route-regained resend (`fabric_state.rs` `Sent`, `eligible`): the mesh primary's commands are the next
+  owner, not this one's. Its first gate (`36aaae4b`) was red at
+  `node_stop::a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat` (`node_stop.rs:1103`):
+  the old holder's Leaving reached its successor `already-applied` 19 ms after the stop stream's
+  `stopped` had recorded it; the cell asserted `applied`, the order the awaited call used to give. Q36
+  publishes NodeStopped once from whichever arrives first, which the cell's next assertion holds; the
+  declaration's own answer is either.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
