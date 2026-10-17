@@ -34,3 +34,27 @@ taken; "Record Q24 and proceed with the first packet before implementation").**
    and claims.
 3. R-FM2's newly-allocated-data-dir path serves a node-admin, not only an rpc node.
 A packet with a §5 delta on each; arms only after.
+
+## Q28 — the first packet's answer (Luke 2026-10-16): A, the store provides the fence
+
+- Every lane append is an insert-and-fail on its own key, `<lane>/rev-<N>/<seq>`, through
+  `insert_claimed`; no append is a check-then-append under a process lock. Insert-and-fail becomes
+  atomic across writers for every mesh (item 1's fix).
+- `N` is the committed fabric seat revision the writer holds. A takeover writes `seat/<N+1>`
+  (per-revision, insert-and-fail: two winners cannot both commit) and seals `N` by claiming `N`'s next
+  sequence key. An old-authority writer's next append under `N` meets the seal and is refused by name
+  (`RejectedStaleSeat` from the store, spanned): nothing of revision `N` commits afterwards (§5's
+  serialization). The winner begins recovery only after `seat/<N+1>` and the seal both stand.
+- Reads reconstruct a lane from its sequenced keys in order; a reader never sees a row past a seal.
+- Durable format moved; a mesh-audit ratchet for the store layout; every Build writer moves onto the
+  primitive; the seat row's blind put goes.
+- Item 3 is conformance once that stands: R-FM2's fresh-dir path accepts a node-admin of another
+  mesh when run from the fabric lane by the fabric-primary (`recovery.rs:754-763`'s own-mesh filter
+  becomes "own mesh, or any mesh with no live node-admin, from the fabric lane").
+- Cells, RED first: two processes appending to one lane race on the same seq key and exactly one
+  commits; a takeover seals `N` and the old writer's next append is refused stale; two takeovers race
+  on `seat/<N+1>` and one commits; a reader reconstructs the lane and sees nothing past the seal; the
+  fresh-dir recovery of a lost mesh's node-admin from the fabric lane. Then e6's live cell: the
+  fabric-primary's mesh killed, the seat moved, fenced, re-created, handed back, no person.
+- Next: the store layout and the seal key's exact shape as the e6.1 packet, before any of it is
+  written. This ruling fixes the mechanism, not the bytes.

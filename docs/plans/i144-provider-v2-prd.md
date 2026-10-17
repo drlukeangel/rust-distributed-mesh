@@ -409,7 +409,7 @@ seat each. Independent of i146 and i147.
   whose domain can be inspected: exit proof, inherited dir reused; only Pending admins surviving:
   the seat waits; the fence unavailable: the takeover held and surfaced on `fabric.get`.
 - **Order.** After R24 and e5; one seat; the packet first.
-- **State.** not started.
+- **State.** Q28 A (2026-10-16): the store provides the fence (rulings `i144-rulings-2026-10-16-fabric-seat.md`). Next: the e6.1 packet, the store layout and the seal key's exact shape, before any code.
 
 ### Files likely to touch
 
