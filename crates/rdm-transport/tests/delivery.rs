@@ -254,11 +254,13 @@ impl Served {
 }
 
 async fn served_with(build: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Served {
-    served_at(birth(), SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), build).await
+    let key = SecretKey::generate();
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    served_on(birth(), key, ep, build).await
 }
 
-/// The responder as birth `me`, with endpoint key `key`, bound at `at`.
-async fn served_at(me: Birth, key: SecretKey, at: std::net::SocketAddr, build: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Served {
+/// The responder as birth `me`, using the socket its endpoint already owns.
+async fn served_on(me: Birth, key: SecretKey, ep: iroh::Endpoint, build: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Served {
     let delivery = Delivery::with_pacing(me.clone(), pacing());
     let runs = Arc::new(AtomicU64::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -295,7 +297,6 @@ async fn served_at(me: Birth, key: SecretKey, at: std::net::SocketAddr, build: i
         }
     });
     let server = build(builder).with_delivery(delivery.clone()).seal(ServedBirth { node_id: me.node_id.to_string(), incarnation: me.incarnation.to_string() }).unwrap();
-    let ep = rdm_transport::endpoint::bind(key.clone(), at).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
     let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
@@ -1160,7 +1161,13 @@ async fn unreachable() -> (Birth, SecretKey, ResolvedNode) {
 /// comes up. Must NOT happen: the Owed call ending while nothing ended it.
 #[tokio::test]
 async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_comes() {
-    let (me, key, node) = unreachable().await;
+    let (me, key) = (birth(), SecretKey::generate());
+    // Keep the OS-assigned socket while the receiver is not serving Node RPC. Releasing a
+    // chosen port and rebinding it later lets another concurrent rig take it in between.
+    let ep = rdm_transport::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    ep.set_alpns(vec![]);
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let node = ResolvedNode { node_id: me.node_id.clone(), name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation: me.incarnation.clone() };
     let (client, _) = client_of(&[&node]).await;
     let cd = client.delivery().clone();
     let target = NodeTarget::ExactNode(node.node_id.clone());
@@ -1172,7 +1179,7 @@ async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_co
     assert!(!owed_call.is_finished(), "the Owed call outlives the bound the Overall call ended at");
     let resent = get(&cd.stats().resends);
     assert!(resent >= 3, "the Owed call is resent on the schedule: {resent}");
-    let s = served_at(me, key, node.transport_addr, |b| b).await;
+    let s = served_on(me, key, ep, |b| b).await;
     let out = tokio::time::timeout(FLOOR * 4, owed_call).await.expect("delivered once the receiver came").unwrap();
     assert_eq!(ran(&out), Some((24, 1)), "{out:?}");
     assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
