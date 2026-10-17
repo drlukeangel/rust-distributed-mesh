@@ -251,3 +251,6 @@ mod seat_replacement;
 
 #[path = "gossip/publication_receive.rs"]
 mod publication_receive;
+
+#[path = "gossip/reserved_receive.rs"]
+mod reserved_receive;
