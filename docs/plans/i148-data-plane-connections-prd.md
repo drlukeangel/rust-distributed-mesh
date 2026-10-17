@@ -116,7 +116,9 @@ execution (a closed connection) exactly as Rafka distinguishes them today.
    `Refused { reason }`; for a tunnel the carrier answers only after its own dial to the destination
    has run the same exchange with intent `Tunnel` and the destination, being that exact birth, has
    answered `Opened`. Application streams are admissible on either end only after `Opened`; the
-   control stream stays open for the connection's life and its close is the connection's. On both
+   control stream stays open for the connection's life and its close is the connection's (Luke,
+   2026-10-17: the streams stay open; nothing is closed after the exchange, and an application
+   stream lives as long as the app keeps it, never per request). On both
    ends of a tunnel `peer()` is the far end (source ↔ destination) and `kind()` is
    `Proxy { via: carrier }`; the carrier is the only party that sees two legs.
 6. **Direct restoration retires the route, not the tunnel** (§10). `Proxy Disconnected(direct-
@@ -157,7 +159,7 @@ Accept ownership on repeated `connections(alpn)` → `AlreadyTaken` by name, rul
 
 ## Page deltas (connections.md; §2, §3, §3.1, §7, §9.4 and §10 applied 2026-10-17 on Luke's yes; §9 lands with e3)
 
-- node-connections-admit.md, Exchange row, one added sentence (i145's page; awaits Luke's yes):
+- node-connections-admit.md, Exchange row, one added sentence (applied 2026-10-17 on Luke's yes: "the streams stay open"):
   "After the verdict the dialer writes its intent on the same stream, `Direct` or
   `Tunnel { origin, destination }` (i148), and the acceptor answers `Opened { peer }` or
   `Refused { reason }`; application streams are admissible only after `Opened`, and the control
