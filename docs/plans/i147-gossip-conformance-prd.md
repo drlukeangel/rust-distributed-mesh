@@ -435,15 +435,19 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   `blake3("rafka.entity.<kind>")` has no fabric in it, so two fabrics on one network share entity
   gossip today). (6) Nobody creates a topic: it is an id every subscriber derives. node-admin
   learns a member's types at its JoinNode, joins every type it does not already hold before it
-  answers, and writes the row's `types_hash` (blake3 of the sorted list; the list is answered by
-  `node.get`); so a joining node's first neighbour is its own node-admin, already there. Across
-  meshes a node-admin that sees a new `types_hash` on the backbone reads that admin's `node.get`
-  and joins what it learns (gossip.md §10). No type list rides a digest. The fabric-primary has no
+  answers, and writes its own row's `held_hash`; so a joining node's first neighbour is its own
+  node-admin, already there. Two sets per node, both answered by `node.get`: `types`, the
+  declaration, immutable per birth, empty for a node-admin; `held`, the types the node has joined,
+  equal to `types` for an ordinary node, for a node-admin the union of its members' declarations
+  and what it read from other node-admins, growing as members join and never shrinking within a
+  birth. `held_hash` (blake3 of sorted `held`) is the one hash on a digest. Across meshes a
+  node-admin that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds
+  what it learns (gossip.md §10). No type list rides a digest. The fabric-primary has no
   part. (7) Receiver: one owner; `recv(&mut self)`, or `split` once into an owned `Publisher` and
   `Subscriber`; the queue is bounded at 1024 events per topic, a full queue drops the newest by
   name (`rdm.mesh.topic.reject.via-queue-full`, count in `dropped()`) and never holds the
   carrier's receive task, so a slow app stalls nothing but itself. (8) Chunking: an event whose
-  `data` exceeds `MAX_MESSAGE_BYTES` goes as `rdm.gossip.chunk` frames (a 23rd `rdm.*` type), each
+  complete encoded frame, metadata included, exceeds `MAX_MESSAGE_BYTES` goes as `rdm.gossip.chunk` frames (a 23rd `rdm.*` type), each
   with its own delivery `id` (`<event id>/<i>`) so `id` duplicate suppression never discards a
   later chunk, `subject` the event's `id`, `data { i, n, bytes }`, `n` at most 16 (an event is at
   most 16 × the measured per-chunk payload, the complete chunk frame measured against
@@ -458,12 +462,14 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   gossip message, so no list rides a digest; the bound is on the JoinNode request (256 / 8 KiB
   encoded postcard bytes, under its 64 KiB ceiling) and the union has no bound of its own (it is
   held by node-admin and answered by `node.get` under the 4 MiB reply ceiling). P2 receiver
-  ownership → rule (7). P2 chunk identity → rule (8).
+  ownership → rule (7). P2 chunk identity → rule (8). Second pass, same day: declared vs union →
+  two sets, `types` (declared, immutable) and `held` (joined, grows), `held_hash` the one hash on a
+  digest, `node.get` answers both; chunk trigger → the complete encoded frame, not `data`.
 - **The directed-path delta (wire format moved; node-rpc-envelope.md applied 2026-10-17 on Luke's
   yes).** Join op `0x1D`: `JoinNode { digest: MeshDigest }` → `JoinNode { digest: MeshDigest,
   types: Vec<String> }` with the bound sentence; node properties table: new row
   `types` / `types_hash`, set by the birth's JoinNode, changed by nothing (a different declaration
-  is a restart), answered whole by `node.get`; the row's digest carries `types_hash` (32 bytes), never the list. Applied 2026-10-17 (Luke: yes).
+  is a restart), answered whole by `node.get` beside `held`; the row's digest carries `held_hash` (32 bytes), never a list. Applied 2026-10-17 (Luke: yes).
 - **Page text (applied 2026-10-17 on Luke's instruction, this landing carries it).** gossip.md
   §3.4: one paragraph after the best-effort sentence (a declared app type rides this envelope, the
   receiver is the app, the carrier decides nothing, the chunk and queue rules). §8: the "Only
@@ -475,7 +481,9 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 - **Acceptance cells (RED first).** `an_undeclared_type_is_refused_by_name_on_publish_and_dropped_by_name_on_receive`;
   `a_join_over_the_types_bound_is_malformed_by_name_and_never_a_member`;
   `a_node_joining_after_its_admin_started_with_a_type_it_never_saw_has_that_admin_as_its_first_neighbour`
-  (P1); `a_node_admin_that_sees_a_new_types_hash_on_the_backbone_reads_node_get_and_joins`;
+  (P1); `a_node_admin_that_sees_a_new_held_hash_on_the_backbone_reads_node_get_and_holds_what_it_learns`;
+  `node_get_answers_types_and_held_and_a_node_admins_held_grows_as_members_join`;
+  `an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked`;
   `a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped` (the carrier decides
   nothing); `the_receive_span_parents_to_the_publishers_span_and_carries_no_data`;
   `the_topic_id_differs_across_fabrics_for_one_type`;

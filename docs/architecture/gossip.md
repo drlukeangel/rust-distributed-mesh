@@ -670,8 +670,8 @@ suppression.
 A declared app type (§8, `rafka.entity.<kind>`) rides this same envelope on its own topic (§4).
 Its receiver is the app: RDM authors `id`, `source`, `time` and the trace context, carries
 `subject`, `sequence` and `data` opaque, and decides nothing on the frame. The receive rules above
-apply to the `rdm.*` types only. An event whose `data` exceeds `MAX_MESSAGE_BYTES` goes as
-`rdm.gossip.chunk` frames, each with its own `id` (`<event id>/<i>`), `subject` the event's `id`
+apply to the `rdm.*` types only. An event whose complete encoded frame, metadata included, exceeds
+`MAX_MESSAGE_BYTES` goes as `rdm.gossip.chunk` frames, each with its own `id` (`<event id>/<i>`), `subject` the event's `id`
 and `data { i, n, bytes }`, `n` at most 16; the receiver assembles by `(source, event id)`, takes
 a duplicate chunk as nothing and a reordered one in its place, decodes the whole event once under
 its own `id`, and evicts an assembly still incomplete after `RDM_STALENESS_MS` by name
@@ -844,11 +844,16 @@ declared type, `rafka.entity.<kind>`: the role declares its types once at boot, 
 hydration hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
 (`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
 declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
-than a gossip message. Its mesh's node-admin records the list beside the row, joins every type it
-did not already hold before it answers the join, and writes the row's `types_hash` (blake3 of the
-sorted list); the list itself is answered by `node.get`. Another node-admin that sees a new
-`types_hash` on the backbone reads that admin's `node.get` and joins what it learns, so every
-projected kind reaches every node-admin (§10: gossip says changed, the call is the certainty). A
+than a gossip message. Two sets, both answered by `node.get`: `types`, what the birth declared, immutable
+for its life (empty for a node-admin, which declares nothing of its own); and `held`, the types
+the node has joined, equal to `types` for an ordinary node and, for a node-admin, the union of
+its members' declarations and what it learned from other node-admins, growing as members join and
+never shrinking within a birth. Its mesh's node-admin records the declaration beside the row,
+joins every type it does not already hold before it answers the join, and writes its own row's
+`held_hash` (blake3 of the sorted `held`), the one hash that rides a digest. Another node-admin
+that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
+learns, so every projected kind reaches every node-admin (§10: gossip says changed, the call is
+the certainty). A
 node joins the topic of every type it declared through `Membership::join_topic`
 (`rdm_transport::gossip`); the topic id is `f(fabric_id, type)` (§4), so two fabrics on one
 network never share a kind; its first neighbour is its own mesh's node-admin, already joined. A write is one
