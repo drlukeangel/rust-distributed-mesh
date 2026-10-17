@@ -242,3 +242,6 @@ mod lifecycle_facts;
 
 #[path = "gossip/concern_reserved.rs"]
 mod concern_reserved;
+
+#[path = "gossip/digest_replacement.rs"]
+mod digest_replacement;

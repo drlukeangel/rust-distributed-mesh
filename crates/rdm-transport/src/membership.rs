@@ -1996,6 +1996,11 @@ impl View {
                 let fresh = self.book.record(digest.clone());
                 if fresh {
                     self.note(digest, via);
+                    tracing::info_span!(
+                        "rdm.mesh.membership.update.via-digest",
+                        node = %self.current_name(), node_id = %digest.node.node_id,
+                        incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq, via,
+                    ).in_scope(|| tracing::info!("the birth's newer heartbeat projection was installed"));
                 }
                 let held = fresh.then(|| self.book.get(digest.node.node_id.as_str()).map(|(d, _)| d)).flatten().unwrap_or_else(|| digest.clone());
                 return (vec![held], fresh);
@@ -2713,10 +2718,12 @@ impl Membership {
         let location = LocationBook::new(endpoint, node)?.with_held_name(view.held_name.clone());
         let (v, f, ls, observing) = (view.clone(), fabric.clone(), location.clone(), clock.clone());
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
+            let mut digest_fresh = false;
             let carried = match &frame {
                 Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel, order).carried,
                 _ => {
                     let (carried, fresh) = v.take_with(&frame, &f, "mesh-channel");
+                    digest_fresh = fresh;
                     // A member's clock follows its current mesh primary's heartbeat, judged on the
                     // digest as its book holds it: the primary's status is its own word, in its
                     // projection, never on its heartbeat.
@@ -2730,6 +2737,15 @@ impl Membership {
             };
             for d in &carried {
                 ls.register(d);
+            }
+            if let Frame::Digest { digest } = &frame {
+                tracing::info_span!(
+                    "rdm.mesh.membership.update.via-digest-receipt",
+                    node = %v.current_name(), node_id = %digest.node.node_id,
+                    incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq,
+                    endpoint_id = %digest.node.endpoint_id.0, applied = digest_fresh,
+                    addresses_registered = carried.len(),
+                ).in_scope(|| tracing::info!("digest receipt finished classification and address registration"));
             }
         });
         let (book, own_mesh, target_view) = (view.book.clone(), mesh.to_string(), view.clone());
