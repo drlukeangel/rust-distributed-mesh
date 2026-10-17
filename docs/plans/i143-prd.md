@@ -2458,6 +2458,8 @@ Page diffs (delegated ruling `R-FM2`):
 
 ### State
 
+Exact-namespace controls GREEN: `/home/admin/rust-distributed-mesh-deploy/s88-root-namespace-live.log`, 2/2, 56.16 s. Mesh cut 19.412 s and node cut 19.046 s, both below the unchanged 23 s plan and 30 s hold; every provider, identity, value, route and bound assertion stands. Rebased on main `ac1acf0d` (i146 e3 included). Reachable RED commits: qualification `2a0634af`, prebuilt acceptance runner `a3be1e58`, post-barrier evidence `e60afc2f`; pre-Q50 code `ba944971`; privilege control RED `d8e40951`. The consumer pin names reachable runtime `e2cdfa2f`. Required full concurrent release and land-script gate remain pending.
+
 Exact-namespace control RED `fdb979a8`: privileged exec inherited the node's non-root user and iptables refused Permission denied before applying any filter; `/home/admin/rust-distributed-mesh-deploy/s88-existing-namespace-live.log`. The fixture command now explicitly runs its privileged filter process as user 0; the node's own user/capabilities do not change.
 
 The earlier redundant-inspect removal in `terminate` is withdrawn: termination is unchanged from main in this qualification landing. Its 2 s miss is retained for i144, not treated as a qualification result. The native fixture establishes the mounted store; the cut fixture no longer creates tool containers within the timed cut. Full outside-path reads for release `127fb05e` are retained at `/home/admin/rust-distributed-mesh-deploy/s88-127fb05e-red-reads.txt`; no outside assertion or bound changed.
