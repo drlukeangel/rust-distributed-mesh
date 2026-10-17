@@ -51,8 +51,13 @@ fn story(kind: StatusEvent, scenario: Story) {
         let frame = |op: LifecycleOp, version| kind.frame(op, publisher.clone(), version);
         if matches!(scenario, Story::Stale) {
             let mut other = op.clone(); other.node_id = NodeId::mint(); other.incarnation = IncarnationId::mint(); other.name = "mesh1.rpc.3".parse().unwrap(); other.operation = format!("node.{command}:mesh1.rpc.3");
+            let other_id = other.node_id.to_string();
             sender.forward(&frame(other, 20)).await.unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async { while !receiver.book.in_flight().iter().any(|o| o.name.to_string() == "mesh1.rpc.3") { tokio::time::sleep(Duration::from_millis(10)).await; } }).await.unwrap();
+            // An open overlay is visible before the same receive finishes its birth notification.
+            // Capture the baseline only after that operation's enclosing receipt has closed.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-lifecycle-receipt" && s["attributes"]["node_id"] == other_id) { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap();
         }
         let births = receiver.book.birth_changes(); let overlays = receiver.book.overlay_changes();
         let held_before = receiver.book.get(op.node_id.as_str()).map(|(d, _)| d);
