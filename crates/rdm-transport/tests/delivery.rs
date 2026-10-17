@@ -402,7 +402,11 @@ async fn read_request(recv: &mut RecvStream) -> (TransportHeader, Vec<u8>) {
 
 /// Read one frame header from `recv`, with `pending` the bytes read and not consumed.
 async fn read_header(recv: &mut RecvStream, pending: &mut Vec<u8>) -> Option<TransportHeader> {
-    let mut chunk = [0u8; 4096];
+    read_header_chunks::<4096>(recv, pending).await
+}
+
+async fn read_header_chunks<const N: usize>(recv: &mut RecvStream, pending: &mut Vec<u8>) -> Option<TransportHeader> {
+    let mut chunk = [0u8; N];
     loop {
         match decode_header(pending) {
             HeaderRead::Read(h, used) => {
@@ -1320,7 +1324,9 @@ async fn node_command_stream(r: &mut Raw, client: &NodeRpcClient) -> (rdm_transp
         let conn = r.conns.recv().await.unwrap();
         loop {
             let (send, mut recv) = conn.accept_bi().await.unwrap();
-            let h = read_header(&mut recv, &mut Vec::new()).await.unwrap();
+            // Deliberately split the read at every header byte: the body must be consumed even
+            // when it is not delivered in the read that completes the transport header.
+            let h = read_header_chunks::<1>(&mut recv, &mut Vec::new()).await.unwrap();
             if matches!(h, TransportHeader::Request { .. }) {
                 break (conn, send, recv, h);
             }
