@@ -158,7 +158,8 @@ pub trait Session: Send + Sync {
     /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
     /// birth's connections rows: the session drops it once it holds the name its join answer handed,
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
+    /// `operation` is the start's own: the ReadyForTraffic the rejoin declares names it (i146 Q36).
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), StartFailed>;
     /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B): report `JoinNode` to the authority reached
     /// back over `spare` and re-enter the mesh channel (and backbone, for a node-admin).
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<WhichMesh>, String> {
@@ -167,8 +168,14 @@ pub trait Session: Send + Sync {
     }
 }
 
-/// Declares a state this birth entered to its authority.
-pub type Declare = Arc<dyn Fn(NodeState) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+/// Declares a state this birth entered to its authority, with the operation that produced it when
+/// one did (i146 Q36).
+pub type Declare = Arc<dyn Fn(NodeState, Option<rdm_core::status::DeclaredOperation>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
+/// The operation `op` names, as a declaration carries it (i146 Q36).
+pub(crate) fn declared(op: &LifecycleOp) -> rdm_core::status::DeclaredOperation {
+    rdm_core::status::DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() }
+}
 
 /// How far this birth took a round, keyed by the round alone: its kind in its fabric for the
 /// accepted Build and attempt (node-rpc-envelope.md, "Fabric status rounds"), never the node-admin
@@ -932,11 +939,6 @@ impl NodeSelf {
             span.record("turns_in_progress", held.turns_in_progress);
             span.record("waited_for", held.waited_for.as_str());
         }
-        // 3. Leaving is declared to the authority while this node can still reach it, then no more
-        // is said: the node gossips nothing for its stop.
-        if let Some(declare) = &self.declare {
-            declare(NodeState::Leaving).await;
-        }
         // 4. R-NS1 item 2 (gossip.md mesh-deleted section): a node-admin that still publishes its
         // mesh's aggregate (the last admin of a deleted mesh, still its primary) publishes it once
         // more before the cut, itself Leaving: "Its last aggregate before a stop carries itself
@@ -983,6 +985,13 @@ impl NodeSelf {
         cut.record("turns_in_progress", report.turns_in_progress);
         // stopping is this node's own status from the moment its tasks are cut; nothing publishes it.
         let _ = (self.set_status)(MemberStatus::Leaving);
+        // 6. Parked, this birth owes its mesh-primary its state, naming this stop (i146 Q29, Q36): the
+        // owed twin of the reply's `stopped`, from which the mesh-primary publishes NodeStopped when
+        // the reply does not reach it. Owed, never awaited here: the reply is not held for it, and
+        // whichever reaches the mesh-primary first is the one it records.
+        if let Some(declare) = &self.declare {
+            tokio::spawn(declare(NodeState::Leaving, Some(declared(op))));
+        }
         cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
         receipt
     }
@@ -1068,7 +1077,7 @@ impl NodeSelf {
             // The admin that commanded the start answers its join, reached back over its own call:
             // the call's endpoint key and path (node-start.md step 2).
             let joined = match commanded {
-                Some(commander) => session.rejoin(retire, commander, rows).await,
+                Some(commander) => session.rejoin(retire, commander, rows, declared(&op)).await,
                 None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
             };
             let reply = match joined {

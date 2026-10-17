@@ -139,6 +139,14 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!(of_node("rdm.node_admin.node.connections.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
     assert_eq!(of_node("rdm.node_admin.node.update.via-stop-transport-cut").len(), 1, "then cuts its transport once");
     assert_eq!(of_node("rdm.node_admin.node.update.via-node-stopped").len(), 1, "the mesh primary publishes NodeStopped once");
+    // i146 Q36, the control: the stop answered within its bound is recorded in the birth's declared
+    // row once, from whichever of its declaration naming the stop and the stop stream's stopped reached
+    // the mesh primary first; the other finds it held and publishes nothing.
+    let received = of_node("rdm.node_admin.node.update.via-stop-received");
+    assert_eq!(received.len(), 1, "the stop stream's stopped is recorded once: {received:#?}");
+    let declared: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["state"] == "Leaving" && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("node.stop:"))).collect();
+    let applied = received.iter().chain(declared.iter()).filter(|sp| sp["attributes"]["outcome"] == "applied").count();
+    assert_eq!(applied, 1, "exactly one of the declaration and the stop stream's stopped applied the birth's Leaving: received {received:#?}, declared {declared:#?}");
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
@@ -450,7 +458,9 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
 /// CONTRACT (states.md "Who sets each state": node stopping is set by the node's mesh-primary on the
 /// stop call's admission; gossip.md frame catalog: `NodeLeaving` is a reserved position, never
 /// published): `mesh1.rpc.1`'s process is held by the operating system (SIGSTOP) and `node.stop` of it
-/// is submitted. The mesh-primary's stop-node call never reaches the birth, so the stop ends `Failed`
+/// is submitted. Its attempt is dispatched only once the mesh-primary marks the birth silent (its
+/// connection to the birth has outlived the idle timeout, the staleness floor), so the stop-node call
+/// never reaches the birth and the stop ends `Failed`
 /// naming the unadmitted command, and the mesh-primary sets nothing: `node.get` lists the birth
 /// neither stopping nor parked, and no `from-command-admitted` sets it `Leaving`. Released (SIGCONT),
 /// the same stop submitted again is accepted, not refused `node-not-live`, and parks the same birth:
@@ -460,20 +470,42 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth() {
     let test = "a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth";
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
-    estate.settled_views(&[("mesh1", 2, 3)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
     // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(SETTLE).await;
+    let fp = views.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
     let nodes = estate.nodes_obj().await;
     let path: PathName = NODE.parse().unwrap();
     let before = view_of(&nodes, &path).await;
     let pid = estate.pid_of(NODE).await;
 
-    // The hold: the operating system suspends the exact runtime; the stop's call cannot reach it.
+    // The hold: the stop's attempt is held after its claim; the operating system suspends the exact
+    // runtime; the attempt is dispatched once the mesh-primary marks the birth silent, so no
+    // connection to it lives and the stop's call cannot reach it.
+    let door = Door::at(&estate, &fp).await;
+    door.arm("claimed", serde_json::json!({"kind": "claimed-attempt"})).await;
+    let stop = tokio::spawn({
+        let nodes = estate.nodes_obj().await;
+        let path = path.clone();
+        async move { frames(nodes.stop(&path).await.expect("the stop was accepted")).await }
+    });
+    door.wait_held("claimed").await;
     let mut held = Held { pid, held: false };
     held.signal("-STOP", true);
-    let refused = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let v = view_of(&nodes, &path).await;
+        if v.status == NodeStatus::PendingReconnect {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "the mesh-primary marks the held birth silent within 30 s: {v:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    door.release("claimed").await;
+    let refused = stop.await.expect("the stop's call");
     let Some(Frame::Started { build_id, .. }) = refused.first().cloned() else { panic!("{refused:?}") };
     assert!(matches!(refused.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the stop fails naming the unadmitted command: {refused:?}");
 
@@ -515,6 +547,9 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let set = stopping(&second);
     assert_eq!(set.len(), 1, "the admitted stop sets the birth stopping once: {set:#?}");
     let node_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "attempt") == second).expect("NodeStopped is published for the admitted stop");
+    // i146 Q36: once, from whichever of the birth's declaration and the stop stream's stopped reached
+    // the mesh-primary first.
+    assert_eq!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).count(), 1, "NodeStopped is published once for the birth");
     assert!(end_ns(admitted_sent[0]) <= start_ns(set[0]) && start_ns(set[0]) <= start_ns(node_stopped), "stopping is set on the admission, before NodeStopped");
     for kind in ["node-leaving", "node-left"] {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
@@ -525,6 +560,77 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let trace = sent[0]["trace_id"].as_str().unwrap_or("").to_string();
     println!("unadmitted stop: http://192.168.68.99:16687/trace/{trace}");
     println!("admitted stop:   http://192.168.68.99:16687/trace/{}", admitted_sent[0]["trace_id"].as_str().unwrap_or(""));
+    estate.record_trace_url(&trace);
+}
+
+/// CONTRACT (i146 Q29, Q36; node-stop.md step 5): `node.stop` of `mesh1.rpc.1` runs and the birth parks;
+/// the stop stream's `stopped` reaches the mesh-primary and is held there before it is recorded (the
+/// faulted admin's `stopped` event cut). The parked birth's declaration of Leaving, naming the stop's
+/// operation, reaches the mesh-primary meanwhile: it is applied, and the mesh-primary publishes
+/// NodeStopped from it with the stop's identity, so `node.get` lists the birth parked while the stream's
+/// `stopped` is still held. Released, the stream's `stopped` finds the birth's row held (already
+/// applied) and the stop completes. Must NOT happen: NodeStopped twice, NodeStopped from the held
+/// stream, a node-leaving frame sent or heard by anyone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_births_declaration() {
+    let test = "a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_births_declaration";
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 3)]).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
+    let fp = views.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
+    let nodes = estate.nodes_obj().await;
+    let path: PathName = NODE.parse().unwrap();
+    let before = view_of(&nodes, &path).await;
+
+    let door = Door::at(&estate, &fp).await;
+    door.arm("stopped-held", serde_json::json!({"kind": "event", "event": "stopped", "node": NODE})).await;
+    let stop = tokio::spawn({
+        let nodes = estate.nodes_obj().await;
+        let path = path.clone();
+        async move { frames(nodes.stop(&path).await.expect("the stop was accepted")).await }
+    });
+    door.wait_held("stopped-held").await;
+    // The stream's stopped is held at the mesh-primary: the birth is listed parked from its own
+    // declaration alone.
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    let parked = loop {
+        let v = view_of(&nodes, &path).await;
+        if v.parked {
+            break v;
+        }
+        assert!(std::time::Instant::now() < until, "the parked birth's declaration lists it parked within 30 s while the stream's stopped is held: {v:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
+    assert_eq!((parked.status, &parked.node_id, &parked.incarnation_id), (NodeStatus::Leaving, &before.node_id, &before.incarnation_id), "the same birth, parked");
+    assert_eq!(door.cut("stopped-held").await["held"], true, "the stream's stopped is still held: {}", door.cut("stopped-held").await);
+    door.release("stopped-held").await;
+    let stopped = stop.await.expect("the stop's call");
+    assert_eq!(events(&stopped), vec![NodeEvent::ConnectionsDeleted, NodeEvent::Stopped], "{stopped:?}");
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let operation = format!("node.stop:{NODE}");
+    let declared = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Leaving" && attr(sp, "operation") == operation && attr(sp, "outcome") == "applied").expect("the parked birth's declaration of Leaving naming its stop was applied");
+    let node_stopped: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).collect();
+    assert_eq!(node_stopped.len(), 1, "NodeStopped is published once for the birth: {node_stopped:#?}");
+    assert_eq!(attr(node_stopped[0], "operation"), operation, "NodeStopped names the stop: {}", node_stopped[0]);
+    // The birth's own span of its declaration opens when its call returns, after the mesh-primary
+    // applied it; the declaration is NodeStopped's source because the stream's stopped was held until
+    // after NodeStopped, and was recorded as already applied.
+    let _ = declared;
+    let received: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-stop-received").into_iter().filter(|sp| attr(sp, "node") == NODE).collect();
+    assert_eq!(received.iter().map(|sp| attr(sp, "outcome")).collect::<Vec<_>>(), vec!["already-applied".to_string()], "the released stream's stopped found the row held: {received:#?}");
+    assert!(start_ns(node_stopped[0]) < start_ns(received[0]), "NodeStopped was published before the held stream's stopped was recorded");
+    for kind in ["node-leaving", "node-left"] {
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
+        assert!(heard.is_empty(), "no {kind} frame is published or heard: {heard:#?}");
+    }
+    let trace = node_stopped[0]["trace_id"].as_str().unwrap_or("").to_string();
+    println!("NodeStopped from the declaration: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }
 

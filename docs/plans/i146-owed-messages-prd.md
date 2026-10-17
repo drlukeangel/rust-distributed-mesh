@@ -326,19 +326,48 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   Page lines, exact old → new to Luke before landing: node-stop.md steps 4-5 gain that the mesh-primary
   records `stopped` from the node's declaration as well as from the stop stream; node-status.md's
   declaration section cites §43 for how the declaration is delivered.
+- **Q36 (Luke 2026-10-17, arm A, made general).** `DeclareNodeState` gains `operation:
+  Option<{ build_id, attempt, operation }>`: the operation that produced the declared state, when one
+  did (a stop's Leaving; a start's Pending and ReadyForTraffic), `None` for a state the node measured
+  itself. The mesh-primary records the state and, for a Leaving that names an operation, publishes
+  NodeStopped with that identity exactly as it would from the stop stream's `node.stopped`; a state the
+  row already holds is `AlreadyApplied` and publishes nothing twice (a stop answered within the bound
+  publishes NodeStopped once, from whichever arrives first). Status `0x1B`: the field appended, reseal,
+  wire format moved. Page lines, exact old → new to Luke before landing: node-rpc-envelope.md:679 (the
+  `DeclareNodeState` schema) and node-stop.md step 5 (NodeStopped from the stop stream's frame or from
+  the node's declaration naming the stop's operation). Cells: the Q29 cell as restated; the control; a
+  declaration with no operation publishes no lifecycle frame.
+  Built on `i146-e3-declaration`: `DeclaredOperation` on the wire (`rdm-core/src/status.rs`); the node
+  declares Leaving naming its stop after its transport cut, spawned (`node_self.rs` stop step 6), and
+  its start's ReadyForTraffic names the start (`node.rs` `Becoming`); the mesh-primary's stop stream
+  records its `stopped` through the same declared-state row (`StatusAuthority::stop_received`), and
+  NodeStopped is published only when that row is applied (`persist_then_commit`), never for a
+  restart's stop. Cells: `status_rpc::tests::a_stops_leaving_publishes_node_stopped_once_from_whichever_reaches_the_mesh_primary_first`
+  (both orders, a measured Leaving and a restart's stop publish nothing);
+  `node_stop::a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_births_declaration`
+  (the faulted admin's `stopped` event cut holds the stream's record; the birth is listed parked from
+  its declaration alone); the control on `stop_then_start`; and
+  `node_stop::a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth`
+  made deterministic (its attempt dispatched only once the mesh-primary marks the held birth silent,
+  so no connection lives and the call is never sent). The SIGSTOP form of Q29's case (a committed
+  stop-node whose bound lapses) cannot be held deterministic from a cell: the commit needs a live
+  mesh-primary → node connection inside the idle timeout at the send (two runs `not-sent`, the dial
+  failing at 3001 ms; the gates' `indeterminate` landed inside it). Open: a node-admin's own
+  declarations stay `None` (its declarer, `status_declare.rs`, reports states from its view); a
+  re-declaration that reaches a new mesh-primary between its seat and its seat fold would apply again.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
-- **The Build watcher's reattach (Luke 2026-10-16).** Q22 made reattach by `build_id` the owner's
-  job after a `Budget::Stream` connection closes; neither `rdm-client`'s `BuildStream` nor the cells'
-  `until_complete` does it, both treat a break as a defect (build.md: "a live run is reattached, never
-  re-claimed"). The Build watcher is an owner that demonstrates reconstruction: reattach by `build_id`
-  after a connection close, resume from the receipts. Cell: a watched Build whose connection closes
-  mid-stream reattaches and ends `Complete` with no step run twice. Not part of R24's landing.
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
   durable state after a restart of the same birth, with operation identity; regeneration of a lost
   reply's result; the already-applied answer by operation identity on a resend that outlived the
   duplicate table. Then the loop deleted and the message handed to the layer. Then the control: the
   owner's old retry span is gone.
+- **The Build watcher's reattach (Luke 2026-10-16).** Q22 made reattach by `build_id` the owner's
+  job after a `Budget::Stream` connection closes; neither `rdm-client`'s `BuildStream` nor the cells'
+  `until_complete` does it, both treat a break as a defect (build.md: "a live run is reattached, never
+  re-claimed"). The Build watcher is an owner that demonstrates reconstruction: reattach by `build_id`
+  after a connection close, resume from the receipts. Cell: a watched Build whose connection closes
+  mid-stream reattaches and ends `Complete` with no step run twice. Not part of R24's landing.
 - **Acceptance cells (per owner, named for it).** `…_reconstructs_its_owed_<message>_from_its_rows_after_a_restart`;
   `…_regenerates_the_lost_<reply>_from_its_record`; `…_answers_already_applied_by_operation_identity_to_a_late_resend`;
   `…_no_longer_runs_its_own_retry_loop` (control). Plus the Q13 five, live: lost completion delivered;

@@ -16,7 +16,7 @@ use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, EndpointId
 use crate::topology::Topology;
 use rdm_transport::{PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
-use rdm_core::status::{transition, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
+use rdm_core::status::{transition, DeclaredOperation, FabricEvent, MeshState, NodeState, NotAuthority, Status, StatusReply, StatusRequest, Transition};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
@@ -279,6 +279,9 @@ pub use rdm_core::status::{declared_of_member, member_of_declared};
 pub struct StatusAuthority {
     /// This admin's `path.name`: what it is named by in spans and refusals.
     pub me: crate::model::PathName,
+    /// What publishes NodeStopped for a stop this admin recorded as its birth's mesh-primary (i146
+    /// Q29, Q36); filled once the admin's backbone exists.
+    pub stopped: Arc<OnceLock<StoppedPublisher>>,
     /// The node id this admin was born with: how it finds its own row and its seats in a view
     /// ([`Topology::own`]), never by `path.name`.
     pub node_id: NodeId,
@@ -350,8 +353,9 @@ pub struct StatusAuthority {
 /// `Declared`: the effect is committed only after the put returned `Ok`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// A node's declared-state row: the state its exact birth declared.
-    Node(crate::status_storage::NodeDeclaredRow, NodeState),
+    /// A node's declared-state row: the state its exact birth declared, and the operation that
+    /// produced it when one did (i146 Q36).
+    Node(crate::status_storage::NodeDeclaredRow, NodeState, Option<DeclaredOperation>),
     /// A mesh and the state applied to it.
     Mesh(MeshId, MeshState),
     /// A fabric event applied.
@@ -368,7 +372,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
     };
     let me_name = auth.held_name_in(view);
     match req {
-        StatusRequest::DeclareNodeState { node_id, incarnation, state } => {
+        StatusRequest::DeclareNodeState { node_id, incarnation, state, operation } => {
             // The subject, as this admin's view holds it.
             let Some(subject) = view.births().find(|n| n.node_id == *node_id) else {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None);
@@ -390,7 +394,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                 Transition::Backward { current } => (StatusReply::RejectedInvalidNodeTransition { current }, None),
                 Transition::Apply => {
                     let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
-                    (StatusReply::Applied, Some(Effect::Node(row, *state)))
+                    (StatusReply::Applied, Some(Effect::Node(row, *state, operation.clone())))
                 }
             }
         }
@@ -936,7 +940,7 @@ impl StatusAuthority {
             return reply;
         }
         let put = match &effect {
-            Effect::Node(row, _) => self.status_storage.put_node_declared(row).await.map_err(|e| format!("status.storage refused the node declared-state row: {e}")),
+            Effect::Node(row, ..) => self.status_storage.put_node_declared(row).await.map_err(|e| format!("status.storage refused the node declared-state row: {e}")),
             Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
             Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
         };
@@ -946,7 +950,7 @@ impl StatusAuthority {
         let reply = {
             let mut declared = self.declared.lock().unwrap();
             match &effect {
-                Effect::Node(row, state) => match transition(declared.node(&row.node_id, &row.incarnation_id), *state) {
+                Effect::Node(row, state, _) => match transition(declared.node(&row.node_id, &row.incarnation_id), *state) {
                     Transition::Apply => {
                         declared.nodes.insert((row.node_id.clone(), row.incarnation_id.clone()), *state);
                         declared.names.insert((row.node_id.clone(), row.incarnation_id.clone()), row.name.clone());
@@ -959,7 +963,7 @@ impl StatusAuthority {
                 Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
             }
         };
-        if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
+        if let (StatusReply::Applied, Effect::Node(row, ..)) = (&reply, &effect) {
             // The node's report, applied, sets its status (node-status.md "Status report": "A node
             // reports to its mesh's primary, which sets its status"), carried by this primary's member
             // projection. node.started, its ReadyForTraffic, also ends that exact birth's restart
@@ -982,6 +986,29 @@ impl StatusAuthority {
             drop(t);
             self.wake.poke();
         }
+        // A birth's Leaving, applied, that names the operation which stopped it (i146 Q29, Q36): this
+        // mesh-primary publishes NodeStopped with that identity, as from the stop stream's `stopped`,
+        // whichever of the two reached it first; the other finds the row held (`AlreadyApplied`) and
+        // publishes nothing. A restart's stop is never NodeStopped (NodeRestarting holds it).
+        if let (StatusReply::Applied, Effect::Node(row, NodeState::Leaving, Some(operation))) = (&reply, &effect) {
+            if !operation.operation.starts_with("node.restart:") {
+                if let Some(publish) = self.stopped.get() {
+                    publish(row.clone(), operation.clone()).await;
+                }
+            }
+        }
+        reply
+    }
+
+    /// The stop stream's `stopped` of `op`'s exact birth, received by this mesh-primary as the stop's
+    /// executor (node-stop.md steps 4-5): its Leaving is recorded in the same declared-state row the
+    /// birth's own declaration names, so NodeStopped is published once, from whichever arrived first.
+    pub async fn stop_received(&self, op: &rdm_core::LifecycleOp) -> StatusReply {
+        let row = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Leaving };
+        let operation = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
+        let reply = self.persist_then_commit(Effect::Node(row, NodeState::Leaving, Some(operation))).await;
+        tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, outcome = reply.name(), "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the stop stream's stopped is recorded in the birth's declared-state row"));
         reply
     }
 
@@ -1313,6 +1340,9 @@ impl CarryEnd {
 /// Shared handles, for the admin's wiring.
 pub type AuthoritySlot = Arc<OnceLock<Arc<StatusAuthority>>>;
 
+/// Publishes NodeStopped for the birth of `row` stopped by `operation` (i146 Q29, Q36).
+pub type StoppedPublisher = Arc<dyn Fn(crate::status_storage::NodeDeclaredRow, DeclaredOperation) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 #[allow(dead_code)]
 fn _assert_send_sync() {
     fn f<T: Send + Sync>() {}
@@ -1359,6 +1389,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
             fabric_id: topology.read().await.fabric.id.clone(),
@@ -1385,11 +1416,94 @@ mod tests {
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
-        let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         assert_eq!(authority.apply(Some(rpc.clone()), &declare).await, R::Applied);
         assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "the authority's declared-state put erased the mesh primary's silence status");
         authority.begin_cycle(&rpc, rpc.incarnation_id.as_ref().unwrap()).await;
         assert_eq!(stored_silence(&*status, &rpc).await, Some(crate::model::NodeStatus::PendingReconnect), "a cycle begin erased the mesh primary's silence status");
+    }
+
+    /// CONTRACT (i146 Q29, Q36; node-stop.md step 5): a birth's Leaving that names the operation which
+    /// stopped it, applied by its mesh-primary, publishes NodeStopped once with that identity, whether
+    /// the birth's declaration or the stop stream's `stopped` reached it first; the other finds the
+    /// row held (`AlreadyApplied`) and publishes nothing. A Leaving naming no operation (a state the
+    /// birth measured itself) and a restart's stop publish nothing. Must NOT happen: NodeStopped twice
+    /// for one stop, or a lifecycle frame from a declaration that names no operation.
+    #[tokio::test]
+    async fn a_stops_leaving_publishes_node_stopped_once_from_whichever_reaches_the_mesh_primary_first() {
+        let mut admin = node("mesh1.admin.1");
+        admin.mesh = "mesh1".into();
+        admin.kind = NodeKind::NodeAdmin;
+        admin.is_primary = true;
+        admin.is_fabric_primary = true;
+        let rpc = |name: &str| {
+            let mut n = node(name);
+            n.mesh = "mesh1".into();
+            n.kind = NodeKind::RpcNode;
+            n
+        };
+        let (declared_first, stream_first, measured, restarted) = (rpc("mesh1.rpc.1"), rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"), rpc("mesh1.rpc.4"));
+        let topology = Arc::new(tokio::sync::RwLock::new(Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone(), restarted.clone()],
+        }));
+        let authority = StatusAuthority {
+            stopped: Default::default(),
+            me: admin.name.clone(),
+            node_id: admin.node_id.clone(),
+            fabric_id: topology.read().await.fabric.id.clone(),
+            topology: topology.clone(),
+            declared: Arc::new(Mutex::new(Declared::default())),
+            status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
+            mesh_ids: Arc::new(BTreeMap::new),
+            republish: Arc::new(OnceLock::new()),
+            commands: Arc::new(crate::node_commands::CommandBook::default()),
+            own: Arc::new(OnceLock::new()),
+            mesh_deleter: Arc::new(OnceLock::new()),
+            hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: Default::default(),
+            rounds: Default::default(),
+            nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
+            configs: Default::default(),
+            configure: Default::default(),
+            hydration: Default::default(),
+            rename: Default::default(),
+            row_moved: Default::default(),
+            loads: None,
+            book: None,
+            first_ready: Default::default(),
+            builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
+        };
+        let published: Arc<Mutex<Vec<(NodeId, String, u32)>>> = Arc::default();
+        let into = published.clone();
+        let publisher: StoppedPublisher = Arc::new(move |row: crate::status_storage::NodeDeclaredRow, op: DeclaredOperation| {
+            into.lock().unwrap().push((row.node_id, op.operation, op.attempt));
+            Box::pin(async {})
+        });
+        let _ = authority.stopped.set(publisher);
+        let stop_of = |n: &crate::model::Node, kind: &str| DeclaredOperation { build_id: "b".into(), attempt: 2, operation: format!("{kind}:{}", n.name) };
+        let declare = |n: &crate::model::Node, operation: Option<DeclaredOperation>| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Leaving, operation };
+        let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone(), event_at_rafka_ms: 0 };
+
+        // The declaration first, then a repeat of it, then the stop stream's stopped.
+        let stop = stop_of(&declared_first, "node.stop");
+        assert_eq!(authority.apply(Some(declared_first.clone()), &declare(&declared_first, Some(stop.clone()))).await, R::Applied);
+        assert_eq!(authority.apply(Some(declared_first.clone()), &declare(&declared_first, Some(stop.clone()))).await, R::AlreadyApplied, "a repeat of the declaration");
+        assert_eq!(authority.stop_received(&stream(&declared_first, &stop)).await, R::AlreadyApplied, "the stop stream's stopped after the declaration");
+        // The stop stream's stopped first, then the declaration.
+        let stop2 = stop_of(&stream_first, "node.stop");
+        assert_eq!(authority.stop_received(&stream(&stream_first, &stop2)).await, R::Applied);
+        assert_eq!(authority.apply(Some(stream_first.clone()), &declare(&stream_first, Some(stop2.clone()))).await, R::AlreadyApplied, "the declaration after the stop stream's stopped");
+        // A Leaving the birth measured itself, and a restart's stop: applied, and nothing published.
+        assert_eq!(authority.apply(Some(measured.clone()), &declare(&measured, None)).await, R::Applied);
+        assert_eq!(authority.apply(Some(restarted.clone()), &declare(&restarted, Some(stop_of(&restarted, "node.restart")))).await, R::Applied);
+
+        assert_eq!(
+            *published.lock().unwrap(),
+            vec![(declared_first.node_id.clone(), stop.operation.clone(), 2), (stream_first.node_id.clone(), stop2.operation.clone(), 2)],
+            "NodeStopped once per stop, from whichever reached the mesh-primary first, and from nothing else"
+        );
     }
 
     /// A status store whose `Leaving` declared-state put returns only once the `ReadyForTraffic`
@@ -1480,6 +1594,7 @@ mod tests {
         }));
         let status: Arc<RacingPuts> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
             fabric_id: topology.read().await.fabric.id.clone(),
@@ -1506,7 +1621,7 @@ mod tests {
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
-        let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
+        let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state, operation: None };
         let (leaving, ready) = (declare(NodeState::Leaving), declare(NodeState::ReadyForTraffic));
         let (a, b) = tokio::join!(authority.apply(Some(rpc.clone()), &leaving), authority.apply(Some(rpc.clone()), &ready));
         assert_eq!((a, b), (R::Applied, R::Applied), "both decided forward from the same held state");
@@ -1541,6 +1656,7 @@ mod tests {
     /// The status authority of the admin born as `me`, deciding over `view`.
     fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
+            stopped: Default::default(),
             me: me.name.clone(),
             node_id: me.node_id.clone(),
             fabric_id: view.fabric.id.clone(),
@@ -1593,10 +1709,10 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![fp.clone(), m2p.clone(), m2a.clone()],
         };
-        let declare = StatusRequest::DeclareNodeState { node_id: m2a.node_id.clone(), incarnation: m2a.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let declare = StatusRequest::DeclareNodeState { node_id: m2a.node_id.clone(), incarnation: m2a.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         let (reply, effect) = decide(&authority_of(&m2p, view.clone()), &view, &Declared::default(), &declare);
         assert_eq!(reply, R::Applied, "mesh2's primary applies its own mesh's admin's ReadyForTraffic");
-        assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic)) if row.node_id == m2a.node_id), "{effect:?}");
+        assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic, None)) if row.node_id == m2a.node_id), "{effect:?}");
         let (reply, effect) = decide(&authority_of(&fp, view.clone()), &view, &Declared::default(), &declare);
         assert_eq!(reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "the fabric-primary of mesh1 is not mesh2.admin.2's authority");
         assert!(effect.is_none());
@@ -1712,7 +1828,7 @@ mod tests {
         let auth = authority_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
-        let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
 
@@ -1861,6 +1977,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
             fabric_id: topology.read().await.fabric.id.clone(),
@@ -1887,7 +2004,7 @@ mod tests {
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
         for n in [&restarted, &deleted, &standing] {
-            let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+            let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
             assert_eq!(authority.apply(Some(n.clone()), &declare).await, R::Applied, "{}", n.name);
         }
         let book = rdm_transport::membership::DigestBook::default();
@@ -1953,6 +2070,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
             fabric_id: topology.read().await.fabric.id.clone(),
@@ -1978,7 +2096,7 @@ mod tests {
             first_ready: Default::default(),
             builds: std::sync::Arc::new(crate::build_state::MemoryBuildStateAdapter::new()),
         };
-        let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);
         // The recovery created a new node at the path; the exited birth's departure is no longer held.
         let mut recovered = exited.clone();

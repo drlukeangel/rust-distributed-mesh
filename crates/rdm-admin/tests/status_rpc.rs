@@ -171,6 +171,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     }));
     let fabric_id = topology.read().await.fabric.id.clone();
     let authority = Arc::new(StatusAuthority {
+        stopped: Default::default(),
         me: me.node.name.clone(),
         node_id: me.node.node_id.clone(),
         fabric_id,
@@ -293,11 +294,11 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
     assert_eq!(reply(&call(&rig, &fabric_primary, &forward, &CallOptions::default()).await), StatusReply::Applied);
     let backward = reply(&call(&rig, &fabric_primary, &pending, &CallOptions::default()).await);
     assert!(matches!(backward, StatusReply::RejectedInvalidMeshTransition { current: MeshState::ReadyForTraffic }), "{backward:?}");
-    let forged = StatusRequest::DeclareNodeState { node_id: other.node.node_id.clone(), incarnation: other.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
+    let forged = StatusRequest::DeclareNodeState { node_id: other.node.node_id.clone(), incarnation: other.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving, operation: None };
     let forged_reply = reply(&call(&rig, &member, &forged, &CallOptions::default()).await);
     assert_eq!(forged_reply, StatusReply::Applied, "a declaration is decided for the birth it names, whoever sends it");
     let never_born = birth("mesh2.rpc.9", NodeKind::RpcNode, "mesh2", false, false);
-    let unknown = StatusRequest::DeclareNodeState { node_id: never_born.node.node_id.clone(), incarnation: never_born.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
+    let unknown = StatusRequest::DeclareNodeState { node_id: never_born.node.node_id.clone(), incarnation: never_born.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving, operation: None };
     assert_eq!(reply(&call(&rig, &member, &unknown, &CallOptions::default()).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a birth this admin does not hold");
     let meshes_final = rig.authority.declared.lock().unwrap().meshes.clone();
     assert_eq!(meshes_final.len(), 1, "one mesh held, by its own id");
@@ -723,7 +724,7 @@ fn status_authority_refuses_every_backward_move_by_name() {
         let mut repeats = 0;
         for (i, start) in nodes.iter().enumerate() {
             let s = &senders[i];
-            let decl = |st: NodeState| StatusRequest::DeclareNodeState { node_id: s.node.node_id.clone(), incarnation: s.node.incarnation_id.clone().unwrap(), state: st };
+            let decl = |st: NodeState| StatusRequest::DeclareNodeState { node_id: s.node.node_id.clone(), incarnation: s.node.incarnation_id.clone().unwrap(), state: st, operation: None };
             assert_eq!(reply(&call(&node_rig, s, &decl(*start), &CallOptions::default()).await), StatusReply::Applied, "{start:?}");
             for lower in nodes.iter().filter(|l| *l < start) {
                 let r = reply(&call(&node_rig, s, &decl(*lower), &CallOptions::default()).await);
@@ -791,7 +792,7 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
             StatusReply::RejectedNotAuthority { why } => assert_eq!(why.as_str(), name, "{r:?}"),
             other => panic!("expected rejected-not-authority/{name}: {other:?}"),
         };
-        let decl_node = |b: &Birth| StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let decl_node = |b: &Birth| StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         // An ordinary node declares to a non-primary admin.
         let r = reply(&call(&rig, &rpc, &decl_node(&rpc), &CallOptions::default()).await);
         not_authority(&r, "receiver-not-primary");
@@ -918,7 +919,7 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
         let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
         let rig = rig(me, &[&subject], BTreeMap::new()).await;
         let old_inc = subject.node.incarnation_id.clone().unwrap();
-        let decl = |inc: &IncarnationId, st: NodeState| StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: inc.clone(), state: st };
+        let decl = |inc: &IncarnationId, st: NodeState| StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: inc.clone(), state: st, operation: None };
         assert_eq!(reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Draining), &CallOptions::default()).await), StatusReply::Applied, "the old birth reached Draining");
         // The restart: same node and key, a new incarnation, now what the view holds.
         let new_inc = IncarnationId::mint();
@@ -953,14 +954,14 @@ fn status_route_loss_never_synthesizes_dead() {
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let subject = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false);
         let rig = rig(me, &[&subject], BTreeMap::new()).await;
-        let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let decl = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
         // The healthy control, in the same capture.
         assert_eq!(reply(&call(&rig, &subject, &decl, &CallOptions::default()).await), StatusReply::Applied);
         let served_before = spans_where(&capture.spans(), DECLARATION, &[]).len();
         // No route: a client whose resolver holds nothing for the target.
         let routeless = NodeRpcClient::new(subject.endpoint().await, Arc::new(StaticResolver::new())).with_caller_system("rdm");
         let to = NodeTarget::ExactNode(rig.me.node.node_id.clone());
-        let again = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
+        let again = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving, operation: None };
         let (out, _) = routeless.call::<Status>(&to, &again, &CallOptions::default()).await;
         assert!(matches!(out, RpcOutcome::NotSent(_)), "no route is NotSent, nothing dispatched: {out:?}");
         assert!(out.proves_not_dispatched());

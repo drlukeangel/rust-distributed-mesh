@@ -166,7 +166,7 @@ pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNode
                 Ok(id) => id,
                 Err(e) => return Ok(DeclareReply::BadTarget { reason: format!("incarnation: {e}") }),
             };
-            let declare = StatusRequest::DeclareNodeState { node_id, incarnation, state };
+            let declare = StatusRequest::DeclareNodeState { node_id, incarnation, state, operation: None };
             let (out, _) = rpc.client.call::<Status>(&target, &declare, &CallOptions::default()).await;
             let (reply, reason) = match &out {
                 RpcOutcome::Reply(r) => (Some(r.value().clone()), None),

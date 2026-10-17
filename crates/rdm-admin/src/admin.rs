@@ -2912,6 +2912,7 @@ mod tests {
         let topology = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)));
         let me = topology.read().await.fabric_primary().expect("admin.1 holds the fabric seat").clone();
         let authority = StatusAuthority {
+            stopped: Default::default(),
             me: me.name.clone(),
             node_id: me.node_id.clone(),
             fabric_id: fabric1(),
@@ -2984,7 +2985,7 @@ mod tests {
         };
         let endpoint = reported.node.endpoint_id.clone();
         assert!(authority.sender_of(&endpoint).await.is_none(), "before the join the authority's view does not hold the birth");
-        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic };
+        let declare = StatusRequest::DeclareNodeState { node_id: reported.node.node_id.clone(), incarnation: reported.node.incarnation.clone(), state: NodeState::ReadyForTraffic, operation: None };
         assert_eq!(authority.apply(None, &declare).await, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "before the join the subject is not held");
         let joined = door.serve(endpoint.clone(), JoinRequest::JoinNode { digest: (&reported).into() }).await;
         assert!(matches!(joined, JoinReply::Joined { .. }), "{joined:?}");

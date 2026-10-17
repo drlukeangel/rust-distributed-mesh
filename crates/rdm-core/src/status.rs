@@ -87,6 +87,18 @@ impl FabricEvent {
     }
 }
 
+/// The operation that produced a declared state (i146 Q36): the Build, its attempt and the
+/// operation's idempotency key, as the command that produced the state named them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredOperation {
+    /// The Build the operation belongs to.
+    pub build_id: String,
+    /// The attempt of the Build.
+    pub attempt: u32,
+    /// The operation's idempotency key (`node.stop:mesh1.rpc.1`).
+    pub operation: String,
+}
+
 /// A Status call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StatusRequest {
@@ -98,6 +110,9 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The state the birth committed.
         state: NodeState,
+        /// The operation that produced the state, when one did (a stop's `Leaving`, a start's
+        /// `Pending` and `ReadyForTraffic`); `None` for a state the birth measured itself.
+        operation: Option<DeclaredOperation>,
     },
     /// Upward: the mesh's current primary declares the Mesh's state to the fabric-primary.
     DeclareMeshState {
@@ -1696,7 +1711,7 @@ mod tests {
             assert_eq!(Status::classify_reply(&back), kind);
         }
         let reqs = [
-            StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic },
+            StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic, operation: None },
             StatusRequest::ApplyNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Draining },
             StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
@@ -1740,6 +1755,9 @@ mod tests {
         for q in reqs {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
         }
+        // A declaration naming the operation that produced its state (i146 Q36).
+        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Leaving, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.rpc.1".into() }) };
+        assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
     }
 
     /// CONTRACT (ops-naming "Node data": config is capped in key count and bytes): a config put at

@@ -57,9 +57,10 @@ pub enum CutSpec {
         #[serde(default)] failed: bool,
     },
     /// A lifecycle event a retirement publishes (`deleting`, `restarting`, `deleted`): the step's
-    /// receipt is durable and the event is not yet published.
+    /// receipt is durable and the event is not yet published. `stopped`: the stop stream's `stopped`
+    /// reached the executor and is not yet recorded in the birth's declared-state row (i146 Q36).
     Event {
-        /// The event name: `deleting`, `restarting` or `deleted`.
+        /// The event name: `deleting`, `restarting`, `deleted` or `stopped`.
         event: String,
         /// The node the event concerns.
         #[serde(default)] node: Option<String>,
@@ -560,6 +561,7 @@ impl LifecycleEvents for FaultedEvents {
     // Every other event the admin publishes passes through unchanged: a decorator that leaves one
     // to the trait's empty default withholds that event's gossip from every faulted estate.
     async fn stopped(&self, op: &LifecycleOp) {
+        self.faults.hold(Probe::Event { event: "stopped", op: op.clone() }).await;
         self.inner.stopped(op).await
     }
     async fn stop_completed(&self, op: &LifecycleOp) {

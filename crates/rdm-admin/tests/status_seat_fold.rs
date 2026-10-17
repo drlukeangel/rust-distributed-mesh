@@ -220,6 +220,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rdm_admin::status_rpc::StatusAuthority {
+                    stopped: Default::default(),
                     me: b.name.clone(),
                     node_id: b.node_id.clone(),
                     fabric_id: fabric_id.clone(),
@@ -245,7 +246,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                     first_ready: Default::default(),
                 };
-                let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic }).await;
+                let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None }).await;
                 let after_declare = status(&rpc1);
                 let _ = std::fs::remove_dir_all(&dir);
                 (trace_id, after_take, rpc2_heard, projected, declared, after_declare)

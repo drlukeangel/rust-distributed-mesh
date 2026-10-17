@@ -86,6 +86,48 @@ pub struct GossipLifecycle {
     /// This admin's view projected and installed at once ([`view_projector`]): a stop this executor
     /// applied to its own book is in its view before the next step decides from it, as a moved row is.
     pub project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+    /// This admin's status authority: a stop's `stopped` is recorded in the birth's declared-state
+    /// row there, which publishes NodeStopped once, from the reply or the birth's declaration,
+    /// whichever arrives first (i146 Q29, Q36). An executor with no status authority (a rig) holds no
+    /// declared row: it publishes from the reply alone.
+    pub authority: crate::status_rpc::AuthoritySlot,
+}
+
+/// NodeStopped for `op`'s exact birth, published by its mesh-primary (node-stop.md step 5): the
+/// departure in this mesh's in-flight overlay, and this admin's view projected at once.
+pub(crate) async fn publish_node_stopped(backbone: &Backbone, project: Option<&Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>, op: &rdm_core::LifecycleOp) {
+    let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
+    async {
+        backbone.publish_status_event(rdm_transport::membership::StatusEvent::Stopped, op).await;
+        if let Some(project) = project {
+            project().await;
+        }
+        tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
+    }
+    .instrument(span)
+    .await
+}
+
+/// The publisher of NodeStopped a status authority calls once it applies a birth's Leaving that names
+/// the operation which stopped it (i146 Q29, Q36): a former seat holder's update said first (R-NS2),
+/// then NodeStopped, the operation stamped with this admin's Rafka-time.
+pub(crate) fn stopped_publisher(membership: Membership, backbone: Backbone, project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>) -> crate::status_rpc::StoppedPublisher {
+    Arc::new(move |row: crate::status_storage::NodeDeclaredRow, operation: rdm_core::status::DeclaredOperation| {
+        let (membership, backbone, project) = (membership.clone(), backbone.clone(), project.clone());
+        Box::pin(async move {
+            let op = rdm_core::LifecycleOp {
+                build_id: operation.build_id,
+                attempt: operation.attempt,
+                operation: operation.operation,
+                node_id: row.node_id,
+                incarnation: row.incarnation_id,
+                name: row.name,
+                event_at_rafka_ms: membership.clock().now_rafka_ms(),
+            };
+            backbone.announce_update_of_stopped_holder(&op).await;
+            publish_node_stopped(&backbone, project.as_ref(), &op).await;
+        })
+    })
 }
 
 impl GossipLifecycle {
@@ -119,16 +161,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .await
     }
     async fn stopped(&self, op: &rdm_core::LifecycleOp) {
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
-        async {
-            self.backbone.publish_status_event(rdm_transport::membership::StatusEvent::Stopped, op).await;
-            if let Some(project) = &self.project {
-                project().await;
+        match self.authority.get() {
+            Some(authority) => {
+                let _ = authority.stop_received(op).await;
             }
-            tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
+            None => publish_node_stopped(&self.backbone, self.project.as_ref(), op).await,
         }
-        .instrument(span)
-        .await
     }
     async fn stop_completed(&self, op: &rdm_core::LifecycleOp) {
         self.backbone.announce_update_of_stopped_holder(op).await;

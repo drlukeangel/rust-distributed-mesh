@@ -996,6 +996,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             {
                                 let records_for_ids = records.clone();
                                 let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
+                                    stopped: Default::default(),
                                     status_storage: status_storage.clone(),
                                     nodes_storage: nodes_storage.clone(),
                                     me: name.clone(),
@@ -1155,13 +1156,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 node_id: node_id.clone(),
                                 endpoint: Some(endpoint.clone()),
                                 node_rpc: node_rpc.clone(),
-                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle {
-                                    membership: membership.clone(),
-                                    backbone: backbone.clone(),
-                                    me: name.clone(),
-                                    mesh_deleter: mesh_deleter.clone(),
-                                    project: Some(view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone())),
-                                })),
+                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), {
+                                    let project = Some(view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()));
+                                    if let Some(status) = authority.get() {
+                                        let _ = status.stopped.set(super::runner::stopped_publisher(membership.clone(), backbone.clone(), project.clone()));
+                                    }
+                                    Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone(), mesh_deleter: mesh_deleter.clone(), project, authority: authority.clone() })
+                                }),
                                 leaves: Arc::new(crate::mesh_delete::MeshDeleteBook::default()),
                                 mesh_delete_runs: crate::mesh_delete::MeshDeleteRuns::default(),
                                 handover: handover.clone(),

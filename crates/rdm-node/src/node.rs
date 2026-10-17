@@ -63,7 +63,7 @@ pub struct RunningNode {
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
     /// The state this birth owes its authority (i143.e4.s11): re-declared every publish cadence
     /// until the authority answers by name (`declare_loop`).
-    pub owed_state: Arc<Mutex<Option<rdm_core::status::NodeState>>>,
+    pub owed_state: Arc<Mutex<OwedDeclaration>>,
     /// Cancelled when this birth is retired (drain-node, stop-node, its process stopping): the
     /// `hydrate_before_ready` hook and any pull it has in flight end.
     pub cancel: rdm_transport::Retirement,
@@ -136,7 +136,7 @@ impl RunningNode {
     /// definitive answer ends the attempt; `NotSent`/`Indeterminate` leaves it to the next call
     /// site. Nothing here gates gossip: the digest already says the state.
     pub(crate) async fn declare_own(&self, state: rdm_core::status::NodeState) -> Option<String> {
-        *self.owed_state.lock().unwrap() = Some(state);
+        self.owed_state.lock().unwrap().owe((state, None));
         declare_once(&self.digest.node, &self.membership, &self.node_rpc.client, &self.owed_state).await
     }
 
@@ -596,7 +596,7 @@ async fn start_booted(
                             // published ReadyForTraffic only once the hook has passed ("born full").
                             let cancel = rdm_transport::Retirement::new();
                             let addressed = crate::app_hydration::Addressed::new();
-                            let owed_state: Arc<Mutex<Option<rdm_core::status::NodeState>>> = Arc::new(Mutex::new(None));
+                            let owed_state: Arc<Mutex<OwedDeclaration>> = Arc::default();
                             let own = {
                                 let (set_digest, set_status_cell, now_status) = (digest.clone(), status.clone(), status.clone());
                                 let set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync> = Arc::new(move |st| {
@@ -608,8 +608,8 @@ async fn start_booted(
                                 let current: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || *now_status.lock().unwrap());
                                 let declare: crate::node_self::Declare = {
                                     let (node, membership, client, owed) = (digest.node.clone(), membership.clone(), client.clone(), owed_state.clone());
-                                    Arc::new(move |state| {
-                                        *owed.lock().unwrap() = Some(state);
+                                    Arc::new(move |state, operation| {
+                                        owed.lock().unwrap().owe((state, operation));
                                         let (node, membership, client, owed) = (node.clone(), membership.clone(), client.clone(), owed.clone());
                                         Box::pin(async move {
                                             let _ = declare_once(&node, &membership, &client, &owed).await;
@@ -666,16 +666,16 @@ async fn start_booted(
                                     loop {
                                         seats.borrow_and_update();
                                         let holder = membership.seats().mesh(&node.name.mesh);
-                                        if authority_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().is_none() {
+                                        if authority_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().owed.is_none() {
                                             let state = node_state_of(*status.lock().unwrap());
                                             tracing::info_span!("rdm.node_rpc.status.update.via-authority-moved", node = %membership.held_name(&node.name), state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
                                                 .in_scope(|| tracing::info!("the mesh's primary seat moved to another birth: this birth's state is owed to it"));
-                                            *owed.lock().unwrap() = Some(state);
+                                            owed.lock().unwrap().owe_again(state);
                                         }
-                                        if owed.lock().unwrap().is_some() {
+                                        if owed.lock().unwrap().owed.is_some() {
                                             declare_once(&node, &membership, &client, &owed).await;
                                         }
-                                        if owed.lock().unwrap().is_none() {
+                                        if owed.lock().unwrap().owed.is_none() {
                                             told = holder.map(|h| (h.node_id, h.incarnation));
                                         }
                                         tokio::select! {
@@ -699,6 +699,7 @@ async fn start_booted(
                                 status: status.clone(),
                                 owed: owed_state.clone(),
                                 client: node_rpc.client.clone(),
+                                operation: None,
                             };
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::app_hydration::Birth {
@@ -772,7 +773,7 @@ struct NodeSession {
     server: NodeRpcServer,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
-    owed: Arc<Mutex<Option<rdm_core::status::NodeState>>>,
+    owed: Arc<Mutex<OwedDeclaration>>,
     rafka_time: rdm_transport::clock::RafkaTime,
     hydration: crate::app_hydration::Hydration,
     addressed: Arc<crate::app_hydration::Addressed>,
@@ -808,13 +809,13 @@ impl crate::node_self::Session for NodeSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), crate::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows };
+        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation };
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
     }
 
@@ -891,6 +892,8 @@ struct AfterStop<'a> {
     retire: Option<rdm_transport::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
     rows: Option<crate::connections_writer::RowsHeld>,
+    /// The start's operation: the ReadyForTraffic this birth declares at the start's end names it.
+    operation: rdm_core::status::DeclaredOperation,
 }
 
 #[async_trait::async_trait]
@@ -968,6 +971,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             status: s.status.clone(),
             owed: s.owed.clone(),
             client: s.client.clone(),
+            operation: Some(self.operation.clone()),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::app_hydration::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
@@ -1042,8 +1046,11 @@ struct Becoming {
     membership: Membership,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
-    owed: Arc<Mutex<Option<rdm_core::status::NodeState>>>,
+    owed: Arc<Mutex<OwedDeclaration>>,
     client: Arc<rdm_transport::NodeRpcClient>,
+    /// The operation that makes this birth ready: the start's, or `None` at its first boot, a state
+    /// the birth measured itself (i146 Q36).
+    operation: Option<rdm_core::status::DeclaredOperation>,
 }
 
 impl Becoming {
@@ -1073,7 +1080,7 @@ impl Becoming {
         )
         .in_scope(|| tracing::info!("ready for traffic"));
         *self.status.lock().unwrap() = MemberStatus::ReadyForTraffic;
-        *self.owed.lock().unwrap() = Some(rdm_core::status::NodeState::ReadyForTraffic);
+        self.owed.lock().unwrap().owe((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
         let mut d = self.digest.clone();
         d.status = MemberStatus::ReadyForTraffic;
         let _ = self.membership.publish(&d).await;
@@ -1094,15 +1101,41 @@ fn authority_moved(told: Option<&(NodeId, IncarnationId)>, holder: Option<&rdm_c
     }
 }
 
+/// A declaration: the state and the operation that produced it, when one did (i146 Q36).
+pub(crate) type Declaration = (rdm_core::status::NodeState, Option<rdm_core::status::DeclaredOperation>);
+
+/// What this birth owes its mesh-primary: the declaration still to be answered by name, and the last
+/// one it made, owed again with its operation when the mesh's primary seat moves to another birth.
+#[derive(Debug, Default)]
+pub(crate) struct OwedDeclaration {
+    pub(crate) owed: Option<Declaration>,
+    last: Option<Declaration>,
+}
+
+impl OwedDeclaration {
+    /// Owe `declaration` from now on, until it is answered by name.
+    pub(crate) fn owe(&mut self, declaration: Declaration) {
+        self.last = Some(declaration.clone());
+        self.owed = Some(declaration);
+    }
+
+    /// Owe `state` again to a new authority: with the operation of the last declaration when that
+    /// declared the same state, else as a state the birth measured itself.
+    fn owe_again(&mut self, state: rdm_core::status::NodeState) {
+        let operation = self.last.clone().filter(|(s, _)| *s == state).and_then(|(_, op)| op);
+        self.owe((state, operation));
+    }
+}
+
 /// One attempt at the owed declaration: the node-admins of this birth's mesh it hears, in path
 /// order, until one answers by name. A definitive answer clears the debt; `RejectedNotAuthority`
 /// (the admin is not the primary, or does not hold this birth yet) and `NotSent`/`Indeterminate`
 /// leave it owed for the next cadence. Nothing here gates gossip: the digest already says the state.
-async fn declare_once(me: &MeshNode, membership: &Membership, client: &rdm_transport::NodeRpcClient, owed: &Mutex<Option<rdm_core::status::NodeState>>) -> Option<String> {
+async fn declare_once(me: &MeshNode, membership: &Membership, client: &rdm_transport::NodeRpcClient, owed: &Mutex<OwedDeclaration>) -> Option<String> {
     use rdm_core::outcome::RpcOutcome;
     use rdm_core::status::{Status, StatusReply, StatusRequest};
-    let Some(state) = *owed.lock().unwrap() else { return None };
-    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state };
+    let Some((state, operation)) = owed.lock().unwrap().owed.clone() else { return None };
+    let req = StatusRequest::DeclareNodeState { node_id: me.node_id.clone(), incarnation: me.incarnation.clone(), state, operation: operation.clone() };
     let mut admins: Vec<MeshDigest> = membership
         .book
         .current(membership.book.staleness_floor())
@@ -1120,12 +1153,13 @@ async fn declare_once(me: &MeshNode, membership: &Membership, client: &rdm_trans
             },
             other => (format!("{}: {other:?}", other.name()), false),
         };
-        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %membership.held_name(&me.name), state = ?state, to = %a.node.name, outcome = %outcome, definitive)
+        tracing::info_span!("rdm.node_rpc.status.update.via-declare-own", node = %membership.held_name(&me.name), state = ?state, operation = %operation.as_ref().map(|o| o.operation.as_str()).unwrap_or(""), to = %a.node.name, outcome = %outcome, definitive)
             .in_scope(|| tracing::info!("declared own state to an admin of the mesh"));
         last = Some(outcome.clone());
         if definitive {
-            if *owed.lock().unwrap() == Some(state) {
-                *owed.lock().unwrap() = None;
+            let mut o = owed.lock().unwrap();
+            if o.owed.as_ref() == Some(&(state, operation.clone())) {
+                o.owed = None;
             }
             return Some(outcome);
         }

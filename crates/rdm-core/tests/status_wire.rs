@@ -12,7 +12,7 @@
 use rdm_core::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rdm_core::outcome::MalformedKind;
 use rdm_core::protocol::NodeProtocol;
-use rdm_core::status::{ConnectionScope, ConnectionsReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
+use rdm_core::status::{ConnectionScope, ConnectionsReceipt, DeclaredOperation, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
 use rdm_core::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -33,7 +33,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn requests_match_the_frozen_thirty_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
-        (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c3031323334353637383961620c39776370726667777674687903"),
+        (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
         (DeclareMeshState { mesh_id: mesh(), state: MeshState::Leaving }, "010c31313233343536373839616202"),
         (ApplyNodeState { node_id: node(), incarnation: birth(), state: NodeState::Draining }, "020c3031323334353637383961620c39776370726667777674687902"),
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
@@ -292,6 +292,10 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
         (MeshState::Pending, "00"), (MeshState::ReadyForTraffic, "01"),
         (MeshState::Leaving, "02"), (MeshState::Dead, "03"),
     ] { golden(state, expected); }
+    // DeclareNodeState's operation (i146 Q36): build_id | attempt | operation, and its Option.
+    let op = DeclaredOperation { build_id: "b".into(), attempt: 2, operation: "node.stop:m".into() };
+    golden(op.clone(), "0162020b6e6f64652e73746f703a6d");
+    golden(Some(op), "010162020b6e6f64652e73746f703a6d");
     golden(FabricEvent::ReadyForTraffic, "00");
     golden(FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() }, "010d6d657368312e61646d696e2e31");
     golden(NotAuthority::ReceiverNotPrimary { needed: "mesh-primary".into() }, "000c6d6573682d7072696d617279");

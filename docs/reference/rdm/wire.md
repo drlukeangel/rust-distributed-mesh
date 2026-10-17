@@ -176,6 +176,7 @@ A Status call.
 | 0.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The declaring birth's logical node. |
 | 0.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The declaring birth's incarnation. |
 | 0.2 | `state` | `NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state the birth committed. |
+| 0.3 | `operation` | `Option<DeclaredOperation>` → [`DeclaredOperation`](#t-rdm_core-status-DeclaredOperation) |  |  | The operation that produced the state, when one did (a stop's `Leaving`, a start's |
 | 1 | **`DeclareMeshState`** |  |  | `op() = "declare-mesh-state"` | Upward: the mesh's current primary declares the Mesh's state to the fabric-primary. |
 | 1.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rdm_core-ids-MeshId) |  |  | The mesh declared. |
 | 1.1 | `state` | `MeshState` → [`MeshState`](#t-rdm_core-status-MeshState) |  |  | The mesh's state. |
@@ -1867,6 +1868,20 @@ The authority a declare probe names.
 | 0.0 | `0` | `String` |  |  |
 | 1 | **`Path`** |  |  | Whoever holds this `path.name`. |
 | 1.0 | `0` | `String` |  |  |
+
+<a id="t-rdm_core-status-DeclaredOperation"></a>
+
+### `DeclaredOperation`
+
+`crates/rdm-core/src/status.rs` · struct · 3 fields · rdm-core
+
+The operation that produced a declared state (i146 Q36): the Build, its attempt and the
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `build_id` | `String` |  | The Build the operation belongs to. |
+| 1 | `attempt` | `u32` |  | The attempt of the Build. |
+| 2 | `operation` | `String` |  | The operation's idempotency key (`node.stop:mesh1.rpc.1`). |
 
 <a id="t-rdm_core-connections-DirectRecovery"></a>
 

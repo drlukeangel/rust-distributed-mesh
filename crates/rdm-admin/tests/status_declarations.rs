@@ -149,6 +149,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
+        stopped: Default::default(),
         me: admin.node.name.clone(),
         node_id: admin.node.node_id.clone(),
         fabric_id,
@@ -213,7 +214,7 @@ async fn client_of(rig: &Rig, b: &Birth) -> NodeRpcClient {
 }
 
 fn declare(b: &Birth, state: NodeState) -> StatusRequest {
-    StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state }
+    StatusRequest::DeclareNodeState { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), state, operation: None }
 }
 
 async fn call(rig: &Rig, b: &Birth, req: &StatusRequest) -> RpcOutcome<StatusReply> {
@@ -263,7 +264,7 @@ async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
     let r = reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await);
     assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
     // A stale birth: the view holds a newer incarnation of the subject.
-    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic };
+    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic, operation: None };
     assert_eq!(reply(&call(&rig, rpc1, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
     // A node of another mesh: this admin is not its mesh-primary.
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
@@ -305,7 +306,7 @@ async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_
     assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
     let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a mesh the fabric-primary does not hold");
-    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Leaving };
+    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Leaving, operation: None };
     assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
     rig.topology.write().await.nodes.push(foreign.node.clone());
@@ -1993,6 +1994,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         let admin = admin.node.clone();
         async move {
             let authority = StatusAuthority {
+                stopped: Default::default(),
                 me: admin.name.clone(),
                 node_id: admin.node_id.clone(),
                 fabric_id: view.fabric.id.clone(),

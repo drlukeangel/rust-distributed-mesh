@@ -59,7 +59,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None };
+    let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, authority: Default::default() };
 
     let rpc = member(&fabric, "mesh1.rpc.1", 10);
     assert!(membership.book.record(rpc.clone()), "the member's heartbeat is held");
@@ -126,6 +126,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         nodes: vec![me.clone(), subject.clone()],
     }));
     let authority = StatusAuthority {
+        stopped: Default::default(),
         me: me.name.clone(),
         node_id: me.node_id.clone(),
         fabric_id: fabric.clone(),
@@ -152,7 +153,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         builds: std::sync::Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
     };
     let status = || membership.book.get(member.node.node_id.as_str()).map(|(h, _)| h.status);
-    let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state };
+    let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state, operation: None };
     assert_eq!(status(), Some(MemberStatus::Pending));
     assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ReadyForTraffic)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "its node.started sets it ready-for-traffic");
