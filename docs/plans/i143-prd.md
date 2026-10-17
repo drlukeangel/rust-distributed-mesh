@@ -2462,6 +2462,8 @@ Qualification implementation, release proof pending (Codex, 2026-10-17). Compile
 
 Release preflight `de027293` stopped at discovery: i144 e6.1 landed while the candidate was built, so main had eight new cells not yet rebased into the candidate. No test jobs ran. Rebase preserves them. The concurrent release builds consumer binaries and their import manifest before test jobs start; UI tests run alongside R-shape jobs, without deleting or rematerializing their binaries during a live cell. The intermediate `ec6030a6` run was cancelled before tests to complete this prerequisite change; its build completed without source mutation.
 
+Consumer preflight `01576088` refused the fixture’s stale lock under `--locked`: the imported rdm-admin adds `futures-util`, and rdm-transport adds `chrono`. The deliberate offline lock refresh changed exactly those two dependency edges, zero package versions; the demo fixture is pinned to landed main `2f10e419f21e4ddee019be0d107ac68443d5b4ea`. The release builder continues to require `--locked`, and materializes its candidate revision against that updated lock. Log `/home/admin/rust-distributed-mesh-deploy/s88-consumer-lock-refresh.log`.
+
 ### Remaining
 
 - [ ] A functional cell proving hard-link insertion (`create_new`), atomic rename (`replace`), file and directory `fsync`, and coherent reads and listings across containers sharing the container provider's mounted `RDM_STORE_DIR` (`R14 item 6`).
