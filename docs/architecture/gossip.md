@@ -658,6 +658,7 @@ catalog's per-frame fields (§3.1) are the values these attributes carry.
 | `sequence` | the per-`(source, subject)` version: a birth's `digest_seq`, a projection's `topology_version`, a seat's `revision` |
 | `time` | rafka-time of the fact; never an ordering |
 | `data` | the body, the frame's own fields |
+| `traceparent`, `tracestate` | the [Distributed Tracing extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md): the author's W3C trace context, so the receive spans parent to the author's trace. Observability only: never dispatch, routing or execution; a malformed value is dropped by name and the frame continues, the same rule as the Node RPC context section (Luke, 2026-10-17) |
 
 The receive rules (§3.1) in these terms: for one `(source, subject)`, a higher `sequence` installs,
 an equal one with identical content is a duplicate, a lower one is stale, a gap is repair; a new
