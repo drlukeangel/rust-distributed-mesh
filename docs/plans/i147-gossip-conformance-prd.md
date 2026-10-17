@@ -354,7 +354,7 @@ Outside-i147 read: `flood::a_flood_of_32_callers_for_10_seconds_round_trips_with
 Indeterminate / ReplyLost("the request's attempts ended") after 36 ms, attempts=1, reused=true;
 [trace](http://192.168.68.99:16687/trace/68bb6983973f33e7308763cff9fb8825). This is the pure Node RPC
 flood path, not publication receipt or PublisherId; cell untouched. Both traces retrieved and
-full gate stems saved under target/evidence/publisher-birth/gate-red/.
+full gate stems saved under target/evidence/publisher-birth/gate-red/. The next land-script rebase found the cell owner had independently landed `78ddb2f1`: each surviving mesh applies the announcement on either channel, plus an explicit backbone receipt by a non-holder peer primary. That stronger upstream cell is retained byte-for-byte; the interim local test edit is discarded in the rebase. The final prerequisite changes no handover cell. Main also advances through `882abfe9` and `bac3a549`; the next gate measures that new baseline, not the recorded red source.
 
 
 
