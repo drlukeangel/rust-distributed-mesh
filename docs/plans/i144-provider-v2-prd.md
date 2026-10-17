@@ -412,7 +412,7 @@ seat each. Independent of i146 and i147.
   whose domain can be inspected: exit proof, inherited dir reused; only Pending admins surviving:
   the seat waits; the fence unavailable: the takeover held and surfaced on `fabric.get`.
 - **Order.** After R24 and e5; one seat; the packet first.
-- **State.** Q28 A (2026-10-16): the store provides the fence (rulings `i144-rulings-2026-10-16-fabric-seat.md`). Next: the e6.1 packet, the store layout and the seal key's exact shape, before any code.
+- **State.** Q28 A (2026-10-16): the store provides the fence. Q35 x (2026-10-17): the layout, one fabric-wide sequence of seat moves (`seat-moves/<T>`, `seat-move/1`) serializing every seat move, each seat keeping its own revision; lanes `rev-<R>/<seq>`, the seal `lane-seal/1`, `in-flight` naming its claim's lane key, and the cells (rulings `i144-rulings-2026-10-16-fabric-seat.md`). Page text (node-primary-update.md's row location, build.md §5.3's journal) exact old → new to Luke with the e6.1 landing. Not started.
 
 ### Files likely to touch
 

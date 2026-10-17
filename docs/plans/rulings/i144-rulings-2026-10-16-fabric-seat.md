@@ -58,3 +58,36 @@ A packet with a §5 delta on each; arms only after.
   fabric-primary's mesh killed, the seat moved, fenced, re-created, handed back, no person.
 - Next: the store layout and the seal key's exact shape as the e6.1 packet, before any of it is
   written. This ruling fixes the mechanism, not the bytes.
+
+## Q35 — e6.1's store layout (Luke 2026-10-17): x, one fabric-wide sequence of seat moves; each seat keeps its own revision
+
+- One fabric-wide sequence of seat moves is the serializer; each seat keeps its own revision as data.
+- Keys: `seat-moves/<T>.json` on the fabric's store root, `T` a 20-digit zero-padded fabric-wide
+  sequence, written through `insert_claimed` at exactly `max(T)+1`. A writer folds the log through
+  `T-1` before it inserts, so any concurrent move would have taken that `T` first: one insert
+  serializes every seat move in the fabric, and a two-seat move is one row, atomic
+  (node-primary-update.md:21, :159).
+- Row: `seat-move/1 { seats: [(seat, from_revision, revision, holder, from)], operation | takeover,
+  by: exact birth }`. `revision` is that seat's own counter stepping by one; `from_revision` is the one
+  the writer folded, and a fold refuses by name a row whose `from_revision` is not the seat's revision
+  at `T-1` (the fold's data-validity check; the insert at `max+1` makes it unreachable except by a
+  defective writer).
+- Per-seat revision stays per seat: `SeatHolder.revision`, `CommittedSeat.revision`,
+  `expected_revision`, `RejectedStaleSeat { expected, current }` and gossip's committed revision per
+  cohort are unchanged on the wire and on the page.
+- Lanes and seals under Q28: `fabric/builds/rev-<R>/<seq>.json` and
+  `meshes/<mesh>/builds/rev-<R>/<seq>.json`, `R` the lane's own seat revision, `R` and `seq` 20-digit
+  zero-padded; one Build fact per key, `build-fact/1`, through `insert_claimed`; the seal
+  `lane-seal/1 { revision, sealed_by, by }` at the first sequence the sealer wins; a writer meeting it
+  is refused `RejectedStaleSeat` and appends nothing past it. Whoever commits the move seals, after its
+  seat-move row stands: on a planned handover the holder (the seal replaces the process-local
+  cut-off), on a takeover the winner; the successor appends only once both stand. Cohort seats are in
+  the same log: a restart or replacement moving a cohort primary is one row.
+- `in-flight`: the one shared key names its claim's lane key and is void when that key is not in the
+  lane below the seal.
+- Durable format moved: `build-journal.jsonl` and `seat-transfers/` refused by name; one reseal.
+- Cells: two writers racing on `seat-moves/<T>`, exactly one commits and the other folds and
+  re-resolves; a two-seat move committed as one row with both revisions stepped; a crash between the
+  row and the seal, the successor does not append and the next fold completes the seal; an
+  old-authority writer meeting the seal refused stale and nothing past it readable; the lane
+  reconstructed in order from its keys.
