@@ -97,11 +97,11 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--since" => since = Some(take("--since")?),
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport" | "topology" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport" | "topology" | "nodes" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    let is_declare = matches!(op.as_deref(), Some("declare" | "topology"));
+    let is_declare = matches!(op.as_deref(), Some("declare" | "topology" | "nodes"));
     let admin_birth = admin_birth.ok_or("--admin-birth is required")?;
     let admin_birth: MeshNode = serde_json::from_str(&admin_birth).map_err(|e| format!("--admin-birth {admin_birth:?} is not a node-admin's birth: {e}"))?;
     Ok(Args {
@@ -291,6 +291,12 @@ fn reply(r: &ProofReply) -> Value {
 
 async fn run(a: Args) -> Result<Value, String> {
     let target = target(&a.target)?;
+    if a.op == "nodes" {
+        let (client, _) = enter(&a.admin_birth).await?;
+        let nodes = views_of(&client, &a.admin_birth.name).await;
+        client.endpoint().close().await;
+        return nodes.map(|nodes| json!({"outcome": "Reply", "nodes": nodes}));
+    }
     if a.op == "resolve" {
         return run_resolve(&a, &target).await;
     }

@@ -605,19 +605,20 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
         let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason };
-        match mode {
+        let code = match mode {
             TerminationMode::Graceful { grace } => {
                 docker(&["stop", "-t", &grace.as_secs().max(1).to_string(), name]).await.map_err(err)?;
+                docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.map_err(err)?
             }
             // Forced termination: the daemon's kill (SIGKILL), never a stop, which delivers SIGTERM
             // first and thaws a paused container so it runs its handler (i144 R23). The kill is
             // waited out before the exit code is read.
             TerminationMode::Immediate => {
                 docker(&["kill", name]).await.map_err(err)?;
-                docker(&["wait", name]).await.map_err(err)?;
+                docker(&["wait", name]).await.map_err(err)?
             }
-        }
-        let code = docker(&["inspect", "--format", "{{.State.ExitCode}}", name]).await.ok().and_then(|c| c.parse().ok());
+        };
+        let code = Some(code.parse::<i32>().map_err(|e| err(format!("the daemon's terminal exit code {code:?} for {name} does not decode: {e}")))?);
         // Keep the logs beside the node's data, then remove the container. Logs that cannot be
         // kept fail the stop by name and leave the stopped container (and its logs) in place, so
         // a re-run keeps them before it removes it.

@@ -126,6 +126,26 @@ async fn nodes_at(estate: &Estate, admin: &str) -> Option<Vec<Value>> {
     estate.node_views_at(&path).await.map(|v| values(&v))
 }
 
+/// Read an isolated admin through its own network namespace. The host's UDP leg stays
+/// cut; this probe binds the held container address and calls the exact held birth locally.
+async fn local_nodes_at(before: &[Value], silenced: &Silenced, name: &str) -> Option<Vec<Value>> {
+    let Some(member) = silenced.members.iter().find(|m| m.node == name) else {
+        return None;
+    };
+    let view: NodeView = serde_json::from_value(node_in(before, name)?.clone()).ok()?;
+    let birth = rdm_client::birth_of_view(&view)?;
+    let probe = rdm_test::estate::binary("rafka-rpc-probe");
+    let output = tokio::process::Command::new("docker")
+        .args(["exec", "-e", &format!("RDM_PROBE_BIND={}", member.ip), &member.id])
+        .arg(probe)
+        .args(["--admin-birth", &serde_json::to_string(&birth).unwrap(), "nodes", "--target", &format!("exact:{}", birth.node_id)])
+        .output().await.expect("execute the isolated admin's local Node RPC observer");
+    assert!(output.status.success(), "{name}: local node.get observer: {}", String::from_utf8_lossy(&output.stderr));
+    let answer: Value = serde_json::from_slice(&output.stdout).expect("the local observer's JSON reply");
+    assert_eq!(answer["outcome"], "Reply", "{name}: {answer}");
+    answer["nodes"].as_array().cloned()
+}
+
 /// The admin `admin`'s own `fabric.get`; `None` when it does not answer for this Fabric.
 async fn fabric_at(estate: &Estate, admin: &str) -> Option<FabricView> {
     let path: PathName = admin.parse().ok()?;
@@ -222,7 +242,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
-    let nodes = values(&estate.settled_named(&all).await);
+    let nodes = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
 
     // The side that is cut off is the mesh without the fabric-primary seat; control is read through
     // an admin of the other side.
@@ -309,7 +329,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         // The silenced side's own view, each of its admins' own node.get.
         let mut own_views = serde_json::Map::new();
         for name in &isolated_admins {
-            let seen: Value = match nodes_at(&estate, name).await {
+            let seen: Value = match if cut == Cut::PeerMesh { local_nodes_at(&nodes, &silenced, name).await } else { nodes_at(&estate, name).await } {
                 Some(v) => json!(v.iter().map(|n| (s(&n["name"]), s(&n["status"]))).collect::<BTreeMap<_, _>>()),
                 None => json!("unanswered"),
             };
@@ -526,7 +546,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
-    let before = values(&estate.settled_named(&all).await);
+    let before = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let kept_mesh = holder.split('.').next().unwrap().to_string();
     let lost_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
@@ -583,7 +603,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         }
     })
     .await;
-    let after = values(&estate.settled_named(&all).await);
+    let after = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
     let fabric_after = fabric_json(&estate).await;
     assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: the current build_id is the accepted Build");
     assert_eq!(mesh_id_of(&estate, &lost_mesh).await, lost_mesh_id, "{lost_mesh} recovered under its own MeshId");
@@ -744,6 +764,10 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
     let started = now_nanos();
     let build_id = estate.reconcile_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.to_string();
     let build_complete = now_nanos();
+    // mesh-delete.md steps 5–7: mesh.deleted leaves its reporting primary alive.
+    // The caller deletes that exact held final primary in a separate node.delete.
+    let delete = estate.submit_change(rdm_client::Change::RemoveNode { node: Estate::path(&holder) }).await;
+    let delete_build_id = estate.follow(delete).await.build_id.to_string();
     // The former holder's containers: terminal at the daemon (not running, or removed).
     let mut lost_terminal = BTreeMap::new();
     for (name, (id, _)) in containers_before.iter().filter(|(n, _)| n.starts_with(&format!("{lost_mesh}."))) {
@@ -817,8 +841,8 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
     assert!(!handed_off.is_empty(), "a surviving admin announced the new fabric primary of {survivor_mesh}, succeeding {lost_mesh}'s");
     let first_handoff = handed_off.iter().map(|sp| start(sp)).min().unwrap();
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
-    let holder_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == holder && attr(sp, "build_id") == build_id).collect();
-    assert_eq!(holder_terminate.len(), 1, "the retire pipeline terminated the former holder {holder} once under {build_id}: {holder_terminate:?}");
+    let holder_terminate: Vec<&Value> = steps.iter().copied().filter(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == holder && attr(sp, "build_id") == delete_build_id).collect();
+    assert_eq!(holder_terminate.len(), 1, "the retire pipeline terminated the former holder {holder} once under {delete_build_id}: {holder_terminate:?}");
     assert_eq!(attr(holder_terminate[0], "outcome"), "complete");
     let terminated_at = holder_terminate[0]["end_unix_nano"].as_u64().unwrap();
     assert!(first_handoff < terminated_at, "fabric authority moved ({first_handoff}) before the former holder's runtime was gone ({terminated_at})");
@@ -828,6 +852,7 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
         "provider": estate.owner.provider,
         "build_id": build_id,
         "former_holder": holder,
+        "delete_build_id": delete_build_id,
         "lost_mesh": lost_mesh,
         "survivor_mesh": survivor_mesh,
         "new_holder": new_holder,

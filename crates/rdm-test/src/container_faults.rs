@@ -144,8 +144,8 @@ pub struct Member {
 /// A mesh's containers silenced against everything outside the set: each keeps its interface, its
 /// address, its sockets, its processes and every other member of the set, and drops all packets
 /// to and from the rest of the estate's containers and all UDP to and from the host (the
-/// transport's protocol); the host still reaches each one's control API over TCP, so a scenario
-/// reads the silenced side's own view. A real network cut, never a container stop.
+/// transport's protocol). A scenario reads an isolated admin's view with a Node RPC probe
+/// running inside that container's network namespace. A real network cut, never a container stop.
 #[derive(Debug, Clone, Serialize)]
 pub struct Silenced {
     /// The Fabric's Docker network.

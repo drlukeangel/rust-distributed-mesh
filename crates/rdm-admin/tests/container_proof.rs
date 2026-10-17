@@ -306,6 +306,7 @@ while not (root / 'done').exists():
     value = (root / 'atomic').read_bytes()
     assert value in (b'A' * 131072, b'B' * 131072), f'torn replacement: {len(value)} bytes'
     reads += 1
+    time.sleep(0)
 assert reads > 0, 'the reader observed no replacements'
 assert (root / 'atomic').read_bytes() == b'B' * 131072
 assert 'replace.tmp' not in {p.name for p in root.iterdir()}
