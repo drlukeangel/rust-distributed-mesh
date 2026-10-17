@@ -490,3 +490,77 @@ pub async fn node_command_completion(client: &rdm_transport::NodeRpcClient, targ
         Err(e) => panic!("{} did not complete: {e}", req.op()),
     }
 }
+
+/// Old cell request builders retain their assertion vocabulary; their command hop is 0x22.
+/// The fixture primary records progress before acknowledging recovery, as the product owner does.
+pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm_transport::NodeTarget, req: &rdm_core::status::StatusRequest, opts: &rdm_transport::CallOptions, book: Option<&rdm_transport::membership::DigestBook>) -> Option<rdm_core::status::StatusReply> {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
+    use rdm_core::status::{StatusReply as R, StatusRequest as S};
+    use rdm_transport::stream::StreamItem;
+    let command = match req {
+        S::StopNode { node_id, incarnation, build_id, attempt, operation } => Q::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() },
+        S::StartNode { node_id, incarnation, build_id, attempt, operation } => Q::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() },
+        _ => return None,
+    };
+    let (node_id, incarnation) = command.subject();
+    let mut stream = match client.call_stream::<NodeCommand>(target, &command, opts).await {
+        Ok((s, _)) => s,
+        Err((rdm_core::outcome::RpcOutcome::Reply(r), _)) => return Some(match r.into_value() {
+            N::RejectedStaleIncarnation { held } => R::RejectedStaleIncarnation { held },
+            N::NotReady { reason } => R::NotReady { reason },
+            N::RejectedInvalidNodeTransition { current } => R::RejectedInvalidNodeTransition { current },
+            other => panic!("{} refused: {other:?}", command.op()),
+        }),
+        Err((other, _)) => panic!("{} did not open: {other:?}", command.op()),
+    };
+    let mut receipt = None;
+    let mut joined = false;
+    while let Some(item) = stream.next().await {
+        let StreamItem::Frame(_, frame) = item else { panic!("{} stream broke: {item:?}", command.op()) };
+        let reply = match frame {
+            N::CommandAccepted { .. } => None,
+            N::StopConnectionsDeleted { receipt: r } => { receipt = Some(r); None }
+            N::NodeJoined => {
+                joined = true;
+                if let Some(book) = book { book.reported(node_id, incarnation, rdm_core::MemberStatus::Pending); }
+                None
+            }
+            N::NodeStarted => {
+                if let Some(book) = book { book.started(node_id, incarnation); }
+                Some(if joined { R::Started } else { R::AlreadyApplied })
+            }
+            N::NodeStopped => {
+                if let Some(book) = book { book.reported(node_id, incarnation, rdm_core::MemberStatus::Leaving); }
+                Some(R::Stopped { receipt: receipt.take().expect("stop reports its closure before NodeStopped") })
+            }
+            N::Failed { step, reason, .. } => Some(R::StartFailed { step, reason }),
+            N::NotReady { reason } => Some(R::NotReady { reason }),
+            N::RejectedInvalidNodeTransition { current } => Some(R::RejectedInvalidNodeTransition { current }),
+            N::RejectedStaleIncarnation { held } => Some(R::RejectedStaleIncarnation { held }),
+            other => panic!("unexpected frame for {}: {other:?}", command.op()),
+        };
+        stream.accepted().await;
+        if reply.is_some() { return reply; }
+    }
+    panic!("{} stream has no terminal", command.op())
+}
+
+/// A cell commanding a real mesh-primary uses that primary's actual command owner.
+pub async fn root_lifecycle_reply(root: &rdm_admin::admin::Running, launch: &rdm_core::launch::Launch, req: &rdm_core::status::StatusRequest) -> Option<rdm_core::status::StatusReply> {
+    use rdm_core::status::{StatusRequest as Q, StatusReply as R};
+    use rdm_admin::deployment::pipeline::{CommandContext, CommandAdmission as A};
+    let (start, build_id, attempt, operation) = match req {
+        Q::StopNode { build_id, attempt, operation, .. } => (false, build_id, attempt, operation),
+        Q::StartNode { build_id, attempt, operation, .. } => (true, build_id, attempt, operation),
+        _ => return None,
+    };
+    let authority = root.status_authority().expect("the primary's command owner");
+    let subject = authority.topology.read().await.births().find(|n| n.node_id == launch.node_id).cloned().expect("the primary holds the commanded birth");
+    let ctx = CommandContext { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
+    Some(match authority.carry_lifecycle(&subject, start, &ctx).await {
+        A::Started {} => R::Started,
+        A::Stopped { receipt } => R::Stopped { receipt },
+        A::StartFailed { step, reason, .. } => R::StartFailed { step, reason },
+        other => panic!("{} did not finish: {other:?}", req.op()),
+    })
+}

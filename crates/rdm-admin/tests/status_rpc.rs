@@ -172,6 +172,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let fabric_id = topology.read().await.fabric.id.clone();
     let authority = Arc::new(StatusAuthority {
         declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
         stopped: Default::default(),
         me: me.node.name.clone(),
         node_id: me.node.node_id.clone(),
@@ -346,9 +348,9 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let subject = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
-    // The node command: node.stop of the exact birth, a command its mesh-primary sends on Status
-    // (node.connections.delete reaches a birth on the node command op 0x22).
-    let command = |inc: IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: "node.stop:mesh1.admin.2".into() };
+    // The exact-birth Status command control is JoinMesh; StopNode is now reserved (Q47).
+    // This cell still proves the admitted status door, its refusal and transport certainty arms.
+    let command = |inc: IncarnationId| StatusRequest::JoinMesh { node_id: node_id.clone(), incarnation: inc, build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: "node.stop:mesh1.admin.2".into() };
 
     // Healthy control before draining: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -595,6 +597,10 @@ impl StatusStorage for Refusing {
     async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::record_store::StorageError> {
         self.inner.fabric_events_of(mesh).await
     }
+    async fn put_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::record_store::StorageError> { self.inner.put_node_operation(row).await }
+    async fn node_operations(&self) -> Result<Vec<rdm_admin::status_storage::NodeOperationRow>, rdm_admin::record_store::StorageError> { self.inner.node_operations().await }
+    async fn remove_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::record_store::StorageError> { self.inner.remove_node_operation(row).await }
+
     async fn put_node_declared(&self, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::record_store::StorageError> {
         self.check()?;
         self.inner.put_node_declared(row).await
@@ -1177,7 +1183,7 @@ async fn scripted_member(b: &Birth, script: Script) -> (ResolvedNode, Router) {
         .serve_stream::<NodeCommand, _, _>(OpOwner::Product("rdm".into()), move |_peer, req: NodeCommandRequest, sink| {
             let script = script.clone();
             async move {
-                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req;
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req else { panic!("expected DeleteConnections") };
                 match script {
                     Script::Refuse(refusal) => Ok(refusal),
                     Script::Accept { end } => {

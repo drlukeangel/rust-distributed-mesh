@@ -208,7 +208,7 @@ A Status call.
 | 7.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 7.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
 | 7.4 | `operation` | `String` |  |  | The operation. |
-| 8 | **`StopNode`** |  |  | `op() = "stop-node"` | Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md): |
+| 8 | **`StopNode`** |  |  | `op() = "stop-node"` | Reserved at position 8: refused by name, never executed. Stop and start use NodeCommand 0x22. |
 | 8.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
 | 8.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 8.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
@@ -262,7 +262,7 @@ A Status call.
 | 15.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
 | 15.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
 | 15.5 | `operation` | `String` |  |  | The operation: `open-traffic:<fabric_id>`. |
-| 16 | **`StartNode`** |  |  | `op() = "start-node"` | Downward: the owning mesh-admin tells the parked exact birth to rejoin as itself |
+| 16 | **`StartNode`** |  |  | `op() = "start-node"` | Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22. |
 | 16.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth commanded. |
 | 16.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 16.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
@@ -998,8 +998,8 @@ The answer to a node.primary.update call.
 | `NAME` | `"node-command"` |
 | `FORWARDABLE` | `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `1` |
-| `REPLY_VARIANTS` | `11` |
+| `REQUEST_VARIANTS` | `3` |
+| `REPLY_VARIANTS` | `17` |
 | `MAX_REQUEST_FRAME_BYTES` | `4 * 1024` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -1007,7 +1007,7 @@ The answer to a node.primary.update call.
 
 ### `NodeCommandRequest`
 
-`crates/rdm-core/src/node_command.rs` · enum · 1 variants · rdm-core
+`crates/rdm-core/src/node_command.rs` · enum · 3 variants · rdm-core
 
 A command to the exact birth it names.
 
@@ -1017,12 +1017,24 @@ A command to the exact birth it names.
 | 0.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The birth whose connections are cut. |
 | 0.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 0.2 | `scope` | `ConnectionScope` → [`ConnectionScope`](#t-rdm_core-status-ConnectionScope) |  |  | Which connections. |
+| 1 | **`StopNode`** |  |  | `op() = "stop-node"` | Stop this exact birth, reporting closure and completion on this stream (Q47). |
+| 1.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The commanded node. |
+| 1.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its exact incarnation. |
+| 1.2 | `build_id` | `String` |  |  | The Build that owns this operation. |
+| 1.3 | `attempt` | `u32` |  |  | Its executing attempt. |
+| 1.4 | `operation` | `String` |  |  | The operation's declared identity. |
+| 2 | **`StartNode`** |  |  | `op() = "start-node"` | Start this parked exact birth, reporting join and readiness on this stream (Q47). |
+| 2.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The commanded node. |
+| 2.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | Its exact incarnation. |
+| 2.2 | `build_id` | `String` |  |  | The Build that owns this operation. |
+| 2.3 | `attempt` | `u32` |  |  | Its executing attempt. |
+| 2.4 | `operation` | `String` |  |  | The operation's declared identity. |
 
 <a id="t-rdm_core-node_command-NodeCommandReply"></a>
 
 ### `NodeCommandReply`
 
-`crates/rdm-core/src/node_command.rs` · enum · 11 variants · rdm-core
+`crates/rdm-core/src/node_command.rs` · enum · 17 variants · rdm-core
 
 One reply frame of a node command's stream. Positional order is part of the wire schema.
 
@@ -1055,6 +1067,17 @@ One reply frame of a node command's stream. Positional order is part of the wire
 | 9.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | What was malformed. |
 | 10 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not authorized for the op. |
 | 10.0 | `reason` | `String` |  |  | Why, by name. |
+| 11 | **`StopConnectionsDeleted`** |  |  | `name() = "stop-connections-deleted"` | The stop's whole All closure; progress, never the stop's terminal. |
+| 11.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | The closure's Established or Deadline evidence. |
+| 12 | **`NodeStopped`** |  |  | `name() = "node-stopped"` | The stop's transport cut is complete; the live process is parked. |
+| 13 | **`NodeJoined`** |  |  | `name() = "node-joined"` | The accepted join and channel join completed; start gates remain. |
+| 14 | **`NodeStarted`** |  |  | `name() = "node-started"` | Every start gate completed; the receiver records ReadyForTraffic. |
+| 15 | **`Failed`** |  |  | `name() = "failed"` | An accepted command failed at this named step. |
+| 15.0 | `step` | `String` |  |  | The step that failed. |
+| 15.1 | `reason` | `String` |  |  | Its explanation. |
+| 15.2 | `code` | `crate::outcome::Code` → [`Code`](#t-rdm_core-outcome-Code) |  |  | The step's typed outcome code. |
+| 16 | **`RejectedInvalidNodeTransition`** |  |  | `name() = "rejected-invalid-node-transition"` | The lifecycle command is invalid for this living birth's held state. |
+| 16.0 | `current` | `crate::status::NodeState` → [`NodeState`](#t-rdm_core-status-NodeState) |  |  | The state it holds, named by the refusal. |
 
 ## 0x40 `broker-data`
 
@@ -2194,7 +2217,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | The node has not yet declared itself ready. |
 | 1 | **`ReadyForTraffic`** |  |  | The node takes traffic. |
-| 2 | **`Draining`** |  |  | The node takes no new work. |
+| 2 | **`Draining`** |  | `rename = "connections-deleting"` | The node takes no new work. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
 <a id="t-rdm_core-build-MeshCounts"></a>
@@ -2392,7 +2415,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | Born and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** |  |  | Draining: it takes no new work while it finishes what it holds. |
+| 2 | **`Draining`** |  | `rename = "connections-deleting"` | Draining: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
 | 5 | **`Restarting`** |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |

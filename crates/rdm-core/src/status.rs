@@ -4,6 +4,8 @@
 //! A node or a primary declares a committed state upward to its authority and gets the typed
 //! result of applying it. Gossip stays the dissemination plane; this is certainty that one
 //! declared state was applied by the authority that holds it. There is no transition id:
+//! an operation-named node effect is idempotent by `(birth, build_id, attempt, operation)` (Q49),
+//! held across cycle begins and forgotten only with the birth. Without an operation,
 //! idempotency is the natural key of the thing declared — `(NodeId, IncarnationId, status)`,
 //! `(MeshId, status)`, `(FabricId, event)` — and the entity's current state is the result.
 //!
@@ -181,10 +183,7 @@ pub enum StatusRequest {
         /// The operation.
         operation: String,
     },
-    /// Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md):
-    /// drain, hard-cut its mesh connections, enter `Leaving` and park, its process alive with its
-    /// endpoint bound. The reply is held until the stop is done and is [`StatusReply::Stopped`]:
-    /// `stopped` rides the stop call's own reply, never a gossip frame and never a second call.
+    /// Reserved at position 8: refused by name, never executed. Stop and start use NodeCommand 0x22.
     StopNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -308,12 +307,7 @@ pub enum StatusRequest {
         /// The operation: `open-traffic:<fabric_id>`.
         operation: String,
     },
-    /// Downward: the owning mesh-admin tells the parked exact birth to rejoin as itself
-    /// (`start-node`; node-start.md): the same node id, incarnation, endpoint key and port. The
-    /// birth joins its authority, rejoins its mesh channel and takes its topology, then runs its
-    /// `hydrate_before_ready` hook with `AfterStop` in its context and declares itself ready. The
-    /// reply is [`StatusReply::Started`] once it has rejoined, or [`StatusReply::StartFailed`]
-    /// naming the step that failed. A birth that is not parked refuses it.
+    /// Reserved at position 16: refused by name, never executed. Stop and start use NodeCommand 0x22.
     StartNode {
         /// The birth commanded.
         node_id: NodeId,

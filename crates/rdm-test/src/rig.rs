@@ -97,6 +97,31 @@ impl NodeObserver for LiveMesh {
             Ok(t) => t,
             Err(reason) => return rdm_admin::deployment::pipeline::CommandAdmission::NotSent { reason, code: rdm_core::outcome::Code::Unavailable },
         };
+        if matches!(cmd, rdm_admin::node_commands::NodeCommand::Stop | rdm_admin::node_commands::NodeCommand::Start) {
+            // Use the real mesh-primary frame owner; the fixture supplies its held view and stores.
+            let birth = self.client.delivery().me().clone();
+            let mut me = Node::allocated(self.membership.node_name().parse().expect("the fixture admin's path"));
+            me.node_id = birth.node_id.clone();
+            me.incarnation_id = Some(birth.incarnation.clone());
+            me.is_primary = true;
+            let fabric_id = self.membership.book.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
+            let authority = rdm_admin::status_rpc::StatusAuthority {
+                me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
+                declaration_seam: None, command_frame_seam: None, operation_effects: Default::default(), stopped: Default::default(),
+                topology: Arc::new(tokio::sync::RwLock::new(rdm_admin::topology::Topology {
+                    fabric: rdm_admin::model::Fabric { id: fabric_id, name: "fabric1".into(), status: rdm_admin::model::ScopeStatus::ReadyForTraffic, provider: rdm_admin::model::ProviderKind::Process },
+                    meshes: vec![], nodes: vec![me, node.clone()],
+                })),
+                declared: Default::default(), status_storage: Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()),
+                nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default),
+                republish: Default::default(), commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
+                hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), configs: Default::default(),
+                configure: Default::default(), hydration: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
+                book: Some(self.membership.book.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+            };
+            assert!(authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());
+            return authority.carry_lifecycle(node, cmd == rdm_admin::node_commands::NodeCommand::Start, ctx).await;
+        }
         rdm_admin::node_commands::send_command(&self.client, &self.commands, &target, node, cmd, ctx).await
     }
 

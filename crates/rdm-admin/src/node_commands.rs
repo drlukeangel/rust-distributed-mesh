@@ -217,7 +217,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBoo
             let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
             let end = rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await;
             unreachable = not_sent_cause(&end);
-            admission_of(end)
+            admission_of_stream(end).await
         }
         NodeCommand::Start => {
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
@@ -225,7 +225,7 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBoo
             let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
             let end = rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await;
             unreachable = not_sent_cause(&end);
-            admission_of(end)
+            admission_of_stream(end).await
         }
     };
     // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
@@ -247,10 +247,44 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBoo
     (admission, unreachable)
 }
 
+/// Read a command's stream; lifecycle state recording belongs to StatusAuthority's owner path.
+async fn admission_of_stream(end: Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, rdm_core::outcome::RpcOutcome<rdm_core::node_command::NodeCommandReply>>) -> CommandAdmission {
+    use rdm_core::node_command::{NodeCommand as P, NodeCommandReply as R};
+    use rdm_core::protocol::NodeProtocol;
+    use rdm_core::outcome::Code;
+    let mut stream = match end {
+        Ok(s) => s,
+        Err(out) => return match out {
+            rdm_core::outcome::RpcOutcome::Reply(r) => { let r = r.into_value(); CommandAdmission::Refused { code: P::classify_reply(&r).code(), reply: format!("{}: {r:?}", r.name()) } },
+            rdm_core::outcome::RpcOutcome::NotSent(n) => CommandAdmission::NotSent { code: n.reason().code(), reason: format!("{:?}", n.reason()) },
+            other @ (rdm_core::outcome::RpcOutcome::Unserved(_) | rdm_core::outcome::RpcOutcome::RejectedStale(_)) => CommandAdmission::Refused { code: other.code(), reply: format!("{}: {other:?}", other.name()) },
+            other => CommandAdmission::Indeterminate { code: other.code(), reason: format!("{}: {other:?}", other.name()) },
+        },
+    };
+    let mut receipt = None;
+    while let Some(item) = stream.next().await {
+        let frame = match item {
+            rdm_transport::stream::StreamItem::Frame(_, frame) => frame,
+            rdm_transport::stream::StreamItem::Failed(f) => return CommandAdmission::Indeterminate { code: match &f { rdm_transport::stream::StreamFailure::Indeterminate(c) => c.code(), _ => Code::Internal }, reason: format!("{f:?}") },
+        };
+        let result = match &frame {
+            R::CommandAccepted { .. } | R::NodeJoined => None,
+            R::StopConnectionsDeleted { receipt: r } => { receipt = Some(r.clone()); None }
+            R::NodeStopped => Some(match receipt.clone() { Some(receipt) => CommandAdmission::Stopped { receipt }, None => CommandAdmission::Indeterminate { code: Code::Internal, reason: "NodeStopped without its closure receipt".into() } }),
+            R::NodeStarted => Some(CommandAdmission::Started {}),
+            R::Failed { step, reason, code } => Some(CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone(), code: *code }),
+            r => Some(CommandAdmission::Refused { code: P::classify_reply(r).code(), reply: format!("{}: {r:?}", r.name()) }),
+        };
+        stream.accepted().await;
+        if let Some(result) = result { return result; }
+    }
+    CommandAdmission::Indeterminate { code: Code::Unknown, reason: "command stream ended before its terminal".into() }
+}
+
 /// The reachability cause of a call that ended never sent.
-fn not_sent_cause(end: &Result<StatusReply, rdm_client::CallEnd>) -> Option<Unreachable> {
+fn not_sent_cause<T>(end: &Result<T, rdm_core::outcome::RpcOutcome<rdm_core::node_command::NodeCommandReply>>) -> Option<Unreachable> {
     match end {
-        Err(rdm_client::CallEnd::NotSent { cause, .. }) => unreachable_of(cause),
+        Err(rdm_core::outcome::RpcOutcome::NotSent(n)) => unreachable_of(n.reason()),
         _ => None,
     }
 }

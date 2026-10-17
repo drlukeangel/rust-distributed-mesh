@@ -1,7 +1,7 @@
 //! The single calls of the `node` family that travel over node-RPC today, and the one way any
 //! object call ends.
 //!
-//! Each object builds today's request (`node.stop` → `StatusRequest::StopNode`, `node.declare`
+//! Each object builds today's request (`node.stop` → `NodeCommandRequest::StopNode`, `node.declare`
 //! → `DeclareNodeState`, `node.apply` → `ApplyNodeState`, `node.get` of one exact birth →
 //! `ProbeNodeState`, `node.topology.get` → `GetTopology` on op `0x1E`), sends it with the
 //! node-RPC client and returns the typed reply. A caller never builds the request.
@@ -281,30 +281,37 @@ impl<'a> NodeRpc<'a> {
     }
 
     /// `node.stop`: tell the exact birth to delete its connections, cut its transport and stop. The
-    /// call is held until the birth is stopped; the reply is `Stopped` with its `All`'s receipt, on the stop
-    /// call's own stream. A birth already parked answers the same.
-    pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::StopNode {
+    /// command stream reports acceptance, the All closure's receipt as Data, then NodeStopped.
+    /// A birth already stopped reports its held closure and completion on the new invocation.
+    pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
+        let req = rdm_core::node_command::NodeCommandRequest::StopNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
             build_id: ctx.build_id.to_string(),
             attempt: ctx.attempt,
             operation: ctx.operation(),
         };
-        self.status(NodeOp::Stop, birth, req, opts).await
+        match self.client.call_stream::<rdm_core::node_command::NodeCommand>(&birth.target, &req, opts).await {
+            Ok((stream, _)) => Ok(stream),
+            Err((out, _)) => Err(out),
+        }
     }
 
     /// `node.start`: tell the parked exact birth to rejoin as itself. The call is held until the
-    /// birth has rejoined; the reply is `Started`, or `StartFailed` naming the step that failed.
-    pub async fn start(&self, birth: &ExactBirth, ctx: &StartContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::StartNode {
+    /// birth reports NodeJoined after joining, then NodeStarted after every gate, or Failed with
+    /// its step, reason and code. This is only the exact-node hop, never the caller's Build carrier.
+    pub async fn start(&self, birth: &ExactBirth, ctx: &StartContext, opts: &CallOptions) -> Result<rdm_transport::stream::ReplyStream<rdm_core::node_command::NodeCommand>, RpcOutcome<rdm_core::node_command::NodeCommandReply>> {
+        let req = rdm_core::node_command::NodeCommandRequest::StartNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
             build_id: ctx.build_id.to_string(),
             attempt: ctx.attempt,
             operation: ctx.operation(),
         };
-        self.status(NodeOp::Start, birth, req, opts).await
+        match self.client.call_stream::<rdm_core::node_command::NodeCommand>(&birth.target, &req, opts).await {
+            Ok((stream, _)) => Ok(stream),
+            Err((out, _)) => Err(out),
+        }
     }
 
     /// `node.config.update`, the caller's single call to the exact birth's mesh-primary, the writer of

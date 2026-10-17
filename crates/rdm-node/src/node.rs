@@ -703,6 +703,7 @@ async fn start_booted(
                                 owed: owed_state.clone(),
                                 client: node_rpc.client.clone(),
                                 operation: None,
+                                progress: None,
                             };
                             let parts = crate::workflows::node_start::HookParts {
                                 birth: crate::app_hydration::Birth {
@@ -812,7 +813,7 @@ impl crate::node_self::Session for NodeSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>) -> Result<(), crate::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
@@ -821,7 +822,7 @@ impl crate::node_self::Session for NodeSession {
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation };
+        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation, progress };
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
     }
 
@@ -900,6 +901,7 @@ struct AfterStop<'a> {
     rows: Option<crate::connections_writer::RowsHeld>,
     /// The start's operation: the ReadyForTraffic this birth declares at the start's end names it.
     operation: rdm_core::status::DeclaredOperation,
+    progress: Option<crate::node_self::CommandProgress>,
 }
 
 #[async_trait::async_trait]
@@ -959,6 +961,9 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         // Back on the topic means a neighbour: only then does this node say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;
+        if let Some(progress) = &self.progress {
+            let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
+        }
         let mut pending = s.digest.clone();
         pending.status = MemberStatus::Pending;
         let _ = membership.publish(&pending).await;
@@ -978,6 +983,7 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             owed: s.owed.clone(),
             client: s.client.clone(),
             operation: Some(self.operation.clone()),
+            progress: self.progress.clone(),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::app_hydration::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
@@ -1057,6 +1063,7 @@ struct Becoming {
     /// The operation that makes this birth ready: the start's, or `None` at its first boot, a state
     /// the birth measured itself (i146 Q36).
     operation: Option<rdm_core::status::DeclaredOperation>,
+    progress: Option<crate::node_self::CommandProgress>,
 }
 
 impl Becoming {
@@ -1086,7 +1093,12 @@ impl Becoming {
         )
         .in_scope(|| tracing::info!("ready for traffic"));
         *self.status.lock().unwrap() = MemberStatus::ReadyForTraffic;
-        self.owed.lock().unwrap().owe((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
+        if self.progress.is_none() {
+            self.owed.lock().unwrap().owe((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
+        } else {
+            // The open start stream reports readiness; keep the declaration for a future seat move.
+            self.owed.lock().unwrap().last = Some((rdm_core::status::NodeState::ReadyForTraffic, self.operation.clone()));
+        }
         let mut d = self.digest.clone();
         d.status = MemberStatus::ReadyForTraffic;
         let _ = self.membership.publish(&d).await;
@@ -1289,7 +1301,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             me.addressed.note(&peer.endpoint_id);
             let commander = sender.as_ref().map(|d| d.node.node_id.clone());
-            let reply = me.own.serve_node_command(commander.as_ref(), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
+            let reply = me.own.serve_node_command_on(commander.as_ref(), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
             tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this node was decided"));
             Ok(reply)

@@ -162,8 +162,8 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     }
     async fn stopped(&self, op: &rdm_core::LifecycleOp) {
         match self.authority.get() {
-            Some(authority) => {
-                let _ = authority.stop_received(op).await;
+            Some(_) => {
+                // The command stream's owner already recorded NodeStopped before recovery.
             }
             None => publish_node_stopped(&self.backbone, self.project.as_ref(), op).await,
         }

@@ -2204,6 +2204,10 @@ impl rdm_admin::status_storage::StatusStorage for CountsExitPuts {
     async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::record_store::StorageError> {
         self.inner.fabric_events_of(mesh).await
     }
+    async fn put_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::record_store::StorageError> { self.inner.put_node_operation(row).await }
+    async fn node_operations(&self) -> Result<Vec<rdm_admin::status_storage::NodeOperationRow>, rdm_admin::record_store::StorageError> { self.inner.node_operations().await }
+    async fn remove_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::record_store::StorageError> { self.inner.remove_node_operation(row).await }
+
     async fn put_node_declared(&self, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::record_store::StorageError> {
         self.inner.put_node_declared(row).await
     }

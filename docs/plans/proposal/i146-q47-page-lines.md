@@ -1,6 +1,6 @@
-# Q47 — exact page replacements for Luke
+# Q47 + Q49 — final exact page replacements for Luke
 
-Approved implementation: Q47 A. These page lines await Luke’s yes.
+This set supersedes the initial Q47 draft. It includes Q49’s operation row and preserves the existing invalid-transition refusal on the moved command hop. Architecture pages are unchanged pending Luke’s yes.
 
 ## docs/architecture/lifecycles/node-stop.md
 
@@ -282,6 +282,8 @@ StartNode { node_id, incarnation, build_id, attempt, operation }
   ← NodeStarted (Terminal; appended reply 14)
 after StopNode or StartNode acceptance:
   ← Failed { step, reason, code } (Terminal; appended reply 15)
+before lifecycle acceptance:
+  ← RejectedInvalidNodeTransition { current } (Refusal; appended reply 16, FAILED_PRECONDITION)
 ```
 
 A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
@@ -293,4 +295,68 @@ before CommandAccepted or for NotSent. There is no separate status declaration f
 the Q36 owed report remains when no stream is open. A stream lost after acceptance is incomplete.
 The owner records each frame before acknowledging recovery; repeated frames cause no second record.
 
+```
+
+## docs/architecture/lifecycles/node-stop.md
+
+Old:
+```text
+   overlay, once: the other finds the stopped state held (`AlreadyApplied`) and publishes nothing.
+```
+
+New:
+```text
+   overlay, once. The mesh-primary blindly puts the applied effect under `(birth, build_id, attempt,
+   operation)`; a cycle begin never clears that row, which is forgotten only with the birth (Q49).
+   A declaration or frame naming that applied operation answers `AlreadyApplied` and applies nothing
+   again. A report naming no operation follows the state transition rule.
+```
+
+## docs/architecture/node-rpc-envelope.md
+
+Old:
+```text
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+```
+
+New:
+```text
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+```
+
+## docs/architecture/node-rpc-envelope.md
+
+Old:
+```text
+postcard, not JSON): a StopNode on op `0x1B` (27).
+```
+
+New:
+```text
+postcard, not JSON): a StopNode on NodeCommand op `0x22` (34).
+```
+
+## docs/architecture/node-rpc-envelope.md
+
+Old:
+```text
+"target": { "node_id": "k8pag1qx95gw", "op": 27 }
+```
+
+New:
+```text
+"target": { "node_id": "k8pag1qx95gw", "op": 34 }
+```
+
+## docs/architecture/node-rpc-envelope.md
+
+Old:
+```text
+(DeclareNodeState, ApplyNodeState, ProbeNodeState, StopNode),
+```
+
+New:
+```text
+(DeclareNodeState, ApplyNodeState, ProbeNodeState; StopNode and StartNode are reserved there),
+`crates/rdm-core/src/node_command.rs::NodeCommandRequest` (DeleteConnections, StopNode, StartNode),
 ```

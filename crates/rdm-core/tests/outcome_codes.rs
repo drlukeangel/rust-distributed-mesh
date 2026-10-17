@@ -38,7 +38,7 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
         0x1F => &[0,0,14,5,5,14,14,15,7,0],
         0x20 => &[0,0,0,0,0,9,0,0,0,9,9,10,5,9,14,10,9,9,5,14,14,14,15,7,0,9],
         0x21 => &[0,10,9,9,9,10,9,9,5,9,14,15,5,14,14,7,9],
-        0x22 => &[0,0,0,3,10,14,5,14,14,15,7],
+        0x22 => &[0,0,0,3,10,14,5,14,14,15,7,0,0,0,0,13,9],
         op => panic!("no expected-code fixture for {op:#x}"),
     };
     assert_eq!(expected.len(), P::REPLY_VARIANTS as usize);
@@ -62,7 +62,8 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
             _ => n,
         },
         0x22 => match rdm_core::node_command::NodeCommand::decode_reply(&wire).unwrap() {
-            rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Deadline { .. }), .. } => 4,
+            rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { receipt: Some(rdm_core::status::ConnectionsReceipt::Deadline { .. }), .. } | rdm_core::node_command::NodeCommandReply::StopConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt::Deadline { .. } } => 4,
+            rdm_core::node_command::NodeCommandReply::Failed { code, .. } => code.number(),
             _ => n,
         },
         _ => n,

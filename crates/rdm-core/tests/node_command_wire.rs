@@ -20,9 +20,11 @@ fn bytes(hex: &str) -> Vec<u8> {
 /// CONTRACT (Luke Q7): the one request of op 0x22, `DeleteConnections`, is variant 0 in frozen bytes:
 /// node id, incarnation, then the scope (`All` 0, `Connections` 1 with its ids).
 #[test]
-fn the_request_matches_the_frozen_one_variant_wire_schema() {
-    assert_eq!(NodeCommand::REQUEST_VARIANTS, 1);
+fn the_requests_match_the_frozen_three_variant_wire_schema() {
+    assert_eq!(NodeCommand::REQUEST_VARIANTS, 3);
     for (req, hex) in [
+        (NodeCommandRequest::StopNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "010c3031323334353637383961620c397763707266677776746879016201016f"),
+        (NodeCommandRequest::StartNode { node_id: node(), incarnation: birth(), build_id: "b".into(), attempt: 1, operation: "o".into() }, "020c3031323334353637383961620c397763707266677776746879016201016f"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::All }, "000c3031323334353637383961620c39776370726667777674687900"),
         (NodeCommandRequest::DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "000c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
     ] {
@@ -36,9 +38,9 @@ fn the_request_matches_the_frozen_one_variant_wire_schema() {
 /// `ConnectionsDeleting` 1, `ConnectionsDeleted` 2 (its receipt absent for a list of ids, present for
 /// `All`), then the refusals.
 #[test]
-fn replies_match_the_frozen_eleven_variant_wire_schema() {
+fn replies_match_the_frozen_seventeen_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
-    assert_eq!(NodeCommand::REPLY_VARIANTS, 11);
+    assert_eq!(NodeCommand::REPLY_VARIANTS, 17);
     use NodeCommandReply::*;
     for (reply, hex) in [
         (CommandAccepted { node_id: node(), incarnation: birth() }, "000c3031323334353637383961620c397763707266677776746879"),
@@ -53,6 +55,12 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
         (Busy { reason: "r".into() }, "070172"),
         (RejectedConnectionsDeleting { reason: "r".into() }, "080172"),
         (Unauthorized { reason: "r".into() }, "0a0172"),
+        (StopConnectionsDeleted { receipt: ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }, "0b000000"),
+        (NodeStopped, "0c"),
+        (NodeJoined, "0d"),
+        (NodeStarted, "0e"),
+        (RejectedInvalidNodeTransition { current: rdm_core::status::NodeState::ReadyForTraffic }, "1001"),
+        (Failed { step: "s".into(), reason: "r".into(), code: rdm_core::outcome::Code::Internal }, "0f017301720d"),
     ] {
         let expected = bytes(hex);
         variants.insert(NodeCommand::encode_reply(&reply).unwrap()[0]);
@@ -88,7 +96,7 @@ fn node_command_seals_streaming_and_never_forwarded_beside_a_forwarded_status() 
 
 #[test]
 fn every_reply_variant_of_node_command_classifies_to_one_code() {
-    replies_match_the_frozen_eleven_variant_wire_schema();
+    replies_match_the_frozen_seventeen_variant_wire_schema();
 }
 
 /// CONTRACT (Q47 A): stop/start append requests 1/2, with the exact birth and operation;

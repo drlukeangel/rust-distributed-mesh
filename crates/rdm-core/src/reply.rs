@@ -114,6 +114,10 @@ use crate::status::{ConnectionScope, ConnectionsReceipt, MAX_CONNECTION_IDS};
 use crate::streaming::{FrameKind, StreamingProtocol};
 use crate::{ConnectionId, IncarnationId, NodeId};
 use serde::{Deserialize, Serialize};
+/// The living birth refuses a lifecycle command against its held state.
+pub fn rejected_invalid_node_transition(current: crate::status::NodeState) -> NodeCommandReply { NodeCommandReply::RejectedInvalidNodeTransition { current } }
+/// An accepted command failed at the named step with its typed code.
+pub fn failed(step: String, reason: String, code: crate::outcome::Code) -> NodeCommandReply { NodeCommandReply::Failed { step, reason, code } }
 /// Construct the typed connections-deleting outcome.
 pub fn connections_deleting(node_id: NodeId, incarnation: IncarnationId) -> NodeCommandReply { NodeCommandReply::ConnectionsDeleting { node_id, incarnation } }
 /// Construct the typed rejected-connection-scope outcome.

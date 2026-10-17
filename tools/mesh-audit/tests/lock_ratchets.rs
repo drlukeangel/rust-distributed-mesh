@@ -237,7 +237,7 @@ fn forward_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 #[test]
 fn node_command_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 11;", "const REPLY_VARIANTS: u32 = 12;");
+    t.edit("crates/rdm-core/src/node_command.rs", "const REPLY_VARIANTS: u32 = 17;", "const REPLY_VARIANTS: u32 = 18;");
     only(check(t.root()), Ratchet::NodeCommandResealIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rdm-core/tests/node_command_wire.rs");

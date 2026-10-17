@@ -597,7 +597,6 @@ impl LifecycleEvents for FaultedEvents {
     // Every other event the admin publishes passes through unchanged: a decorator that leaves one
     // to the trait's empty default withholds that event's gossip from every faulted estate.
     async fn stopped(&self, op: &LifecycleOp) {
-        self.faults.hold(Probe::Event { event: "stopped", op: op.clone() }).await;
         self.inner.stopped(op).await
     }
     async fn stop_completed(&self, op: &LifecycleOp) {
@@ -698,6 +697,15 @@ impl rdm_admin::fabric_rounds::RoundActions for FaultedRoundActions {
 /// drain phases belong to a transition into `Draining`, which no admin path runs.
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
 
+struct FaultedCommandFrame(Arc<AdminFaults>);
+
+#[async_trait]
+impl rdm_admin::wiring::CommandFrameSeam for FaultedCommandFrame {
+    async fn before_stopped(&self, op: &LifecycleOp) {
+        self.0.hold(Probe::Event { event: "stopped", op: op.clone() }).await;
+    }
+}
+
 /// The `Wiring` that puts every decorator and hook of `faults` into a node-admin.
 pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     let (f_builds, f_provider, f_events) = (faults.clone(), faults.clone(), faults.clone());
@@ -708,6 +716,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
         read_seam: Some(Arc::new(FaultedRead(faults.clone()))),
         declaration_seam: Some(Arc::new(FaultedDeclaration(faults.clone()))),
+        command_frame_seam: Some(Arc::new(FaultedCommandFrame(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),

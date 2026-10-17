@@ -1,3 +1,5 @@
+Q47: A (Luke, 2026-10-17). Q49: A folds into Q47: applied operation effects survive cycle begins. Exact page replacements await Luke’s yes.
+
 # Q47 — move node.stop and node.start onto the NodeCommand 0x22 stream
 
 ### 1. Spec

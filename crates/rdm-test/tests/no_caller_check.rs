@@ -26,6 +26,7 @@ use std::time::Duration;
 
 async fn call(client: &NodeRpcClient, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
     let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+    if let Some(reply) = crate::common::lifecycle_reply(client, target, req, &opts, None).await { return reply; }
     match client.call::<Status>(target, req, &opts).await.0 {
         RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -112,7 +113,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
 
         // The node's own decision span names the stop it answered the stranger, and names the
         // stranger by the one fact the node holds of it: its endpoint.
-        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-command", |f| f.get("op").is_some_and(|o| o == "stop-node") && f.get("outcome").is_some_and(|o| o == "stopped") && f.get("sender").is_some_and(|s| s.contains(&stranger_endpoint))))
+        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-command", |f| f.get("op").is_some_and(|o| o == "stop-node") && f.get("outcome").is_some_and(|o| o == "node-stopped") && f.get("sender").is_some_and(|s| s.contains(&stranger_endpoint))))
             .await
             .expect("the node decided the stranger's node.stop: Stopped, naming the sender it holds no digest of by its endpoint");
         let _ = std::fs::remove_dir_all(&dir);

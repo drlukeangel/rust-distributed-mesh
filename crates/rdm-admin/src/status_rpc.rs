@@ -20,9 +20,17 @@ use rdm_core::status::{transition, DeclaredOperation, FabricEvent, MeshState, No
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
+fn request_name(start: bool) -> &'static str { if start { "node.start" } else { "node.stop" } }
+
+fn operation_row(row: &crate::status_storage::NodeDeclaredRow, operation: &DeclaredOperation) -> crate::status_storage::NodeOperationRow {
+    crate::status_storage::NodeOperationRow { node_id: row.node_id.clone(), incarnation_id: row.incarnation_id.clone(), name: row.name.clone(), state: row.state, operation: operation.clone() }
+}
+
 /// What this admin applied, by natural key.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Declared {
+    /// Applied operation effects survive every cycle begin; forgotten only with the exact birth.
+    pub operations: BTreeMap<String, crate::status_storage::NodeOperationRow>,
     /// Per birth `(node id, incarnation)`: the greatest state it declared.
     pub nodes: std::collections::HashMap<(NodeId, IncarnationId), NodeState>,
     /// Per birth held in `nodes`: the path.name it declared at.
@@ -138,6 +146,9 @@ impl Declared {
         let rows = status.node_declared().await.map_err(|e| format!("status.storage: {e}"))?;
         let mut declared = Self::default();
         declared.fold_rows(meshes, events, rows);
+        for row in status.node_operations().await.map_err(|e| format!("status.storage: {e}"))? {
+            declared.operations.insert(row.key(), row);
+        }
         Ok(declared)
     }
 }
@@ -211,10 +222,12 @@ impl SeatFold {
             let meshes = self.storage.mesh_statuses().await.map_err(|e| format!("Mesh status rows of {}: {e}", self.mesh))?;
             let events = self.storage.fabric_events().await.map_err(|e| format!("Fabric event rows of {}: {e}", self.mesh))?;
             let rows = self.storage.node_declared().await.map_err(|e| format!("node declared-state rows of {}: {e}", self.mesh))?;
-            Ok::<_, String>((meshes, events, rows))
+            let operations = self.storage.node_operations().await.map_err(|e| format!("node operation rows of {}: {e}", self.mesh))?;
+            Ok::<_, String>((meshes, events, rows, operations))
         };
         match tracing::Instrument::instrument(read, span.clone()).await {
-            Ok((meshes, events, rows)) => {
+            Ok((meshes, events, rows, operations)) => {
+                for row in operations { declared.lock().unwrap().operations.insert(row.key(), row); }
                 span.record("node_declared_rows", rows.len());
                 span.record("mesh_status_rows", meshes.len());
                 span.record("fabric_event_rows", events.len());
@@ -282,6 +295,10 @@ pub struct StatusAuthority {
     /// Asked before a node's declaration is decided ([`crate::wiring::DeclarationSeam`]); the product's
     /// is `None`.
     pub declaration_seam: Option<Arc<dyn crate::wiring::DeclarationSeam>>,
+    /// Executable decoration before the command owner records NodeStopped.
+    pub command_frame_seam: Option<Arc<dyn crate::wiring::CommandFrameSeam>>,
+    /// Serialize operation effects with cycle begins; state-only declarations retain their own rule.
+    pub operation_effects: tokio::sync::RwLock<()>,
     /// What publishes NodeStopped for a stop this admin recorded as its birth's mesh-primary (i146
     /// Q29, Q36); filled once the admin's backbone exists.
     pub stopped: Arc<OnceLock<StoppedPublisher>>,
@@ -391,8 +408,18 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
                 Some(held) => return (rdm_core::reply::stale(held.clone()), None),
                 None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None),
             }
+            if let Some(operation) = operation {
+                let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
+                if declared.operations.contains_key(&operation_row(&row, operation).key()) {
+                    return (rdm_core::reply::already_applied(), None);
+                }
+            }
             let current = declared.node(&subject.node_id, incarnation);
             match transition(current, *state) {
+                Transition::AlreadyApplied if operation.is_some() => {
+                    let row = crate::status_storage::NodeDeclaredRow { node_id: subject.node_id.clone(), incarnation_id: incarnation.clone(), name: subject.name.clone(), state: *state };
+                    (rdm_core::reply::already_applied(), Some(Effect::Node(row, *state, operation.clone())))
+                }
                 Transition::AlreadyApplied => (rdm_core::reply::already_applied(), None),
                 Transition::Backward { current } => (rdm_core::reply::status::rejected_invalid_node_transition(current), None),
                 Transition::Apply => {
@@ -573,12 +600,12 @@ impl StatusAuthority {
             rounds.heard_from(&from.node_id);
         }
         match req {
-            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
+            StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return crate::node_commands::refuse_reserved(&me_name.to_string(), &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req),
             StatusRequest::NodeLeft { node_id, .. } => {
                 let name = view.births().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_default();
                 return crate::node_commands::refuse_node_left(&me_name.to_string(), &name, &sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), req);
             }
-            StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
+            StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { node_id, incarnation, scope } => return self.carry_delete_connections(&view, sender.as_ref(), node_id, incarnation, scope).await.status_reply(),
             StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } => {
                 let Some(mesh_deleter) = self.mesh_deleter.get().cloned() else {
@@ -712,6 +739,7 @@ impl StatusAuthority {
     /// `ReadyForTraffic` run forward again from the start. The cleared state is a row put before it
     /// is held, as every applied state is.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
+        let _operation = self.operation_effects.write().await;
         // The cut of its last cycle is not its next cycle's: a started birth holds connections again.
         self.declared.lock().unwrap().connections_deleted.remove(&(node.node_id.clone(), birth.clone()));
         let held = self.declared.lock().unwrap().node(&node.node_id, birth);
@@ -741,7 +769,9 @@ impl StatusAuthority {
         // The births held and their paths, read under the lock and the lock released before any await.
         let held: Vec<((NodeId, IncarnationId), Option<crate::model::PathName>)> = {
             let declared = self.declared.lock().unwrap();
-            declared.nodes.keys().map(|k| (k.clone(), declared.names.get(k).cloned())).collect()
+            let mut births: std::collections::HashMap<_, _> = declared.nodes.keys().map(|k| (k.clone(), declared.names.get(k).cloned())).collect();
+            for row in declared.operations.values() { births.entry((row.node_id.clone(), row.incarnation_id.clone())).or_insert(Some(row.name.clone())); }
+            births.into_iter().collect()
         };
         // Who the book holds at each path.name now.
         let at_path: std::collections::HashMap<crate::model::PathName, NodeId> = book.all().into_iter().map(|d| (d.node.name, d.node.node_id)).collect();
@@ -755,6 +785,13 @@ impl StatusAuthority {
                     _ => continue,
                 },
             };
+            let operations: Vec<_> = self.declared.lock().unwrap().operations.values().filter(|r| r.node_id == node_id && r.incarnation_id == incarnation).cloned().collect();
+            let mut failed = false;
+            for row in &operations {
+                if self.status_storage.remove_node_operation(row).await.is_err() { failed = true; break; }
+            }
+            if failed { continue; }
+            self.declared.lock().unwrap().operations.retain(|_, r| r.node_id != node_id || r.incarnation_id != incarnation);
             let (outcome, error) = match self.status_storage.remove_node_declared(&node_id, &incarnation).await {
                 Ok(()) => {
                     let mut declared = self.declared.lock().unwrap();
@@ -771,6 +808,116 @@ impl StatusAuthority {
             };
             span.in_scope(|| tracing::info!("a superseded birth's declared-state keys are tombstoned: nothing of that birth is folded back"));
         }
+    }
+
+    /// Q47: the mesh-primary records lifecycle state only from the exact node's ordered frames.
+    pub async fn carry_lifecycle(&self, node: &crate::model::Node, start: bool, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
+        self.carry_lifecycle_reaching(node, start, ctx).await.0
+    }
+
+    /// Carry the lifecycle command, preserving a typed never-sent reachability cause.
+    pub async fn carry_lifecycle_reaching(&self, node: &crate::model::Node, start: bool, ctx: &crate::deployment::pipeline::CommandContext) -> (crate::deployment::pipeline::CommandAdmission, Option<crate::node_commands::Unreachable>) {
+        let mut unreachable = None;
+        let admission = async {
+        use crate::deployment::pipeline::CommandAdmission as A;
+        use rdm_core::node_command::{NodeCommand, NodeCommandReply as R, NodeCommandRequest as Q};
+        use rdm_core::outcome::Code;
+        use rdm_core::protocol::NodeProtocol;
+        use tracing::Instrument;
+        let Some(incarnation) = node.incarnation_id.clone() else { return A::NotSent { reason: "the command names no exact birth".into(), code: Code::FailedPrecondition }; };
+        let op = rdm_core::LifecycleOp { node_id: node.node_id.clone(), incarnation: incarnation.clone(), name: node.name.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), event_at_rafka_ms: 0 };
+        let request = if start { Q::StartNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() } } else { Q::StopNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() } };
+        let key = crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() };
+        let _ = self.commands.open(key.clone());
+        let mut frames = if node.node_id == self.node_id {
+            let Some(own) = self.own.get().cloned() else { return A::NotSent { reason: "the own birth has not joined".into(), code: Code::Unavailable }; };
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let commander = self.node_id.clone();
+            tokio::spawn(async move {
+                let terminal = own.serve_node_command(Some(&commander), &request, Box::new(crate::node_self::ChannelFrames(tx.clone()))).await;
+                let _ = tx.send(terminal);
+            }.instrument(tracing::Span::current()));
+            CarriedFrames::InProcess(rx)
+        } else {
+            let Some(configs) = self.configs.get() else { return A::NotSent { reason: "this mesh-primary holds no Node RPC client".into(), code: Code::Unavailable }; };
+            let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: std::time::Duration::from_secs(5), reply: if start { std::time::Duration::from_secs(60) } else { self.commands.connections_delete_reply() } }, ..Default::default() };
+            match configs.client().call_stream::<NodeCommand>(&rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), &request, &opts).await {
+                Ok((frames, _)) => CarriedFrames::Dialled(frames),
+                Err((out, _)) => return match out {
+                    rdm_core::outcome::RpcOutcome::NotSent(n) => {
+                        unreachable = crate::node_commands::unreachable_of(n.reason());
+                        A::NotSent { reason: format!("{:?}", n.reason()), code: n.reason().code() }
+                    },
+                    rdm_core::outcome::RpcOutcome::Reply(r) => { let r = r.into_value(); A::Refused { code: NodeCommand::classify_reply(&r).code(), reply: format!("{}: {r:?}", r.name()) } },
+                    other @ (rdm_core::outcome::RpcOutcome::Unserved(_) | rdm_core::outcome::RpcOutcome::RejectedStale(_)) => A::Refused { code: other.code(), reply: format!("{}: {other:?}", other.name()) },
+            other => A::Indeterminate { code: other.code(), reason: format!("{}: {other:?}", other.name()) },
+                },
+            }
+        };
+        let mut accepted = false;
+        let mut closure = None;
+        while let Some(item) = frames.next().await {
+            let frame = match item {
+                Ok(frame) => frame,
+                Err(f) => return A::Indeterminate { code: match &f { rdm_transport::stream::StreamFailure::Indeterminate(c) => c.code(), _ => Code::Internal }, reason: format!("{} stream: {f:?}", request_name(start)) },
+            };
+            let position = frames.position();
+            let result = match &frame {
+                R::CommandAccepted { .. } => {
+                    // Admission and completion share this operation's serialization: a declaration
+                    // cannot publish stopped between the seen check and setting stopping.
+                    let _admission = self.operation_effects.write().await;
+                    accepted = true;
+                    let declared = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Leaving };
+                    let identity = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
+                    let completed = self.declared.lock().unwrap().operations.contains_key(&operation_row(&declared, &identity).key());
+                    if !start && !completed {
+                        if let Some(book) = &self.book { book.admitted(&op, rdm_core::MemberStatus::Leaving); }
+                        tracing::info_span!("rdm.node_admin.node.update.via-stop-admitted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation).in_scope(|| tracing::info!("CommandAccepted reports the stop's admission; this mesh-primary sets stopping"));
+                    }
+                    None
+                }
+                R::StopConnectionsDeleted { receipt } if !start => { closure = Some(receipt.clone()); None }
+                R::NodeJoined if start => {
+                    self.begin_cycle(node, &incarnation).await;
+                    if let Some(book) = &self.book { book.joined(&op); }
+                    let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: incarnation.clone(), name: node.name.clone(), state: NodeState::Pending };
+                    let applied = self.persist_then_commit(Effect::Node(row, NodeState::Pending, None)).await;
+                    if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
+                    None
+                }
+                R::NodeStopped if !start => {
+                    if let Some(seam) = &self.command_frame_seam { seam.before_stopped(&op).await; }
+                    let applied = self.stop_received(&op).await;
+                    if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeStopped not recorded: {applied:?}") }; }
+                    Some(match closure.clone() { Some(receipt) => A::Stopped { receipt }, None => A::Indeterminate { code: Code::Internal, reason: "NodeStopped without StopConnectionsDeleted".into() } })
+                }
+                R::NodeStarted if start => {
+                    let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: incarnation.clone(), name: node.name.clone(), state: NodeState::ReadyForTraffic };
+                    let operation = DeclaredOperation { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() };
+                    let applied = self.persist_then_commit(Effect::Node(row, NodeState::ReadyForTraffic, Some(operation))).await;
+                    Some(if matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { A::Started {} } else { A::StartFailed { code: <Status as NodeProtocol>::classify_reply(&applied).code(), step: "node.started".into(), reason: format!("ReadyForTraffic not recorded: {applied:?}") } })
+                }
+                R::Failed { step, reason, code } => Some(A::StartFailed { step: step.clone(), reason: reason.clone(), code: *code }),
+                _ => Some(if accepted { A::Indeterminate { code: Code::Internal, reason: format!("unexpected {} after acceptance", frame.name()) } } else { A::Refused { code: NodeCommand::classify_reply(&frame).code(), reply: format!("{}: {frame:?}", frame.name()) } }),
+            };
+            let span = tracing::info_span!("rdm.node_admin.node.update.via-command-frame", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), operation = %ctx.operation, frame = frame.name(), invocation_id = tracing::field::Empty, seq = tracing::field::Empty, code = NodeCommand::classify_reply(&frame).code().name(), detail = NodeCommand::reply_detail(&frame));
+            if let Some((invocation, seq)) = position { span.record("invocation_id", invocation.to_string()).record("seq", seq); }
+            span.in_scope(|| tracing::info!("the mesh-primary recorded the node's command frame before acknowledging its recovery"));
+            frames.accepted().await;
+            if let Some(result) = result {
+                if matches!(result, A::Stopped { .. }) {
+                    if let Some(configs) = self.configs.get() {
+                        if let Some(peer) = node.endpoint_id.as_ref().and_then(|e| e.0.parse::<iroh::PublicKey>().ok()) { configs.client().close_pooled_to(&peer, "node.stopped"); }
+                    }
+                }
+                let _ = self.commands.complete(&key);
+                return result;
+            }
+        }
+        A::Indeterminate { code: Code::Unknown, reason: format!("{} ended without its terminal frame", request_name(start)) }
+        }.await;
+        (admission, unreachable)
     }
 
     /// `node.connections.delete` of a birth of this admin's mesh, carried in-process: the mesh-primary's
@@ -948,6 +1095,19 @@ impl StatusAuthority {
     /// so the same declaration again is decided afresh. The commit decides again over what is
     /// held now, so two declarations of one natural key racing each other answer `Applied` once.
     async fn persist_then_commit(&self, effect: Effect) -> StatusReply {
+        let operation = match &effect { Effect::Node(row, _, Some(op)) => Some(operation_row(row, op)), _ => None };
+        let _operation = if operation.is_some() { Some(self.operation_effects.write().await) } else { None };
+        let _state = if matches!(&effect, Effect::Node(_, _, None)) { Some(self.operation_effects.read().await) } else { None };
+        if let Some(row) = &operation {
+            if self.declared.lock().unwrap().operations.contains_key(&row.key()) {
+                return rdm_core::reply::already_applied();
+            }
+        }
+        if let Effect::Node(row, state, _) = &effect {
+            if let Transition::Backward { current } = transition(self.declared.lock().unwrap().node(&row.node_id, &row.incarnation_id), *state) {
+                return rdm_core::reply::status::rejected_invalid_node_transition(current);
+            }
+        }
         if let Effect::Mesh(mesh_id, state) = &effect {
             return commit_mesh_state(&*self.status_storage, &self.declared, mesh_id, *state).await;
         }
@@ -968,8 +1128,14 @@ impl StatusAuthority {
         if let Err(reason) = put {
             return rdm_core::reply::status::not_ready(reason);
         }
+        if let Some(row) = &operation {
+            if let Err(error) = self.status_storage.put_node_operation(row).await {
+                return rdm_core::reply::status::not_ready(format!("status.storage refused the applied operation: {error}"));
+            }
+        }
         let reply = {
             let mut declared = self.declared.lock().unwrap();
+            if let Some(row) = &operation { declared.operations.insert(row.key(), row.clone()); }
             match &effect {
                 Effect::Node(row, state, _) => match transition(declared.node(&row.node_id, &row.incarnation_id), *state) {
                     Transition::Apply => {
@@ -1228,7 +1394,7 @@ fn serve_node_command(b: ServerBuilder, authority: Arc<OnceLock<Arc<StatusAuthor
                 return Ok(rdm_core::reply::node_command::not_ready(format!("{} has not yet joined its mesh; {} is refused", auth.me, req.op())));
             };
             let sender = auth.sender_of(&EndpointId(peer.endpoint_id.to_string())).await;
-            let reply = own.serve_node_command(sender.as_ref().map(|n| &n.node_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
+            let reply = own.serve_node_command_on(sender.as_ref().map(|n| &n.node_id), Some(peer.endpoint_id), &req, Box::new(crate::node_self::StreamFrames::new(sink))).await;
             tracing::info_span!("rdm.node_admin.status.update.via-command", node = %auth.me, op = req.op(), sender = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("a node command naming this admin was decided"));
             Ok(reply)
@@ -1440,6 +1606,8 @@ mod tests {
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -1501,6 +1669,8 @@ mod tests {
         }));
         let authority = StatusAuthority {
             declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -1563,6 +1733,9 @@ mod tests {
             vec![(declared_first.node_id.clone(), stop.operation.clone(), 2), (stream_first.node_id.clone(), stop2.operation.clone(), 2)],
             "NodeStopped once per stop, from whichever reached the mesh-primary first, and from nothing else"
         );
+        let recovered = Declared::rehydrate(&*authority.status_storage).await.unwrap();
+        assert_eq!(recovered.operations, authority.declared.lock().unwrap().operations, "Q49: the successor folds every applied operation, including the previous cycle's stop");
+
     }
 
     /// A status store whose `Leaving` declared-state put returns only once the `ReadyForTraffic`
@@ -1591,6 +1764,10 @@ mod tests {
         async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
             self.inner.fabric_events_of(mesh).await
         }
+        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::record_store::StorageError> { self.inner.put_node_operation(row).await }
+        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::record_store::StorageError> { self.inner.node_operations().await }
+        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::record_store::StorageError> { self.inner.remove_node_operation(row).await }
+
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await?;
             match row.state {
@@ -1654,6 +1831,8 @@ mod tests {
         let status: Arc<RacingPuts> = Arc::new(Default::default());
         let authority = StatusAuthority {
             declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -1717,6 +1896,8 @@ mod tests {
     fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
             declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
             stopped: Default::default(),
             me: me.name.clone(),
             node_id: me.node_id.clone(),
@@ -1893,9 +2074,9 @@ mod tests {
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
 
-        let stop = StatusRequest::StopNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.admin.1".into() };
+        let stop = StatusRequest::JoinMesh { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.1".into() };
         let reply = auth.apply(Some(owner.clone()), &stop).await;
-        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node naming this admin's node id reaches the subject's own door: {reply:?}");
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 
     /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who sent a frame or call: a Node RPC
@@ -1919,13 +2100,13 @@ mod tests {
         };
         let auth = authority_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
-        let stop = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.admin.2".into() };
+        let stop = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.mesh.join:mesh1.admin.2".into() };
         let reply = auth.apply(None, &stop).await;
-        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node from a stranger reaches the subject's own door: {reply:?}");
+        assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a JoinMesh from a stranger reaches the subject's own door: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
         let reply = auth.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::ReadyForTraffic, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
-        let stale = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.admin.2".into() };
+        let stale = StatusRequest::JoinMesh { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.mesh.join:mesh1.admin.2".into() };
         assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 
@@ -2039,6 +2220,8 @@ mod tests {
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),
@@ -2133,6 +2316,8 @@ mod tests {
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
             declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
             stopped: Default::default(),
             me: admin.name.clone(),
             node_id: admin.node_id.clone(),

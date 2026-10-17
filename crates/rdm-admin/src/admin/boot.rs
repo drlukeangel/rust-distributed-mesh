@@ -1005,6 +1005,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let records_for_ids = records.clone();
                                 let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
                                     declaration_seam: wiring.declaration_seam.clone(),
+                                    command_frame_seam: wiring.command_frame_seam.clone(),
+                                    operation_effects: Default::default(),
                                     stopped: Default::default(),
                                     status_storage: status_storage.clone(),
                                     nodes_storage: nodes_storage.clone(),

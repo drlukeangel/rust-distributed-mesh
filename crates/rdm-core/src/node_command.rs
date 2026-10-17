@@ -18,8 +18,12 @@
 //! refused before acceptance: one refusal frame
 //! ```
 //!
-//! `CommandAccepted` is neither a transport envelope nor node.start's `Started`; only
-//! `ConnectionsDeleting` makes the mesh-primary record that state. A stream that breaks after
+//! Q47 appends `StopNode` and `StartNode`: stop reports `CommandAccepted`, then
+//! `StopConnectionsDeleted` (Data), then `NodeStopped` (Terminal); start reports `CommandAccepted`,
+//! `NodeJoined` (Data), then `NodeStarted` (Terminal), or a typed `Failed` terminal after acceptance.
+//! A lifecycle state refusal before acceptance is `RejectedInvalidNodeTransition`.
+//! `CommandAccepted` carries no lifecycle state: on a stop, its admission records stopping.
+//! `ConnectionsDeleting`, `NodeJoined`, `NodeStopped` and `NodeStarted` record their own effects. A stream that breaks after
 //! `CommandAccepted` is incomplete: whatever the frames before the break reported stands, and no
 //! completion is claimed. The record is of the transport header's `(invocation_id, seq)`: delivery
 //! orders and suppresses repeats before handing progress to the mesh-primary, which records it
@@ -54,6 +58,32 @@ pub enum NodeCommandRequest {
         /// Which connections.
         scope: ConnectionScope,
     },
+    /// Stop this exact birth, reporting closure and completion on this stream (Q47).
+    StopNode {
+        /// The commanded node.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The Build that owns this operation.
+        build_id: String,
+        /// Its executing attempt.
+        attempt: u32,
+        /// The operation's declared identity.
+        operation: String,
+    },
+    /// Start this parked exact birth, reporting join and readiness on this stream (Q47).
+    StartNode {
+        /// The commanded node.
+        node_id: NodeId,
+        /// Its exact incarnation.
+        incarnation: IncarnationId,
+        /// The Build that owns this operation.
+        build_id: String,
+        /// Its executing attempt.
+        attempt: u32,
+        /// The operation's declared identity.
+        operation: String,
+    },
 }
 
 impl NodeCommandRequest {
@@ -61,13 +91,15 @@ impl NodeCommandRequest {
     pub fn op(&self) -> &'static str {
         match self {
             Self::DeleteConnections { .. } => "delete-connections",
+            Self::StopNode { .. } => "stop-node",
+            Self::StartNode { .. } => "start-node",
         }
     }
 
     /// The birth the command names.
     pub fn subject(&self) -> (&NodeId, &IncarnationId) {
         match self {
-            Self::DeleteConnections { node_id, incarnation, .. } => (node_id, incarnation),
+            Self::DeleteConnections { node_id, incarnation, .. } | Self::StopNode { node_id, incarnation, .. } | Self::StartNode { node_id, incarnation, .. } => (node_id, incarnation),
         }
     }
 }
@@ -147,6 +179,31 @@ pub enum NodeCommandReply {
         /// Why, by name.
         reason: String,
     },
+    /// The stop's whole All closure; progress, never the stop's terminal.
+    StopConnectionsDeleted {
+        /// The closure's Established or Deadline evidence.
+        receipt: ConnectionsReceipt,
+    },
+    /// The stop's transport cut is complete; the live process is parked.
+    NodeStopped,
+    /// The accepted join and channel join completed; start gates remain.
+    NodeJoined,
+    /// Every start gate completed; the receiver records ReadyForTraffic.
+    NodeStarted,
+    /// An accepted command failed at this named step.
+    Failed {
+        /// The step that failed.
+        step: String,
+        /// Its explanation.
+        reason: String,
+        /// The step's typed outcome code.
+        code: crate::outcome::Code,
+    },
+    /// The lifecycle command is invalid for this living birth's held state.
+    RejectedInvalidNodeTransition {
+        /// The state it holds, named by the refusal.
+        current: crate::status::NodeState,
+    },
 }
 
 impl NodeCommandReply {
@@ -164,6 +221,12 @@ impl NodeCommandReply {
             Self::RejectedConnectionsDeleting { .. } => "rejected-connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::StopConnectionsDeleted { .. } => "stop-connections-deleted",
+            Self::NodeStopped => "node-stopped",
+            Self::NodeJoined => "node-joined",
+            Self::NodeStarted => "node-started",
+            Self::Failed { .. } => "failed",
+            Self::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
         }
     }
 }
@@ -191,8 +254,8 @@ impl NodeProtocol for NodeCommand {
     /// A connections-deleting node still takes a command: a second `All` leaves an incomplete
     /// closure (node-connections-delete.md step 5).
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 11;
+    const REQUEST_VARIANTS: u32 = 3;
+    const REPLY_VARIANTS: u32 = 17;
 
     type Request = NodeCommandRequest;
     type Reply = NodeCommandReply;
@@ -210,12 +273,22 @@ impl NodeProtocol for NodeCommand {
             NodeCommandReply::RejectedConnectionsDeleting { .. } => "rejected-connections-deleting",
             NodeCommandReply::Malformed { .. } => "malformed",
             NodeCommandReply::Unauthorized { .. } => "unauthorized",
+            NodeCommandReply::StopConnectionsDeleted { .. } => "stop-connections-deleted",
+            NodeCommandReply::NodeStopped => "node-stopped",
+            NodeCommandReply::NodeJoined => "node-joined",
+            NodeCommandReply::NodeStarted => "node-started",
+            NodeCommandReply::Failed { .. } => "failed",
+            NodeCommandReply::RejectedInvalidNodeTransition { .. } => "rejected-invalid-node-transition",
         }
     }
 
     fn classify_reply(reply: &NodeCommandReply) -> ReplyKind {
         match reply {
-            NodeCommandReply::CommandAccepted { .. } => ReplyKind::Success,
+            NodeCommandReply::CommandAccepted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeJoined | NodeCommandReply::NodeStarted => ReplyKind::Success,
+            NodeCommandReply::Failed { code, .. } => ReplyKind::new(*code),
+            NodeCommandReply::RejectedInvalidNodeTransition { .. } => ReplyKind::new(crate::outcome::Code::FailedPrecondition),
+            NodeCommandReply::StopConnectionsDeleted { receipt: ConnectionsReceipt::Deadline { .. } } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
+            NodeCommandReply::StopConnectionsDeleted { .. } => ReplyKind::Success,
             NodeCommandReply::ConnectionsDeleting { .. } => ReplyKind::Success,
             NodeCommandReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { .. }), .. } => ReplyKind::new(crate::outcome::Code::DeadlineExceeded),
             NodeCommandReply::ConnectionsDeleted { .. } => ReplyKind::Success,
@@ -254,8 +327,8 @@ impl StreamingProtocol for NodeCommand {
     fn frame_kind(frame: &NodeCommandReply) -> FrameKind {
         match frame {
             NodeCommandReply::CommandAccepted { .. } => FrameKind::Started,
-            NodeCommandReply::ConnectionsDeleting { .. } => FrameKind::Data,
-            NodeCommandReply::ConnectionsDeleted { .. } => FrameKind::Terminal,
+            NodeCommandReply::ConnectionsDeleting { .. } | NodeCommandReply::StopConnectionsDeleted { .. } | NodeCommandReply::NodeJoined => FrameKind::Data,
+            NodeCommandReply::ConnectionsDeleted { .. } | NodeCommandReply::NodeStopped | NodeCommandReply::NodeStarted | NodeCommandReply::Failed { .. } => FrameKind::Terminal,
             other => FrameKind::Refusal(NodeCommand::classify_reply(other)),
         }
     }

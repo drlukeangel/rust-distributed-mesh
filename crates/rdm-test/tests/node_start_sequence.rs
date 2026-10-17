@@ -130,6 +130,7 @@ fn stop(launch: &Launch) -> StatusRequest {
 /// it: the commanded node holds the call's endpoint key, which its start joins back through.
 async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> StatusReply {
     let opts = rdm_transport::CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: WRONG }, ..Default::default() };
+    if let Some(reply) = crate::common::root_lifecycle_reply(root, launch, req).await { return reply; }
     match root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
         rdm_core::outcome::RpcOutcome::Reply(r) => r.into_value(),
         other => panic!("{} to {} did not end in a reply: {other:?}", req.op(), launch.name),

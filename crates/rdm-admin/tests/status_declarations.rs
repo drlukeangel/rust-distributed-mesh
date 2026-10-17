@@ -154,6 +154,8 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
         declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
         stopped: Default::default(),
         me: admin.node.name.clone(),
         node_id: admin.node.node_id.clone(),
@@ -464,7 +466,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
             let (s, h, answer) = (cs.clone(), ch.clone(), canswer.clone());
             async move {
                 use rdm_core::node_command::{NodeCommandReply as N, NodeCommandRequest};
-                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req;
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, scope } = req else { panic!("expected DeleteConnections") };
                 let carried = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: scope.clone() };
                 let reply = answer(&carried);
                 s.lock().unwrap().push(carried);
@@ -2000,6 +2002,8 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         async move {
             let authority = StatusAuthority {
                 declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
                 stopped: Default::default(),
                 me: admin.name.clone(),
                 node_id: admin.node_id.clone(),
@@ -2282,7 +2286,7 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: NodeCommandRequest, sink| {
             let (sd, cd) = (sd.clone(), cd.clone());
             async move {
-                let NodeCommandRequest::DeleteConnections { node_id, incarnation, .. } = req;
+                let NodeCommandRequest::DeleteConnections { node_id, incarnation, .. } = req else { panic!("expected DeleteConnections") };
                 let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
                 tokio::time::timeout(Duration::from_secs(5), async {
                     while rdm_transport::DeliveryStats::get(&sd.get().unwrap().stats().acks_received) == 0 { tokio::task::yield_now().await; }
@@ -2315,4 +2319,215 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
     assert_eq!(cap.spans("rdm.mesh.membership.update.from-status-report").len(), 1, "one status write, not just one carrier span");
     assert!(!records[0].1.get("invocation_id").unwrap_or(&String::new()).is_empty(), "the record names the invocation: {records:?}");
     assert_eq!(records[0].1.get("seq").map(String::as_str), Some("1"), "the progress position: {records:?}");
+}
+
+/// Q47: a command provably never sent writes neither a lifecycle state nor an operation effect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_never_sent_stop_or_start_writes_no_lifecycle_state() {
+    use rdm_admin::deployment::pipeline::{CommandAdmission, CommandContext};
+    let (rig, births) = rig().await;
+    let subject = &births["rpc2"].node;
+    for start in [false, true] {
+        let before = rig.authority.declared.lock().unwrap().clone();
+        let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.{}:{}", if start { "start" } else { "stop" }, subject.name) };
+        assert!(matches!(rig.authority.carry_lifecycle(subject, start, &ctx).await, CommandAdmission::NotSent { .. }));
+        assert_eq!(*rig.authority.declared.lock().unwrap(), before);
+        assert!(rig.storage.node_declared().await.unwrap().is_empty());
+        assert!(rig.storage.node_operations().await.unwrap().is_empty());
+    }
+}
+
+/// Q47: Status's former stop/start positions are reserved, even for an exact held birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_stop_and_start_positions_are_refused_by_name_without_execution() {
+    let (rig, births) = rig().await;
+    let subject = &births["rpc2"];
+    for start in [false, true] {
+        let request = if start { StatusRequest::StartNode { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), build_id: "b".into(), attempt: 1, operation: "start".into() } } else { StatusRequest::StopNode { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), build_id: "b".into(), attempt: 1, operation: "stop".into() } };
+        let before = rig.authority.declared.lock().unwrap().clone();
+        let result = call(&rig, subject, &request).await;
+        assert!(matches!(reply(&result), StatusReply::RejectedUnmatchedCompletion { expected, reported, .. } if expected.contains("reserved") && reported.contains(request.op())), "{result:?}");
+        assert_eq!(*rig.authority.declared.lock().unwrap(), before);
+        assert!(rig.storage.node_declared().await.unwrap().is_empty());
+    }
+}
+
+/// Q47: the stream owner records only the node's frames, before recovery; the start's Ready
+/// record precedes its return to the Build. An accepted failure keeps its step, reason and code.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failure() {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
+    use rdm_admin::deployment::pipeline::{CommandAdmission as A, CommandContext};
+    for (start, fail) in [(false, false), (true, false), (true, true)] {
+        let (rig, births) = rig().await;
+        let subject = births["rpc2"].node.clone();
+        let (arrived, admit, progressed, finish) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let (a, b, c, d) = (arrived.clone(), admit.clone(), progressed.clone(), finish.clone());
+        let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: Q, sink| {
+            let (a, b, c, d) = (a.clone(), b.clone(), c.clone(), d.clone());
+            async move {
+                a.notify_one();
+                b.notified().await;
+                let (node_id, incarnation) = req.subject();
+                let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
+                if fail { return Ok(N::Failed { step: "hydrate_before_ready".into(), reason: "app refused".into(), code: rdm_core::outcome::Code::FailedPrecondition }); }
+                sink.data(if start { N::NodeJoined } else { N::StopConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } } }).await.unwrap();
+                c.notify_one();
+                d.notified().await;
+                Ok(if start { N::NodeStarted } else { N::NodeStopped })
+            }
+        }).seal(ServedBirth { node_id: subject.node_id.to_string(), incarnation: subject.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        let ep = rdm_transport::endpoint::bind(births["rpc2"].key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { node_id: subject.node_id.clone(), name: subject.name.clone(), endpoint_id: births["rpc2"].key.public(), transport_addr: addr, incarnation: subject.incarnation_id.clone().unwrap() });
+        let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
+        assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, Default::default(), Default::default()))).is_ok());
+        let ctx = CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.{}:{}", if start { "start" } else { "stop" }, subject.name) };
+        let (authority, target) = (rig.authority.clone(), subject.clone());
+        let call = tokio::spawn(async move { authority.carry_lifecycle(&target, start, &ctx).await });
+        tokio::time::timeout(Duration::from_secs(5), arrived.notified()).await.unwrap();
+        assert!(rig.storage.node_declared().await.unwrap().is_empty(), "no state before CommandAccepted");
+        admit.notify_one();
+        if !fail {
+            tokio::time::timeout(Duration::from_secs(5), progressed.notified()).await.unwrap();
+            if start {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while rig.authority.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()) != Some(NodeState::Pending) { tokio::task::yield_now().await; }
+                }).await.expect("NodeJoined is recorded before NodeStarted exists");
+            }
+            finish.notify_one();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap();
+        if fail {
+            assert!(matches!(result, A::StartFailed { step, reason, code: rdm_core::outcome::Code::FailedPrecondition } if step == "hydrate_before_ready" && reason == "app refused"));
+            assert!(rig.storage.node_operations().await.unwrap().is_empty());
+        } else {
+            assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");
+            let state = if start { NodeState::ReadyForTraffic } else { NodeState::Leaving };
+            assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), Some(state), "recorded before the outer Build can complete");
+            assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
+        }
+    }
+}
+
+/// Q47: the NodeJoined position is recovered once, even when its ack is lost.
+#[test]
+fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest};
+    let cap = capture();
+    cap.run(async {
+        let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _gossip_router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let fabric = FabricId::mint();
+        let time = rdm_transport::clock::RafkaTime::unadopted();
+        time.adopt(5_000_000);
+        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![]).await.unwrap();
+        membership.set_mesh_primary(true);
+        let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
+        let rpc = &b["rpc2"];
+        assert!(membership.book.record(rdm_core::MeshDigest {
+            fabric_id: fabric,
+            node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
+            status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
+        }));
+        let (server_delivery, caller_delivery) = (Arc::new(OnceLock::<rdm_transport::Delivery>::new()), Arc::new(OnceLock::<rdm_transport::Delivery>::new()));
+        let (sd, cd) = (server_delivery.clone(), caller_delivery.clone());
+        let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, req: NodeCommandRequest, sink| {
+            let (sd, cd) = (sd.clone(), cd.clone());
+            async move {
+                let NodeCommandRequest::StartNode { node_id, incarnation, .. } = req else { panic!("expected StartNode") };
+                let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while rdm_transport::DeliveryStats::get(&sd.get().unwrap().stats().acks_received) == 0 { tokio::task::yield_now().await; }
+                }).await.expect("Started recovered before the progress fault is armed");
+                cd.get().unwrap().seams().drop_next_response_ack();
+                sink.data(N::NodeJoined).await.unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while rdm_transport::DeliveryStats::get(&sd.get().unwrap().stats().responses_resent) == 0 || sd.get().unwrap().owed_frames() != 0 { tokio::task::yield_now().await; }
+                }).await.expect("the unrecovered progress is resent on a new stream and acknowledged");
+                Ok(N::NodeStarted)
+            }
+        }).seal(ServedBirth { node_id: rpc.node.node_id.to_string(), incarnation: rpc.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+        server_delivery.set(server.delivery().clone()).unwrap_or_else(|_| panic!("one responder"));
+        let ep = rdm_transport::endpoint::bind(rpc.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: rpc.key.public(), transport_addr: addr, incarnation: rpc.node.incarnation_id.clone().unwrap() });
+        let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
+        caller_delivery.set(client.delivery().clone()).unwrap_or_else(|_| panic!("one caller"));
+        assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, rig.authority.configure.clone(), Default::default()))).is_ok());
+        let context = rdm_admin::deployment::pipeline::CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.start:{}", rpc.node.name) };
+        let answer = rig.authority.carry_lifecycle(&rpc.node, true, &context).await;
+        assert!(matches!(answer, rdm_admin::deployment::pipeline::CommandAdmission::Started {}), "{answer:?}");
+        assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
+        assert!(rdm_transport::DeliveryStats::get(&server_delivery.get().unwrap().stats().responses_resent) >= 1);
+    });
+    let records: Vec<_> = cap.spans("rdm.node_admin.node.update.via-command-frame").into_iter().filter(|(_, a)| a.get("frame").map(String::as_str) == Some("node-joined")).collect();
+    assert_eq!(records.len(), 1, "the mesh-primary records the repeated progress once: {records:?}");
+    let applied: Vec<_> = cap.spans("rdm.mesh.membership.update.from-status-report").into_iter().filter(|(_, a)| a.get("status").map(String::as_str) == Some("Pending")).collect();
+    assert_eq!(applied.len(), 1, "one Pending status write, not just one carrier span: {applied:?}");
+    assert!(!records[0].1.get("invocation_id").unwrap_or(&String::new()).is_empty(), "the record names the invocation: {records:?}");
+    assert_eq!(records[0].1.get("seq").map(String::as_str), Some("1"), "the progress position: {records:?}");
+}
+
+/// Q47/Q49: the stop's physical stream is cut after its closure report. The live responder sends
+/// the operation-named Q36 declaration on its endpoint, then its recovered terminal is AlreadyApplied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_declaration() {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply as N, NodeCommandRequest as Q};
+    use rdm_admin::deployment::pipeline::{CommandContext, CommandAdmission as A};
+    let (rig, births) = rig().await;
+    let subject = &births["rpc2"];
+    let published = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = published.clone();
+    assert!(rig.authority.stopped.set(Arc::new(move |_, _| {
+        count.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {})
+    })).is_ok());
+    let responder = Arc::new(OnceLock::<rdm_transport::NodeRpcServer>::new());
+    let node_client = Arc::new(OnceLock::<NodeRpcClient>::new());
+    let (server_slot, client_slot) = (responder.clone(), node_client.clone());
+    let primary = rig.admin.node.node_id.clone();
+    let server = ServerBuilder::new().serve_stream::<NodeCommand, _, _>(rdm_core::catalog::OpOwner::Product("rdm".into()), move |_, request: Q, sink| {
+        let (server_slot, client_slot, primary) = (server_slot.clone(), client_slot.clone(), primary.clone());
+        async move {
+            let Q::StopNode { node_id, incarnation, build_id, attempt, operation } = request else { panic!("a stop") };
+            let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
+            sink.data(N::StopConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } }).await.unwrap();
+            let server = server_slot.get().unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while rdm_transport::DeliveryStats::get(&server.delivery().stats().acks_received) < 2 { tokio::task::yield_now().await; }
+            }).await.expect("the stop's acceptance and closure are recovered before the connection is cut");
+            assert!(server.close_connections_except(&[], "the cell cuts the stop stream after closure") > 0);
+            let declaration = StatusRequest::DeclareNodeState { node_id, incarnation, state: NodeState::Leaving, operation: Some(rdm_core::status::DeclaredOperation { build_id, attempt, operation }) };
+            let (out, _) = client_slot.get().unwrap().call::<Status>(&NodeTarget::ExactNode(primary), &declaration, &CallOptions::default()).await;
+            assert!(matches!(out, RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied)), "the owed stop declaration is applied before the terminal exists");
+            Ok(N::NodeStopped)
+        }
+    }).seal(ServedBirth { node_id: subject.node.node_id.to_string(), incarnation: subject.node.incarnation_id.as_ref().unwrap().to_string() }).unwrap();
+    let server_delivery = server.delivery().clone();
+    responder.set(server.clone()).unwrap_or_else(|_| panic!("one responder"));
+    let ep = rdm_transport::endpoint::bind(subject.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(rig.resolved.clone());
+    node_client.set(NodeRpcClient::new(ep.clone(), resolver).with_delivery(server_delivery).with_caller_system("rdm")).unwrap_or_else(|_| panic!("one node client"));
+    let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(ResolvedNode { node_id: subject.node.node_id.clone(), name: subject.node.name.clone(), endpoint_id: subject.key.public(), transport_addr: addr, incarnation: subject.node.incarnation_id.clone().unwrap() });
+    let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
+    assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, Default::default(), Default::default()))).is_ok());
+    let context = CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.stop:{}", subject.node.name) };
+    let end = tokio::time::timeout(Duration::from_secs(5), rig.authority.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");
+    assert!(matches!(end, A::Stopped { .. }), "{end:?}");
+    assert_eq!(published.load(Ordering::SeqCst), 1, "the declaration publishes stopped; the recovered terminal publishes nothing twice");
+    assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Leaving));
 }

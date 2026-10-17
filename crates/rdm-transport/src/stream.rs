@@ -524,6 +524,7 @@ impl NodeRpcClient {
             delivery_id = tracing::field::Empty,
             attempts = tracing::field::Empty,
             delivery = tracing::field::Empty,
+            reused = tracing::field::Empty,
         );
         let started = Instant::now();
         let start = started;
@@ -560,6 +561,7 @@ impl NodeRpcClient {
                             _ => None,
                         };
                         let evidence = owed.evidence.lock().unwrap().clone();
+                        span.record("reused", evidence.reused);
                         return Ok((ReplyStream { span: span.clone(), started, owed, order: FrameOrder::new(), deadline, done: false, unrecovered: Vec::new(), position: None, terminal_handed: false, read_only: false, attempt_end: None, _p: PhantomData }, evidence));
                     }
                     Some(Attempted::NotSent(r)) => last = r,

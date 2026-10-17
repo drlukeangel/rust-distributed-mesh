@@ -115,6 +115,13 @@ impl SyncState {
     }
 }
 
+/// The owner is about to record a lifecycle command frame; executable decorations may hold it.
+#[async_trait::async_trait]
+pub trait CommandFrameSeam: Send + Sync {
+    /// Before the stopped report is recovered by its mesh-primary.
+    async fn before_stopped(&self, operation: &rdm_core::LifecycleOp);
+}
+
 /// The one notice the application gets after the open-traffic round completed and the fabric is
 /// ready-for-traffic. It gates nothing.
 pub type TrafficOpenedNotice = Arc<dyn Fn(StateSyncRound) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
@@ -155,6 +162,8 @@ pub struct Wiring {
     pub read_seam: Option<Arc<dyn ReadSeam>>,
     /// Asked by the status door before it decides a node's declaration.
     pub declaration_seam: Option<Arc<dyn DeclarationSeam>>,
+    /// Asked before a command's stopped frame is recorded by its owner.
+    pub command_frame_seam: Option<Arc<dyn CommandFrameSeam>>,
     /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the

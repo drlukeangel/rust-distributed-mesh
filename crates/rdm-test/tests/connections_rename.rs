@@ -133,8 +133,9 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let target = NodeTarget::ExactNode(renamed.node_id.clone());
         let call = |req: StatusRequest| {
-            let (client, target, opts) = (&admin.observer.client, &target, &opts);
+            let (client, target, opts, book) = (&admin.observer.client, &target, &opts, &admin.observer.membership.book);
             async move {
+                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, Some(book)).await { return reply; }
                 match client.call::<Status>(target, &req, opts).await.0 {
                     RpcOutcome::Reply(r) => r.into_value(),
                     other => panic!("{} did not end in a reply: {other:?}", req.op()),
@@ -337,8 +338,9 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let call = |req: StatusRequest| {
-            let (client, target, opts) = (&admin.observer.client, &target, &opts);
+            let (client, target, opts, book) = (&admin.observer.client, &target, &opts, &admin.observer.membership.book);
             async move {
+                if let Some(reply) = crate::common::lifecycle_reply(client, target, &req, opts, Some(book)).await { return reply; }
                 match client.call::<Status>(target, &req, opts).await.0 {
                     RpcOutcome::Reply(r) => r.into_value(),
                     other => panic!("{} did not end in a reply: {other:?}", req.op()),

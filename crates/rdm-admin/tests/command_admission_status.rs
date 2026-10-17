@@ -127,6 +127,8 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     }));
     let authority = StatusAuthority {
         declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
         stopped: Default::default(),
         me: me.name.clone(),
         node_id: me.node_id.clone(),

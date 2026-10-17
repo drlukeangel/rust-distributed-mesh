@@ -221,6 +221,8 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 // rpc.1 declares to its new primary.
                 let authority = rdm_admin::status_rpc::StatusAuthority {
                     declaration_seam: None,
+            command_frame_seam: None,
+            operation_effects: Default::default(),
                     stopped: Default::default(),
                     me: b.name.clone(),
                     node_id: b.node_id.clone(),
@@ -276,4 +278,36 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
 /// A status store over `root`'s mesh1 rows, as the seat holder's status authority writes through it.
 async fn records_status_storage(root: &rdm_admin::store_root::StoreRoot) -> Arc<dyn StatusStorage> {
     Arc::new(FileStatusStorage::open(root, "mesh1", &IncarnationId::mint()).await.unwrap())
+}
+
+/// Q49: cycle state rows may be cleared, but an applied operation survives a disk reopen and
+/// a successor writer. Attempts have separate identities; only forgetting the birth removes them.
+#[tokio::test]
+async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_store() {
+    use rdm_admin::status_storage::NodeOperationRow;
+    let dir = std::env::temp_dir().join(format!("operation-status-{}", NodeId::mint()));
+    let root = rdm_admin::store_root::StoreRoot::at(&dir);
+    let node_id = NodeId::mint();
+    let incarnation = IncarnationId::mint();
+    let row = NodeOperationRow {
+        node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: "mesh1.rpc.1".parse().unwrap(), state: NodeState::Leaving,
+        operation: rdm_core::status::DeclaredOperation { build_id: "b".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() },
+    };
+    let next = NodeOperationRow { operation: rdm_core::status::DeclaredOperation { attempt: 2, ..row.operation.clone() }, ..row.clone() };
+    {
+        let store = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        store.put_node_declared(&NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: row.name.clone(), state: NodeState::Leaving }).await.unwrap();
+        store.put_node_operation(&row).await.unwrap();
+        store.put_node_operation(&next).await.unwrap();
+        store.remove_node_declared(&node_id, &incarnation).await.unwrap();
+    }
+    let successor = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
+    let held = rdm_admin::status_rpc::Declared::rehydrate(&successor).await.unwrap();
+    assert_eq!(held.node(&node_id, &incarnation), None, "only the current cycle's state was cleared");
+    assert_eq!(held.operations.len(), 2, "both attempts are still applied");
+    assert_eq!(held.operations.get(&row.key()), Some(&row));
+    assert_eq!(held.operations.get(&next.key()), Some(&next));
+    for applied in held.operations.values() { successor.remove_node_operation(applied).await.unwrap(); }
+    assert!(successor.node_operations().await.unwrap().is_empty(), "the operation rows are forgotten with the birth");
+    let _ = std::fs::remove_dir_all(dir);
 }

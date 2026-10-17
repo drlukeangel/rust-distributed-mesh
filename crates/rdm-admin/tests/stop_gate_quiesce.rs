@@ -151,13 +151,16 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
         let stop_trace = root.in_scope(rdm_transport::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
         let node_self = running.node_self();
         let commander = NodeId::mint();
-        let req = StatusRequest::StopNode { node_id: own.node.node_id.clone(), incarnation: own.node.incarnation.clone(), build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: format!("node.stop:{}", own.node.name) };
-        let stop = tokio::spawn(async move { node_self.serve(Some(&commander), None, &req).await }.instrument(root));
+        let req = rdm_core::node_command::NodeCommandRequest::StopNode { node_id: own.node.node_id.clone(), incarnation: own.node.incarnation.clone(), build_id: "8pe1w1tk1f0n".into(), attempt: 1, operation: format!("node.stop:{}", own.node.name) };
+        let stop = tokio::spawn(async move {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            node_self.serve_node_command(Some(&commander), &req, Box::new(rdm_admin::node_self::ChannelFrames(tx))).await
+        }.instrument(root));
         // Once the stop has parked the gate, the lock goes.
         tokio::time::timeout(NEVER, state.wait_for(|s| s.parked)).await.expect("the stop never parked the gate").unwrap();
         drop(holder);
         let reply = tokio::time::timeout(NEVER, stop).await.expect("the stop was not answered").unwrap();
-        assert!(matches!(reply, Some(StatusReply::Stopped { .. })), "the stop is answered Stopped: {reply:?}");
+        assert!(matches!(reply, rdm_core::node_command::NodeCommandReply::NodeStopped), "the stop is answered Stopped: {reply:?}");
         // The held turn runs to its end before the admin is ended.
         tokio::time::timeout(NEVER, state.wait_for(|s| !s.turns.contains_key("executor"))).await.expect("the held executor turn never ended").unwrap();
 

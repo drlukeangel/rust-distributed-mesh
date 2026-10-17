@@ -139,6 +139,7 @@ impl Birth {
     }
 
     async fn call(&self, req: &StatusRequest) -> StatusReply {
+        if let Some(reply) = crate::common::lifecycle_reply(&self.admin.observer.client, &self.target, req, &Self::opts(), Some(&self.admin.observer.membership.book)).await { return reply; }
         match self.admin.observer.client.call::<Status>(&self.target, req, &Self::opts()).await.0 {
             RpcOutcome::Reply(r) => r.into_value(),
             other => panic!("{} did not end in a reply: {other:?}", req.op()),

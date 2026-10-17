@@ -1996,57 +1996,13 @@ impl DeploymentPipeline<'_> {
             }
         }
         let _forget = Forget(self.joins, node.node_id.clone(), run.build_id.to_string(), run.attempt);
-        // The birth's join to this executor, admitted at its join door: its node.joined (node-start.md
-        // step 2), which precedes everything the start does after it, node.started included.
-        let mut reported = self.joins.expect(deployed.clone());
-        let _ = handle;
-        // The start on this exact birth, as the stop it ends is keyed: `node.joined` is taken under it.
-        let start_op = node.incarnation_id.clone().map(|incarnation| LifecycleOp {
-            build_id: run.build_id.to_string(),
-            attempt: run.attempt,
-            operation: run.operation.clone(),
-            node_id: node.node_id.clone(),
-            incarnation,
-            name: node.name.clone(),
-            event_at_rafka_ms: 0,
-        });
+        // Register the exact birth expected at the join door. This writes no lifecycle state.
+        let _reported = self.joins.expect(deployed.clone());
         let admission: CommandAdmission = self
             .step_with(run, steps[0], async {
-                node.status = NodeStatus::Pending;
-                self.sink.publish(node.clone());
-                // node.joined is taken when the birth's join is admitted, before the birth can report
-                // node.started: a birth that runs its whole start before it answers (a node-admin's
-                // hook runs inside its start) answers `Started` after its node.started.
-                let take_joined = || async {
-                    if let Some(op) = &start_op {
-                        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
-                        self.lifecycle.joined(&op).await;
-                    }
-                };
-                let send = self.observer.send_command(node, NodeCommand::Start, &ctx);
-                tokio::pin!(send);
-                let mut joined = false;
-                let admission = loop {
-                    tokio::select! {
-                        biased;
-                        admitted = async { reported.wait_for(Option::is_some).await.is_ok() }, if !joined => {
-                            joined = true;
-                            if admitted {
-                                take_joined().await;
-                            }
-                        }
-                        admission = &mut send => break admission,
-                    }
-                };
+                let admission = self.observer.send_command(node, NodeCommand::Start, &ctx).await;
                 match &admission {
-                    CommandAdmission::Started {} => {
-                        // `start-node` answered `Started`: the birth rejoined. A start with no join to
-                        // this executor admitted (its join door saw none) takes node.joined here.
-                        if !joined || reported.borrow().is_none() {
-                            take_joined().await;
-                        }
-                        Ok(admission)
-                    }
+                    CommandAdmission::Started {} => Ok(admission),
                     // The reissue of the start that already brought this birth back (a later attempt
                     // of the same Build, after its executor was lost): its node.joined and node.started
                     // were taken when it ran; taking node.joined again would set the birth back to
@@ -2358,13 +2314,7 @@ impl DeploymentPipeline<'_> {
         // (states.md "Who sets each state"): a command the birth never held sets nothing.
         let admission: CommandAdmission = self
             .step(run, steps[0], async {
-                let op = self.command_op(&ctx, node)?;
-                let admission = self.observer.send_command(node, NodeCommand::Stop, &ctx).await;
-                if admission.admitted() {
-                    self.sink.publish(Node { status: NodeStatus::Leaving, ..node.clone() });
-                    self.lifecycle.leaving(&op).await;
-                }
-                Ok(admission)
+                Ok(self.observer.send_command(node, NodeCommand::Stop, &ctx).await)
             })
             .await?;
         if admission.admitted() {

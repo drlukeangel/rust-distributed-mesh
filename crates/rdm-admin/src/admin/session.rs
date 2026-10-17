@@ -210,12 +210,15 @@ impl NodeObserver for MembershipObserver {
     }
 
     async fn send_command(&self, node: &Node, cmd: crate::node_commands::NodeCommand, ctx: &crate::deployment::pipeline::CommandContext) -> crate::deployment::pipeline::CommandAdmission {
-        // A start begins the birth's next cycle: the states it declares from here run forward from
-        // `Pending` again, not from the `Leaving` its stop declared.
-        if cmd == crate::node_commands::NodeCommand::Start {
-            if let (Some(authority), Some(birth)) = (self.authority.get(), node.incarnation_id.as_ref()) {
-                authority.begin_cycle(node, birth).await;
-            }
+        if matches!(cmd, crate::node_commands::NodeCommand::Stop | crate::node_commands::NodeCommand::Start) {
+            let Some(authority) = self.authority.get() else {
+                return crate::deployment::pipeline::CommandAdmission::NotSent { reason: "this admin holds no status authority".into(), code: rdm_core::outcome::Code::Unavailable };
+            };
+            let (admission, unreachable) = authority.carry_lifecycle_reaching(node, cmd == crate::node_commands::NodeCommand::Start, ctx).await;
+            if let Some(why) = &unreachable { self.mark_unreachable(node, cmd, ctx, why); }
+            let detail = format!("{admission:?}");
+            tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), code = admission.code().name(), detail = %detail, "otel.kind" = "internal").in_scope(|| tracing::info!("the exact node's command stream ended"));
+            return admission;
         }
         // node.connections.delete { All } goes through this admin's own status authority, the birth's
         // mesh-primary: it commands the birth and holds its node.connections.deleted for a rename.
@@ -338,12 +341,12 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation };
+        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation, progress };
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
     }
 
@@ -434,6 +437,7 @@ pub(crate) struct AdminAfterStop<'a> {
     pub(crate) rows: Option<crate::connections_writer::RowsHeld>,
     /// The start's operation: the node.started this cycle reports names it (node-status.md "Status report").
     pub(crate) operation: rdm_core::status::DeclaredOperation,
+    progress: Option<crate::node_self::CommandProgress>,
 }
 
 #[async_trait::async_trait]
@@ -513,6 +517,14 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         // node.joined begins this birth's next cycle: the node.started it reports, naming this start,
         // is owed afresh to its mesh's primary, before its declarer runs again.
         s.declarer.begin_own_cycle(&me, &s.incarnation.as_str(), &self.operation);
+        if self.progress.is_some() {
+            if let Some(authority) = s.membership.projected_member_at(&self.commander.borrow().to_string()) {
+                s.declarer.own_on_stream(&me, &s.node_id, &s.incarnation, &self.operation, &authority);
+            }
+        }
+        if let Some(progress) = &self.progress {
+            let _ = progress.lock().await.progress(rdm_core::node_command::NodeCommandReply::NodeJoined).await;
+        }
         // Back on the topic means a neighbour: only then does this admin say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;

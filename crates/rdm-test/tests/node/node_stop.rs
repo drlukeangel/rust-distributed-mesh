@@ -161,10 +161,11 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
     // The start's node.started names the start (node-status.md "Status report": "a start's Pending and
     // ReadyForTraffic"), applied by the mesh primary.
-    let ready = declared_of("ReadyForTraffic", "node.start:");
-    assert!(ready.iter().any(|sp| sp["attributes"]["outcome"] == "applied"), "{node}'s node.started after the start names the start and was applied: {ready:#?}");
+    let ready: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "frame") == "node-started" && attr(sp, "operation").starts_with("node.start:")).collect();
+    assert_eq!(ready.len(), 1, "{node}'s NodeStarted is recorded on its open start stream: {ready:#?}");
+    assert!(declared_of("ReadyForTraffic", "node.start:").is_empty(), "the open start sends no separate Ready declaration");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["node"] == node && sp["attributes"]["command"] == "start-node").expect("the start command was sent");
-    let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && sp["attributes"]["reused"].is_string()).expect("the start call was made");
+    let call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && attr(sp, "op") == "34").expect("the start call was made on 0x22");
     // The stop's transport cut closed its connection, so the start dials afresh or rides a connection
     // its caller dialled to this birth after the cut: a response the caller owed the node (node-rpc.md
     // §43) may dial the same live birth between the two (i146 e1, the read of this cell's reds).
@@ -575,7 +576,7 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     assert_eq!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).count(), 1, "NodeStopped is published once for the birth");
     assert!(start_ns(node_stopped) <= end_ns(admitted_sent[0]), "NodeStopped, from the birth's declaration, precedes the admission");
     let set = stopping(&second);
-    assert!(set.is_empty(), "the admission after NodeStopped sets nothing: {set:#?}");
+    assert!(set.iter().all(|sp| start_ns(sp) < start_ns(node_stopped)), "CommandAccepted may set stopping only before NodeStopped, never after it: {set:#?}");
     // i146 Q39: the stop's declaration goes to the holder of mesh1's primary seat, direct or carried,
     // never to an admin the released birth merely hears.
     let primary = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh1's primary");
@@ -1140,23 +1141,23 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_
     let test = "a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder";
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
-    let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 2)]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
+    let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     estate.until_fabric_ready(SETTLE).await;
     let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary == primary).map(|n| n.name.clone()).expect("mesh2 has two admins");
     let (holder, successor) = (admin_of(true), admin_of(false));
     assert!(!views.iter().any(|n| n.name == holder && n.is_fabric_primary), "mesh2's primary is not the fabric primary: the entry admin stays put");
-    let node = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::RpcNode && !n.is_primary).map(|n| n.name.clone()).expect("mesh2 has an rpc node that is not its cohort's primary");
+    let node: PathName = "mesh2.rpc.2".parse().unwrap();
     let (node_s, holder_s, successor_s) = (node.to_string(), holder.to_string(), successor.to_string());
     let nodes = estate.nodes_obj().await;
 
     // The old holder holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &holder_s).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node_s, "state": "ReadyForTraffic"})).await;
-    let restarted = frames(nodes.restart(&node).await.expect("the restart was accepted")).await;
+    let restarted = frames(nodes.create(&rdm_client::NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.expect("the create was accepted")).await;
     assert!(
         matches!(restarted.last(), Some(Frame::Failed { reason, .. }) if reason.contains("WaitForNodeReady") && reason.contains("it took no node.started")),
-        "the restart's wait for readiness fails naming the node.started its primary never took: {restarted:?}"
+        "the first start's wait for readiness fails naming the node.started its primary never took: {restarted:?}"
     );
     let hit = door.wait_held("declaration").await;
     assert_eq!(hit["hit"]["node"], node_s.as_str(), "the old holder holds the node's declaration: {hit}");
@@ -1178,8 +1179,8 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_
     let spans = estate.spans();
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        // The restart's start names its node.started `node.start:<node>`.
-        .filter(|sp| attr(sp, "node") == node_s && attr(sp, "state") == "ReadyForTraffic" && attr(sp, "operation") == format!("node.start:{node_s}"))
+        // A first start names no operation; its measured Ready remains owed without an open command stream.
+        .filter(|sp| attr(sp, "node") == node_s && attr(sp, "state") == "ReadyForTraffic" && attr(sp, "operation").is_empty())
         .collect();
     let applied: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "outcome") == "applied").collect();
     assert_eq!(applied.len(), 1, "the node.started is applied once: {ready:#?}");

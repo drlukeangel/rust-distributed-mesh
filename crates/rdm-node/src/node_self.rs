@@ -14,7 +14,7 @@
 //!   `Leaving` to the authority, publish a mesh-primary node-admin's last aggregate with itself
 //!   `Leaving` (gossip.md, "Mesh delete"), then the stop's own transport cut (gossip neighbours and the
 //!   Node RPC pool; never the endpoint and never the commander's connection the call rides), and answer
-//!   [`StatusReply::Stopped`] with the `All`'s receipt on that same call. The process stays alive,
+//!   `StopConnectionsDeleted` (Data) with the `All`'s receipt and `NodeStopped` (Terminal) on that stream. The process stays alive,
 //!   its endpoint bound.
 //! - `StartNode`: a stopped birth rejoins as itself (same node id, incarnation, endpoint key and
 //!   port) through its [`Session`], and answers `Started`, or `StartFailed` naming the step.
@@ -159,7 +159,7 @@ pub trait Session: Send + Sync {
     /// birth's connections rows: the session drops it once it holds the name its join answer handed,
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
     /// `operation` is the start's own: the ReadyForTraffic the rejoin declares names it (i146 Q36).
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), StartFailed>;
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>) -> Result<(), StartFailed>;
     /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B): report `JoinNode` to the authority reached
     /// back over `spare` and re-enter the mesh channel (and backbone, for a node-admin).
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<WhichMesh>, String> {
@@ -516,9 +516,17 @@ impl NodeSelf {
     /// block on new application work is in force, then closes and answers `ConnectionsDeleted`;
     /// `Connections([…])` answers its completion right after the acceptance. A caller gone after the
     /// acceptance stops nothing: the node completes what it accepted.
-    pub async fn serve_node_command(&self, commander: Option<&NodeId>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+    pub async fn serve_node_command(self: &Arc<Self>, commander: Option<&NodeId>, req: &NodeCommandRequest, frames: Box<dyn CommandFrames>) -> NodeCommandReply {
+        self.serve_node_command_on(commander, None, req, frames).await
+    }
+
+    /// Serve the command on its caller's connection, which a stop spares and a start joins back over.
+    pub async fn serve_node_command_on(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         use tracing::Instrument;
-        let NodeCommandRequest::DeleteConnections { incarnation, scope, .. } = req;
+        if !matches!(req, NodeCommandRequest::DeleteConnections { .. }) {
+            return self.serve_lifecycle_command(commander, spare, req, frames).await;
+        }
+        let NodeCommandRequest::DeleteConnections { incarnation, scope, .. } = req else { unreachable!("checked") };
         if *incarnation != self.incarnation {
             return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
@@ -777,7 +785,7 @@ impl NodeSelf {
                 None => rdm_core::reply::status::not_ready(format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op())),
             });
         }
-        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. }) {
+        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. }) {
             return Some(refuse_reserved(&self.held_name().to_string(), &named(commander), req));
         }
         if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
@@ -792,33 +800,46 @@ impl NodeSelf {
             }
             return Some(self.serve_join_mesh(spare, operation).await);
         }
+        None
+    }
+
+    /// Q47: admission and progress of the exact node's stop/start on 0x22.
+    async fn serve_lifecycle_command(self: &Arc<Self>, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, req: &NodeCommandRequest, mut frames: Box<dyn CommandFrames>) -> NodeCommandReply {
         let (incarnation, build_id, attempt, operation) = match req {
-            StatusRequest::StopNode { incarnation, build_id, attempt, operation, .. }
-            | StatusRequest::StartNode { incarnation, build_id, attempt, operation, .. } => (incarnation, build_id, attempt, operation),
-            _ => return None,
+            NodeCommandRequest::StopNode { incarnation, build_id, attempt, operation, .. }
+            | NodeCommandRequest::StartNode { incarnation, build_id, attempt, operation, .. } => (incarnation, build_id, attempt, operation),
+            _ => unreachable!("lifecycle command"),
         };
-        // The birth the call reached obeys it (R-RX5: no receiver refuses a downward call for the
-        // node id it names); the exact birth it names is checked, so a call that reached another
-        // birth is refused naming the one held.
         if *incarnation != self.incarnation {
-            return Some(rdm_core::reply::stale(self.incarnation.clone()));
+            return rdm_core::reply::node_command::rejected_stale_incarnation(self.incarnation.clone());
         }
-        let op = LifecycleOp {
-            build_id: build_id.clone(),
-            attempt: *attempt,
-            operation: operation.clone(),
-            node_id: self.node_id.clone(),
-            incarnation: self.incarnation.clone(),
-            name: self.held_name(),
-            event_at_rafka_ms: self.membership.clock().now_rafka_ms(),
+        let stopping = matches!(req, NodeCommandRequest::StopNode { .. });
+        let refusal = {
+            let cycle = self.cycle.lock().unwrap();
+            match &*cycle {
+                Cycle::Starting { .. } if stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()))),
+                Cycle::Stopping(_) if !stopping => Some(rdm_core::reply::node_command::not_ready(format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()))),
+                Cycle::Live(Some((build, op))) if !stopping && build == build_id && op == operation => None,
+                Cycle::Live(_) if !stopping => Some(rdm_core::reply::node_command::rejected_invalid_node_transition(crate::status::declared_of_member((self.status)()))),
+                _ => None,
+            }
         };
-        // The command's serve span carries the caller's propagated trace; the work this command
-        // starts continues it, so the spans it opens join the outer trace.
-        let parent = tracing::Span::current();
-        let commander = commander.cloned();
-        match req {
-            StatusRequest::StopNode { .. } => Some(self.stop(commander, spare, op, parent).await),
-            _ => Some(self.start(commander, spare, op, parent).await),
+        if let Some(refusal) = refusal { return refusal; }
+        if frames.accepted(NodeCommandReply::CommandAccepted { node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }).await.is_err() {
+            return rdm_core::reply::node_command::not_ready(format!("{}: caller gone before CommandAccepted; nothing executed", self.held_name()));
+        }
+        let progress = Arc::new(tokio::sync::Mutex::new(frames));
+        let op = LifecycleOp { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.held_name(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
+        let result = if stopping {
+            self.stop(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
+        } else {
+            self.start(commander.cloned(), spare, op, tracing::Span::current(), Some(progress)).await
+        };
+        match result {
+            StatusReply::Stopped { .. } => NodeCommandReply::NodeStopped,
+            StatusReply::Started | StatusReply::AlreadyApplied => NodeCommandReply::NodeStarted,
+            StatusReply::StartFailed { step, reason } => rdm_core::reply::node_command::failed(step, reason, rdm_core::outcome::Code::FailedPrecondition),
+            other => rdm_core::reply::node_command::failed(req.op().into(), format!("{}: {other:?}", other.name()), <rdm_core::status::Status as rdm_core::protocol::NodeProtocol>::classify_reply(&other).code()),
         }
     }
 
@@ -923,7 +944,7 @@ impl NodeSelf {
     /// stop's own transport cut. The receipt is the `All`'s. A second stop of the same birth, while this one runs or after it, answers the same
     /// receipt: stopping a stopped birth is done. A stop while a start of the birth is under way is
     /// refused naming the start.
-    async fn stop(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
+    async fn stop(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span, progress: Option<CommandProgress>) -> StatusReply {
         use tracing::Instrument;
         enum Next {
             Done(ConnectionsReceipt),
@@ -946,10 +967,17 @@ impl NodeSelf {
             }
         };
         let receipt = match next {
-            Next::Done(r) => r,
-            Next::Wait(mut rx) => match rx.wait_for(|r| r.is_some()).await {
-                Ok(r) => r.clone().expect("waited for a receipt"),
-                Err(_) => return rdm_core::reply::status::not_ready(format!("{}: the stop that was under way ended without a receipt", self.held_name())),
+            Next::Done(r) => {
+                if let Some(progress) = &progress { let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: r.clone() }).await; }
+                r
+            },
+            Next::Wait(mut rx) => {
+                let receipt = match rx.wait_for(|r| r.is_some()).await {
+                    Ok(r) => r.clone().expect("waited for a receipt"),
+                    Err(_) => return rdm_core::reply::status::not_ready(format!("{}: the stop that was under way ended without a receipt", self.held_name())),
+                };
+                if let Some(progress) = &progress { let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await; }
+                receipt
             },
             Next::Run(tx) => {
                 let span = tracing::info_span!(
@@ -958,7 +986,7 @@ impl NodeSelf {
                     node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
                     commander = %named(commander.as_ref()), state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
-                let receipt = self.stop_steps(commander.as_ref(), spare, &op).instrument(span.clone()).await;
+                let receipt = self.stop_steps(commander.as_ref(), spare, &op, progress.clone()).instrument(span.clone()).await;
                 span.record("receipt", receipt.name());
                 *self.cycle.lock().unwrap() = Cycle::Stopped(receipt.clone());
                 let _ = tx.send(Some(receipt.clone()));
@@ -970,7 +998,7 @@ impl NodeSelf {
 
     /// The stop's own steps (node-stop.md steps 2-3): the whole `node.connections.delete { All }`,
     /// then the transport cut; the receipt is the All's.
-    async fn stop_steps(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> ConnectionsReceipt {
+    async fn stop_steps(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, op: &LifecycleOp, progress: Option<CommandProgress>) -> ConnectionsReceipt {
         use tracing::Instrument;
         parking().park();
         if let Some(retire) = &self.retire {
@@ -985,6 +1013,9 @@ impl NodeSelf {
             .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %named(commander)))
             .await;
         let receipt = deleted.receipt.expect("All carries its receipt");
+        if let Some(progress) = &progress {
+            let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
+        }
         let session = self.session.lock().unwrap().clone();
         // 2. The node's own tasks are held: no turn begins, and every turn already past its wait
         // point runs to its end before anything more is said or cut.
@@ -1062,7 +1093,7 @@ impl NodeSelf {
     /// of its own and answers that start's outcome, and its call is the one the start's join goes
     /// back over from then on (node-start.md step 2: the start joins back over the call that
     /// commanded it, and this call commanded it last).
-    async fn start(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
+    async fn start(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span, progress: Option<CommandProgress>) -> StatusReply {
         use tracing::Instrument;
         let span = tracing::info_span!(
             parent: &parent,
@@ -1113,10 +1144,14 @@ impl NodeSelf {
             let (outcome, receipt, session, commanded) = match next {
                 Next::Join(mut rx) => {
                     tracing::Span::current().record("joined", true);
-                    return match rx.wait_for(|r| r.is_some()).await {
+                    let reply = match rx.wait_for(|r| r.is_some()).await {
                         Ok(r) => r.clone().expect("waited for an outcome"),
                         Err(_) => rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.held_name())),
                     };
+                    if matches!(reply, StatusReply::Started) {
+                        if let Some(progress) = &progress { let _ = progress.lock().await.progress(NodeCommandReply::NodeJoined).await; }
+                    }
+                    return reply;
                 }
                 Next::Run(tx, receipt, session, commanded) => (tx, receipt, session, commanded),
             };
@@ -1137,7 +1172,7 @@ impl NodeSelf {
             // The admin that commanded the start answers its join, reached back over its own call:
             // the call's endpoint key and path (node-start.md step 2).
             let joined = match commanded {
-                Some(commander) => session.rejoin(retire, commander, rows, declared(&op)).await,
+                Some(commander) => session.rejoin(retire, commander, rows, declared(&op), progress).await,
                 None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
             };
             let reply = match joined {
@@ -1205,12 +1240,12 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
 
 /// What a reserved `DrainNode` or `NodeDrained` is refused with: neither is ever a call (R-CR4).
-pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: DrainNode and NodeDrained are reserved positions, never sent; a node's connections are deleted by node.connections.delete";
+pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), and 16 (StartNode) are reserved, never executed; lifecycle commands use NodeCommand 0x22";
 
 /// A reserved `DrainNode` or `NodeDrained` at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation }) = req else {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation }) = req else {
         unreachable!("refuse_reserved is called for the reserved pair only")
     };
     let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
@@ -1317,6 +1352,9 @@ pub trait CommandFrames: Send {
     /// A progress frame after the acceptance.
     async fn progress(&mut self, frame: NodeCommandReply) -> Result<(), String>;
 }
+
+/// The admitted command's progress, shared with its lifecycle steps.
+pub type CommandProgress = Arc<tokio::sync::Mutex<Box<dyn CommandFrames>>>;
 
 /// A node command's frames on its ordered reply stream (op 0x22).
 pub struct StreamFrames {

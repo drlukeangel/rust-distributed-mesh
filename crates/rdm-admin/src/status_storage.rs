@@ -5,7 +5,8 @@
 //!
 //! A status fact is a blind put of its own key: `(mesh_id, state)` for a Mesh, `(fabric_id,
 //! event)` for a Fabric event, `(node_id, incarnation, state)` for a node's declared state (a new
-//! cycle tombstones the birth's rows),
+//! cycle tombstones only those state rows), and `(birth, build_id, attempt, operation)` for an
+//! operation's applied effect (Q49: a cycle begin never clears it),
 //! `(node_id, incarnation)` for a birth's silence status. Nothing is read back to be written again.
 //! A reader folds the rows: the greatest state per Mesh and per birth, the set of events per Fabric. `Applied` means the row's put was
 //! acknowledged before the answer left. The rows of a mesh live on the fabric's store root under
@@ -88,6 +89,29 @@ impl NodeDeclaredRow {
             NodeState::Pending | NodeState::ReadyForTraffic | NodeState::Draining | NodeState::Leaving => s,
         };
         [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving].into_iter().map(every).map(|s| Self::key_of(node_id, incarnation_id, s)).collect()
+    }
+}
+
+/// An operation effect already applied to this exact birth (Q49). Independent of its current cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeOperationRow {
+    /// The birth's node.
+    pub node_id: NodeId,
+    /// The birth's incarnation.
+    pub incarnation_id: IncarnationId,
+    /// The path this birth held.
+    pub name: PathName,
+    /// The operation that produced this effect.
+    pub operation: rdm_core::status::DeclaredOperation,
+    /// The effect applied.
+    pub state: NodeState,
+}
+
+impl NodeOperationRow {
+    /// The operation identity: exact birth, Build, attempt and operation, never its current state.
+    pub fn key(&self) -> String {
+        let hex = |v: &str| v.bytes().map(|b| format!("{b:02x}")).collect::<String>();
+        format!("{}--{}--{}--{}--{}", self.node_id, self.incarnation_id, hex(&self.operation.build_id), self.operation.attempt, hex(&self.operation.operation))
     }
 }
 
@@ -302,6 +326,12 @@ pub trait StatusStorage: Send + Sync {
     async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError>;
     /// Every declared-state row held.
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError>;
+    /// Blind put of the operation's applied effect; a cycle begin never clears it.
+    async fn put_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError>;
+    /// The operation effects held, including effects from earlier cycles of a live birth.
+    async fn node_operations(&self) -> Result<Vec<NodeOperationRow>, StorageError>;
+    /// Forget one operation effect only when its exact birth is forgotten.
+    async fn remove_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError>;
     /// A blind put of the birth's silence-status row.
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError>;
     /// Every birth's silence-status row.
@@ -406,6 +436,7 @@ pub struct MemoryStatusStorage {
     meshes: Mutex<Vec<MeshStatusRow>>,
     events: Mutex<Vec<FabricEventRow>>,
     declared: Mutex<std::collections::BTreeMap<String, NodeDeclaredRow>>,
+    operations: Mutex<std::collections::BTreeMap<String, NodeOperationRow>>,
     silences: Mutex<std::collections::BTreeMap<String, NodeSilenceRow>>,
     exits: Mutex<std::collections::BTreeMap<String, NodeExitRow>>,
     /// The Mesh status rows of each mesh named through the `_of` puts: a store held in memory names
@@ -489,6 +520,17 @@ impl StatusStorage for MemoryStatusStorage {
     }
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
         Ok(self.declared.lock().unwrap().values().cloned().collect())
+    }
+    async fn put_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.operations.lock().unwrap().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn node_operations(&self) -> Result<Vec<NodeOperationRow>, StorageError> {
+        Ok(self.operations.lock().unwrap().values().cloned().collect())
+    }
+    async fn remove_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.operations.lock().unwrap().remove(&row.key());
+        Ok(())
     }
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
         self.silences.lock().unwrap().insert(row.key(), row.clone());
@@ -610,6 +652,7 @@ pub struct FileStatusStorage {
     meshes: FileRecords,
     fabric: FileRecords,
     declared: FileRecords,
+    operations: FileRecords,
     silence: FileRecords,
     exits: FileRecords,
     held_running: FileRecords,
@@ -641,6 +684,7 @@ impl FileStatusStorage {
             meshes: root.records(&base, "meshes", writer).await?,
             fabric: root.records(&base, "fabric", writer).await?,
             declared: root.records(&base, "declared", writer).await?,
+            operations: root.records(&base, "operations", writer).await?,
             silence: root.records(&base, "silence", writer).await?,
             exits: root.records(&base, "exits", writer).await?,
             held_running: root.records(&base, "held-running", writer).await?,
@@ -659,11 +703,12 @@ impl FileStatusStorage {
 
     /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
     /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 11] {
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 12] {
         [
             &self.meshes,
             &self.fabric,
             &self.declared,
+            &self.operations,
             &self.silence,
             &self.exits,
             &self.held_running,
@@ -767,6 +812,15 @@ impl StatusStorage for FileStatusStorage {
     }
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
         self.declared.list(NODE_DECLARED_FORMAT).await
+    }
+    async fn put_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.operations.write(&row.key(), "node-operation/1", row).await
+    }
+    async fn node_operations(&self) -> Result<Vec<NodeOperationRow>, StorageError> {
+        self.operations.list("node-operation/1").await
+    }
+    async fn remove_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
+        self.operations.remove(&row.key()).await.map(|_| ())
     }
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
         self.silence.write(&row.key(), NODE_SILENCE_FORMAT, row).await
