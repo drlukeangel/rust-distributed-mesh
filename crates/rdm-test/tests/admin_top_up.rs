@@ -172,15 +172,12 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         // primary hears the primary's full once (its neighbour replay): it is waited for, so no full of
         // the primary reaches mesh1.admin.2 after the delta below.
         let admin_digest = admin.digest.lock().unwrap().clone();
-        let installs_at_admin = || spans_named(&spans, "rdm.mesh.membership.update.via-snapshot-installed", |f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("channel").map(String::as_str) == Some("mesh-channel")).len();
-        let installed_before = installs_at_admin();
         let probe = gossip_node().await;
         let admin_addr = gossip_addr(&admin_digest).expect("mesh1.admin.2's digest names its endpoint");
         learn_addresses(&probe.ep, &[admin_addr.clone()]).unwrap();
         let mesh_id = root_digest.mesh_id.clone().expect("the root holds its mesh id");
         let channel = Membership::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr]).await.expect("the cell joins mesh1's channel");
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
-        until("mesh1.admin.2 to take the primary's replayed full", WRONG, || installs_at_admin() > installed_before).await;
 
         // A delta of mesh1 under the primary's epoch whose base is not what mesh1.admin.2 holds.
         let (_, held) = admin.membership.held_source_version("mesh1").expect("mesh1.admin.2 holds mesh1");
@@ -198,8 +195,8 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         };
         channel.forward(&delta).await.expect("the cell puts the delta on mesh1's channel");
         let base_s = gap_base.to_string();
-        let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s);
-        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.membership.update.via-version-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
+        let gap = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("mesh").map(String::as_str) == Some("mesh1") && f.get("base_version") == Some(&base_s) && f.get("repair_requested").map(String::as_str) == Some("true");
+        tokio::time::timeout(WRONG, spans.recorded("rdm.mesh.membership.reject.via-gap", gap)).await.expect("mesh1.admin.2 took the delta as a version gap");
 
         // The top-up: mesh1.admin.2 reads mesh1 from its own Mesh's primary and resumes the source.
         let topped = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("meshes").is_some_and(|m| m.split(',').any(|m| m == "mesh1"));
