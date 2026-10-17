@@ -1,6 +1,6 @@
 # i145 — the cert chain, its verification at a connection and its renewal are RDM's
 
-**Status:** approved 2026-10-16; held as its own phase until the Node RPC and gossip work closed; **dispatched 2026-10-17 to Codex (Luke: "145")**, e1 first. Approved 2026-10-16 (Luke, Q1–Q6 of `docs/plans/proposal/cert-verification-ownership.md`;
+**Status:** approved 2026-10-16; **held as its own phase; it lands only after the full regression of the Node RPC and gossip work** (Luke, 2026-10-17). Not dispatched. Approved 2026-10-16 (Luke, Q1–Q6 of `docs/plans/proposal/cert-verification-ownership.md`;
 ruling `docs/plans/rulings/i145-rulings-2026-10-16-cert-ownership.md`, R-CT1). Page set applied
 2026-10-16. Nothing built.
 
