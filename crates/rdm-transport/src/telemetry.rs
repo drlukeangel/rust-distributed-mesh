@@ -55,7 +55,8 @@ impl Exporters {
             if !export::ExportRuntime::running() {
                 eprintln!("telemetry: {what}: the export thread has not begun running; the evidence flush waits for it within {} ms", export::DRAIN_BOUND.as_millis());
             }
-            export::bounded_until(
+            let loss = evidence.0.loss();
+            let flushed = export::bounded_until(
                 "the evidence flush",
                 vec![Box::new(move || {
                     if let Err(e) = opentelemetry_sdk::trace::SpanProcessor::force_flush(&evidence) {
@@ -65,6 +66,16 @@ impl Exporters {
                 false,
                 deadline,
             );
+            // The bound is the contract: a flush the disk holds past it ends there, its loss named
+            // (Luke 2026-10-17: a named, bounded loss, never an exit that waits on the disk).
+            if !flushed {
+                eprintln!(
+                    "telemetry: the evidence flush ended at its bound ({} ms): {} of {} spans not confirmed written to the evidence file",
+                    export::DRAIN_BOUND.as_millis(),
+                    loss.lost(),
+                    loss.handed()
+                );
+            }
         }
         let provider = self.provider.clone();
         let mut jobs: Vec<Box<dyn FnOnce() + Send>> = vec![Box::new(move || {
@@ -79,7 +90,9 @@ impl Exporters {
                 }
             }));
         }
-        export::bounded_until(what, jobs, true, deadline);
+        if !export::bounded_until(what, jobs, true, deadline) {
+            export::name_abandoned(what);
+        }
         flush_log_sinks();
     }
 }

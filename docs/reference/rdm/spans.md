@@ -191,8 +191,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.mesh.seat.update.via-holder-stopped` | `crates/rdm-transport/src/membership.rs` | 3925 |
 | `rdm.mesh.seat.update.via-primary-updated` | `crates/rdm-transport/src/membership.rs` | 2686 |
 | `rdm.mesh.seat.update.via-primary-updating` | `crates/rdm-transport/src/membership.rs` | 2211 |
-| `rdm.mesh.telemetry.create.via-init` | `crates/rdm-transport/src/telemetry.rs` | 535 |
-| `rdm.mesh.telemetry.create.via-init-step` | `crates/rdm-transport/src/telemetry.rs` | 537 |
+| `rdm.mesh.telemetry.create.via-init` | `crates/rdm-transport/src/telemetry.rs` | 548 |
+| `rdm.mesh.telemetry.create.via-init-step` | `crates/rdm-transport/src/telemetry.rs` | 550 |
 | `rdm.mesh.topology.reject.via-read-install` | `crates/rdm-node/src/topology_read.rs` | 458 |
 | `rdm.mesh.topology.serve.via-read` | `crates/rdm-node/src/topology_read.rs` | 106 |
 | `rdm.mesh.topology.update.via-read-install` | `crates/rdm-node/src/topology_read.rs` | 445 |

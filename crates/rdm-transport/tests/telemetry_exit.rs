@@ -103,27 +103,50 @@ fn run_child(case: &str, env: &[(&str, &str)]) -> (String, String, u128, std::pa
     (out, err, ended, dir)
 }
 
+/// `(unwritten, handed)` when the exit drain's evidence flush ended at its bound and named its loss.
+fn named_loss(stderr: &str) -> Option<(usize, usize)> {
+    let line = stderr.lines().find(|l| l.contains("the evidence flush ended at its bound"))?;
+    let (_, tail) = line.split_once("): ")?;
+    let mut words = tail.split_whitespace();
+    let unwritten = words.next()?.parse().ok()?;
+    let handed = words.nth(1)?.parse().ok()?;
+    Some((unwritten, handed))
+}
+
 fn evidence_of(dir: &std::path::Path) -> String {
     std::fs::read_dir(dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".spans.jsonl")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect()
 }
 
-/// CONTRACT (i146 Q42): a process whose collector is down (its first export to a refusing collector
-/// failed, named on stderr before it exits) emits a burst of spans and its last span and exits at once,
-/// and every one of them is in its evidence file: the exit drain flushes the evidence file whatever the
-/// collector's state. Must NOT happen: the drain returning at once because the collector is down, the
-/// process exiting with spans still queued.
+/// CONTRACT (i146 Q42; Luke 2026-10-17: the bound is the contract, a named, bounded loss): a process
+/// whose collector is down (its first export to a refusing collector failed, named on stderr before it
+/// exits) emits a burst of spans and its last span and exits at once. The exit drain flushes the
+/// evidence file whatever the collector's state, within its one bound: every span handed is in the
+/// evidence file, or the flush ended at its bound and named how many of them it did not confirm
+/// written. Must NOT happen: the drain returning at once because the collector is down, a span lost
+/// unnamed, an exit held past the bound.
 #[test]
 fn a_process_whose_collector_is_down_keeps_every_span_it_emits_before_it_exits_at_once() {
     if std::env::var(CHILD).is_ok() {
         return;
     }
-    let (_, err, _, dir) = run_child("collector-down", &[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")]);
+    let (_, err, ended, dir) = run_child("collector-down", &[("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")]);
     let exiting = err.find("EXITING_AT_MS=").expect("the child reached its exit");
     assert!(err[..exiting].contains("telemetry: the OTLP span export to"), "the collector was found down before the exit (the case's precondition): {err}");
+    let exited_at: u128 = err.lines().find_map(|l| l.strip_prefix("EXITING_AT_MS=")).and_then(|v| v.trim().parse().ok()).expect("the exit's time");
+    let drained = Duration::from_millis((ended - exited_at) as u64);
+    assert!(drained < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the drain ended within its one bound: {drained:?}; stderr {err}");
     let evidence = evidence_of(&dir);
     let burst = evidence.lines().filter(|l| l.contains("rdm.test.telemetry.update.via-burst-span")).count();
-    assert_eq!(burst, BURST, "every span of the burst is in the evidence file: stderr {err}");
-    assert!(evidence.contains("rdm.test.telemetry.update.via-last-span"), "the last span before the exit is in the evidence file: stderr {err}");
+    match named_loss(&err) {
+        None => {
+            assert_eq!(burst, BURST, "every span of the burst is in the evidence file: stderr {err}");
+            assert!(evidence.contains("rdm.test.telemetry.update.via-last-span"), "the last span before the exit is in the evidence file: stderr {err}");
+        }
+        Some((unwritten, handed)) => {
+            let written = evidence.lines().filter(|l| !l.trim().is_empty()).count();
+            assert!(handed >= BURST + 2 && written + unwritten >= handed, "a bounded loss is named whole: {written} written and {unwritten} named unwritten of {handed} handed; stderr {err}");
+        }
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -138,7 +161,7 @@ fn an_evidence_file_whose_open_blocks_at_the_exit_ends_the_exit_flush_at_its_bou
     }
     let (_, err, ended, dir) = run_child("blocked-open", &[]);
     let exiting: u128 = err.lines().find_map(|l| l.strip_prefix("EXITING_AT_MS=")).and_then(|v| v.trim().parse().ok()).expect("the child reached its exit");
-    assert!(err.contains("telemetry: the evidence flush did not finish within 2000 ms"), "the blocked flush is named: {err}");
+    assert!(named_loss(&err).is_some(), "the blocked flush ended at its bound and named its loss: {err}");
     let drained = Duration::from_millis((ended - exiting) as u64);
     assert!(drained < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the drain ended at its one bound: {drained:?} from the exit to the process's end; stderr {err}");
     let _ = std::fs::remove_dir_all(&dir);

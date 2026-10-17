@@ -222,13 +222,23 @@ impl<E: LogExporter> LogExporter for WatchedLogs<E> {
 /// collector is known to be down they are not waited for at all. Past the bound the threads are
 /// left behind (the process goes on, or exits and takes them) and the wait is named on stderr.
 pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
-    bounded_until(what, jobs, true, std::time::Instant::now() + DRAIN_BOUND)
+    if !bounded_until(what, jobs, true, std::time::Instant::now() + DRAIN_BOUND) {
+        name_abandoned(what);
+    }
+}
+
+/// `what`, a wait on the collector, was abandoned at [`DRAIN_BOUND`]: named on stderr with what the
+/// collector's outage dropped so far.
+pub(crate) fn name_abandoned(what: &str) {
+    eprintln!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", DRAIN_BOUND.as_millis(), dropped_by_outage());
 }
 
 /// [`bounded`] up to `deadline`, one deadline for every wait of a drain, so a drain ends within one
 /// [`DRAIN_BOUND`]. A job that never waits on the collector (the evidence file's flush) passes
 /// `skip_when_collector_down = false` and is waited for whatever the collector's state (i146 Q42).
-pub(crate) fn bounded_until(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>, skip_when_collector_down: bool, deadline: std::time::Instant) {
+/// Whether every job finished by `deadline` (a wait skipped because the collector is down counts as
+/// finished: it was never owed); the caller names a wait that did not.
+pub(crate) fn bounded_until(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>, skip_when_collector_down: bool, deadline: std::time::Instant) -> bool {
     let (done, finished) = std::sync::mpsc::channel::<()>();
     let mut started = 0;
     for job in jobs {
@@ -243,14 +253,14 @@ pub(crate) fn bounded_until(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>, ski
         }
     }
     if skip_when_collector_down && collector_is_down() {
-        return;
+        return true;
     }
     for _ in 0..started {
         if finished.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_err() {
-            eprintln!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", DRAIN_BOUND.as_millis(), dropped_by_outage());
-            return;
+            return false;
         }
     }
+    true
 }
 
 /// Which `tracing` events the exporter's own machinery may put in a log, a span or the collector:

@@ -337,7 +337,16 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   cell now carries the probe's stderr. Cells: `telemetry_exit::a_process_whose_collector_is_down_keeps_every_span_it_emits_before_it_exits_at_once`
   (RED against main: the burst incomplete after the named outage),
   `telemetry_exit::an_evidence_file_whose_open_blocks_at_the_exit_ends_the_exit_flush_at_its_bound_named`
-  (RED against main: the blocked flush unnamed); the FIFO init cell and `probe_root_span` green. The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
+  (RED against main: the blocked flush unnamed); the FIFO init cell and `probe_root_span` green.
+  The first cell went red on Q45's gate (`db5f64bf`, `telemetry_exit.rs:125`, 4,736 of 5,000 burst
+  spans): under the gate's disk load each evidence write stalled 244-315 ms, and the drain ended at its
+  bound naming only the collector outage's drops. Luke (2026-10-17): the bound is the contract; a named,
+  bounded loss is right, an exit that waits on the disk past its bound is not. The drain now names the
+  evidence loss at its bound ("the evidence flush ended at its bound (2000 ms): N of M spans not
+  confirmed written to the evidence file", from the processor's handed and written counts; a write the
+  bound cuts counts unwritten), and names the collector outage's drops only for the collector's
+  shutdown. The cells assert the contract: every span handed is in the file or named unwritten, and the
+  exit ends within its bound. The split's next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
   cell's own thread, named after its module, and its leak check matched the bare word
   `transport_diag`; the check now matches the diagnostic target (`"target":"transport_diag"`). The gate
   after (`882abfe9`) red at `fabric_primary_handover.rs:516`: mesh3's only admin other than the holder
@@ -632,7 +641,14 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   planned birth after the round began); the cell asserts that report and never waited for it, and now
   waits for the fabric to read ready-for-traffic before its stop. And `telemetry_exit` (main's; its own
   row in e2). The five check-in and cut-off cells (each about 55 s) moved from `rounds` to their own
-  stem, `owed_check_ins`, release-only in the gate (Luke: "55 s cells belong in release").
+  stem, `owed_check_ins`, release-only in the gate (Luke: "55 s cells belong in release"). Its second gate
+  (`c911edb4`) was red in six stems; five were refusals I caused, editing `rdm-transport/src/telemetry.rs`
+  in the lane while that gate's cells ran ("`faulted-node-admin` was built before ... `telemetry.rs`
+  changed"). The sixth, `sticky_seat::a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts`
+  (`sticky_seat.rs:579`), is the provider's: the recipe's `node.delete:mesh1.admin.1.old` failed
+  `TerminateRuntime` with `stage=unproven` 74 ms in ("mesh1.admin.1.old still runs after the stop
+  ladder"), the old holder being the estate's adopted Day-0 runtime; Q45 changes no termination. Open,
+  to be read (trace `b241a08f397cdc549c10970b44268948`).
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
