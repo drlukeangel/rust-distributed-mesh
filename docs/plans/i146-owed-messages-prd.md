@@ -294,7 +294,18 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   (`rdm.mesh.telemetry.create.via-init-step`), and the cell's failure names the slowest with that
   span; no change to telemetry's behaviour or the bound. A recurrence comes as a packet naming the
   step. A synchronous disk wait at init would be Q30's defect in a second place: its own packet and
-  fix, R25's rule and its unit cell's shape.
+  fix, R25's rule and its unit cell's shape. Its next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
+  cell's own thread, named after its module, and its leak check matched the bare word
+  `transport_diag`; the check now matches the diagnostic target (`"target":"transport_diag"`). The gate
+  after (`882abfe9`) red at `fabric_primary_handover.rs:516`: mesh3's only admin other than the holder
+  heard "primary updated" on its mesh channel (`mesh3.admin.2`, `via=mesh-channel`, trace
+  `2b5ad5013364284dc7c1b0bdfb4e0f6b`), the copy mesh3's primary carries from the backbone (gossip.md
+  "Peer mesh primaries carry them under the forwarding rules"; `membership.rs` `forward_of`), and the
+  backbone copy then a repeat of the same publication (i147 `0c7aff9e`); the cell's per-mesh backbone
+  check raced that forward. Restated to the page: every surviving mesh hears it, on either channel,
+  naming the exact birth and revision; the backbone proven by an admin other than the holder that heard
+  it there (a peer mesh's primary, which hears it nowhere else: `mesh2.admin.1`, trace
+  `a865e1a0ef1729a5a2b75e8c16ee8dab`).
 
 #### e3 — the owners move onto it, one at a time, each after its reconstruction cells
 

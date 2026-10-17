@@ -505,19 +505,26 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     );
 
     // Part C3 edit 6 (gossip.md): "primary updated" rides the backbone, and every surviving mesh hears
-    // it naming the exact committed holder birth at the committed revision.
+    // it naming the exact committed holder birth at the committed revision. A peer mesh's primary
+    // carries it onto its own mesh channel (gossip.md "Peer mesh primaries carry them under the
+    // forwarding rules"; `forward_of`), so an admin of that mesh hears it on either channel, the first
+    // copy held and the other a repeat of the same publication. The backbone is proven by an admin
+    // other than the holder that heard it there: a peer mesh's primary, which hears it nowhere else.
     let h = after.iter().find(|n| s(&n["name"]) == holder).unwrap();
     let (succ_mesh, succ_rest) = attr_s(&row, "successor").split_once(':').map(|(m, r)| (m.to_string(), r.to_string())).unwrap();
     let (succ_id, succ_inc) = succ_rest.split_once(':').map(|(i, c)| (i.to_string(), c.to_string())).unwrap();
     assert_eq!((succ_id.as_str(), succ_inc.as_str()), (s(&h["node_id"]).as_str(), s(&h["incarnation_id"]).as_str()), "the committed successor is the holder's exact birth: {h}");
     let exact = format!("{succ_mesh}:{succ_id}@{succ_inc} (revision {})", attr_s(&row, "fabric_revision"));
+    let mut on_backbone = Vec::new();
     for m in ["mesh2", "mesh3"] {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node").starts_with(&format!("{m}.admin.")) && attr_s(sp, "node") != holder).collect();
-        assert!(heard.iter().any(|sp| attr_s(sp, "via") == "backbone"), "{m}: an admin other than the holder heard primary updated on the backbone: {heard:?}");
+        assert!(!heard.is_empty(), "{m}: an admin other than the holder heard primary updated");
+        on_backbone.extend(heard.iter().filter(|sp| attr_s(sp, "via") == "backbone").map(|sp| attr_s(sp, "node")));
         for sp in &heard {
             assert_eq!(attr_s(sp, "successor"), exact, "{m}: the frame names the exact holder birth and revision: {sp}");
             assert_ne!(attr_s(sp, "outcome"), "refused-not-newer", "{m}: the committed holder is taken: {sp}");
         }
     }
+    assert!(!on_backbone.is_empty(), "an admin other than the holder heard primary updated on the backbone");
     estate.record_trace_url(&s(&row["trace_id"]));
 }
