@@ -294,7 +294,16 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   (`rdm.mesh.telemetry.create.via-init-step`), and the cell's failure names the slowest with that
   span; no change to telemetry's behaviour or the bound. A recurrence comes as a packet naming the
   step. A synchronous disk wait at init would be Q30's defect in a second place: its own packet and
-  fix, R25's rule and its unit cell's shape. Its next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
+  fix, R25's rule and its unit cell's shape. The red again on i147's tree `c4536992`, the collector up throughout (Luke checked,
+  42 h): all three outage cells, slowest step `evidence-file` at 7727, 7337 and 7696 ms, every other
+  step 0 ms but one `transport-diagnostic` at 495 ms (traces `337a4ba7dd621901e7ec6a13800e7d99`,
+  `318443778945d7f23274f7f37d38e949`, `0821208674cb2585fddd377da130d40c`; log
+  `gates-e7s3-c4536992.log.d/rdm-transport:main.log`). That step held both the JSONL create and open
+  and the export runtime's first start (a thread that builds a runtime while init waits for its
+  handle) with the evidence processor's build, so it is split: `export-runtime`, `evidence-file` (the
+  create and open alone), `evidence-processor`. Measured on this host, a create and open in `/tmp`
+  (ext4) under 64 writers fsyncing took 6.3 ms at worst, under eight 256 MiB buffered writers with
+  fsyncs 5.2 ms: no seconds-long wait reproduced, so the next red's split names the defect. Its next gate (`bac3a549`) red at `transport_diag`: the init step spans run on that
   cell's own thread, named after its module, and its leak check matched the bare word
   `transport_diag`; the check now matches the diagnostic target (`"target":"transport_diag"`). The gate
   after (`882abfe9`) red at `fabric_primary_handover.rs:516`: mesh3's only admin other than the holder

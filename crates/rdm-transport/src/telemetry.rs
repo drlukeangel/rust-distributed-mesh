@@ -432,8 +432,9 @@ pub fn jsonl_span_exporter(dir: &std::path::Path, service: &str) -> std::io::Res
 }
 
 /// How long each synchronous step of [`init_evidence_telemetry`] took, in the order it ran: the
-/// evidence file, the exporters, the stderr sink, the transport diagnostic file, the subscriber and
-/// the watchdog (i144 Q33). `Display`: `step=<ms>ms`, space-separated.
+/// export runtime's first start, the evidence file's create and open, its processor, the exporters,
+/// the stderr sink, the transport diagnostic file, the subscriber and the watchdog (i144 Q33).
+/// `Display`: `step=<ms>ms`, space-separated.
 #[derive(Debug, Clone, Default)]
 pub struct InitSteps(pub Vec<(&'static str, std::time::Duration)>);
 
@@ -486,17 +487,26 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
     let mut any = false;
     let mut steps = InitSteps::default();
+    // The export runtime's first start, its own step: every processor below runs on it.
     let step = std::time::Instant::now();
+    if std::env::var_os("RDM_EVIDENCE_DIR").is_some() || std::env::var_os("OTEL_EXPORTER_OTLP_ENDPOINT").is_some() {
+        let _ = ExportRuntime::get();
+    }
+    steps.timed("export-runtime", step);
     if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
-        match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
+        let step = std::time::Instant::now();
+        let file = JsonlSpanExporter::create(std::path::Path::new(&dir), &service);
+        steps.timed("evidence-file", step);
+        let step = std::time::Instant::now();
+        match file {
             Ok(e) => {
                 builder = builder.with_span_processor(span_processor("evidence", e));
                 any = true;
             }
             Err(e) => eprintln!("telemetry: RDM_EVIDENCE_DIR={dir} is unusable: {e}"),
         }
+        steps.timed("evidence-processor", step);
     }
-    steps.timed("evidence-file", step);
     let step = std::time::Instant::now();
     let mut logs = None;
     if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
