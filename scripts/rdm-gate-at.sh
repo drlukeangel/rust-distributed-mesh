@@ -2,7 +2,9 @@
 [ -z "$GATE_PRIVATE_COPY" ] && { c=$(mktemp /tmp/rdm-gate-run.XXXXXX); cp "$0" "$c"; chmod +x "$c"; GATE_PRIVATE_COPY=1 exec bash "$c" "$@"; }
 # RDM local gate: build everything once, then run every check and every scenario binary in
 # parallel. Ports need nothing here: node-admin's EndpointAllocator claims each port host-wide.
-cd "${1:-/home/admin/rust-distributed-mesh}"
+cd "${1:-$HOME/rust-distributed-mesh}"
+# Every path is this repo root (the lane) or the box's directories under $HOME.
+ROOT=$(pwd); DEPLOY=$HOME/rust-distributed-mesh-deploy
 # Workspace crates incremental, the same value cells.sh uses, so a lane holds one build (measured: an admin.rs edit 8.5 s, not 55.3 s).
 # Incremental for workspace crates through cargo's own setting (build.incremental), never the env var
 # CARGO_INCREMENTAL: sccache refuses every vendor compile when CARGO_INCREMENTAL is set (2026-10-13, a cold
@@ -39,7 +41,7 @@ JOBS="${GATE_JOBS:-40}"
 # stems are starting.
 export I143_ACCEPTANCE_SKIP_BUILD=1
 SHA=$(git rev-parse --short HEAD)
-O=/home/admin/rust-distributed-mesh-deploy/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
+O=$DEPLOY/gates-$(basename $(pwd))-$SHA${GATE/fast/}.log; : > $O; : > $O.detail
 D=$O.d; rm -rf $D; mkdir -p $D
 SCENARIOS="node_delete node_connections_delete node_replace node_restart routing status shape_reconcile live_resize role_build role_cohort restart_target role_routing role_context role_wedge provider_state late_authority sticky_seat mesh_create fabric_primary_handover canonical_ids cohort_election fabric_primary rpc_proof_store accepted_topology cohort_recovery rpc_certainty peer_mesh_investigation joiner_build_facts boot_trace restored_faults admin_restart rafka_time_discipline issuance rounds node_stop build_op mesh_delete_resume mesh_delete_no_survivor apply_cuts scheduler_replay shared_dial digest_sequence"
 t0=$(date +%s)
@@ -59,7 +61,7 @@ ROLES=""
 # transport, node-rpc and node-admin-core compiled in each of the invocations; 87 + 188 + 96 s).
 step build "cargo build --timings --message-format=json --tests --bins $PKGS $ROLES > $D/artifacts.json" || { echo DONE | tee -a $O; exit 1; }
 # The timings row (Luke 2026-10-12, layout proposal §5): wall, units, max concurrency, the unit-time sum and the five longest units.
-python3 scripts/timings_row.py target/cargo-timings/cargo-timing.html 2>&1 | tee -a $O
+python3 $ROOT/scripts/timings_row.py target/cargo-timings/cargo-timing.html 2>&1 | tee -a $O
 # One build, one set of test binaries: every job runs an executable this build produced, and any
 # test executable in the lane this build did not produce (an older SHA's, another selection's) is
 # deleted, so a lane holds one set, never one per gate.
@@ -84,7 +86,7 @@ PY
 # origin/main and on the candidate, and refuse any drop in test discovery naming the package and binary.
 discover_check(){
     MAIN_SHA=$(git rev-parse --short origin/main)
-    MAIN_DISC="/home/admin/rust-distributed-mesh-deploy/discovery-$MAIN_SHA.json"
+    MAIN_DISC="$DEPLOY/discovery-$MAIN_SHA.json"
     CAND_DISC="$D/discovery-candidate.json"
     python3 - "$D/artifacts.json" "$CAND_DISC" <<'PY'
 import json, subprocess, sys
@@ -107,12 +109,12 @@ for l in open(art_path):
     pkgs[pkg][tname] = {"kind": tkind, "count": len(tests), "tests": tests}
 json.dump(pkgs, open(out_path, "w"), indent=2, sort_keys=True)
 PY
-    cp "$CAND_DISC" "/home/admin/rust-distributed-mesh-deploy/discovery-$SHA.json"
+    cp "$CAND_DISC" "$DEPLOY/discovery-$SHA.json"
     if [ ! -f "$MAIN_DISC" ]; then
         if [ "$SHA" = "$MAIN_SHA" ]; then
             cp "$CAND_DISC" "$MAIN_DISC"
         else
-            MAIN_REPO="/home/admin/rust-distributed-mesh"
+            MAIN_REPO="$HOME/rust-distributed-mesh"
             git -C "$MAIN_REPO" fetch -q origin
             git -C "$MAIN_REPO" checkout -q origin/main
             MAIN_MEMBERS=$(cargo metadata --manifest-path "$MAIN_REPO/Cargo.toml" --no-deps --format-version 1 2>/dev/null | python3 -c 'import json,sys; print(" ".join("-p "+p["name"] for p in json.load(sys.stdin)["packages"]))')
@@ -344,7 +346,7 @@ one(){
     wait $jp 2>/dev/null; rc=$?
     [ $r = ok ] && [ $rc -ne 0 ] && r=FAIL
     case "$r" in FAIL*)
-        K=/home/admin/rust-distributed-mesh-deploy/kept/gate-$(basename $O .log)-$name; mkdir -p $K; cp -r crates/$SCENARIO_PKG/tests/artifacts $K/ 2>/dev/null
+        K=$DEPLOY/kept/gate-$(basename $O .log)-$name; mkdir -p $K; cp -r crates/$SCENARIO_PKG/tests/artifacts $K/ 2>/dev/null
     ;; esac
     echo "$r $name $(( $(date +%s)-s ))s" | tee -a $O
 }

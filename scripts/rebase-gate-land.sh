@@ -6,11 +6,13 @@ set -u
 # The lock is held by a wrapping flock(1) with -o: the fd is closed before this script runs, so
 # no node a gate spawns can inherit it and hold the box after the run dies.
 [ -z "${LAND_LOCKED:-}" ] && { LAND_LOCKED=1 exec flock -o /tmp/rdm-land.lock bash "$0" "$@"; }
-L=/home/admin/rdm-lanes/$1; B=$2
+# Every path is the lane's repo root or the box's checkouts under $HOME: the lane is $HOME/rdm-lanes/<lane>,
+# and the scripts this one runs are that root's scripts/, after its rebase on main.
+L=$HOME/rdm-lanes/$1; B=$2; MAIN=$HOME/rust-distributed-mesh
 # What the gates leave behind, beside their logs: the red trees and the timings ledger.
-DEPLOY=/home/admin/rust-distributed-mesh-deploy
-cd /home/admin/rust-distributed-mesh && git fetch -q origin
-cd $L && git fetch -q /home/admin/rust-distributed-mesh main:refs/remotes/origin/main 2>/dev/null; git fetch -q origin
+DEPLOY=$HOME/rust-distributed-mesh-deploy
+cd $MAIN && git fetch -q origin
+cd $L && git fetch -q $MAIN main:refs/remotes/origin/main 2>/dev/null; git fetch -q origin
 cur=$(git branch --show-current); [ "$cur" = "$B" ] || { echo "REFUSED: $L has $cur checked out, not $B"; exit 3; }
 if git merge-base --is-ancestor origin/main HEAD; then :  # already on main: a rebase would only flatten merges
 elif [ -n "$(git rev-list --merges origin/main..HEAD)" ]; then
@@ -24,7 +26,7 @@ fi
 echo "rebased $B -> $(git rev-parse --short HEAD) on $(git rev-parse --short origin/main)"
 # The name check (rdm-crate-and-test-layout.md §4): a diff that ADDS a retired word in an identifier or a file
 # name, or an id-named test file, is refused before any gate runs.
-NC=$(python3 scripts/name-check.py origin/main HEAD 2>&1); [ -n "$NC" ] && { echo "REFUSED: name check"; echo "$NC"; exit 5; }
+NC=$(python3 $L/scripts/name-check.py origin/main HEAD 2>&1); [ -n "$NC" ] && { echo "REFUSED: name check"; echo "$NC"; exit 5; }
 # A tree whose gate went red is never gated again: a red is a defect to fix, not a roll to repeat.
 TREE=$(git rev-parse HEAD^{tree}); RED=$DEPLOY/red-trees
 if grep -q "^$TREE " "$RED" 2>/dev/null; then echo "REFUSED: this exact tree was red ($(grep "^$TREE " "$RED" | tail -1 | cut -d' ' -f2-)); fix the red, do not re-gate it"; exit 4; fi

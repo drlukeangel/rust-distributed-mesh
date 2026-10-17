@@ -11,12 +11,12 @@
 #   scripts/cells.sh rdm-transport main -- delivery::
 #   scripts/cells.sh rdm-admin lib -- status_declare::
 #   scripts/cells.sh rdm-test main -- node_stop::      (every cell runs at the gate cadence)
-# Run it from the lane's root.
+# It runs from anywhere: the lane is the repo root this script sits in.
 set -u
 pkg=${1:?usage: cells.sh <package> [<test target>|lib] [-- args]}; shift
 target=main; if [ $# -gt 0 ] && [ "$1" != "--" ]; then target=$1; shift; fi
 [ "${1:-}" = "--" ] && shift
-lane=$(pwd); out=$lane/target/cells; mkdir -p $out
+lane=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd); cd "$lane"; out=$lane/target/cells; mkdir -p $out
 # Workspace crates compile incrementally through cargo's own setting (build.incremental), the gate's
 # value, never the env var CARGO_INCREMENTAL: sccache refuses every vendor compile when it is set.
 export CARGO_BUILD_INCREMENTAL=true
