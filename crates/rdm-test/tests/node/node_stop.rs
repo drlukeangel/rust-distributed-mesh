@@ -156,14 +156,20 @@ async fn stop_then_start(test: &str, node: &str) {
     // its caller dialled to this birth after the cut: a response the caller owed the node (node-rpc.md
     // §43) may dial the same live birth between the two (i146 e1, the read of this cell's reds).
     if attr(call, "reused") != "false" {
+        // A connection between the two births dialled after the cut, by either end: the caller's own
+        // dial (within the call's attempts too), or the parked birth's dial to its mesh-primary for the
+        // declaration naming its stop (node-stop.md step 4, i146 Q36).
         let cut = start_ns(of_node("rdm.node_admin.node.update.via-stop-transport-cut")[0]);
-        let caller = attr(call, "delivery_id").split('/').next().unwrap_or_default().to_string();
+        let identity = attr(call, "delivery_id");
+        let (caller, caller_incarnation) = identity.split('#').next().unwrap_or_default().split_once('/').map(|(n, i)| (n.to_string(), i.to_string())).unwrap_or_default();
         let caller_addr = mesh.iter().find(|n| n.node_id.as_str() == caller).and_then(|n| n.transport_addr).unwrap_or_else(|| panic!("the start's caller {caller} is a node of mesh1")).to_string();
-        let incarnation = before.incarnation_id.as_ref().unwrap().as_str().to_string();
+        let (birth_addr, incarnation) = (before.transport_addr.expect("the birth's transport address").to_string(), before.incarnation_id.as_ref().unwrap().as_str().to_string());
         let dialled = named(&spans, "rdm.node_rpc.connection.create.via-dial").into_iter().any(|sp| {
-            attr(sp, "outcome") == "connected" && attr(sp, "incarnation_id") == incarnation && attr(sp, "local").contains(&caller_addr) && (cut..=start_ns(call)).contains(&start_ns(sp))
+            let by_caller = attr(sp, "incarnation_id") == incarnation && attr(sp, "local").contains(&caller_addr);
+            let by_birth = attr(sp, "incarnation_id") == caller_incarnation && attr(sp, "local").contains(&birth_addr);
+            attr(sp, "outcome") == "connected" && (by_caller || by_birth) && (cut..=end_ns(call)).contains(&start_ns(sp))
         });
-        assert!(dialled, "the start rode a connection {caller} dialled to {node}'s birth after the stop's transport cut: {call}");
+        assert!(dialled, "the start rode a connection between {caller} and {node}'s birth dialled after the stop's transport cut: {call}");
     }
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a parked node is not drift");
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));

@@ -376,6 +376,10 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   ladder (`os-stopped`, listed Dead) at gate cadence; it now waits out both unheard marks. With the
   declaration ahead of the reply, NodeStopped comes from it before the admission, which then sets
   nothing; the cell says so.
+  The gate after (`360c69d4`) red at `node_stop.rs:166`: the parked birth's post-cut dial for its
+  declaration is the connection the start then rode; the cell counts a dial after the cut by either
+  end. The same gate's `flood` red, its reason named (`Indeterminate(ReplyLost("the request's attempts
+  ended"))`, trace `953088dfb155d2b745f9b890aef34316`), went to Luke as a packet (Q32's rule).
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
