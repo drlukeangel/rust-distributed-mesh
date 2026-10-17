@@ -56,13 +56,31 @@
 //! repeats emit `via-duplicate`. These receipts drive no checklist or lifecycle. Only the admin's
 //! existing open-round book decides whether an ordinary check-in is carried (Q21: x).
 //!
-//! Concern is reserved position 10 (Q23). Receipt emits `via-reserved` and installs nothing;
-//! it carries nothing onward and never commands investigation. The remaining reserved variants
-//! retain their existing refusal names pending their row.
+//! [`refuse_reserved`] handles Concern (position 10, Q23), NodeConnectionsDeleting (11),
+//! NodeLeaving (12), NodeLeft (13), NodeConnectionsDeleted (14), and NewFabricPrimary (15).
+//! Receipt emits `via-reserved` before any identity book, apply span or carrier runs. No reserved
+//! body installs a projection, records a fact, registers a contact or commands investigation.
 
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;
 use std::collections::{HashMap, HashSet};
+
+/// Reserved wire positions have one receive outcome. Inspect only the kind, before any book,
+/// identity receipt, ordinary apply span or completion carrier can run.
+pub(crate) fn refuse_reserved(f: &Frame, node: &str, via: &str) -> bool {
+    let (frame, position) = match f {
+        Frame::Concern { .. } => ("concern", 10),
+        Frame::NodeConnectionsDeleting { .. } => ("node-connections-deleting", 11),
+        Frame::NodeLeaving { .. } => ("node-leaving", 12),
+        Frame::NodeLeft { .. } => ("node-left", 13),
+        Frame::NodeConnectionsDeleted { .. } => ("node-connections-deleted", 14),
+        Frame::NewFabricPrimary { .. } => ("new-fabric-primary", 15),
+        _ => return false,
+    };
+    tracing::info_span!("rdm.mesh.membership.reject.via-reserved", node, frame, position, via)
+        .in_scope(|| tracing::info!("the reserved position installs nothing and invokes no carrier"));
+    true
+}
 
 /// Admit a replacement status against the projection held under the status book's lock. The
 /// declared subject, publisher and change instant identify it; forwarding metadata is not content.

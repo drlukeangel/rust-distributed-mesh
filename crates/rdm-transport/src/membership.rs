@@ -2026,6 +2026,7 @@ impl View {
     }
 
     fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
+        if crate::receive_order::refuse_reserved(f, &self.current_name(), via) { return Vec::new(); }
         if !self.round_receipts.lock().unwrap().admit(f) {
             return Vec::new();
         }
@@ -2057,68 +2058,6 @@ impl View {
                 );
                 let _in = span.enter();
                 span.record("applied", self.book.depart(op.clone()));
-                Vec::new()
-            }
-            Frame::NodeLeft { op, forwarded_by } => {
-                let reason = if forwarded_by.is_some() {
-                    "forwarded"
-                } else {
-                    "direct"
-                };
-                tracing::info_span!(
-                    "rdm.mesh.membership.reject.via-node-left",
-                    node = %self.current_name(),
-                    subject = %op.name,
-                    subject_id = %op.node_id,
-                    incarnation_id = %op.incarnation.as_str(),
-                    build_id = %op.build_id,
-                    attempt = op.attempt,
-                    operation = %op.operation,
-                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
-                    via,
-                    reason,
-                )
-                .in_scope(|| tracing::info!("node-left is not an overlay or completion frame: a node's departure is published by the mesh-primary as NodeDeleted"));
-                Vec::new()
-            }
-            Frame::NodeLeaving { op, forwarded_by } => {
-                tracing::info_span!(
-                    "rdm.mesh.membership.reject.via-node-leaving",
-                    node = %self.current_name(),
-                    subject = %op.name,
-                    subject_id = %op.node_id,
-                    incarnation_id = %op.incarnation.as_str(),
-                    operation = %op.operation,
-                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
-                    via,
-                )
-                .in_scope(|| tracing::info!("node-leaving is a reserved frame position: stopping reaches peers as the member's status in its mesh-primary's projection; nothing is applied"));
-                Vec::new()
-            }
-            Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
-                let kind = match f {
-                    Frame::NodeConnectionsDeleting { .. } => "node-connections-deleting",
-                    _ => "node-connections-deleted",
-                };
-                tracing::info_span!(
-                    "rdm.mesh.membership.update.via-lifecycle-frame",
-                    node = %self.current_name(),
-                    kind,
-                    subject = %op.name,
-                    subject_id = %op.node_id,
-                    incarnation_id = %op.incarnation.as_str(),
-                    build_id = %op.build_id,
-                    attempt = op.attempt,
-                    operation = %op.operation,
-                    forwarded_by = forwarded_by.as_deref().unwrap_or(""),
-                    via,
-                )
-                .in_scope(|| tracing::info!("a lifecycle command or completion frame was heard: evidence of the accepted command, never liveness, completion or exit proof"));
-                if let (Frame::NodeConnectionsDeleted { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
-                    if let Some(carry) = self.completion_carrier.lock().unwrap().clone() {
-                        carry(f);
-                    }
-                }
                 Vec::new()
             }
             Frame::StateCommitting { hook, forwarded_by } | Frame::StateCommitted { hook, forwarded_by } | Frame::TrafficOpening { hook, forwarded_by } | Frame::TrafficOpened { hook, forwarded_by } => {
@@ -2176,18 +2115,6 @@ impl View {
                 if !self.book.seats.receive(f) { return Vec::new(); }
                 tracing::info_span!("rdm.mesh.seat.update.via-primary-updating", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, seats = %seats_named(seats), via)
                     .in_scope(|| tracing::info!("a seat holder said its seats are updating: receivers keep the current holder until the committed row names the next epoch"));
-                Vec::new()
-            }
-            Frame::NewFabricPrimary { holder, .. } => {
-                tracing::info_span!("rdm.mesh.membership.reject.via-new-fabric-primary", node = %self.current_name(), holder = %holder, via)
-                    .in_scope(|| tracing::info!("new-fabric-primary is a reserved frame position (R-G3): a seat update is announced by primary updating and primary updated, and a birth's contacts ride its digest"));
-                Vec::new()
-            }
-            Frame::Concern { .. } => {
-                tracing::info_span!(
-                    "rdm.mesh.membership.reject.via-reserved",
-                    node = %self.current_name(), frame = "concern", position = 10, via,
-                ).in_scope(|| tracing::info!("position 10 is reserved (Q23): nothing installed or carried"));
                 Vec::new()
             }
             _ => Vec::new(),
