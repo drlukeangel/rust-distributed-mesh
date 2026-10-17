@@ -226,9 +226,13 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     let _ = std::fs::write(root.join("fabric_id"), &fabric_id);
     env.push(("RDM_FABRIC_ID", fabric_id.clone()));
     env.push(("RDM_NODE_ADMIN_API_BIND", format!("{ip}:20000")));
-    for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG", "RDM_HUNG_HOLD_FLOORS"] {
-        if let Ok(v) = std::env::var(k) {
-            env.push((k, v));
+    // A native child inherits the harness's cadence. Give the container the same declared
+    // values, retaining an explicit value supplied for this birth over its ambient default.
+    for k in ["OTEL_EXPORTER_OTLP_ENDPOINT", "RUST_LOG", "RDM_HUNG_HOLD_FLOORS", "RDM_STALENESS_MS", "RDM_GOSSIP_INTERVAL_MS", "RDM_BACKBONE_INTERVAL_MS", "RAFKA_STALENESS_MS", "RAFKA_GOSSIP_INTERVAL_MS", "RAFKA_BACKBONE_INTERVAL_MS"] {
+        if !env.iter().any(|(name, _)| *name == k) {
+            if let Ok(v) = std::env::var(k) {
+                env.push((k, v));
+            }
         }
     }
     let bin = bin_dir().display().to_string();

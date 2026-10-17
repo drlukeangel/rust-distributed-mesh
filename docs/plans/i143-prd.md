@@ -2470,6 +2470,8 @@ Release `499d699d`: provider/qualification cells 12/12 green (76.40 s), includin
 
 The attempted unspecified client bind (`e30e230a`) was refused immediately by the existing R-B2 guard: the network monitor is disabled, so every transport must bind a concrete address. The read is `peers.rs:55`, named “network monitor is disabled”; the existing endpoint cells prove that refusal. Corrected at construction: `Peers::at(exact_birth)` asks the OS route to the declared destination for its concrete local address (no datagram, no interface enumeration), drops that temporary query socket, then binds the client's one endpoint on that address at port 0. Both the estate and Admin UI enter through that exact-birth constructor. No monitor setting, target identity, bound or wire byte changes.
 
+Concrete-route control `e772f35a`: container restart canary green; container kill/recovery reached the admin but held PendingReconnect until its unchanged 93 s bound. Read `/home/admin/rust-distributed-mesh-deploy/s88-entry-route-live.log` and its retained container log: the Day-0 admin marks the member stale at `staleness_ms=30000`, while the harness's declared floor is 3000. `spawn_admin_in_container_within` forwarded telemetry and hold settings but omitted the six cadence variables native children inherit. It now hands those declared values into the container, with explicit birth settings taking precedence; no timeout, assertion or product default changes.
+
 ### Remaining
 
 - [ ] A functional cell proving hard-link insertion (`create_new`), atomic rename (`replace`), file and directory `fsync`, and coherent reads and listings across containers sharing the container provider's mounted `RDM_STORE_DIR` (`R14 item 6`).
