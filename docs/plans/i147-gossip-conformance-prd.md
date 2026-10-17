@@ -459,11 +459,11 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   encoded postcard bytes, under its 64 KiB ceiling) and the union has no bound of its own (it is
   held by node-admin and answered by `node.get` under the 4 MiB reply ceiling). P2 receiver
   ownership → rule (7). P2 chunk identity → rule (8).
-- **The directed-path delta (wire format moved; node-rpc-envelope.md old → new awaits Luke's
+- **The directed-path delta (wire format moved; node-rpc-envelope.md applied 2026-10-17 on Luke's
   yes).** Join op `0x1D`: `JoinNode { digest: MeshDigest }` → `JoinNode { digest: MeshDigest,
   types: Vec<String> }` with the bound sentence; node properties table: new row
   `types` / `types_hash`, set by the birth's JoinNode, changed by nothing (a different declaration
-  is a restart), answered whole by `node.get`; Members rows carry `types_hash`. Digest unchanged.
+  is a restart), answered whole by `node.get`; the row's digest carries `types_hash` (32 bytes), never the list. Applied 2026-10-17 (Luke: yes).
 - **Page text (applied 2026-10-17 on Luke's instruction, this landing carries it).** gossip.md
   §3.4: one paragraph after the best-effort sentence (a declared app type rides this envelope, the
   receiver is the app, the carrier decides nothing, the chunk and queue rules). §8: the "Only
@@ -489,8 +489,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   dependencies go; the entity frame becomes an `Event` with the row's version as `sequence`.
   Not here.
 - **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144).
-- **State.** Recorded 2026-10-17; gossip.md text on main; node-rpc-envelope.md delta awaits
-  Luke's yes; not started.
+- **State.** Recorded 2026-10-17; gossip.md and node-rpc-envelope.md text on main; packet sent to Codex; not started.
 
 ## Verification
 

@@ -355,6 +355,7 @@ Each command goes to the node's mesh-primary as the row writer (Forward `0x1A` w
 | `name` | the create spec | **`node.name.update { node_id, incarnation, name }`** ([node.name.update](lifecycles/node-name-update.md)) | the node admits no connection: stopped, or connections-deleted after an `All` with zero held; never ready-for-traffic (R-CR1) | `node.name.updated` |
 | `tags` | the create spec (may be empty); inherited with the config on recover (from the Deleted row at the claim) and on replace (from the retained predecessor row at the cutover rename) | `node.tags.create { label \| [labels] }` adds; `node.tags.delete { All \| [labels] }` removes. Additive and removal commands on keyed label rows, not a replacement of a tags property | none | `node.tags.created` / `node.tags.deleted` |
 | `config` | the create spec | `node.config.update { map }`, the whole map replaced ([node.config.update](lifecycles/node-config-update.md)) | none | `node.config.updated` |
+| `types`, `types_hash` | the birth's [JoinNode](#join-op-0x1d-rdm) (`types`); `types_hash` is blake3 of the sorted list, written by the row writer at the join and carried by the row's digest (32 bytes; the list never rides gossip) | nothing: a different declaration is a restart. `node.get` answers `types` whole | — | — |
 | `is_primary` | the committed seat record | `node.primary.update`; never a put | node.primary.update's | `node.primary.updated` |
 | `is_fabric_primary` | the committed seat record | `node.fabric-primary.update` | node.fabric-primary.update's | `node.fabric-primary.updated` |
 | connections | — (data plane, never a property) | `node.connections.delete { All \| [ids] }` | — | `node.connections.deleted` |
@@ -451,7 +452,7 @@ A unary reply is the body alone, with no second target or context.
 `MalformedKind` is shared by the protocol refusal variants:
 
 ```rust
-pub enum MalformedKind { TooLarge, UnknownVariant, Corrupt }
+pub enum MalformedKind { TooLarge, UnknownVariant, Corrupt, TypesOverCap }
 ```
 
 RDM-owned Node RPC instrumentation uses the `rdm` owner root under the repository grammar
@@ -1008,9 +1009,14 @@ joining birth.
 
 ```rust
 pub enum JoinRequest {
-    JoinNode { digest: MeshDigest },
+    JoinNode { digest: MeshDigest, types: Vec<String> },
 }
 ```
+
+`types` is the birth's declared app types ([gossip.md §8](gossip.md#8-entity-projection-gossip-remains-projection-not-source-of-truth)),
+at most 256 and 8 KiB encoded; over the bound the join is `Malformed { kind: TypesOverCap }` and
+the birth is never a member. The serving node-admin records the list beside the row, joins every
+type it does not already hold before it answers, and writes the row's `types_hash`.
 
 The reply alternatives and their complete named fields are:
 
