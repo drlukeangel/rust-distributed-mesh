@@ -102,7 +102,7 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
   does not overwrite; recovery through a topology read, then stale gossip: no rollback; each reserved
   frame: named refusal, no mutation.
 - **Order.** MeshStatus and FabricStatus; NodeDeleted; StateCommitting, StateCommitted, TrafficOpening, TrafficOpened (one grouped landing, Luke 2026-10-16); NodeDeleting, NodeRestarting, NodeStopped (one grouped row); Concern episode rule; replacement state; snapshot or delta; reserved positions; recovery through a topology read. Each row lands separately and stops for review. R10 stays open throughout e2; e3 starts only after the last e2 row.
-- **State.** MeshStatus, FabricStatus, NodeDeleted (`d4662736`) and the grouped round hooks (`bad08475`) accepted. The grouped NodeDeleting / NodeRestarting / NodeStopped row is GREEN in its 12 live cells; all 34 live lifecycle/operation/status cells and 9 receive-order/lifecycle units pass. Candidate `be5102b5` was NOT LANDED: the land-script gate is RED (transport span assertion, provider_state and sticky_seat). Work stopped under the outside-i147-red rule; no gate rerun or external-cell fix. The in-row transport span assertion remains pending too. Concern (R11) and later rows remain not started. R10 remains open; e3 remains not started. A gate red outside i147 is read and reported to its owner, never fixed here.
+- **State.** MeshStatus, FabricStatus, NodeDeleted (`d4662736`) and the grouped round hooks (`bad08475`) accepted. The grouped NodeDeleting / NodeRestarting / NodeStopped row is GREEN in its 12 live cells; all 34 live lifecycle/operation/status cells and 9 receive-order/lifecycle units pass. Candidate `be5102b5` was NOT LANDED: the land-script gate is RED (transport span assertion, provider_state and sticky_seat). The transport assertion is fixed and GREEN at `c8856575` (1 passed, 0 failed, 0.19 s). Both disputed cells were compared in this same lane: 3/3 GREEN each at main `bad08475` and 3/3 GREEN each at branch `c8856575`, through cells.sh. Neither is designated outside: the original gate failures are not reproduced or causally attributed by this matrix. No landing or gate rerun; no receive-path change for an unreproduced regression. Concern (R11) and later rows remain not started. R10 remains open; e3 remains not started. A gate red outside i147 is read and reported to its owner, never fixed here.
 
 | Frame row | State | Evidence |
 |---|---|---|
@@ -110,52 +110,108 @@ mesh-audit reseal, as its own packet). No new gossip frame and no new `MemberSta
 | `FabricStatus` | GREEN | Lane `e7s3`, branch `codex/i147-e2-fabric-status`. RED SHA `870fe399`: 0 passed/3 failed (0.06 s). GREEN code SHA `3f830db0`: all 6 live receive-rule cells passed (0.06 s), including all 3 MeshStatus cells. Stale before `6ca2949ec512e5facb98aef7d93a160d`, after `08472821f369e1186b01c69c8cab8f1c`; duplicate before `da985d5d2b5a4a5b1309303c0348cb1e`, after `8ed68b1a8c4977c9aebed8ec566d9446`; inconsistent before `a88a5dea06fee1c1aa02c6a3102d0c12`, after `89fd0fc7555d8af478f5e7d502c87422` (local Jaeger). Each cell proves receipt and no apply effect, preserving held status/publisher/timestamp. Named outcomes carry frame/subject/both keys, frame/identity/ignored, or frame/subject/revision respectively. Both status kinds now use the receive framework’s shared classifier under the held projection lock; the FabricStatus handler check is removed. Receipt instrumentation supplies the live before/after flame; module doc and generated span reference updated. Delivery uses `rebase-gate-land.sh`, which enforces its fast gate. No architecture or wire change; R10 stays open. No other initiative’s cells are modified. Envelope notes: subject `(fabric, publisher)`; ordering `changed_at_rafka_ms`; identity `(fabric, publisher, changed_at_rafka_ms)`; status content distinguishes duplicate from inconsistency. Publisher is currently a string without a committed revision or exact author birth; forwarding metadata is excluded. |
 | `NodeDeleted` | GREEN | Lane `e7s3`, branch `codex/i147-e2-node-deleted`. RED SHA `f0a4a173`: terminal-after-unrelated-traffic passed, repeat failed only for missing via-duplicate (1 passed/1 failed, 0.06 s). GREEN code SHA `5200cc79`: 8 operation/status cells passed, 0 failed (0.07 s). Before repeat `83766273424177d1cc6837ecef7c7b9f`, after `d6b785406239146d16897dc05ffcc715`; before control `99d3af602032128f4b1a489a948160f9`, after `40465e0624bbfb76f27856467ac2b936` (local Jaeger). Control applies a status at timestamp 10,000, then NodeDeleted carrying event time 1: its ordinary removal span says was_held=true. Repeat emits via-duplicate and changes neither the retained fact nor birth notifications; only one removal occurs. The receive framework classifies against the retained deletion under its installation lock; the handler’s operation-identity dedupe is removed. No separate receipt history or counter; ordinary local deleted-retention stays bounded and a repeat does not refresh it. Module doc and generated span reference updated; delivery is through rebase-gate-land.sh and its fast gate. Envelope notes: subject `(node_id, incarnation)`; identity `(kind, build_id, attempt, operation, node_id, incarnation)`; no order against unrelated traffic; `event_at_rafka_ms` is evidence only; `name` supplies the subject path. The frame has `op` and `forwarded_by`, but no declared author birth: neither forwarder nor transport sender supplies it. No wire/architecture change, no R10 closure and no other initiative’s cell edit. |
 | `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` | GREEN (Q21: x) | Lane `e7s3`, branch `codex/i147-e2-round-hooks`, rebased onto main `9295f151` before implementation. Original repeat RED `3dc216a5` (rebased `e5da6b09`); Q21 carrier-cell RED `dc878ae3`: 2 passed, 14 failed, 0 ignored (0.09 s). The 4 status-as-round-completion probes are withdrawn. Framework admission matches the full hook identity before either its ordinary span or carrier invocation. Only the admin’s existing open-round book decides carrying; its check is factored into RoundBook::carry_check_in and returns carried, closed-round or node-admin to the ordinary receive span. Forwarded metadata supplies no authority and cannot prevent an ordinary open-round check-in from being carried once. No checklist or lifecycle update comes from receipt. RED forwarded StateCommitted traces `c942cbb101284adf0351a99a9ed78223`, `f470712ef975576e1cd671ba32d9f580`; closed trace `3bc14b25d47b0a1b972995883801efce`. RED forwarded TrafficOpened traces `3f7385448ea1044c536008d44f787f1d`, `78dde0daa185c4cc6154da094856c995`; closed trace `ab3151916d82bbd7e07a30877415c2e7` (local Jaeger). GREEN code SHA `24fe82d4`: 22 live cells passed, 0 failed, 0 ignored (0.10 s), including 14 hook cells, both NodeDeleted cells and all 6 status cells; 8 receive-order unit cells passed, 0 failed (0.00 s). state-committing: before repeat `212e96f68cc304bcc637c6d11ad46fa3`, after duplicate `afa02230435278ed33c0325dc38cb7e4`; state-committed: before repeat `3f5968ab7d8147c6bbae4fc67e326efd`, after duplicate `d79da62c43e4339fbbc0e100efaccb3f`; traffic-opening: before repeat `53c6b3f3e0724c38165eee57cb1e0bcb`, after duplicate `25bf25beb88814f02e47a9ca2b953146`; traffic-opened: before repeat `417bf129e0aba3217d4129cacd4ad2c0`, after duplicate `0310c1fa3f37927a55105574139defa7`. Forwarded StateCommitted after carry `fa1f58b774ede0758d8ee308c2654db9`, after repeat `f07b8086d072be9318d3e6d14af735d7`; TrafficOpened closed after `2d973a6e1a82a578ec6cfb34696438c8`. All named flames retrieved from local Jaeger. Live backbone receipts, carrier invocations, birth notifications and the directed checklist’s completion/tick are asserted: gossip never checks in a birth or reopens a round. The first 22-cell run took 1.10 s, including live mesh/backbone handshake and teardown barriers; final run 0.10 s with stronger checklist assertions, unchanged 5 s bounds. Module documentation kept true, generated span reference refreshed. Delivery through rebase-gate-land.sh with its fast gate. No outside-i147 cell edits; no unanswered packet. [Q21 packet ruled x](rulings/i147-q21-round-evidence.md), Luke 2026-10-16. Envelope notes for e3: author; subject is the exact birth `(node_id, incarnation)`; order = `Operation(identity)`, with identity `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)`; no ordering field. Event timestamps and forwarded_by do not order or identify the fact. Current publisher is a path string without exact author birth. No wire, snapshot or architecture change. R10 stays open; e3 not started. |
-| `NodeDeleting`, `NodeRestarting`, `NodeStopped` | GREEN live; gate RED, NOT LANDED | Lane `e7s3`, branch `codex/i147-e2-lifecycle-facts`. RED `38927162`: 3 passed, 9 failed (0.08 s). Repeats overwrite retained event-time evidence; a version-refused identity can reopen at a higher carried version. Held completion already prevents reopening but lacks the repeat outcome. GREEN code `7daae9dc`: 34 live lifecycle/operation/status cells passed, 0 failed (0.12 s), including all 12 new lifecycle cells; 9 receive-order/lifecycle units passed, 0 failed (0.00 s). node-deleting: repeat before `72e0a34444ca26e25fbe82ac3f74f8e0`, after `2dd2391662f1f5e63f4233d5a30ace13`; completion before `bf09d6eab320cfa6f4fd714d04fcbad2`, after `b3c9c0810559dfe4da0f553b395f080d`; carried-version refusal before `e4a3aebb878f89eb16616c12d3b72c2b`, after `f92cd8390a7f3f3255091478fb72e0c5`; apply/routing control `c921bfea4e5e3ef1e1839dee4d40a27c`; node-restarting: repeat before `98b830f68e56372c811be313ead5d6cc`, after `a2ce8dc4b7576e18552e035fe3fafce5`; completion before `9ea1857b8e78c42bb338cae1ef4ad3cf`, after `503b1f8bcdb725a6d7a168830ee59a2f`; carried-version refusal before `7e4ff3fb9ddf5d470c2b91a27acad331`, after `f8138dc467da6c35c85264687d4987b3`; apply/routing control `b91804ceb124747593b71e678cc5e123`; node-stopped: repeat before `3e34adb89ec19bef8953d3f219a4c063`, after `53bd90c6c0a97c293d02fbc43da16ce6`; completion before `7c8e9c193faab22f6bf085a5c269e50a`, after `550a99107776e0e835b6fb7f0c255f98`; carried-version refusal before `dcda23ff52b62d0c96a71af6d5290ee7`, after `7df077be858b6ef59a292a9eb54ef267`; apply/routing control `23ee2b3c12e3d57ad23f5edd3a894779`. All RED and GREEN lifecycle receipt flames retrieved from local Jaeger. The live cells assert retained operation/digest content, birth and overlay notifications, routing exclusion/restoration, and named duplicate/stale spans. The stale cell records the identity at refused v10, ignores its repeat at v21, and refuses a distinct fact at v20: the carried projection floor advances independently of operation replay. Completed cells use the receiver's actual local evidence: deletion attempt terminal facts, restart node.started, and stop followed by node.joined plus node.started of the same birth. Framework admission records the full identity before judging the existing per-publisher/mesh version; the version is judged even on a duplicate, while no duplicate handler runs. Shared overlay classification replaces the book methods' own dedupe and completion checks under their installation lock; retained completion now includes exact birth. NodeDeleting still changes only the overlay read by application routing, never the held digest or RPC readiness. The existing lifecycle receive unit reused a version-refused identity for its second-publisher control (8 passed/1 failed); it now asserts that repeat is refused, then uses a fresh attempt for the independent per-publisher assertion, retaining the original sender-independence coverage. No outside-i147 cell changed. Module doc kept true; span reference regenerated. Delivery through rebase-gate-land.sh and its fast gate. Envelope notes: author is the declared PublisherId (path plus incarnation, without author NodeId); subject is the exact `(node_id, incarnation)` birth; fact order = `Operation(identity)` with identity `(build_id, attempt, operation, node_id, incarnation)`; the existing carried publisher/topology_version is separately `Revision(topology_version)` for `(publisher, subject mesh)`. These coexist as an outer Operation order plus the existing body's projection revision, with two independent receive decisions: never flatten revision into an ordering of operations, and never lose the projection check when deduping a fact. e3's one order field must preserve this composition; its exact typed shape is frozen in e3. Event timestamp and forwarded_by supply neither order nor identity. No wire, snapshot or architecture change; R10 stays open; no new question or packet; stop before Concern. Land-script candidate `be5102b5` gate RED: 1,653 passed, 3 failed, 0 ignored across 62 summaries, 231 s. No landing; no re-roll; the red candidate is recorded by the script. Full read report immediately below; outside-i147 owners land their fixes. |
+| `NodeDeleting`, `NodeRestarting`, `NodeStopped` | GREEN live; gate RED, NOT LANDED | Lane `e7s3`, branch `codex/i147-e2-lifecycle-facts`. RED `38927162`: 3 passed, 9 failed (0.08 s). Repeats overwrite retained event-time evidence; a version-refused identity can reopen at a higher carried version. Held completion already prevents reopening but lacks the repeat outcome. GREEN code `7daae9dc`: 34 live lifecycle/operation/status cells passed, 0 failed (0.12 s), including all 12 new lifecycle cells; 9 receive-order/lifecycle units passed, 0 failed (0.00 s). node-deleting: repeat before `72e0a34444ca26e25fbe82ac3f74f8e0`, after `2dd2391662f1f5e63f4233d5a30ace13`; completion before `bf09d6eab320cfa6f4fd714d04fcbad2`, after `b3c9c0810559dfe4da0f553b395f080d`; carried-version refusal before `e4a3aebb878f89eb16616c12d3b72c2b`, after `f92cd8390a7f3f3255091478fb72e0c5`; apply/routing control `c921bfea4e5e3ef1e1839dee4d40a27c`; node-restarting: repeat before `98b830f68e56372c811be313ead5d6cc`, after `a2ce8dc4b7576e18552e035fe3fafce5`; completion before `9ea1857b8e78c42bb338cae1ef4ad3cf`, after `503b1f8bcdb725a6d7a168830ee59a2f`; carried-version refusal before `7e4ff3fb9ddf5d470c2b91a27acad331`, after `f8138dc467da6c35c85264687d4987b3`; apply/routing control `b91804ceb124747593b71e678cc5e123`; node-stopped: repeat before `3e34adb89ec19bef8953d3f219a4c063`, after `53bd90c6c0a97c293d02fbc43da16ce6`; completion before `7c8e9c193faab22f6bf085a5c269e50a`, after `550a99107776e0e835b6fb7f0c255f98`; carried-version refusal before `dcda23ff52b62d0c96a71af6d5290ee7`, after `7df077be858b6ef59a292a9eb54ef267`; apply/routing control `23ee2b3c12e3d57ad23f5edd3a894779`. All RED and GREEN lifecycle receipt flames retrieved from local Jaeger. The live cells assert retained operation/digest content, birth and overlay notifications, routing exclusion/restoration, and named duplicate/stale spans. The stale cell records the identity at refused v10, ignores its repeat at v21, and refuses a distinct fact at v20: the carried projection floor advances independently of operation replay. Completed cells use the receiver's actual local evidence: deletion attempt terminal facts, restart node.started, and stop followed by node.joined plus node.started of the same birth. Framework admission records the full identity before judging the existing per-publisher/mesh version; the version is judged even on a duplicate, while no duplicate handler runs. Shared overlay classification replaces the book methods' own dedupe and completion checks under their installation lock; retained completion now includes exact birth. NodeDeleting still changes only the overlay read by application routing, never the held digest or RPC readiness. The existing lifecycle receive unit reused a version-refused identity for its second-publisher control (8 passed/1 failed); it now asserts that repeat is refused, then uses a fresh attempt for the independent per-publisher assertion, retaining the original sender-independence coverage. No outside-i147 cell changed. Module doc kept true; span reference regenerated. Delivery through rebase-gate-land.sh and its fast gate. Envelope notes: author is the declared PublisherId (path plus incarnation, without author NodeId); subject is the exact `(node_id, incarnation)` birth; fact order = `Operation(identity)` with identity `(build_id, attempt, operation, node_id, incarnation)`; the existing carried publisher/topology_version is separately `Revision(topology_version)` for `(publisher, subject mesh)`. These coexist as an outer Operation order plus the existing body's projection revision, with two independent receive decisions: never flatten revision into an ordering of operations, and never lose the projection check when deduping a fact. e3's one order field must preserve this composition; its exact typed shape is frozen in e3. Event timestamp and forwarded_by supply neither order nor identity. No wire, snapshot or architecture change; R10 stays open; no new question or packet; stop before Concern. Land-script candidate `be5102b5` gate RED: 1,653 passed, 3 failed, 0 ignored across 62 summaries, 231 s. No landing; no re-roll; the red candidate is recorded by the script. The transport span assertion is now fixed at `c8856575` and verified GREEN. The 2×3 comparison for each disputed cell is GREEN on both revisions; attribution remains unestablished. Full comparison and precise gate observations immediately below. |
 
 
-**Lifecycle row gate stop — candidate `be5102b5` (2026-10-16).**
+**Lifecycle row verification and attribution — not landed (Luke's requested comparison, 2026-10-16 Eastern).**
 
-- **In-row compatibility assertion, left pending after the external gate red.**
-  `crates/rdm-transport/tests/publisher_handover.rs:214–231` selects only
-  `via-earlier-version` and expects NodeStopped among those four refusals. The receiver actually
-  emits the required `via-stale`: frame `node-stopped`, subject `mesh1.admin.2@w0059jjnfhp9 mesh1`,
-  held key `topology_version=3`, frame key `topology_version=2`. The assertion at line 231 therefore
-  sees three old-span entries instead of four. The frame was refused, not applied.
-  [Member refusal flame](http://192.168.68.99:16687/trace/a3be0ea1591c2a72986f913a1f994e74),
-  [admin refusal flame](http://192.168.68.99:16687/trace/3426d3b1d5cb0bae18cbabe7631c5219).
-  This integration cell was not edited or rerun after the stop.
-- **Outside i147: i144 provider state.**
-  `crates/rdm-test/tests/runtime/provider_state.rs:123–126` suspends the runtime, waits for its
-  os-stopped row, then kills it. Line 141 expects `recorded` then `cleared/exited`, but observed
-  `recorded` then `cleared/running`. Evidence for exact birth `nwq5r2wm30r4/mtsdp2hc8bjy`:
-  os-stopped recorded at 23:25:23.006366 UTC
-  ([flame](http://192.168.68.99:16687/trace/a79bbdd5cf8878c67453178e8833ae5b)); the next provider
-  inspection says running at 23:25:23.257674, and the row clears with detail running at
-  23:25:23.263247
-  ([flame](http://192.168.68.99:16687/trace/df6bda8fae6d1fd7d660bf0fb1d3c691)); a later inspection
-  says exited at 23:25:23.773021
-  ([flame](http://192.168.68.99:16687/trace/4a15763f9dc8db1bc5911dccc191324c)).
-  `crates/rdm-admin/src/admin/recovery.rs:289–292` clears os-stopped on a Running verdict.
-  This is the observed verdict sequence; why that inspection returned Running is not established
-  here. No provider code, cell or bound changed.
-- **Outside i147: sticky seat hand-over.**
-  `crates/rdm-test/tests/elections/sticky_seat.rs:546–551` rejects any seatless resolution during
-  the replace-to-ready interval. At 23:25:39.251252 UTC the observer `mesh1.admin.1.new` resolves
-  mesh1 with previous NodeId `7yyns8c7sykk` and empty winner fields
-  ([vacancy flame](http://192.168.68.99:16687/trace/6c6c55baa54c041220d5ff72cc0aabf5)); this is
-  emitted by `crates/rdm-admin/src/election.rs:406–417`. That observer heard the old holder's
-  revision-1 seat at 23:25:39.186883 and installed the successor's revision-2 primary-updated at
-  23:25:41.099265
-  ([installation flame](http://192.168.68.99:16687/trace/00c525fbf8d0dca8467d37f5e41a87a6)).
-  The sequence is a real empty resolution before that installation, not an inferred exit. No
-  election code, cell or bound changed; its owner decides and lands the fix.
+Candidate `be5102b5` had a RED fast gate: 1,653 passed, 3 failed, 0 ignored across 62 summaries,
+231 s. The three failing cells were the transport span assertion, provider state and sticky seat.
+The attribution of the last two is **unestablished**, not outside i147.
 
-Gate log: `/home/admin/rust-distributed-mesh-deploy/gates-e7s3-be5102b5.log`; detailed output is
-`.log.detail`, per-stem outputs are in `.log.d/`. Preserved evidence is under
+**Transport assertion — fixed.** `c8856575` updates
+`crates/rdm-transport/tests/publisher_handover.rs` to require `via-stale` with `subject`, `held_key`
+and `frame_key` for NodeStopped. The other three keyed families retain their existing named
+expectations. The assertion includes the span's name, so an old-name NodeStopped refusal cannot
+satisfy it. The exact integration cell passed through cells.sh: 1 passed, 0 failed, 0 ignored,
+0.19 s. No receive-path code changed in this commit.
+
+**Method.** Lane `e7s3`, serial isolated exact cells, three runs of each at detached main
+`bad08475`, then three of each on `codex/i147-e2-lifecycle-facts` at `c8856575`. Both cells' source
+files are byte-for-byte unchanged between those revisions. The branch's receive implementation
+is the gate candidate's; the additional change is the transport assertion. Every invocation used
+`/home/admin/lane-queue/i143-lead/cells.sh rdm-test main -- <fully-qualified-cell> --exact --nocapture`
+and `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`. cells.sh set the same cadence in both
+states (staleness 3000 ms, gossip/backbone 500 ms); no bound changed. Each run's source SHA,
+exit status, timing, full log, manifest and node evidence was preserved before the next run.
+
+**Provider state: 2×3.** The trace links name the os-stopped clear of the original birth. Every run
+observed `recorded` then `cleared/exited`, and the cell completed the recovery checks.
+
+| Revision | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| main `bad08475` | PASS [`ad0564b99997ba56cec348f4718635f4`](http://localhost:16686/trace/ad0564b99997ba56cec348f4718635f4) | PASS [`38f4f39881a5aff69502a96d478096e3`](http://localhost:16686/trace/38f4f39881a5aff69502a96d478096e3) | PASS [`201da0f2af1b6ef9c88a7bb99e1cda39`](http://localhost:16686/trace/201da0f2af1b6ef9c88a7bb99e1cda39) |
+| branch `c8856575` | PASS [`eb2849f8be7665a620044cdca115ec2f`](http://localhost:16686/trace/eb2849f8be7665a620044cdca115ec2f) | PASS [`1397967d9f91595ab4a57bc10f8cc685`](http://localhost:16686/trace/1397967d9f91595ab4a57bc10f8cc685) | PASS [`1e87ea699eb3e8c1ed029eb2d3ec1dfb`](http://localhost:16686/trace/1e87ea699eb3e8c1ed029eb2d3ec1dfb) |
+
+**Sticky seat: 2×3.** The trace links name the successor's holder-stopped/publication path. Every
+run completed the no-vacancy and exact hand-over sequence assertions.
+
+| Revision | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| main `bad08475` | PASS [`f6fcdc8dc865e663e0ccabde22129718`](http://localhost:16686/trace/f6fcdc8dc865e663e0ccabde22129718) | PASS [`84b165d845e8128719c1843ac23cc1e5`](http://localhost:16686/trace/84b165d845e8128719c1843ac23cc1e5) | PASS [`c4491deda3ca92f07c9b5cfb8fe5fd2c`](http://localhost:16686/trace/c4491deda3ca92f07c9b5cfb8fe5fd2c) |
+| branch `c8856575` | PASS [`e6a6504de7812a903934559058375a4b`](http://localhost:16686/trace/e6a6504de7812a903934559058375a4b) | PASS [`f725a7d792fb0d082c4260a633d0298c`](http://localhost:16686/trace/f725a7d792fb0d082c4260a633d0298c) | PASS [`9b38a8d0b3a7d6b018e55e5a68273362`](http://localhost:16686/trace/9b38a8d0b3a7d6b018e55e5a68273362) |
+
+All 12 selected traces were retrieved from local Jaeger and saved as `selected-trace.json` beside
+their run's output. Machine-readable results and preserved run evidence:
+`/home/admin/rdm-lanes/e7s3/target/evidence/lifecycle-comparison/matrix.json` and its
+`{main,branch}/{provider_state,sticky_seat}-{1,2,3}/` directories. Baseline cell times:
+provider 25.06/24.97/25.02 s; sticky 14.13/17.14/16.96 s. Branch times:
+provider 25.62/24.92/25.63 s; sticky 14.03/17.01/14.41 s. Build time is separate in each output log.
+
+**Interpretation.** There is no branch-only RED in the requested matrix, and neither cell is RED
+on main in these runs. Therefore these runs reproduce neither gate failure and establish neither
+as outside. The original parallel-gate failures remain unexplained. No speculative receive-path
+fix, provider-state fix, election fix, cell edit or bound change was made for those two failures.
+No gate was rerun and nothing was landed; Concern remains not started.
+
+**Receive-path review of the first suspect.**
+`crates/rdm-transport/src/receive_order.rs:329–331` keys the carried version by
+`(publisher.to_string(), subject mesh)`, where `PublisherId`'s string includes both path and
+incarnation (`crates/rdm-core/src/publisher.rs:17–20`). Its stale comparison is strict `<`
+(`receive_order.rs:398`), so the revision comparison admits an equal key, and a successor's
+version 1 has its own publisher source. The additional held-projection stop check compares only
+the same publisher (`membership.rs:2227–2229`). Separately, the branch's full operation identity
+dedupe can suppress re-entry of the same operation from a successor publisher; the carried
+revision is still judged and recorded (`membership.rs:1428–1430`). That is a changed receive
+path relevant to further reproduction; the all-GREEN matrix does not establish that it caused
+or could not cause the original failures.
+
+**Precise provider-state observation for the i144 owner, from the original RED gate.**
+The fixture suspends the exact runtime, waits for its os-stopped row, then calls Kill and asserts
+that the test kit reported `exited=true` (`crates/rdm-test/tests/runtime/provider_state.rs:123–126`);
+it proceeded to fail at line 141, so that Kill acknowledgement succeeded. The retained evidence
+for `nwq5r2wm30r4/mtsdp2hc8bjy`, on 2026-10-16 UTC, is:
+
+1. 23:25:23.006366 — os-stopped `recorded`
+   ([flame](http://192.168.68.99:16687/trace/a79bbdd5cf8878c67453178e8833ae5b)).
+2. 23:25:23.257674 — provider inspection verdict `running`
+   ([flame](http://192.168.68.99:16687/trace/626e5724e2c5d9c15a0c14793d3cf5b6)).
+3. 23:25:23.263247 — os-stopped `cleared`, detail `running`
+   ([flame](http://192.168.68.99:16687/trace/df6bda8fae6d1fd7d660bf0fb1d3c691)).
+4. 23:25:23.773021 — the provider's exit verdict, **509.774 ms after the clear**
+   ([flame](http://192.168.68.99:16687/trace/4a15763f9dc8db1bc5911dccc191324c)).
+
+`crates/rdm-admin/src/admin/recovery.rs:289–292` clears the os-stopped row on a Running verdict.
+The saved child spans do not timestamp the parent test's Kill return; no finer ordering of that
+return against the Running inspection is inferred here. The observed clear reason was running,
+not exited, and the exit verdict followed about 510 ms later despite the Kill being acknowledged
+as exited by the test kit. Why that inspection returned Running remains unestablished; the six
+provider matrix runs did not reproduce it. Provider code and the i144 cell are untouched.
+
+**Original sticky-seat observation, without attribution.**
+`crates/rdm-test/tests/elections/sticky_seat.rs:546–551` rejects a seatless resolution during the
+replace-to-ready interval. At 23:25:39.251252 UTC, `mesh1.admin.1.new` resolved mesh1 with previous
+NodeId `7yyns8c7sykk` and empty winner fields
+([vacancy flame](http://192.168.68.99:16687/trace/6c6c55baa54c041220d5ff72cc0aabf5));
+`crates/rdm-admin/src/election.rs:406–417` emits that span. It had heard the old revision-1 seat at
+23:25:39.186883 and installed the successor's revision-2 primary-updated at 23:25:41.099265
+([installation flame](http://192.168.68.99:16687/trace/00c525fbf8d0dca8467d37f5e41a87a6)).
+The six sticky-seat matrix runs did not reproduce this vacancy; its source and bounds are untouched.
+
+Original gate log: `/home/admin/rust-distributed-mesh-deploy/gates-e7s3-be5102b5.log`; detailed
+output is `.log.detail`, per-stem outputs are in `.log.d/`. Original evidence is preserved under
 `/home/admin/rust-distributed-mesh-deploy/kept/gate-gates-e7s3-be5102b5-{provider_state,sticky_seat,rdm-transport:main}/`.
-All linked external RED traces were retrieved from central Jaeger. The candidate remains unlanded;
-no Concern work started and no new ruling question is needed.
-
+No new ruling question is raised by this comparison; R10 remains open and no e3 work has started.
 
 #### e3 — the gossip envelope: one typed shape for what every frame declares (Luke Q20: A, 2026-10-16)
 
