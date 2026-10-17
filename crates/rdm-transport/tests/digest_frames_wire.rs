@@ -79,3 +79,15 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
     let Frame::MembersDelta { changed, .. } = Frame::decode(&bytes(&delta_hex)).expect("the MembersDelta frame decodes") else { panic!("not MembersDelta") };
     assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
 }
+
+/// The complete gossip message is the standard context list followed by opaque postcard data.
+#[test]
+fn a_gossip_message_has_standard_context_and_an_opaque_postcard_body() {
+    let frame = Frame::Digest { digest: digest("ready-for-traffic") };
+    let encoded = frame.encode();
+    let (attributes, body): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&encoded).expect("CloudEvents binary metadata and opaque data");
+    assert_eq!(attributes.iter().find(|(name, _)| name == "specversion").map(|(_, v)| v.as_str()), Some("1.0"));
+    assert_eq!(attributes.iter().find(|(name, _)| name == "type").map(|(_, v)| v.as_str()), Some("rdm.mesh.digest"));
+    assert!(!body.is_empty());
+    assert!(encoded.len() <= rdm_transport::membership::MAX_FRAME);
+}
