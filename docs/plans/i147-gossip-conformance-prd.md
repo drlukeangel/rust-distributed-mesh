@@ -339,7 +339,23 @@ The existing real Node RPC recovery cell is also GREEN. The new cell initially i
 mesh-channel floor for a backbone receipt; it now uses Backbone::held_source and waits for the
 backbone subscription to join before the single send, with the same 20 s bound. No envelope
 attribute, type string, status revision, catalog category, publication-id rule or classifier
-behavior from Q34 is implemented here; R10 remains open. Separate land-script gate follows.
+behavior from Q34 is implemented here; R10 remains open. Separate land-script candidate `f2dfe47b` gate RED: 1759 passed, 2 failed, 62 summaries,
+174 s. i147 conformance assertion: `fabric_primary_handover::deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it`,
+`crates/rdm-test/tests/mesh/fabric_primary_handover.rs:516`: demands the ordinary apply on the
+backbone although mesh2.admin.2 applied the exact committed primary update first on its mesh
+channel (revision 2, held), [trace](http://192.168.68.99:16687/trace/07ce092d24e4164a082aa6820c47e759).
+The accepted e2 shared dedupe emits that ordinary span only once across channels. The assertion
+now requires that each surviving mesh's admin other than the holder apply the cross-mesh
+announcement; exact successor/revision and outcome checks, directed handoff checks, every bound
+and all other cell purpose remain unchanged. It does not require a second backbone apply after
+a forwarded copy. GREEN exact handover cell: 1 passed, 0 failed (71.04 s), /tmp/i147-birth-handover-green.log; the entire directed handoff, exact holder and later teardown proof passes. This assertion correction makes a new candidate; the previous red source is not re-gated.
+Outside-i147 read: `flood::a_flood_of_32_callers_for_10_seconds_round_trips_without_error`,
+`crates/rdm-transport/tests/flood.rs:134`: 5056 replies, one committed pooled op-1 call ended
+Indeterminate / ReplyLost("the request's attempts ended") after 36 ms, attempts=1, reused=true;
+[trace](http://192.168.68.99:16687/trace/68bb6983973f33e7308763cff9fb8825). This is the pure Node RPC
+flood path, not publication receipt or PublisherId; cell untouched. Both traces retrieved and
+full gate stems saved under target/evidence/publisher-birth/gate-red/.
+
 
 
 
