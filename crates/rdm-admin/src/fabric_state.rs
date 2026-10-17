@@ -201,6 +201,11 @@ impl RoundBook {
         new
     }
 
+    /// The rounds this book holds.
+    pub fn keys(&self) -> Vec<RoundKey> {
+        self.rounds.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Forget every round: the tenure that opened them ended.
     pub fn clear(&self) {
         self.rounds.lock().unwrap().clear();

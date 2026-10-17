@@ -196,6 +196,10 @@ pub struct FabricRounds {
     /// The check-ins of the mesh primaries, as the fabric-primary.
     pub fabric_book: RoundBook,
     drivers: Mutex<HashSet<RoundKey>>,
+    /// The rounds whose own action this admin stored, as its mesh's primary: a round run again
+    /// (a re-opened round after a cut-off, a re-sent command) checks in from this record and never
+    /// runs the action twice.
+    acted: Mutex<HashSet<RoundKey>>,
     /// Where the round hooks are published; set once the admin has joined the backbone.
     gossip: std::sync::OnceLock<RoundGossip>,
     climb: tokio::sync::Mutex<Climb>,
@@ -206,7 +210,7 @@ pub struct FabricRounds {
 impl FabricRounds {
     /// The rounds of the admin `env` describes.
     pub(crate) fn new(env: RoundEnv) -> Arc<Self> {
-        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
+        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashSet::new()), acted: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
     }
 
     /// The paths the current Build plans in each mesh (`node.get` names a birth its view no longer
@@ -399,8 +403,19 @@ impl FabricRounds {
     }
 
     fn fabric_book_reset(&self) {
-        // A checklist belongs to the tenure that opened its round: a new holder opens its own.
+        // A checklist belongs to the tenure that opened its round: a new holder opens its own. The
+        // tenure's own mesh rounds go with it (i146 Q45): a round it opens again re-runs this admin's
+        // own mesh round, whose members check in again from their record.
+        let ended = self.fabric_book.keys();
+        if ended.is_empty() {
+            return;
+        }
+        for key in &ended {
+            self.mesh_book.close(key);
+        }
         self.fabric_book.clear();
+        tracing::info_span!("rdm.node_admin.fabric.remove.via-tenure-ended", node = %self.env.me, rounds = ended.len(), "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("this admin holds the fabric-primary role no more: the rounds it opened and its own mesh's rounds are closed"));
     }
 
     fn enter(&self, climb: &mut Climb, next: FabricState, me: &PathName) {
@@ -751,7 +766,7 @@ impl FabricRounds {
         let this = self.clone();
         tokio::spawn(async move {
             let me = this.held_name().await;
-            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-round", node = %me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, superseded_by = tracing::field::Empty, "otel.kind" = "internal");
+            let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-round", node = %me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, superseded_by = tracing::field::Empty, own_action = tracing::field::Empty, "otel.kind" = "internal");
             this.drive_mesh(&key, owes_upward).instrument(span.clone()).await;
             this.drivers.lock().unwrap().remove(&key);
         });
@@ -759,7 +774,11 @@ impl FabricRounds {
 
     async fn drive_mesh(self: &Arc<Self>, key: &RoundKey, owes_upward: bool) {
         let mesh = self.env.me.mesh.clone();
-        let mut own_done = false;
+        let mut own_done = self.acted.lock().unwrap().contains(key);
+        if own_done {
+            // A round run again: this admin's own action is stored, and its check-in is made from that.
+            tracing::Span::current().record("own_action", "from-record");
+        }
         let round_span = tracing::Span::current();
         // The wait is armed before the read: a checklist change, a view change or a birth addressing
         // this primary that happens during the read is seen by the wait, never lost, and nothing
@@ -819,7 +838,11 @@ impl FabricRounds {
             }
             if !own_done {
                 match run_action(&*self.env.actions, &me, key.kind).await {
-                    Ok(()) => own_done = true,
+                    Ok(()) => {
+                        own_done = true;
+                        self.acted.lock().unwrap().insert(key.clone());
+                        round_span.record("own_action", "run");
+                    }
                     Err(e) => {
                         tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %me, round = key.kind.command(), error = %e, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("this admin's own action failed: it owes no check-in"));
@@ -937,8 +960,10 @@ impl FabricRounds {
                 self.spawn_mesh_driver(key, true, tracing::Span::current());
                 rdm_core::reply::applied()
             } else {
-                // The round is held: a successor fabric-primary asking again is owed the completion
-                // again by the declarer, which sees the seat moved.
+                // The round is held. A fabric-primary asking again holds another tenure's round (a
+                // successor, or the holder healed from a cut-off, i146 Q45): a completion this admin
+                // already made is owed again from its record, and the checklist rebuilds.
+                self.env.declarer.owe_again(&me_name, &crate::status_declare::Key::round(&key));
                 self.env.wake.poke();
                 rdm_core::reply::already_applied()
             }

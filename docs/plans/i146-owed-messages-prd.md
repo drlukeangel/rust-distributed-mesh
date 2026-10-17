@@ -591,6 +591,48 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   the seat first in the next, so the live cell takes either end: retargeted, answered by the new
   holder, the fabric ready; flame `45f6e0eea6a17d42ecb3b81c9a767560`). Control: one completion call
   per owed check-in, its resends the layer's `via-resend`; the member had no loop of its own.
+  Landed `4bab74ab`.
+- **Owner (3), the mesh-primary's check-in (2026-10-17).** It rides the declarer (`status_declare.rs`
+  `round`: one `CallOptions::default()` call per due key, sent again only on an eligible event).
+  Lost-result cell
+  `rounds::a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready`
+  (mesh1 the fabric-primary alone; mesh2's primary held in its own commit-state action; the
+  fabric-primary suspended past the idle timeout and 10 s): RED on `4bab74ab`, 2 of 2, but not on the
+  check-in. The declarer held it while the fabric-primary was unheard, sent it on resume (`not-ready`:
+  the round book had been cleared), and again on the re-command (`applied`). The fabric then held on
+  `mesh1.admin.1(no-check-in)`: suspended past the floor, the fabric-primary is cut off and publishes
+  as no primary (`boot.rs:2244-2250`), `climb_step` resets its climb and clears its fabric book
+  (`fabric_rounds.rs:268-276`, `:391-394`); healed, it adopts state-commit and re-opens the round
+  (`:278-287`) but re-spawns its own mesh's driver only when its mesh book does not hold the round
+  (`:661-664`), and the book still holds the completed one, so its own `check_in_local` (`:840`) into
+  the cleared book is never made (flames `d3e5b7cee23c2e01bd84b82e1c515b14`,
+  `7ca8f6f37931b1803a56812bbd3264d4`). **Q45 (Luke 2026-10-17, A).** The climb reset on a cut-off
+  clears the fabric-primary's own mesh book with the fabric book. On healing, the re-opened round
+  re-commands every mesh primary and re-spawns its own mesh's driver: members already done answer
+  AlreadyApplied and check in again from their record without re-running their action, the
+  fabric-primary's own check-in is made again from its record, and the fabric book rebuilds. rdm-admin
+  only; no wire or frame change. Built: `fabric_book_reset` closes the tenure's own mesh rounds
+  (`rdm.node_admin.fabric.remove.via-tenure-ended`); a mesh round's own action is recorded per round
+  key (`FabricRounds::acted`; `via-mesh-round` `own_action` `run` or `from-record`); and a mesh
+  primary asked again for a round it completed owes the completion again from its record
+  (`Declarer::owe_again`, `rdm.node_admin.status.update.via-asked-again`): its declarer re-owed only
+  when the authority was another birth, and a healed fabric-primary is the same birth (the
+  open-traffic shape: mesh2's primary answered the re-sent commit-state `already-applied` and never
+  checked in again). Cells, each asserting every round action once per round key (the fabric-primary's
+  and mesh2's primary's `own_action` `run` once, each member's `acted` once):
+  `rounds::a_fabric_primary_cut_off_during_state_commit_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready`
+  (flame `10472d81ffe9df63c1fd604dfebf9928`), the same during open-traffic (flame
+  `72d8353cea2ebd2be7481cdb8a66172e`), and the fabric-primary alone in its mesh, owner 3's lost-result
+  cell (flame `e9fadecbfb812f8f526697d038aee08c`), all RED on `4bab74ab` and GREEN; the mesh
+  primary's check-in rode the declarer's own resend in each. Owner 3's move onto `Budget::Owed`
+  follows. Its first gate (`db5f64bf`) was red twice. `fabric_primary::losing_the_fabric_primary_mesh_moves_control`
+  (`fabric_primary.rs:240`, no `via-recovered`): the cell stopped the fabric about 100 ms after the
+  rebuilt mesh's new rpc.3 sent its first direct digest (`:73760` against `:73857`), before the mesh's new
+  primary's status round completed and reported the mesh ready (`round.rs`: a fresh digest from each
+  planned birth after the round began); the cell asserts that report and never waited for it, and now
+  waits for the fabric to read ready-for-traffic before its stop. And `telemetry_exit` (main's; its own
+  row in e2). The five check-in and cut-off cells (each about 55 s) moved from `rounds` to their own
+  stem, `owed_check_ins`, release-only in the gate (Luke: "55 s cells belong in release").
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its

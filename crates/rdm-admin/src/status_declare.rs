@@ -227,6 +227,19 @@ impl Declarer {
         self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
     }
 
+    /// The authority asked again for `key`, a round completion it already answered: the round it
+    /// holds is another tenure's (i146 Q45: a fabric-primary healed from a cut-off re-opens its
+    /// rounds), so the completion is owed again from its record ("Members already done check in
+    /// again"). Whether it was owed again; a key not yet answered is left as it is.
+    pub(crate) fn owe_again(&self, me: &PathName, key: &Key) -> bool {
+        let Some((by, _, _)) = self.done.lock().unwrap().remove(key).map(|(o, by, inc)| (by, o, inc)) else { return false };
+        let Some((to, request, trace)) = self.requests.lock().unwrap().get(key).cloned() else { return false };
+        tracing::info_span!("rdm.node_admin.status.update.via-asked-again", node = %me, key = ?key, was = %by, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the authority asked again for a completion it answered: owed again from its record"));
+        self.pending.lock().unwrap().insert(key.clone(), Pending { key: key.clone(), to, request, attempts: 0, last: None, sent: None, trace });
+        true
+    }
+
     /// A start of this admin's birth `incarnation` begins its next cycle: the own-state declarations
     /// its last cycle owed or had answered are forgotten whole, so the node.started this start reports
     /// is owed afresh to its mesh's primary (states.md: node ReadyForTraffic is set from "the node's

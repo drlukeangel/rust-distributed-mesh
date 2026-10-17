@@ -154,6 +154,10 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let change = spawn.accepted().build_id.to_string();
     Estate::complete(&mut spawn).await;
     estate.settles_to(&[(lost.as_str(), 2, 3), (survivor.as_str(), 2, 4)], Duration::from_secs(60)).await;
+    // The lost mesh's new primary reports its mesh ready once its own status round is complete (a fresh
+    // digest from each planned birth after the round began, round.rs), a fact after its nodes are
+    // ready; on that report the new fabric primary clears degraded (R-DG1), which the spans below read.
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
 
     // And the whole fabric stops from the new primary.
     estate.stop().await;
