@@ -1,6 +1,6 @@
 # Q47 + Q49 — final exact page replacements for Luke
 
-This set supersedes the initial Q47 draft. It includes Q49’s operation row and preserves the existing invalid-transition refusal on the moved command hop. Architecture pages are unchanged pending Luke’s yes.
+This set supersedes the initial Q47 draft. It includes Q49’s operation row and preserves the existing invalid-transition refusal on the moved command hop. Luke approved this final set on 2026-10-17; the exact replacements land with Q47/Q49.
 
 ## docs/architecture/lifecycles/node-stop.md
 

@@ -212,19 +212,19 @@ async fn a_node_declares_to_its_seat_holder_and_an_admin_holding_none_answers_it
     estate.stop().await;
 
     let spans = estate.spans();
-    // The restart's own declaration names its start (`node.start:mesh1.rpc.1`); the estate's teardown
-    // declares every node's Leaving too, naming no operation.
+    // An open start reports on its command stream to the seat holder. Q36's separate
+    // declaration remains for a report with no open stream.
+    let started: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-command-frame")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["frame"] == "node-started" && sp["attributes"]["operation"] == "node.start:mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
+        .collect();
+    assert!(!started.is_empty(), "the seat holder records the start's terminal: {started:#?}");
+    assert!(started.iter().all(|sp| sp["attributes"]["recorder"] == "mesh1.admin.2"), "only the seat holder records it: {started:#?}; holder {holder_id}");
     let declared_own: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["operation"] == "node.start:mesh1.rpc.1" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= restart_at)
         .collect();
-    // `to` names the holder by its name while this node hears it, else by its node id.
-    let to_holder = |sp: &Value| sp["attributes"]["to"] == "mesh1.admin.2" || sp["attributes"]["to"] == holder_id.as_str();
-    let flag = |v: &Value| v == true || v == "true";
-    assert!(declared_own.iter().any(|sp| to_holder(sp) && flag(&sp["attributes"]["definitive"])), "the seat's holder takes the restarted node's declaration: {declared_own:#?}");
-    let elsewhere: Vec<&&Value> = declared_own.iter().filter(|sp| !to_holder(sp)).collect();
-    assert!(elsewhere.is_empty(), "the restarted node declares to the seat's holder alone: {elsewhere:#?}");
-    assert!(declared_own.iter().all(|sp| !sp["attributes"]["outcome"].as_str().unwrap_or_default().contains("RequestNotHandled")), "no node-admin answers a declaration not handled: {declared_own:#?}");
+    assert!(declared_own.is_empty(), "the open start sends no second Ready declaration: {declared_own:#?}");
     let trace = r["traceparent"].as_str().and_then(|tp| tp.split('-').nth(1)).unwrap_or_default().to_string();
     println!("a declaration at the admin holding no seat: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);

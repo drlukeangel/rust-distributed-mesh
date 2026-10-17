@@ -82,7 +82,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
 
         // What each step did, from outside.
         let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
-        assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Leaving]);
+        assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic], "the pipeline does not publish Leaving from a stop answer; the command owner records the node report");
         let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
         assert_eq!(digest.status, MemberStatus::Leaving, "the admin side holds the status it set from the node's last report, its stop's Leaving (node-status.md \"Status report\"); the node's heartbeats carry none (gossip.md §3.1 `Digest`)");
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));

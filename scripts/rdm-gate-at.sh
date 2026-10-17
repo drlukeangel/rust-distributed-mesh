@@ -350,7 +350,7 @@ one(){
     ;; esac
     echo "$r $name $(( $(date +%s)-s ))s" | tee -a $O
 }
-export -f one; export O D SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_STALENESS_MS RDM_GOSSIP_INTERVAL_MS RDM_BACKBONE_INTERVAL_MS RAFKA_STALENESS_MS RAFKA_GOSSIP_INTERVAL_MS RAFKA_BACKBONE_INTERVAL_MS
+export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_STALENESS_MS RDM_GOSSIP_INTERVAL_MS RDM_BACKBONE_INTERVAL_MS RAFKA_STALENESS_MS RAFKA_GOSSIP_INTERVAL_MS RAFKA_BACKBONE_INTERVAL_MS
 # Release-only: proofs of the offline ladder's own windows (production cadence), containers, and
 # every job over a minute on its own (Luke 10-08: stems > 1 min run in the release suite between
 # epics). The cargo-invoking jobs (doctests, the no-default-features check) are release-only too:

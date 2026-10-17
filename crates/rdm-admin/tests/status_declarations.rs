@@ -48,6 +48,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
 
 struct Rig {
     admin: Birth,
+    endpoint: iroh::Endpoint,
     server: rdm_transport::NodeRpcServer,
     _router: Router,
     resolved: ResolvedNode,
@@ -200,7 +201,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         .unwrap();
     let ep = rdm_transport::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-    let router = Router::builder(ep).accept(rdm_transport::ALPN, server.clone()).spawn();
+    let router = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode {
         node_id: admin.node.node_id.clone(),
         name: admin.node.name.clone(),
@@ -208,7 +209,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         transport_addr: addr,
         incarnation: admin.node.incarnation_id.clone().unwrap(),
     };
-    (Rig { admin, server, _router: router, resolved, authority, storage, nodes, topology, mesh_ids: rig_mesh_ids, withhold, refuse_release }, others)
+    (Rig { admin, endpoint: ep, server, _router: router, resolved, authority, storage, nodes, topology, mesh_ids: rig_mesh_ids, withhold, refuse_release }, others)
 }
 
 /// A birth's client to the authority, speaking as that birth.
@@ -2521,8 +2522,9 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     let _router = Router::builder(ep).accept(rdm_transport::ALPN, server).spawn();
     let resolver = Arc::new(StaticResolver::new());
     resolver.insert(ResolvedNode { node_id: subject.node.node_id.clone(), name: subject.node.name.clone(), endpoint_id: subject.key.public(), transport_addr: addr, incarnation: subject.node.incarnation_id.clone().unwrap() });
-    let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    let client = Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm"));
+    // The caller owns and serves one birth on one endpoint: recovered responses arrive
+    // through this router and find the invocation in the same Delivery as the call.
+    let client = Arc::new(NodeRpcClient::new(rig.endpoint.clone(), resolver).with_delivery(rig.server.delivery().clone()).with_caller_system("rdm"));
     assert!(rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(client, Default::default(), Default::default()))).is_ok());
     let context = CommandContext { build_id: "b".into(), attempt: 1, operation: format!("node.stop:{}", subject.node.name) };
     let end = tokio::time::timeout(Duration::from_secs(5), rig.authority.carry_lifecycle(&subject.node, false, &context)).await.expect("the lost physical stream recovers its terminal on the same invocation");

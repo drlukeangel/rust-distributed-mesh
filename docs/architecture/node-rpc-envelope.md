@@ -212,7 +212,7 @@ sees only the catalog.
 | `0x1F` | build-facts | rdm | live | canonical | `FetchBuildFacts` |
 | `0x20` | build | rdm | live | canonical | build.create, build.attempt.run, build.get, build.delete; build.create refuses `fabric-not-ready` until the initial fabric has first reached ready-for-traffic ([Build refusals](#fabric-not-ready-refusal)) |
 | `0x21` | primary-update | rdm | live | canonical | `PrimaryUpdate`, `PrimaryUpdated`; refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic |
-| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
+| `0x22` | node-command | rdm | live | canonical | `DeleteConnections`, `StopNode`, `StartNode`, the mesh-primary to the exact node; server-streaming, never forwarded; the request and reply variants are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md) |
 | `0x10` | legacy-control | rafka | live | transitional | `ControlFrame` |
 | `0x12` | data-frame | rafka | live | transitional | `DataFrame` broker operations |
 | `0x13` | snapshot | rafka | live | transitional | mesh digest snapshot |
@@ -302,8 +302,8 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | Typed caller | Existing wire / execution component | Caller result / events | code |
 |---|---|---|---|
 | [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by }; the create of a mesh's first node-admin is the mesh-absent arm, [mesh.create](lifecycles/mesh-create.md), with no call of its own | every FirstStart event ending node.started, then node.created | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
-| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → NodeJoined (Data) → NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
+| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted → StopConnectionsDeleted (Data) → NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.restart](lifecycles/node-restart.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's and the start's ops; no restart opcode | every stop/start event, node.restarted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
 | [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |
@@ -333,7 +333,8 @@ Every row also retains §25 and §40's delivery code when it does not produce a 
 | build.attempt.run | [Build 0x20](#build-op-0x20-rdm); fabric-primary calls the named executor with the won claim | receipt replay, current Blocked, then live frames | `OK` for read/result/completion; AlreadyApplied `ALREADY_EXISTS`, unknown Build `NOT_FOUND`, stale/conflict `ABORTED`, writer/state refusal `FAILED_PRECONDITION`, BuildInProgress `UNAVAILABLE` |
 
 Codec evidence: `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/status.rs::StatusRequest`
-(DeclareNodeState, ApplyNodeState, ProbeNodeState, StopNode),
+(DeclareNodeState, ApplyNodeState, ProbeNodeState; StopNode and StartNode are reserved there),
+`crates/rdm-core/src/node_command.rs::NodeCommandRequest` (DeleteConnections, StopNode, StartNode),
 `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/join.rs::JoinRequest`,
 `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/topology.rs::TopologyRequest`,
 `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_facts.rs::BuildFactsRequest` and
@@ -420,11 +421,11 @@ pub struct CallContext {
 ```
 
 A decoded request, shown as a readable JSON view of the three postcard sections (the wire is
-postcard, not JSON): a StopNode on op `0x1B` (27).
+postcard, not JSON): a StopNode on NodeCommand op `0x22` (34).
 
 ```json
 {
-  "target": { "node_id": "k8pag1qx95gw", "op": 27 },
+  "target": { "node_id": "k8pag1qx95gw", "op": 34 },
   "context": {
     "caller_system": "rdm",
     "traceparent": "00-f16a8b75a1b2c3d4e5f60718293a4b5c-1111111111111111-01",
@@ -731,7 +732,7 @@ pub enum StatusRequest {
     ApplyFabricEvent { fabric_id: FabricId, event: FabricEvent },
     Reserved6 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 6, reserved: never sent
     Reserved7 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 7, reserved: never sent
-    StopNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    StopNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 8, reserved: refused by name, never executed
     NodeLeft { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 9, reserved: never sent
     DeleteMesh { mesh_id: MeshId, build_id: String, attempt: u32, operation: String },
     MeshDeleted {
@@ -748,7 +749,7 @@ pub enum StatusRequest {
     StateCommitted { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
     OpenTraffic { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
     TrafficOpened { fabric_id: FabricId, node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
-    StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 16, reserved: refused by name, never executed
     UpdateNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     ApplyNodeName { node_id: NodeId, incarnation: IncarnationId, name: String },
@@ -913,18 +914,17 @@ seed or application writer logic. Integration message examples live in
 
 ### Node stop command pair
 
-The caller contract is [node.stop / node.delete](#typed-object-contract); the sequences are
-[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md) and
-[node.delete](lifecycles/node-delete.md). The Status bodies StopNode and NodeLeft are
-[StatusRequest](#status-op-0x1b-rdm) positions 8 and 9.
+The caller contract is [node.stop / node.delete](#typed-object-contract). The mesh-primary's
+exact-node stop and start hops use [NodeCommand 0x22](#nodecommand-op-0x22-rdm); caller routing and
+the Build carrier are unchanged. StatusRequest positions 8 `StopNode` and 16 `StartNode` are reserved:
+a receiver refuses each by name and executes nothing. Reply positions 17 `Stopped`, 18 `Started`
+and 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are
+refused by name; Reserved2 retains StatusReply position 2. No position is reordered or reused.
 
-The stop's graceful closure is `node.connections.delete { scope: All }`; its receipt is a
-`ConnectionsReceipt`, `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }`.
-Stopped rides the StopNode reply as `Stopped { receipt }`, and the receipt keeps the deadline evidence
-when the stop hard-cut at the deadline. Reserved6 and Reserved7 keep their positions 6 and 7 and are
-never sent; a receiver refuses them by name. Reserved2 keeps StatusReply position 2 and is
-never sent. NodeLeft keeps its position and is never sent; a receiver refuses it by name.
-Enum discriminants are never reordered or reused ([Section 2](#section-2-the-body)).
+Stop's whole `node.connections.delete { scope: All }` reports its `ConnectionsReceipt` in
+`StopConnectionsDeleted` (Data), preserving `Established` or `Deadline` evidence; `NodeStopped`
+ends the stream after the transport cut. The operation-named owed Stopped declaration remains
+(Q36); frame and declaration apply once through the operation's held row (Q49).
 
 ### Mesh delete command pair
 
@@ -1549,25 +1549,40 @@ to these frames is `durable format moved`, with byte fixtures.
 
 ## NodeCommand, op `0x22`, rdm
 
-RDM owns this family. It carries the mesh-primary-to-node hop of
-[node.connections.delete](lifecycles/node-connections-delete.md), which owns sequencing and the
-failure contract. Direction: a node's mesh-primary calls the exact birth. Every call is
-server-streaming and not forwardable; the server keeps serving it while the node is
-connections-deleting. Field order and enum positions are on the generated
-[wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md). Births are exact
-identities, never names.
+RDM owns this family. It carries the mesh-primary → exact-node hop of
+[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md)
+and [node.start](lifecycles/node-start.md). The caller's hop and Build carrier are unchanged.
+Every call is server-streaming, never forwarded, and served while connections-deleting.
+Births are exact identities, never names. Every earlier byte and enum position stands; requests
+`StopNode` and `StartNode` append at 1 and 2. Replies append after the existing positions 0–10.
 
 ```text
-mesh-primary → node   DeleteConnections { node_id, incarnation, scope: All | Connections([id, …]) }
-node → mesh-primary   CommandAccepted { node_id, incarnation }            (Started)
-node → mesh-primary   ConnectionsDeleting { node_id, incarnation }        (Data; All only)
-node → mesh-primary   ConnectionsDeleted { closed, not_open, held, receipt }   (Terminal)
+DeleteConnections { node_id, incarnation, scope }
+  ← CommandAccepted { node_id, incarnation } (Started)
+  ← ConnectionsDeleting { node_id, incarnation } (Data; All only)
+  ← ConnectionsDeleted { closed, not_open, held, receipt } (Terminal)
+StopNode { node_id, incarnation, build_id, attempt, operation }
+  ← CommandAccepted { node_id, incarnation } (Started)
+  ← StopConnectionsDeleted { receipt } (Data; appended reply 11)
+  ← NodeStopped (Terminal; appended reply 12)
+StartNode { node_id, incarnation, build_id, attempt, operation }
+  ← CommandAccepted { node_id, incarnation } (Started)
+  ← NodeJoined (Data; appended reply 13)
+  ← NodeStarted (Terminal; appended reply 14)
+after StopNode or StartNode acceptance:
+  ← Failed { step, reason, code } (Terminal; appended reply 15)
+before lifecycle acceptance:
+  ← RejectedInvalidNodeTransition { current } (Refusal; appended reply 16, FAILED_PRECONDITION)
 ```
 
-A refusal before acceptance is one frame, one of the reply's refusal variants on the wire page.
-`CommandAccepted` carries no lifecycle state and is not node.start's
-`Started`. Only `ConnectionsDeleting` makes the mesh-primary record connections-deleting. A stream
-that breaks after `CommandAccepted` is incomplete.
+A refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no
+lifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`
+records connections-deleting for connections.delete; `NodeStopped` records stopped, `NodeJoined`
+records pending, and `NodeStarted` records ReadyForTraffic after every start gate and before the
+outer Build's Complete. Starting stays the executing authority's overlay. Nothing is written
+before CommandAccepted or for NotSent. There is no separate status declaration for an open start;
+the Q36 owed report remains when no stream is open. A stream lost after acceptance is incomplete.
+The owner records each frame before acknowledging recovery; repeated frames cause no second record.
 
 ## Transitional codec conventions
 

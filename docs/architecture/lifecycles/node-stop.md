@@ -25,23 +25,29 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 
 ## Numbered end-to-end sequence
 
-1. Call node.stop for the accepted exact node, preserving its operation trace and
-   Build/attempt identity where Build-backed.
+1. The mesh-primary sends NodeCommand `StopNode { node_id, incarnation, build_id, attempt,
+   operation }` to the exact birth. The caller's hop and Build carrier are unchanged. The node
+   validates the command and sends `CommandAccepted`; only this admission makes the mesh-primary
+   record stopping. A never-sent command writes no state.
 2. Run the entire [node.connections.delete](node-connections-delete.md) with `{ scope: All }`:
    graceful closure of every open connection of the node, each open Direct or Proxy entry of its
    connections log, ending in node.connections.deleted with its `Established` or `Deadline` receipt
-   and the closed ids. The stop's visible status is stopping; the child call keeps its events,
+   and the closed ids, reported as `StopConnectionsDeleted { receipt }` (Data) on the stop stream.
+   The stop's visible status is stopping; the child call keeps its events,
    spans and receipt. On the deadline the stop may hard-cut, and its receipt keeps the deadline
    evidence.
 3. Cut the stop's own transport: its gossip neighbours and its Node RPC pool. Never unbind the
    node's own endpoint or close the stop call's stream.
-4. Emit node.stopped on that same reply stream, and declare `Stopped` to the mesh-primary naming
+4. Emit `NodeStopped` (Terminal) on that same reply stream, and declare `Stopped` to the mesh-primary naming
    the stop's operation, an owed message ([Node RPC §43](../node-rpc.md#43-owed-messages-delivery-is-the-runtimes))
    sent whether or not the stop call's stream is still open. The node gossips nothing for this step.
 5. The mesh-primary takes the matching stopped frame, or the node's declaration of `Stopped`
    naming the stop's operation, whichever reaches it first, and publishes
    [NodeStopped](../gossip.md#node-stopped-lifecycle-overlay) with that operation in its in-flight
-   overlay, once: the other finds the stopped state held (`AlreadyApplied`) and publishes nothing.
+   overlay, once. The mesh-primary blindly puts the applied effect under `(birth, build_id, attempt,
+   operation)`; a cycle begin never clears that row, which is forgotten only with the birth (Q49).
+   A declaration or frame naming that applied operation answers `AlreadyApplied` and applies nothing
+   again. A report naming no operation follows the state transition rule.
    NodeStopped is retained as that section states; for the last node-admin of a deleted mesh the
    fabric-primary publishes it ([Mesh delete](../gossip.md#mesh-delete)). The node's status is
    stopped and its process is live.
@@ -56,10 +62,11 @@ Readable execution view; the [typed-object contract](../node-rpc-envelope.md#typ
 owns wire mapping, target and context:
 
 ```text
-node.stop
-  ← Started
-  ← node.connections.deleted ConnectionsReceipt [Established { in_flight, closed } | Deadline { last_in_flight, closed, held }]
-  ← node.stopped
+node.stop (mesh-primary → exact node, NodeCommand 0x22)
+  ← CommandAccepted (Started; admission, no lifecycle state)
+  ← StopConnectionsDeleted { receipt: ConnectionsReceipt } (Data)
+  ← NodeStopped (Terminal)
+  or, after acceptance: Failed { step, reason, code } (Terminal)
 ```
 
 These are reply frames on one call; each step has its own span and Build receipt.

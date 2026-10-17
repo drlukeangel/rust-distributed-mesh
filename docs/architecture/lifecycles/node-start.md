@@ -25,8 +25,9 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
    outbound call; AfterStop rejoins the same `(node.id, incarnation)` over the endpoint and path of
    the call that commanded it, and learns who answered from the answer. A node renamed while
    stopped starts with its old name in its digest and is admitted under the row's. Emit
-   `node.joined` only after the accepted join and channel join. node.start clears NodeStopped at
-   node.joined.
+   `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records
+   pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written
+   before `CommandAccepted`; starting remains the executing authority's overlay.
 3. Run [hydrate_before_ready](../fabric-node-hooks.md#hydrate_before_ready) with the
    start kind and inherited-data-dir indication. The app subscribes its kind topics
    through the joined channel and reads no topology snapshot as a prerequisite.
@@ -42,7 +43,7 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
    facts are absorbed through the Build log; the step completes when the Ready check holds
    the required facts, never on a received frame alone. Refresh rafka-time **last**, so it
    is current when the node re-enters.
-5. Emit `node.started`: hydrated, with nothing pending. Neither a partial snapshot nor a
+5. Emit `NodeStarted` (Terminal): hydrated, with nothing pending. Neither a partial snapshot nor a
    Blocked hook permits it. That frame is the node's report: the mesh-primary sets
    ReadyForTraffic on that exact birth through the [node status](node-status.md) apply,
    not a caller op. The node sends no separate status report after node.started. A typed
@@ -52,24 +53,24 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
 
 ## Command, completion and gossip messages
 
-The following is a decoded caller progress view, not a new wire enum:
+The mesh-primary → exact-node hop uses NodeCommand 0x22. The caller's hop and Build carrier
+are unchanged:
 
 ```text
-node.start
-  ← Started
-  ← node.joined
+StartNode { node_id, incarnation, build_id, attempt, operation }
+  ← CommandAccepted (Started; admission, no lifecycle state)
+  ← NodeJoined (Data; mesh-primary records pending)
   [hydrate_before_ready]
   [node.topology.get, missing Build floor, rafka-time last]
-  ← node.started
-  [mesh-primary sets ReadyForTraffic]
-  ← Complete
+  ← NodeStarted (Terminal; mesh-primary records ReadyForTraffic)
+  [outer Build Complete only after the ReadyForTraffic record]
 ```
 
 If join fails after start:
 
 ```text
-Started
-Failed { step: "node.join", reason: "…" }
+CommandAccepted
+Failed { step: "node.join", reason: "…", code } (Terminal)
 ```
 
 No node.joined, node.started or downstream success follows that failure

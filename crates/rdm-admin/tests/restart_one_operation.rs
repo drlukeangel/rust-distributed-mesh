@@ -482,8 +482,10 @@ impl NodeObserver for StartsWhole<'_> {
     async fn send_command(&self, _: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
         match cmd {
             NodeCommand::Start => {
-                // The join, admitted at the commander's door, then the start's own steps and its report.
+                // This observer models the command-stream owner: NodeJoined is recorded
+                // after the admitted join, before NodeStarted. The pipeline records neither.
                 self.joins.report(&self.digest);
+                self.events.published.lock().unwrap().push(("joined", ctx.operation.clone()));
                 tokio::task::yield_now().await;
                 self.events.published.lock().unwrap().push(("node.started", ctx.operation.clone()));
                 CommandAdmission::Started {}
