@@ -146,7 +146,7 @@ For every seat:
 - a living holder keeps its seat; a lower-NodeId candidate that later becomes Ready never displaces it;
 - silence, an observer-inferred Dead, a `held-running` hold or an unheard route is not proof: the holder keeps the seat;
 - for a hung mesh-primary (`R-FM1`), the fabric-primary runs the `RDM_HUNG_HOLD_FLOORS` hold and, when it expires with the provider still reporting `Running`, submits the recovery Build whose `TerminateRuntime` step proves the exit; the seat moves only once that exit proof is recorded, never before the proof;
-- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; watching admins record `held-running { since, verdicts }` on the holder's status row (surfaced on `node.get` and `fabric.get`), publish `Concern` as today, and the fabric seat never moves on silence;
+- for a hung fabric-primary (`R-FM1`), no node below it commands its termination; watching admins record `held-running { since, verdicts }` on the holder's status row (surfaced on `node.get` and `fabric.get`), and the fabric seat never moves on silence;
 - a holder that yields or whose exact birth is proven gone hands the seat to the lowest ReadyForTraffic NodeId of its own mesh;
 - restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the holder;
 - replacement mints a new NodeId and may or may not win.

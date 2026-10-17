@@ -90,7 +90,7 @@ timer of its own:
    hold under the ordinary rule.
    For a hung mesh-primary, the fabric-primary runs the same hold and submits the same
    Build; for a hung fabric-primary, watching admins record `held-running` (surfaced on
-   `node.get` and `fabric.get`) and publish `Concern` as today, and nothing below it
+   `node.get` and `fabric.get`) and surface it on `fabric.get`, and nothing below it
    commands its termination.
 
 ## Numbered end-to-end sequence

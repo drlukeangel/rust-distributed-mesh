@@ -102,8 +102,7 @@ name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a stat
 `cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary folds the rows and
 continues the schedule from them; nothing about renewal lives only in memory. Every cert row is in the
 fabric-level projection: `fabric.get` shows the next expiry across the fabric, and a mesh whose renewals
-stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) raises `Concern`, as a
-held fabric-primary does today. There is no revocation: expiry is the revocation, which is why the
+stall (a row past `renew_at` by more than a floor with no `node.cert.renewed`) is surfaced on `fabric.get` as `renewals: stalled`, the way `held-running` is. There is no revocation: expiry is the revocation, which is why the
 member TTL is a day. The TTLs and the renewal point are fabric policy, read once by the bootstrap admin
 and fixed for the fabric, carried to every later admin in its entry pull the way `MESH_SPAWN_TYPE` is:
 `RDM_MEMBER_CERT_TTL_SECS` (default 86400), `RDM_ISSUING_CERT_TTL_SECS` (default 2592000, 30 days),

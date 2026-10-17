@@ -503,7 +503,7 @@ the receiver holds about the same subject: refused by name), *duplicate* (the sa
 identity, with identical content: nothing happens), *gap* (ahead of what the receiver holds in a way it
 cannot apply: it requests repair, §3.3 and §6, and logs a gap, never "stale"). A frame equal in revision
 to the held one but different in content is an inconsistency, refused by name, for every state
-projection, seat record and snapshot publication. Four categories:
+projection, seat record and snapshot publication. What a receiver may do with any frame: install a projection, record a fact, or carry the frame onward. It decides nothing on a frame (§10: gossip disseminates; the directed call is the certainty). Four categories:
 
 | category | stale | duplicate | gap |
 |---|---|---|---|
@@ -522,7 +522,7 @@ projection, seat record and snapshot publication. Four categories:
 | `MeshStatus`, `FabricStatus` | replacement state | `(mesh \| fabric, publisher)` | `changed_at_rafka_ms`, higher is newer. **Gap:** they carry a publisher string and a timestamp, not the publisher's revision, so a delayed predecessor's frame is not refused by revision; closing it is an i147 packet (a field, or the status riding the publisher's projection) | `(subject, publisher, changed_at_rafka_ms)` |
 | `Seated` | replacement state | the cohort `(mesh, node_type)`, or the fabric seat | the committed `revision` | `(cohort, revision)` |
 | `PrimaryUpdating`, `PrimaryUpdated` | replacement state | each named cohort `(mesh, node_type)` or the fabric seat | the committed `revision` per cohort; at one revision `updated` is later than `updating`; a frame naming two cohorts is ignored when either holds a newer key | `(cohort, revision, stage)` |
-| `Concern` | advisory observation | `(seat, node_id, incarnation, observer)` | none; it establishes neither exit nor vacancy. It is an idempotent investigation wake for the current concern episode: a repeat while the observer's silence mark on that birth stands does nothing; the episode ends when the receiver itself hears the birth again, after which a new `Concern` is a new wake | `(seat, node_id, incarnation, observer)` within the episode |
+| `Concern` (position 10) | reserved | — | — | refused by name (`rdm.mesh.membership.reject.via-reserved`), nothing applied. Retired (Luke, Q23, 2026-10-16): a receiver that started an investigation because a frame told it to was deciding on gossip (§10); the fabric-primary's silence is measured by each admin itself and acted on with the directed tickle |
 | `StateCommitting`, `StateCommitted`, `TrafficOpening`, `TrafficOpened` | operation fact | `(kind, fabric_id, build_id, attempt, operation, node_id, incarnation)` | none: a hook drives no checklist and reopens nothing by construction (gossip receipt never replaces the directed completion). Its only effects are its span and, on the mesh-admin holding an open round, carrying an ordinary node's check-in onto the backbone; a hook of a closed or superseded round is carried nowhere (`via-round-frame` with `carried = closed-round`) | the identity |
 | `NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`, `NodeLeft`, `NewFabricPrimary` | reserved | — | — | refused by name, nothing applied |
 
