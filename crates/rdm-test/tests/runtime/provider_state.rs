@@ -111,10 +111,13 @@ async fn an_os_stopped_member_is_recorded_on_node_get_and_cleared_when_it_runs_a
 }
 
 /// CONTRACT (deployment-provider.md §2.5: "`Exited` is the ordinary exit proof"): a member recorded
-/// `os-stopped` is then killed (SIGKILL of the suspended runtime). The next inspection reads it
-/// exited: the `os-stopped` fact clears (`cleared`, `exited`), the exit proof is recorded and the
-/// ordinary recovery runs: a new birth (new node.id) at the same path.name, ready for traffic.
-/// Must NOT happen: an exit inferred from the os-stopped fact itself, or a recovery before the exit.
+/// `os-stopped` is then killed (SIGKILL of the suspended runtime). The fact clears on the first
+/// inspection after the kill that does not read the runtime suspended (§2.5: "`Running` again clears
+/// the fact"): `exited`, or `running` while the killed thread group's tasks are still exiting (§2.6: a
+/// process is gone only once every task of its thread group has exited). An inspection then reads it
+/// exited, the exit proof is recorded and the ordinary recovery runs: a new birth (new node.id) at the
+/// same path.name, ready for traffic. Must NOT happen: the fact cleared before the kill, an exit
+/// inferred from the os-stopped fact itself, or a recovery before the exit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recovery() {
     let test = "an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recovery";
@@ -137,8 +140,11 @@ async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recove
     estate.stop().await;
     let spans = estate.spans();
     let of_birth = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
-    let facts: Vec<(String, String)> = of_birth("rdm.node_admin.node.update.via-os-stopped").iter().map(|sp| (attr(sp, "outcome"), attr(sp, "detail"))).collect();
-    assert_eq!(facts, vec![("recorded".to_string(), String::new()), ("cleared".to_string(), "exited".to_string())], "recorded, then cleared by the exit");
+    let facts: Vec<(String, String, u64)> = of_birth("rdm.node_admin.node.update.via-os-stopped").iter().map(|sp| (attr(sp, "outcome"), attr(sp, "detail"), start_ns(sp))).collect();
+    assert!(
+        facts.len() == 2 && (facts[0].0.as_str(), facts[0].1.as_str()) == ("recorded", "") && facts[1].0 == "cleared" && ["exited", "running"].contains(&facts[1].1.as_str()) && facts[1].2 >= killed_at,
+        "recorded, then cleared after the kill by its first inspection that does not read it suspended (exited, or running while its tasks still exit): {facts:?}"
+    );
     let exited = of_birth("rdm.node_admin.node.resolve.via-provider-inspection").into_iter().find(|sp| attr(sp, "verdict") == "exited").expect("the inspection proves the exit");
     assert!(start_ns(&exited) >= killed_at, "the exit is proven after the kill, never from the os-stopped fact");
     let submit = of_birth("rdm.node_admin.build.update.via-node-recovery").into_iter().next().expect("the ordinary recovery is submitted");
