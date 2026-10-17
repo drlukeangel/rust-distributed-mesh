@@ -413,7 +413,18 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   the declaration's round trip, and
   `node_stop::a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_it_stops` read the
   successor's "primary updated" (its holder-stopped at +196.9 ms) as inside a cut that ended at
-  +198.4 ms, after the declaration.
+  +198.4 ms, after the declaration. The gate on `6e5f7532` red at
+  `fabric_primary_handover.rs:454` (two "primary updated" announcements): a deleted mesh's last admin,
+  still its own mesh's primary, declared its stop to itself after its cut, so its own authority
+  published its NodeStopped and its holder-stopped announcement on a parked channel, and its commander
+  published NodeStopped again. node-stop.md step 4: after its cut it publishes nothing. An admin that
+  is its own mesh's primary declares no stop (`rdm.node_admin.status.reject.via-own-mesh-primary`); the
+  cell asserts that span and the last admin's NodeStopped once. Tied to Q39 (open):
+  `node_stop::a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth`
+  red once in three local runs at :573: the resumed birth's `declare_once` addressed only
+  `mesh1.admin.2` (`RejectedNotAuthority`, the book not yet hearing `mesh1.admin.1`), so NodeStopped
+  came from the stop stream (trace `2f1267dca2a797afb6fd18ae6325ac29`); the declaration's addressee is
+  the admins the digest book hears, not the mesh's primary.
   The landing's gate on `4c8c3cb7` red three times, read: the declaration then went out after the
   reply, unawaited, so a restart's start (`begin_cycle`, `session.rs`) cleared the declared row and the
   late Leaving applied over it, refusing the start's ReadyForTraffic as backward

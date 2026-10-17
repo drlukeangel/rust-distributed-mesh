@@ -1743,15 +1743,22 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         // Its stop's Leaving names the stop, as every node's does (node-status.md "Status
                                         // report", node-stop.md step 4; i146 Q37): owed in its declarer and sent at once,
                                         // before the stop's reply, since the declarer's own turns are held while it is stopped.
+                                        // An admin that is its own mesh's primary has no primary to report to, and after its
+                                        // cut it publishes nothing (node-stop.md step 4): its stop is its commander's to publish.
                                         let declare: crate::node_self::Declare = {
                                             let (declarer, topology, client, authority, digest, me_id, incarnation) =
                                                 (declarer.clone(), control.topology.clone(), node_rpc.client.clone(), authority.clone(), digest.clone(), node_id.clone(), incarnation.clone());
                                             Arc::new(move |state, operation| {
                                                 let me = digest.lock().unwrap().node.name.clone();
-                                                declarer.owe_own(&me, &me_id, &incarnation, state, operation);
-                                                let (declarer, topology, client, authority, me_id) = (declarer.clone(), topology.clone(), client.clone(), authority.clone(), me_id.clone());
+                                                let (declarer, topology, client, authority, me_id, incarnation) = (declarer.clone(), topology.clone(), client.clone(), authority.clone(), me_id.clone(), incarnation.clone());
                                                 Box::pin(async move {
                                                     let view = topology.read().await.clone();
+                                                    if view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == me_id) {
+                                                        tracing::info_span!("rdm.node_admin.status.reject.via-own-mesh-primary", node = %me, state = ?state, operation = %operation.as_ref().map(|o| o.operation.as_str()).unwrap_or(""), "otel.kind" = "internal")
+                                                            .in_scope(|| tracing::info!("this admin is its own mesh's primary: there is no primary to report its state to, and after its cut it publishes nothing"));
+                                                        return;
+                                                    }
+                                                    declarer.owe_own(&me, &me_id, &incarnation, state, operation);
                                                     declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &BTreeSet::new()).await;
                                                 })
                                             })

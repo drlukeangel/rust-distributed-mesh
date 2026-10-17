@@ -454,6 +454,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         assert_eq!(v.len(), 1, "exactly one {name} span of {operation}: {v:?}");
         v[0].clone()
     };
+    // mesh1's last admin stays its mesh's primary to its own stop: it reports its stop to no one,
+    // itself included, since after its cut it publishes nothing (node-stop.md step 4; i146 Q37), and
+    // its NodeStopped is published once, by its commander.
+    let final_stop = format!("node.stop:{final_name}");
+    let own_primary: Vec<&Value> = named(&spans, "rdm.node_admin.status.reject.via-own-mesh-primary").into_iter().filter(|sp| attr_s(sp, "node") == final_name && attr_s(sp, "operation") == final_stop).collect();
+    assert_eq!(own_primary.len(), 1, "{final_name}'s stop is not reported to itself: {own_primary:#?}");
+    let final_stopped: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr_s(sp, "node") == final_name).collect();
+    assert_eq!(final_stopped.len(), 1, "{final_name}'s NodeStopped is published once: {final_stopped:#?}");
     let updating = one("rdm.node_admin.seat.update.via-primary-updating");
     assert_eq!((attr_s(&updating, "node"), attr_s(&updating, "seat"), attr_s(&updating, "successor"), attr_s(&updating, "outcome")), (final_name.clone(), "fabric-primary".to_string(), fabric_primary.clone(), "updated".to_string()), "mesh1's primary moved the fabric seat alone to the outside successor: {updating}");
     let said_updating = one("rdm.mesh.seat.update.via-announce-primary-updating");
