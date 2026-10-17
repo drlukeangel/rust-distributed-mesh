@@ -135,7 +135,10 @@ async fn a_status_call_carried_to_a_target_the_admin_cannot_resolve_is_not_sent_
     let origin = NodeRpcClient::new(origin_ep, resolver);
     let (out, _) = origin.call_via::<Status>(&admin_target(&r), &stranger.node_id, &probe(&stranger), &CallOptions::default()).await;
     match &out {
-        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::Carried(why) if why.contains("Unknown")), "{out:?}"),
+        RpcOutcome::NotSent(n) => {
+            assert_eq!(n.reason(), &NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Unknown));
+            assert_eq!(n.code(), rdm_core::outcome::Code::Unavailable);
+        },
         other => panic!("not sent, naming the unresolved target: {other:?}"),
     }
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);

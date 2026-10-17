@@ -462,3 +462,5 @@ Critical path: wave 0 → e1 → e2 → e3. e1 and the red canary run concurrent
 - `docs/plans/i143-prd.md` e12.s86, e12.s87 (landed), e12.s89 (the D2/D2b rows and C17), e12.s90 (superseded by this PRD's e1-e2 once approved)
 - `docs/plans/i146-owed-messages-prd.md` (R-MSG1: the one delivery mechanism, from Q13's lost round check-in in e2b's release run; supersedes the Q13 addendum and Q14)
 - `docs/architecture/deployment-provider.md`, `lifecycles/node-runtime-inspect.md`, `lifecycles/node-recovery.md`, `lifecycles/node-tickle.md`, `lifecycles/node-restart.md`, `build.md` §4.1
+
+Q40 first landing gate `34f90edd`: 1783 passed, 1 failed, 0 ignored across 62 summaries, 84 s. Own conformance assertion at crates/rdm-admin/tests/admin_serves_forward.rs:138 expected a Carried string containing Unknown; the ruled typed result is Resolve(Unknown). It now asserts that exact cause and UNAVAILABLE, with the original no-inner-handler assertion unchanged. The red candidate is recorded; the changed assertion is verified before a new land-script candidate.
