@@ -1,0 +1,77 @@
+[
+  [
+    "docs/architecture/lifecycles/node-stop.md",
+    "node.stop\n  \u2190 Started\n  \u2190 node.connections.deleted ConnectionsReceipt [Established { in_flight, closed } | Deadline { last_in_flight, closed, held }]\n  \u2190 node.stopped",
+    "node.stop (mesh-primary \u2192 exact node, NodeCommand 0x22)\n  \u2190 CommandAccepted (Started; admission, no lifecycle state)\n  \u2190 StopConnectionsDeleted { receipt: ConnectionsReceipt } (Data)\n  \u2190 NodeStopped (Terminal)\n  or, after acceptance: Failed { step, reason, code } (Terminal)"
+  ],
+  [
+    "docs/architecture/lifecycles/node-stop.md",
+    "1. Call node.stop for the accepted exact node, preserving its operation trace and\n   Build/attempt identity where Build-backed.",
+    "1. The mesh-primary sends NodeCommand `StopNode { node_id, incarnation, build_id, attempt,\n   operation }` to the exact birth. The caller's hop and Build carrier are unchanged. The node\n   validates the command and sends `CommandAccepted`; only this admission makes the mesh-primary\n   record stopping. A never-sent command writes no state."
+  ],
+  [
+    "docs/architecture/lifecycles/node-stop.md",
+    "   and the closed ids. The stop's visible status is stopping; the child call keeps its events,",
+    "   and the closed ids, reported as `StopConnectionsDeleted { receipt }` (Data) on the stop stream.\n   The stop's visible status is stopping; the child call keeps its events,"
+  ],
+  [
+    "docs/architecture/lifecycles/node-stop.md",
+    "4. Emit node.stopped on that same reply stream, and declare `Stopped` to the mesh-primary naming",
+    "4. Emit `NodeStopped` (Terminal) on that same reply stream, and declare `Stopped` to the mesh-primary naming"
+  ],
+  [
+    "docs/architecture/lifecycles/node-start.md",
+    "The following is a decoded caller progress view, not a new wire enum:\n\n```text\nnode.start\n  \u2190 Started\n  \u2190 node.joined\n  [hydrate_before_ready]\n  [node.topology.get, missing Build floor, rafka-time last]\n  \u2190 node.started\n  [mesh-primary sets ReadyForTraffic]\n  \u2190 Complete\n```",
+    "The mesh-primary \u2192 exact-node hop uses NodeCommand 0x22. The caller's hop and Build carrier\nare unchanged:\n\n```text\nStartNode { node_id, incarnation, build_id, attempt, operation }\n  \u2190 CommandAccepted (Started; admission, no lifecycle state)\n  \u2190 NodeJoined (Data; mesh-primary records pending)\n  [hydrate_before_ready]\n  [node.topology.get, missing Build floor, rafka-time last]\n  \u2190 NodeStarted (Terminal; mesh-primary records ReadyForTraffic)\n  [outer Build Complete only after the ReadyForTraffic record]\n```"
+  ],
+  [
+    "docs/architecture/lifecycles/node-start.md",
+    "Started\nFailed { step: \"node.join\", reason: \"\u2026\" }",
+    "CommandAccepted\nFailed { step: \"node.join\", reason: \"\u2026\", code } (Terminal)"
+  ],
+  [
+    "docs/architecture/lifecycles/node-start.md",
+    "   `node.joined` only after the accepted join and channel join. node.start clears NodeStopped at\n   node.joined.",
+    "   `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records\n   pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written\n   before `CommandAccepted`; starting remains the executing authority's overlay."
+  ],
+  [
+    "docs/architecture/lifecycles/node-start.md",
+    "5. Emit `node.started`: hydrated, with nothing pending.",
+    "5. Emit `NodeStarted` (Terminal): hydrated, with nothing pending."
+  ],
+  [
+    "docs/architecture/lifecycles/states.md",
+    "| node stopping | the node's mesh-primary | the stop call's admission (node.stop) |",
+    "| node stopping | the node's mesh-primary | the node's `CommandAccepted` admission frame on the `StopNode` command stream (0x22); no state before that frame |"
+  ],
+  [
+    "docs/architecture/node-rpc-envelope.md",
+    "| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |",
+    "| [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [NodeCommand 0x22 StartNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted \u2192 NodeJoined (Data) \u2192 NodeStarted (Terminal) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |"
+  ],
+  [
+    "docs/architecture/node-rpc-envelope.md",
+    "| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |",
+    "| [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [NodeCommand 0x22 StopNode](#nodecommand-op-0x22-rdm), exact-node hop only; CommandAccepted \u2192 StopConnectionsDeleted (Data) \u2192 NodeStopped (Terminal); the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic | `OK` for served result/completion; `FAILED_PRECONDITION` for named state refusal |"
+  ],
+  [
+    "docs/architecture/node-rpc-envelope.md",
+    "    StopNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },",
+    "    StopNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 8, reserved: refused by name, never executed"
+  ],
+  [
+    "docs/architecture/node-rpc-envelope.md",
+    "    StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },",
+    "    StartNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 16, reserved: refused by name, never executed"
+  ],
+  [
+    "docs/architecture/node-rpc-envelope.md",
+    "The caller contract is [node.stop / node.delete](#typed-object-contract); the sequences are\n[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md) and\n[node.delete](lifecycles/node-delete.md). The Status bodies StopNode and NodeLeft are\n[StatusRequest](#status-op-0x1b-rdm) positions 8 and 9.\n\nThe stop's graceful closure is `node.connections.delete { scope: All }`; its receipt is a\n`ConnectionsReceipt`, `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }`.\nStopped rides the StopNode reply as `Stopped { receipt }`, and the receipt keeps the deadline evidence\nwhen the stop hard-cut at the deadline. Reserved6 and Reserved7 keep their positions 6 and 7 and are\nnever sent; a receiver refuses them by name. Reserved2 keeps StatusReply position 2 and is\nnever sent. NodeLeft keeps its position and is never sent; a receiver refuses it by name.\nEnum discriminants are never reordered or reused ([Section 2](#section-2-the-body)).\n",
+    "The caller contract is [node.stop / node.delete](#typed-object-contract). The mesh-primary's\nexact-node stop and start hops use [NodeCommand 0x22](#nodecommand-op-0x22-rdm); caller routing and\nthe Build carrier are unchanged. StatusRequest positions 8 `StopNode` and 16 `StartNode` are reserved:\na receiver refuses each by name and executes nothing. Reply positions 17 `Stopped`, 18 `Started`\nand 19 `StartFailed` stand. Reserved6, Reserved7 and NodeLeft retain positions 6, 7 and 9 and are\nrefused by name; Reserved2 retains StatusReply position 2. No position is reordered or reused.\n\nStop's whole `node.connections.delete { scope: All }` reports its `ConnectionsReceipt` in\n`StopConnectionsDeleted` (Data), preserving `Established` or `Deadline` evidence; `NodeStopped`\nends the stream after the transport cut. The operation-named owed Stopped declaration remains\n(Q36); frame and declaration apply once through the operation's held row (Q49).\n"
+  ],
+  [
+    "docs/architecture/node-rpc-envelope.md",
+    "RDM owns this family. It carries the mesh-primary-to-node hop of\n[node.connections.delete](lifecycles/node-connections-delete.md), which owns sequencing and the\nfailure contract. Direction: a node's mesh-primary calls the exact birth. Every call is\nserver-streaming and not forwardable; the server keeps serving it while the node is\nconnections-deleting. Field order and enum positions are on the generated\n[wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md). Births are exact\nidentities, never names.\n\n```text\nmesh-primary \u2192 node   DeleteConnections { node_id, incarnation, scope: All | Connections([id, \u2026]) }\nnode \u2192 mesh-primary   CommandAccepted { node_id, incarnation }            (Started)\nnode \u2192 mesh-primary   ConnectionsDeleting { node_id, incarnation }        (Data; All only)\nnode \u2192 mesh-primary   ConnectionsDeleted { closed, not_open, held, receipt }   (Terminal)\n```\n\nA refusal before acceptance is one frame, one of the reply's refusal variants on the wire page.\n`CommandAccepted` carries no lifecycle state and is not node.start's\n`Started`. Only `ConnectionsDeleting` makes the mesh-primary record connections-deleting. A stream\nthat breaks after `CommandAccepted` is incomplete.\n",
+    "RDM owns this family. It carries the mesh-primary \u2192 exact-node hop of\n[node.connections.delete](lifecycles/node-connections-delete.md), [node.stop](lifecycles/node-stop.md)\nand [node.start](lifecycles/node-start.md). The caller's hop and Build carrier are unchanged.\nEvery call is server-streaming, never forwarded, and served while connections-deleting.\nBirths are exact identities, never names. Every earlier byte and enum position stands; requests\n`StopNode` and `StartNode` append at 1 and 2. Replies append after the existing positions 0\u201310.\n\n```text\nDeleteConnections { node_id, incarnation, scope }\n  \u2190 CommandAccepted { node_id, incarnation } (Started)\n  \u2190 ConnectionsDeleting { node_id, incarnation } (Data; All only)\n  \u2190 ConnectionsDeleted { closed, not_open, held, receipt } (Terminal)\nStopNode { node_id, incarnation, build_id, attempt, operation }\n  \u2190 CommandAccepted { node_id, incarnation } (Started)\n  \u2190 StopConnectionsDeleted { receipt } (Data; appended reply 11)\n  \u2190 NodeStopped (Terminal; appended reply 12)\nStartNode { node_id, incarnation, build_id, attempt, operation }\n  \u2190 CommandAccepted { node_id, incarnation } (Started)\n  \u2190 NodeJoined (Data; appended reply 13)\n  \u2190 NodeStarted (Terminal; appended reply 14)\nafter StopNode or StartNode acceptance:\n  \u2190 Failed { step, reason, code } (Terminal; appended reply 15)\n```\n\nA refusal before acceptance is one refusal frame. `CommandAccepted` is admission and carries no\nlifecycle state: on a stop it makes the mesh-primary record stopping. `ConnectionsDeleting`\nrecords connections-deleting for connections.delete; `NodeStopped` records stopped, `NodeJoined`\nrecords pending, and `NodeStarted` records ReadyForTraffic after every start gate and before the\nouter Build's Complete. Starting stays the executing authority's overlay. Nothing is written\nbefore CommandAccepted or for NotSent. There is no separate status declaration for an open start;\nthe Q36 owed report remains when no stream is open. A stream lost after acceptance is incomplete.\nThe owner records each frame before acknowledging recovery; repeated frames cause no second record.\n"
+  ]
+]

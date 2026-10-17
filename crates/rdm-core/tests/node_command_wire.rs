@@ -90,3 +90,34 @@ fn node_command_seals_streaming_and_never_forwarded_beside_a_forwarded_status() 
 fn every_reply_variant_of_node_command_classifies_to_one_code() {
     replies_match_the_frozen_eleven_variant_wire_schema();
 }
+
+/// CONTRACT (Q47 A): stop/start append requests 1/2, with the exact birth and operation;
+/// stop's closure is Data, its stopped frame Terminal; start's joined is Data and started Terminal.
+/// Existing ConnectionsDeleted remains Terminal. A failed admitted command is Terminal with code.
+#[test]
+fn stop_and_start_append_their_requests_and_report_their_ordered_frames() {
+    use rdm_core::streaming::{FrameKind, FrameOrder, StreamingProtocol};
+    let birth_bytes = bytes("0c3031323334353637383961620c397763707266677776746879");
+    for (position, name) in [(1, "stop-node"), (2, "start-node")] {
+        let mut wire = vec![position];
+        wire.extend_from_slice(&birth_bytes);
+        wire.extend_from_slice(&bytes("016201016f")); // build "b", attempt 1, operation "o"
+        let request = NodeCommand::decode_request(&wire).unwrap_or_else(|e| panic!("Q47 {name} request {position} must decode: {e:?}"));
+        assert_eq!(request.op(), name);
+        assert_eq!(request.subject(), (&node(), &birth()));
+        assert_eq!(NodeCommand::encode_request(&request).unwrap(), wire);
+    }
+    let accepted = NodeCommandReply::CommandAccepted { node_id: node(), incarnation: birth() };
+    for sequence in [vec![("0b000000", FrameKind::Data), ("0c", FrameKind::Terminal)], vec![("0d", FrameKind::Data), ("0e", FrameKind::Terminal)], vec![("0f017301720d", FrameKind::Terminal)]] {
+        let mut order = FrameOrder::new();
+        order.admit(NodeCommand::frame_kind(&accepted)).unwrap();
+        for (hex, kind) in sequence {
+            let wire = bytes(hex);
+            let frame = NodeCommand::decode_reply(&wire).unwrap_or_else(|e| panic!("Q47 appended frame {hex} must decode: {e:?}"));
+            assert_eq!(NodeCommand::frame_kind(&frame), kind, "{frame:?}");
+            assert_eq!(NodeCommand::encode_reply(&frame).unwrap(), wire);
+            order.admit(kind).unwrap();
+        }
+    }
+    assert_eq!(NodeCommand::frame_kind(&NodeCommandReply::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: None }), FrameKind::Terminal);
+}
