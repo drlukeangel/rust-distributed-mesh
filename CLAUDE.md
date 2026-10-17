@@ -42,7 +42,10 @@ packet without a section 5 delta is returned, not reviewed. Every question and r
 - Never export `CARGO_TARGET_DIR`; never `cargo test -p` in a lane (each `-p` shape rebuilds
   admin-core). One stem: `cells.sh`; the whole suite: `rdm-gate-at.sh <lane> fast|release`;
   landing: `rebase-gate-land.sh <lane> <branch>` (rebase, name check, gate, fast-forward push).
-  The lead's copies are in `/home/admin/lane-queue/i143-lead/`.
+  The scripts live in this repo under `scripts/gate/` (landed `5fc51946`): the land script runs
+  main's copy, the gate runs the lane's own copy, and `cells.sh` builds exactly what the gate
+  builds. `/home/admin/lane-queue/i143-lead/` holds short wrappers only. Gate state (the red-tree
+  list, the timings ledger) and the gate logs are in `/home/admin/rust-distributed-mesh-deploy/`.
 - A red gate is read, never re-rolled. A landing that adds a retired word to an identifier or a
   file name, or an issue-named test file, is refused by the name check.
 - Every landing that changes a page's statement lands the page text and the code together.
