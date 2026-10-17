@@ -28,7 +28,9 @@ fn run(malformed: bool) {
         let author = crate::gossip_author(&fabric);
         let status = |scope: &str, stamp| Frame::MeshStatus { mesh: scope.into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: stamp };
         let (event, parent) = {
+            let upstream = tracing::info_span!("rdm.test.gossip.update.via-upstream");
             let span = tracing::info_span!("rdm.test.gossip.update.via-author");
+            rdm_transport::set_remote_parent(&span, &rdm_transport::traceparent_of(&upstream).unwrap(), Some("rojo=00f067aa0ba902b7"));
             span.in_scope(|| (status("traced", 1).authored(&author, 2, 1), rdm_transport::current_traceparent().unwrap()))
         };
         let author_trace = parent.split('-').nth(1).unwrap().trim_start_matches('0').to_string();
@@ -42,6 +44,7 @@ fn run(malformed: bool) {
         } else {
             let (attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&bytes).unwrap();
             assert_eq!(attrs.iter().find(|(n, _)| n == "traceparent").map(|(_, v)| v.as_str()), Some(parent.as_str()), "the authored trace crosses the wire");
+            assert_eq!(attrs.iter().find(|(n, _)| n == "tracestate").map(|(_, v)| v.as_str()), Some("rojo=00f067aa0ba902b7"));
         }
         sender.broadcast_neighbors(bytes.clone().into()).await.unwrap();
         sender.broadcast_neighbors(status("barrier", 1).authored(&author, 2, 1).encode().into()).await.unwrap();
@@ -52,18 +55,39 @@ fn run(malformed: bool) {
             sender.broadcast_neighbors(bytes.into()).await.unwrap();
             sender.broadcast_neighbors(status("barrier", 2).authored(&author, 2, 2).encode().into()).await.unwrap();
             held(&receiver, "barrier", 2).await;
+            let parent_context = event.context().unwrap();
+            let traced = |f: Frame| {
+                let mut f = f.authored(&author, 2, 1);
+                let Frame::Authored { context, .. } = &mut f else { unreachable!() };
+                context.traceparent = parent_context.traceparent.clone(); context.tracestate = parent_context.tracestate.clone(); f.encode()
+            };
+            let older = traced(status("traced", 0));
+            let inconsistent = traced(Frame::MeshStatus { mesh: "traced".into(), status: "leaving".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 });
+            let gap = traced(Frame::MembersDelta { mesh: "mesh2".into(), source_publisher: rdm_core::PublisherId { node: "mesh2.admin.1".into(), node_id: author.node.clone(), incarnation: author.incarnation.clone() }, base_version: 10, topology_version: 11, published_at_rafka_ms: 1, changed: vec![], removed: vec![], in_flight: vec![], departed: vec![] });
+            let (mut attrs, _): (Vec<(String, String)>, Vec<u8>) = rdm_transport::wire::decode(&event.encode()).unwrap();
+            attrs.retain(|(n, _)| n != "sequence"); attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.mesh.concern".into();
+            let reserved = rdm_transport::wire::encode(&(attrs.clone(), vec![255u8])).unwrap();
+            attrs.iter_mut().find(|(n, _)| n == "type").unwrap().1 = "rdm.unknown".into();
+            let unknown = rdm_transport::wire::encode(&(attrs, vec![255u8])).unwrap();
+            for (i, bytes) in [older, inconsistent, gap, reserved, unknown].into_iter().enumerate() {
+                sender.broadcast_neighbors(bytes.into()).await.unwrap();
+                let stamp = i as u64 + 3;
+                sender.broadcast_neighbors(status("barrier", stamp).authored(&author, 2, stamp).encode().into()).await.unwrap();
+                held(&receiver, "barrier", stamp).await;
+            }
+            assert_eq!(receiver.mesh_status("traced").unwrap().status, "ready-for-traffic");
         }
         send_ep.close().await; recv_ep.close().await;
         author_trace
     });
     let spans = capture.spans().unwrap();
-    let applied: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["mesh"] == "traced").collect();
+    let applied: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-mesh-status" && s["attributes"]["mesh"] == "traced" && s["attributes"]["taken"] == "true").collect();
     assert_eq!(applied.len(), 1, "exactly one ordinary apply span");
     if malformed {
         assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.update.via-context-dropped" && s["attributes"]["context_dropped"] == "traceparent"), "malformed traceparent dropped by name");
         assert_ne!(applied[0]["trace_id"].as_str().unwrap().trim_start_matches('0'), author_trace);
     } else {
-        for name in ["rdm.mesh.membership.update.via-frame", "rdm.mesh.membership.update.via-mesh-status", "rdm.mesh.membership.update.via-duplicate"] {
+        for name in ["rdm.mesh.membership.update.via-frame", "rdm.mesh.membership.update.via-mesh-status", "rdm.mesh.membership.update.via-duplicate", "rdm.mesh.membership.reject.via-stale", "rdm.mesh.membership.reject.via-inconsistent", "rdm.mesh.membership.update.via-gap", "rdm.mesh.membership.reject.via-reserved", "rdm.mesh.membership.reject.via-unknown-type"] {
             assert!(spans.iter().any(|s| s["name"] == name && s["trace_id"].as_str().unwrap_or("").trim_start_matches('0') == author_trace), "{name} shares the author's trace");
         }
     }

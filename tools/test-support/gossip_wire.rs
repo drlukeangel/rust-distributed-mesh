@@ -35,7 +35,10 @@ fn stamp(ms: u64) -> String {
 /// A complete golden, including the metadata count, all literal names and both vector prefixes.
 /// The literal data golden includes its historical enum byte solely to select the reference row;
 /// that byte is removed and never appears in the expected wire message.
-pub fn golden(f: &Frame, old: &[u8]) -> Vec<u8> {
+pub fn golden(f: &Frame, old: &[u8]) -> Vec<u8> { golden_with_trace(f, old, None, None) }
+
+/// The resealed optional standard pairs, supplied as literal expected W3C strings.
+pub fn golden_with_trace(f: &Frame, old: &[u8], parent: Option<&str>, state: Option<&str>) -> Vec<u8> {
     let kinds = ["rdm.mesh.digest", "rdm.mesh.members", "rdm.mesh.members.delta", "rdm.node.deleting", "rdm.node.deleted", "rdm.node.restarting", "rdm.mesh.status", "rdm.fabric.status", "rdm.seat.seated", "rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new", "rdm.fabric.state.committing", "rdm.fabric.state.committed", "rdm.fabric.traffic.opening", "rdm.fabric.traffic.opened", "rdm.node.stopped", "rdm.node.primary.updated", "rdm.node.primary.updating"];
     let kind = kinds[old[0] as usize];
     let a = author(); let mut source = format!("rdm://{}/{}/{}", a.fabric, a.node, a.incarnation);
@@ -85,6 +88,8 @@ pub fn golden(f: &Frame, old: &[u8]) -> Vec<u8> {
     let mut attrs = vec![("specversion", "1.0".into()), ("id", format!("{kind}/{}", joined(identity))), ("source", source), ("type", kind.into()), ("subject", subject)];
     if let Some(s) = seq { attrs.push(("sequence", s)); }
     attrs.push(("time", stamp(ms))); attrs.push(("datacontenttype", "application/octet-stream".into()));
+    if let Some(p) = parent { attrs.push(("traceparent", p.into())); }
+    if let Some(s) = state { attrs.push(("tracestate", s.into())); }
     let mut body = old[1..].to_vec();
     if let Frame::Members { mesh, publisher, topology_version, published_at_rafka_ms, snapshot_id, .. } = f.data() {
         let mut prefix = Vec::new(); text(mesh, &mut prefix); text(&publisher.node, &mut prefix); text(publisher.incarnation.as_str(), &mut prefix); text(publisher.node_id.as_str(), &mut prefix);

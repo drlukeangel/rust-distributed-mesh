@@ -469,3 +469,13 @@ fn handover_reseal_refuses_a_moved_position_or_a_lost_golden() {
     f.edit("crates/rdm-core/tests/handover_wire.rs", "fn failed_primary_update_retains_the_typed_build_code_in_its_appended_position", "fn changed_failed_primary_update_cell");
     only(check(f.root()), Ratchet::PrimaryUpdateResealIsAtomic);
 }
+
+#[test]
+fn gossip_envelope_reseal_is_atomic_holds_context_goldens_and_receive_controls() {
+    let t = Planted::of_tree();
+    t.edit("crates/rdm-transport/src/envelope.rs", "pub traceparent: Option<String>", "pub lost_parent: Option<String>");
+    only(check(t.root()), Ratchet::GossipEnvelopeResealIsAtomic);
+    let g = Planted::of_tree();
+    g.edit("crates/rdm-transport/tests/digest_frames_wire.rs", "fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling", "fn missing_traced_golden");
+    only(check(g.root()), Ratchet::GossipEnvelopeResealIsAtomic);
+}

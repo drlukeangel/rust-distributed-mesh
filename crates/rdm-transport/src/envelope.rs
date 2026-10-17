@@ -53,6 +53,10 @@ pub struct Context {
     pub time_ms: u64,
     /// Birth and existing counter of this publication's owner, for Members only.
     pub publication: Option<(Birth, u64)>,
+    /// Original author’s W3C parent; preserved through replay and forwarding.
+    pub traceparent: Option<String>,
+    /// Original author’s vendor trace state, never a receive decision.
+    pub tracestate: Option<String>,
 }
 
 /// The catalog's literal types, in historical page order.
@@ -181,7 +185,8 @@ impl Context {
             Frame::NewFabricPrimary { holder, .. } => { identity = vec![holder.node_id.to_string(), holder.incarnation.to_string()]; format!("fabric/{}/seat", author.fabric) }
             Frame::Authored { .. } => unreachable!(),
         };
-        Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, publication }
+        let (trace, _) = sanitized_trace(crate::current_traceparent(), crate::current_tracestate());
+        Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
 
     fn attributes(&self) -> Result<Vec<(String, String)>, WireError> {
@@ -189,6 +194,8 @@ impl Context {
         if let Some(s) = &self.sequence { a.push(("sequence".into(), s.clone())); }
         a.push(("time".into(), date(self.time_ms)?));
         a.push(("datacontenttype".into(), "application/octet-stream".into()));
+        if let Some(parent) = &self.traceparent { a.push(("traceparent".into(), parent.clone())); }
+        if let Some(state) = &self.tracestate { a.push(("tracestate".into(), state.clone())); }
         Ok(a)
     }
 
@@ -229,14 +236,49 @@ fn members_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), WireError> {
     Ok((prefix, data.len() - cursor.len()))
 }
 
+/// The receive path observes tracing even when the event type is reserved or unknown.
+pub(crate) struct Received {
+    pub trace: rdm_core::context::CallContext,
+    pub dropped: Vec<rdm_core::context::Dropped>,
+    pub frame: Result<Frame, DecodeError>,
+}
+
+fn sanitized_trace(parent: Option<String>, state: Option<String>) -> (rdm_core::context::CallContext, Vec<rdm_core::context::Dropped>) {
+    use rdm_core::context::{CallContext, Dropped};
+    let (mut trace, mut dropped) = CallContext { traceparent: parent, tracestate: state, ..Default::default() }.sanitized();
+    if trace.tracestate.as_deref().is_some_and(|s| {
+        trace.traceparent.is_none() || !s.bytes().all(|b| (0x20..=0x7e).contains(&b))
+            || s.split(',').count() > 32
+            || opentelemetry::trace::TraceState::from_key_value(s.split(',').map(|m| m.trim().split_once('=').expect("sanitized member"))).is_err()
+            || { let mut keys = std::collections::BTreeSet::new(); s.split(',').any(|m| !keys.insert(m.trim().split_once('=').unwrap().0)) }
+    }) {
+        trace.tracestate = None;
+        dropped.push(Dropped::Tracestate);
+    }
+    (trace, dropped)
+}
+
 /// Decode context, reject reserved/unknown types, then select and validate domain data.
-pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
+pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> { decode_received(bytes).frame }
+
+pub(crate) fn decode_received(bytes: &[u8]) -> Received {
+    let mut trace = rdm_core::context::CallContext::default();
+    let mut dropped = Vec::new();
+    let frame = decode_event(bytes, &mut trace, &mut dropped);
+    Received { trace, dropped, frame }
+}
+
+fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, dropped: &mut Vec<rdm_core::context::Dropped>) -> Result<Frame, DecodeError> {
     if bytes.len() > crate::membership::MAX_FRAME { return Err(invalid("complete message exceeds MAX_FRAME").into()); }
     let (pairs, mut data): (Vec<(String, String)>, Vec<u8>) = wire::decode(bytes)?;
+    // Trace values are sanitized separately: even an invalid String value cannot refuse data.
+    let parent = pairs.iter().find(|(n, _)| n == "traceparent").map(|(_, v)| v.clone());
+    let state = pairs.iter().find(|(n, _)| n == "tracestate").map(|(_, v)| v.clone());
+    (*trace, *dropped) = sanitized_trace(parent, state);
     let mut a = BTreeMap::new();
     for (name, value) in pairs {
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) { return Err(invalid("attribute name").into()); }
-        if value.chars().any(|c| { let n = c as u32; n <= 0x1f || (0x7f..=0x9f).contains(&n) || (0xfdd0..=0xfdef).contains(&n) || n & 0xffff >= 0xfffe }) { return Err(invalid("attribute String value").into()); }
+        if name != "traceparent" && name != "tracestate" && value.chars().any(|c| { let n = c as u32; n <= 0x1f || (0x7f..=0x9f).contains(&n) || (0xfdd0..=0xfdef).contains(&n) || n & 0xffff >= 0xfffe }) { return Err(invalid("attribute String value").into()); }
         if a.insert(name, value).is_some() { return Err(invalid("duplicate attribute").into()); }
     }
     let required = |name: &str| -> Result<&str, WireError> { a.get(name).filter(|v| !v.is_empty()).map(String::as_str).ok_or_else(|| invalid(&format!("missing {name}"))) };
@@ -279,7 +321,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     }
     let mut tagged = vec![index as u8]; tagged.extend(data);
     let frame: Frame = wire::decode(&tagged)?;
-    let context = Context { id, source, kind, subject, sequence, time_ms, publication };
+    let context = Context { id, source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent.clone(), tracestate: trace.tracestate.clone() };
     match &frame {
         Frame::NodeDeleting { publisher, .. } | Frame::NodeRestarting { publisher, .. } | Frame::NodeStopped { publisher, .. }
             if Birth::publisher(&context.source.fabric, publisher) != context.source => return Err(invalid("publisher and source disagree").into()),
@@ -334,8 +376,42 @@ mod tests {
         assert_eq!(decode(&wire::encode(&(attrs.clone(), data.clone())).unwrap()).unwrap().context(), event().context());
         attrs.push(attrs[0].clone()); malformed(attrs, data);
         let (mut attrs, data) = parts(); attrs.push(("traceparent".into(), "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into()));
-        assert!(decode(&wire::encode(&(attrs, data)).unwrap()).is_ok(), "an unsupported optional attribute is ignored");
+        assert!(decode(&wire::encode(&(attrs, data)).unwrap()).is_ok(), "the optional tracing attribute is accepted");
     }
+    #[test]
+    fn tracing_is_optional_sanitized_and_excluded_from_event_identity() {
+        let (attrs, data) = parts();
+        let parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        let baseline = event();
+        for bad in ["", "not-a-parent", "00-00000000000000000000000000000000-0123456789abcdef-01", "00-0123456789abcdef0123456789abcdef-0000000000000000-01", "bad\nparent"] {
+            let mut pairs = attrs.clone(); pairs.push(("traceparent".into(), bad.into())); pairs.push(("tracestate".into(), "rojo=123".into()));
+            let received = decode_received(&wire::encode(&(pairs, data.clone())).unwrap());
+            assert_eq!(received.dropped, vec![rdm_core::context::Dropped::Traceparent]);
+            let frame = received.frame.unwrap(); assert_eq!(frame.context(), baseline.context());
+        }
+        for bad in ["", "no-equals", "rojo=a\n", "BadKey=a", "rojo=a,rojo=b", "orphan"] {
+            let mut pairs = attrs.clone(); pairs.push(("traceparent".into(), parent.into())); pairs.push(("tracestate".into(), bad.into()));
+            let received = decode_received(&wire::encode(&(pairs, data.clone())).unwrap());
+            assert_eq!(received.dropped, vec![rdm_core::context::Dropped::Tracestate], "{bad:?}");
+            assert_eq!(received.trace.traceparent.as_deref(), Some(parent));
+            assert!(received.frame.unwrap().context().unwrap().tracestate.is_none());
+        }
+        let mut pairs = attrs; pairs.push(("traceparent".into(), parent.into())); pairs.push(("tracestate".into(), "rojo=123".into()));
+        let frame = decode(&wire::encode(&(pairs, data)).unwrap()).unwrap();
+        assert_eq!(frame.context().unwrap().id, baseline.context().unwrap().id);
+        assert_eq!(frame.context().unwrap().traceparent.as_deref(), Some(parent));
+        let forwarded = crate::membership::forward_of(frame.clone(), "mesh2.admin.1", "mesh2").unwrap();
+        assert_eq!(forwarded.context(), frame.context(), "forwarder keeps the author's context");
+        let retained = frames_roundtrip(&[forwarded]);
+        assert_eq!(retained[0].context(), frame.context(), "directed replay keeps the author's context");
+    }
+    fn frames_roundtrip(events: &[Frame]) -> Vec<Frame> {
+        #[derive(Serialize, Deserialize)]
+        struct Retained { #[serde(with = "frames")] events: Vec<Frame> }
+        let bytes = wire::encode(&Retained { events: events.to_vec() }).unwrap();
+        wire::decode::<Retained>(&bytes).unwrap().events
+    }
+
     #[test]
     fn reserved_and_unknown_types_are_refused_before_invalid_data_is_decoded() {
         for (index, kind) in ["rdm.mesh.concern", "rdm.node.connections.deleting", "rdm.node.leaving", "rdm.node.left", "rdm.node.connections.deleted", "rdm.fabric.primary.new"].into_iter().enumerate() {

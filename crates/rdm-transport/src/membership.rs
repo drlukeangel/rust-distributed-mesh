@@ -1570,51 +1570,62 @@ impl Channel {
                     let node = book.observer_name();
                     match &ev {
                         Some(Ok(Event::Received(m))) => {
-                            match crate::envelope::decode(&m.content) {
-                                Ok(f) => {
-                                    if f.context().is_none_or(|c| c.source.fabric.as_str() != fabric) {
-                                        tracing::info_span!("rdm.mesh.membership.reject.via-undecodable-frame", node = %node, channel = %channel, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), error = "source fabric differs from the channel")
-                                            .in_scope(|| tracing::info!("the source does not belong to this fabric"));
-                                        continue;
-                                    }
-                                    received.fetch_add(1, Ordering::Relaxed);
-                                    // The one ordering check of the receive path (R-RX3), against the
-                                    // node's one held version per source, shared by every channel and
-                                    // the topology-read install: a frame received after a newer one of
-                                    // its source is ignored, by name, before any handler reads it. The
-                                    // check and what the handler installs are one hold of it.
-                                    let receipt = match f.data() {
-                                        Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeRestarting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
-                                            "rdm.mesh.membership.update.via-lifecycle-receipt",
-                                            node = %node, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation,
-                                            node_id = %op.node_id, incarnation_id = %op.incarnation, topology_version,
-                                        )),
-                                        _ => None,
-                                    };
-                                    let _receipt = receipt.as_ref().map(tracing::Span::enter);
-                                    let mut held = order.lock().unwrap();
-                                    if admitted(&mut held, &f, &node, &channel) {
-                                        on_frame(f, &mut held);
-                                    }
-                                }
-                                // A frame this build does not read is refused by name, with who
-                                // sent it, never dropped as if it had not arrived.
-                                Err(crate::envelope::DecodeError::Reserved(kind, position)) => tracing::info_span!(
-                                    "rdm.mesh.membership.reject.via-reserved", node = %node, channel = %channel, frame = reserved_name(position), event_type = %kind, position, via = if channel == "backbone" { "backbone" } else { "mesh-channel" }, ignored = true,
-                                ).in_scope(|| tracing::info!("reserved type refused before data decode")),
-                                Err(crate::envelope::DecodeError::Unknown(kind)) => tracing::info_span!(
-                                    "rdm.mesh.membership.reject.via-unknown-type", node = %node, channel = %channel, frame = %kind, ignored = true,
-                                ).in_scope(|| tracing::info!("unknown type refused before data decode")),
-                                Err(crate::envelope::DecodeError::Malformed(e)) => tracing::info_span!(
-                                    "rdm.mesh.membership.reject.via-undecodable-frame",
-                                    node = %node,
-                                    channel = %channel,
-                                    sender = %m.delivered_from.fmt_short(),
-                                    bytes = m.content.len(),
-                                    error = %e
-                                )
-                                .in_scope(|| tracing::info!("a gossip frame does not decode")),
+                            let received_event = crate::envelope::decode_received(&m.content);
+                            let span = tracing::info_span!("rdm.mesh.membership.update.via-frame", node = %node, channel = %channel, sender = %m.delivered_from.fmt_short(), bytes = m.content.len());
+                            if let Some(parent) = received_event.trace.traceparent.as_deref() {
+                                crate::set_remote_parent(&span, parent, received_event.trace.tracestate.as_deref());
                             }
+                            span.in_scope(|| {
+                                if !received_event.dropped.is_empty() {
+                                    tracing::info_span!("rdm.mesh.membership.update.via-context-dropped", node = %node, channel = %channel, context_dropped = %rdm_core::context::dropped_as_str(&received_event.dropped))
+                                        .in_scope(|| tracing::info!("malformed tracing metadata dropped; the frame continues"));
+                                }
+                                match received_event.frame {
+                                    Ok(f) => {
+                                        if f.context().is_none_or(|c| c.source.fabric.as_str() != fabric) {
+                                            tracing::info_span!("rdm.mesh.membership.reject.via-undecodable-frame", node = %node, channel = %channel, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), error = "source fabric differs from the channel")
+                                                .in_scope(|| tracing::info!("the source does not belong to this fabric"));
+                                            return;
+                                        }
+                                        received.fetch_add(1, Ordering::Relaxed);
+                                        // The one ordering check of the receive path (R-RX3), against the
+                                        // node's one held version per source, shared by every channel and
+                                        // the topology-read install: a frame received after a newer one of
+                                        // its source is ignored, by name, before any handler reads it. The
+                                        // check and what the handler installs are one hold of it.
+                                        let receipt = match f.data() {
+                                            Frame::NodeDeleting { op, topology_version, .. } | Frame::NodeRestarting { op, topology_version, .. } | Frame::NodeStopped { op, topology_version, .. } => Some(tracing::info_span!(
+                                                "rdm.mesh.membership.update.via-lifecycle-receipt",
+                                                node = %node, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation,
+                                                node_id = %op.node_id, incarnation_id = %op.incarnation, topology_version,
+                                            )),
+                                            _ => None,
+                                        };
+                                        let _receipt = receipt.as_ref().map(tracing::Span::enter);
+                                        let mut held = order.lock().unwrap();
+                                        if admitted(&mut held, &f, &node, &channel) {
+                                            on_frame(f, &mut held);
+                                        }
+                                    }
+                                    // A frame this build does not read is refused by name, with who
+                                    // sent it, never dropped as if it had not arrived.
+                                    Err(crate::envelope::DecodeError::Reserved(kind, position)) => tracing::info_span!(
+                                        "rdm.mesh.membership.reject.via-reserved", node = %node, channel = %channel, frame = reserved_name(position), event_type = %kind, position, via = if channel == "backbone" { "backbone" } else { "mesh-channel" }, ignored = true,
+                                    ).in_scope(|| tracing::info!("reserved type refused before data decode")),
+                                    Err(crate::envelope::DecodeError::Unknown(kind)) => tracing::info_span!(
+                                        "rdm.mesh.membership.reject.via-unknown-type", node = %node, channel = %channel, frame = %kind, ignored = true,
+                                    ).in_scope(|| tracing::info!("unknown type refused before data decode")),
+                                    Err(crate::envelope::DecodeError::Malformed(e)) => tracing::info_span!(
+                                        "rdm.mesh.membership.reject.via-undecodable-frame",
+                                        node = %node,
+                                        channel = %channel,
+                                        sender = %m.delivered_from.fmt_short(),
+                                        bytes = m.content.len(),
+                                        error = %e
+                                    )
+                                    .in_scope(|| tracing::info!("a gossip frame does not decode")),
+                                }
+                            });
                             continue;
                         }
                         // A neighbour coming up or going down is named: when a channel found its

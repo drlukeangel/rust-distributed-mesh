@@ -136,3 +136,52 @@ fn members_chunks_are_sized_against_the_complete_message() {
     assert_eq!(chunks.iter().map(|f| match f.data() { Frame::Members { digests, .. } => digests.len(), _ => unreachable!() }).sum::<usize>(), 2);
     assert!(chunks.iter().all(|f| f.encode().len() <= 4032));
 }
+
+/// Optional tracing pairs move the complete envelope, never its opaque data or identity.
+/// Hand prefix: ten pairs, traceparent name length 11, value length 55; tracestate name 10.
+#[test]
+fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling() {
+    const PARENT: &str = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+    const STATE: &str = "rojo=00f067aa0ba902b7";
+    let mut d = digest("ready-for-traffic");
+    d.admin_api_base = Some("x".repeat(3500));
+    let frame = Frame::Digest { digest: d };
+    // 3500 = postcard unsigned varint 0xac 0x1b. All other domain positions stand.
+    let mut data = bytes("00 0c313132333435363738396162 0c303132333435363738396162 0b6d657368312e7270632e31 016b 007f00000150 0c79727a34396a333033796834 0000 00 01 ac1b");
+    data.extend(std::iter::repeat_n(b'x', 3500));
+    data.extend(bytes("07 09 00 00 00 00 00 00"));
+    let expected = crate::gossip_wire::golden_with_trace(&frame, &data, Some(PARENT), Some(STATE));
+    let mut traced = crate::gossip_wire::authored(&frame);
+    let Frame::Authored { context, .. } = &mut traced else { unreachable!() };
+    context.traceparent = Some(PARENT.into()); context.tracestate = Some(STATE.into());
+    assert_eq!(traced.encode(), expected);
+    assert_eq!(expected[0], 10, "the complete metadata count is hand-sealed");
+    assert!(expected.len() <= rdm_transport::membership::MAX_FRAME);
+    assert!(expected.len() > 3900);
+    assert_eq!(Frame::decode(&expected).unwrap().encode(), expected);
+    println!("traced complete message golden: {} B / {} B", expected.len(), rdm_transport::membership::MAX_FRAME);
+}
+
+/// The full permitted trace state rides every chunk; packing counts its exact metadata bytes.
+#[test]
+fn members_chunks_include_the_maximum_trace_context_in_their_complete_size() {
+    let author = crate::gossip_wire::author();
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: author.incarnation.clone(), node_id: author.node.clone() };
+    let state = format!("a={},b={}", "x".repeat(256), "y".repeat(251));
+    assert_eq!(state.len(), rdm_core::context::MAX_TRACESTATE_BYTES);
+    let mut d = digest("ready-for-traffic"); d.admin_api_base = Some("x".repeat(1600));
+    let mut other = d.clone(); other.node.node_id = rdm_core::NodeId::mint(); other.node.name = "mesh1.rpc.2".parse().unwrap();
+    let shape = |digests, in_flight, departed, chunk_index, chunk_count| {
+        let mut f = Frame::Members { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: None, topology_version: 1, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index, chunk_count, digests, in_flight, departed }.authored(&author, 0, 1);
+        let Frame::Authored { context, .. } = &mut f else { unreachable!() };
+        context.traceparent = Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".into());
+        context.tracestate = Some(state.clone()); f
+    };
+    let full = rdm_transport::snapshot::Full::new(vec![d, other], vec![], vec![]);
+    let oversized = shape(full.digests(), vec![], vec![], 0, 1).encode();
+    assert!(oversized.len() > rdm_transport::membership::MAX_FRAME);
+    let chunks = rdm_transport::snapshot::chunks_of(&full, shape);
+    assert_eq!(chunks.len(), 2);
+    assert!(chunks.iter().all(|f| f.encode().len() <= rdm_transport::membership::MAX_FRAME));
+    assert!(chunks.iter().all(|f| f.context().unwrap().tracestate.as_ref() == Some(&state)));
+}

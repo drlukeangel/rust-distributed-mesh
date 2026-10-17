@@ -36,6 +36,7 @@ pub enum Ratchet {
     PrimaryUpdateResealIsAtomic,
     NodeCommandResealIsAtomic,
     TransportHeaderResealIsAtomic,
+    GossipEnvelopeResealIsAtomic,
     OneNewLivenessPrimitive,
     RdmSpansAreRdmPrefixed,
     NoJsonOnTheWire,
@@ -44,7 +45,7 @@ pub enum Ratchet {
 }
 
 impl Ratchet {
-    pub const ALL: [Ratchet; 26] = [
+    pub const ALL: [Ratchet; 27] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
         Self::AcceptedBuildHasExplicitPathConfig,
@@ -66,6 +67,7 @@ impl Ratchet {
         Self::PrimaryUpdateResealIsAtomic,
         Self::NodeCommandResealIsAtomic,
         Self::TransportHeaderResealIsAtomic,
+        Self::GossipEnvelopeResealIsAtomic,
         Self::OneNewLivenessPrimitive,
         Self::RdmSpansAreRdmPrefixed,
         Self::NoJsonOnTheWire,
@@ -97,6 +99,7 @@ impl Ratchet {
             Self::ForwardResealIsAtomic => "forward_reseal_is_atomic",
             Self::NodeCommandResealIsAtomic => "node_command_reseal_is_atomic",
             Self::TransportHeaderResealIsAtomic => "transport_header_reseal_is_atomic",
+            Self::GossipEnvelopeResealIsAtomic => "gossip_envelope_reseal_is_atomic",
             Self::OneNewLivenessPrimitive => "one_new_liveness_primitive",
             Self::RdmSpansAreRdmPrefixed => "rdm_spans_are_rdm_prefixed",
             Self::NoJsonOnTheWire => "no_json_on_the_wire",
@@ -726,6 +729,12 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 ratchet,
                 &mut out,
             );
+        }
+        Ratchet::GossipEnvelopeResealIsAtomic => {
+            require(root, "crates/rdm-transport/src/envelope.rs", &["pub const TYPES: [&str; 22]", "pub traceparent: Option<String>", "pub tracestate: Option<String>", "decode_received", "sanitized_trace"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/src/membership.rs", &["rdm.mesh.membership.update.via-context-dropped", "crate::set_remote_parent"], ratchet, &mut out);
+            require(root, "crates/rdm-transport/tests/digest_frames_wire.rs", &["fn the_traced_envelope_reseal_matches_the_hand_golden_and_complete_ceiling", "fn members_chunks_include_the_maximum_trace_context_in_their_complete_size"], ratchet, &mut out);
+            require(root, "crates/rdm-test/tests/gossip/trace_context.rs", &["fn a_received_frames_span_shares_its_authors_trace_id", "fn a_malformed_traceparent_is_dropped_by_name_and_the_frame_applies"], ratchet, &mut out);
         }
         Ratchet::NoJsonOnTheWire => {
             let files: Vec<PathBuf> = files_in(root, WIRE_SOURCES).into_iter().filter(|f| !NON_WIRE_CORE_FILES.iter().any(|n| rel(root, f) == format!("crates/rdm-core/src/{n}")) && !NON_WIRE_TRANSPORT_FILES.iter().any(|n| rel(root, f) == format!("crates/rdm-transport/src/{n}"))).collect();
