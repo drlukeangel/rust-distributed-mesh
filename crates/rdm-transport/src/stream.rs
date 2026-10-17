@@ -474,7 +474,7 @@ impl<P: StreamingProtocol> ReplyStream<P> {
             StreamFailure::Indeterminate(reason) => (reason.code(), reason.detail_name()),
             StreamFailure::Violation(_) => (rdm_core::outcome::Code::Internal, "protocol-violation"),
         };
-        self.span.record("code", code.name()).record("detail", detail).record("outcome", "failed").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+        self.span.record("code", code.name()).record("detail", detail).record("elapsed_ms", self.started.elapsed().as_millis() as u64);
         // The owner has its end: the invocation is owed no longer.
         self.owed.guard.complete();
         if let Some(h) = &self.owed._task.0 {
@@ -594,7 +594,7 @@ impl NodeRpcClient {
 impl<P: StreamingProtocol> Drop for ReplyStream<P> {
     fn drop(&mut self) {
         if !self.done {
-            self.span.record("code", "CANCELLED").record("detail", "caller-gone").record("outcome", "cancelled").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+            self.span.record("code", "CANCELLED").record("detail", "caller-gone").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
         }
     }
 }

@@ -1487,7 +1487,7 @@ impl CallSpanGuard {
 impl Drop for CallSpanGuard {
     fn drop(&mut self) {
         if !self.done {
-            self.span.record("code", "CANCELLED").record("detail", "caller-gone").record("outcome", "cancelled").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+            self.span.record("code", "CANCELLED").record("detail", "caller-gone").record("elapsed_ms", self.started.elapsed().as_millis() as u64);
         }
     }
 }
