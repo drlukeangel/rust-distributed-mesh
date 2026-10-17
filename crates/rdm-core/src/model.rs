@@ -287,6 +287,12 @@ mod tests {
     #[test]
     fn view_spelling_matches_the_design_contract() {
         assert_eq!(serde_json::to_value(NodeStatus::ReadyForTraffic).unwrap(), "ready-for-traffic");
+        assert_eq!(serde_json::to_value(NodeStatus::Draining).unwrap(), "connections-deleting");
+        assert_eq!(serde_json::to_value(crate::MemberStatus::Draining).unwrap(), "connections-deleting");
+        assert_eq!(serde_json::from_str::<NodeStatus>("\"connections-deleting\"").unwrap(), NodeStatus::Draining);
+        assert_eq!(serde_json::from_str::<crate::MemberStatus>("\"connections-deleting\"").unwrap(), crate::MemberStatus::Draining);
+        assert_eq!(postcard::to_allocvec(&NodeStatus::Draining).unwrap(), [2], "the view enum position stands");
+        assert_eq!(postcard::to_allocvec(&crate::MemberStatus::Draining).unwrap(), [2], "the projection enum position stands");
         assert_eq!(serde_json::to_value(NodeKind::RpcNode).unwrap(), "rpc_node");
         assert_eq!(serde_json::to_value(NodeKind::NodeAdmin).unwrap(), "node_admin");
         let n = Node::allocated("mesh1.rpc.2".parse().unwrap());
