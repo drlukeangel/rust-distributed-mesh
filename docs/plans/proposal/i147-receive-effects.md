@@ -7,6 +7,9 @@ remains next and is not started in this landing.
 Page: `docs/architecture/gossip.md`, §3.1, “Receive rules: stale, duplicate and gap, per frame”.
 Only the frame table changes. The preceding sentence “It decides nothing on a frame” stays.
 Each later row's cells must prove the listed effect and the absence of any other effect.
+The approved table and the catalog cell `every_frame_kind_has_a_row_in_the_receive_rules`
+will land together: its header and required-column assertions move from five columns to six.
+That catalog change is not made against the current five-column architecture page.
 “Refuse” is the reserved-frame effect; its diagnostic span installs nothing and carries nothing.
 
 Old:

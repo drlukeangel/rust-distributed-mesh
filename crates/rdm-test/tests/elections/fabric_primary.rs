@@ -86,7 +86,10 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let old_primary = fabric.fabric_primary.clone().expect("the fabric names its primary").to_string();
     let nodes = estate.node_values().await;
     assert_eq!(old_primary, "mesh1.admin.1", "the Day-0 admin keeps the seat whatever mesh2's primary NodeId is (R-A2): {nodes:#?}");
-    let old_base = s(&nodes.iter().find(|n| n["name"] == old_primary.as_str()).unwrap()["admin_api_base"]);
+    let old_birth = nodes.iter().find(|n| n["name"] == old_primary.as_str()).unwrap();
+    let old_node_id = s(&old_birth["node_id"]);
+    let old_incarnation = s(&old_birth["incarnation_id"]);
+    let old_base = s(&old_birth["admin_api_base"]);
     assert_eq!(fabric.admin_api_base.as_deref(), Some(old_base.as_str()), "the fabric advertises its primary's control API");
     let lost = old_primary.split('.').next().unwrap().to_string();
     let survivor = if lost == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
@@ -163,10 +166,16 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     assert!(named(&spans, "rdm.mesh.seat.update.via-concern").is_empty(), "no Concern on the wire");
     assert!(named(&spans, "rdm.node_admin.seat.update.via-concern-answer").is_empty(), "no Concern-driven re-feed");
     let investigation = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter()
-        .find(|sp| attr(sp, "suspect") == old_primary && attr(sp, "finding") == "exit-proven")
+        .filter(|sp| attr(sp, "suspect_node_id") == old_node_id && attr(sp, "suspect_incarnation") == old_incarnation && attr(sp, "finding") == "exit-proven")
+        .min_by_key(|sp| at(sp))
         .expect("the holder's exact runtime exit was investigated before its replacement");
     assert_eq!(attr(investigation, "trigger"), "silence");
-    println!("Q23 silence investigation trace {}", s(&investigation["trace_id"]));
+    assert_eq!(attr(investigation, "exit_proof_row"), "put");
+    let replacement = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").into_iter()
+        .find(|sp| attr(sp, "winner_path") == new_primary && at(sp) >= killed_ns)
+        .expect("the surviving admin became the fabric holder");
+    assert!(at(investigation) < at(replacement), "the exact birth is investigated from silence before the replacement");
+    println!("Q23 silence investigation trace {}; replacement trace {}", s(&investigation["trace_id"]), s(&replacement["trace_id"]));
     // No member answered: the verdict and every probe of the investigation that reached it are
     // unreachable, and no carrier-edge-lost recovery opened. (The fabric's own stop later makes the
     // recovered mesh unheard again; that investigation is the stop's.)

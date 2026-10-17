@@ -37,7 +37,7 @@ gossip.
 | R7 | `node.cert.renew`: the issuing authority's tick renews at `RDM_CERT_RENEW_AT` + jitter; installed on the running node; presented on new connections; terminates nothing; retried to expiry | BUILD | nothing renews | e3 |
 | R8 | `mesh.issuer.create` at the mesh's acceptance, `mesh.issuer.renew` on the fabric-primary's tick, `node.issuer.update` per admin; a member never outlives its issuer | BUILD | rafka `node-admin/src/main.rs:20707` mints an issuer once; nothing rotates | e3 |
 | R9 | the TTLs and renewal point are fabric policy, carried in the entry pull | BUILD | `MESH_SPAWN_TYPE` is the pattern | e3 |
-| R10 | the fabric-primary watches every cert row; a mesh whose renewals stall raises `Concern` | BUILD | the held-fabric-primary `Concern` is the pattern | e3 |
+| R10 | the fabric-primary watches every cert row; a mesh whose renewals stall has its row surfaced on `fabric.get` | BUILD | Q23 retires Concern; stalled renewal is surfaced on `fabric.get` | e3 |
 | R11 | Rafka passes the root in once (`CertChoice::Ca`), signs and verifies nothing, reads none of `RAFKA_CA_PUBKEY` / `RAFKA_NODE_CERT` / `RAFKA_NO_CERT`; its node-admin's minting and the belt are deleted | BUILD | rafka `node-admin/src/main.rs:4713`, `lib.rs:5806`, `rafka-node-base/src/lib.rs:2724` | e4 |
 | R12 | no cert is checked on Node RPC or gossip | HOLDS | nothing checks today; the control cell keeps it so | every epic |
 | R13 | two levels above the issuers: the fabric root (the app's anchor, signs only the CA) and RDM's CA (minted on day 0 under the root, `fabric.ca.create`); the chain is member → issuer → CA → root (Luke 2026-10-16: "I thought we were using the caller root to issue a new root that I then passed on and we can rotate internally") | BUILD | one level: the root signs issuers | e5 |
@@ -92,7 +92,7 @@ No new gossip frame and no new `MemberStatus`.
 |---|---|---|
 | unit | the format: sign, verify, each refusal by name; `MemberOutlivesIssuer`; the skew window; the renew-at computation with jitter | `rdm-core/src/certs.rs` |
 | component | the admission exchange over a loopback endpoint: admitted, each refusal, no-cert within the floor, a reset stream; a `NoCerts` acceptor | `rdm-transport` |
-| live (test kit mesh) | a member renewed with a seconds-long TTL dials past its first expiry and is admitted; the row and both spans; a successor mesh-primary continues the schedule; an issuer rotated and a member signed by the new issuer admitted by a peer that still holds the old; a stalled mesh raises `Concern` | `rdm-test` |
+| live (test kit mesh) | a member renewed with a seconds-long TTL dials past its first expiry and is admitted; the row and both spans; a successor mesh-primary continues the schedule; an issuer rotated and a member signed by the new issuer admitted by a peer that still holds the old; a stalled mesh's row is surfaced on `fabric.get` | `rdm-test` |
 | rafka | the Rafka lane with Rafka's node-admin and belt deleted: every data-plane dial admitted through RDM's step; no `rafka.mesh.auth.*` span | rafka-v2 gate |
 
 ## Implementation plan
@@ -139,7 +139,7 @@ No new gossip frame and no new `MemberStatus`.
   tick in `admin/boot.rs` (the recovery tick is the pattern), `status.rs` (`RenewCert`, `CertRenewed`
   appended), the node's install in `rdm-node`; R8 the fabric-primary's tick, `UpdateIssuer` /
   `IssuerUpdated`, the mesh's issuer row; R9 the entry pull's policy fields (`MESH_SPAWN_TYPE` is the
-  pattern); R10 the fabric-level projection and `Concern`.
+  pattern); R10 the fabric-level projection surfaced on `fabric.get`.
 - **Spans.** the five e3 spans in the bar.
 - **Acceptance cells.** `a_join_writes_the_births_cert_row_and_node_get_shows_it`;
   `a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admitted`;
@@ -150,7 +150,7 @@ No new gossip frame and no new `MemberStatus`.
   `an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_peer_holding_the_old`;
   `a_member_due_near_the_issuers_expiry_is_cut_to_it`;
   `two_admins_read_the_same_policy_from_the_entry_pull`;
-  `a_mesh_whose_renewals_stall_raises_concern`. RED first.
+  `a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get`. RED first.
 - **Page text.** None beyond the set.
 - **Sizing.** Two seats (member renewal + row + policy; issuer renewal + watch).
 - **State.** not started.

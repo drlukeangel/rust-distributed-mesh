@@ -321,10 +321,9 @@ async fn a_mesh_primary_change_reaches_the_other_mesh_over_the_backbone() {
 }
 
 /// CONTRACT: every UDP path between the fabric primary's mesh and the other mesh is cut while
-/// all processes run. The other mesh's primary says the fabric primary's exact birth is silent (a
-/// Concern), the incumbent mesh's admins look at it, and the seat does not move on either side. The
-/// cut is healed and the seat is still where it was. The Concern and the investigation carry
-/// iroh's local view of the holder (A1), in its shape and read as nothing more.
+/// all processes run. Each admin uses its own silence evidence to inspect the exact birth;
+/// the seat does not move on either side. After healing it remains held. The investigation
+/// carries iroh's local view of the holder (A1), in its shape and read as nothing more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
     let (mut estate, nodes) = fabric("a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat").await;
@@ -345,12 +344,6 @@ async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
         Err(why) => panic!("RDM_REQUIRE_NETFAULT: {why}"),
     };
     let fp_id = s(&fp_node["node_id"]);
-    let concern = wait_for("the other mesh's primary says the fabric primary's birth is silent", Duration::from_secs(120), || {
-        let spans = estate.spans();
-        let found = named(&spans, "rdm.mesh.seat.update.via-concern").into_iter().find(|sp| attr(sp, "holder_node_id") == fp_id).cloned();
-        async move { found }
-    })
-    .await;
     let looked = wait_for("an admin looked at the exact silent birth", Duration::from_secs(60), || {
         let spans = estate.spans();
         let found = named(&spans, "rdm.node_admin.seat.update.via-investigation").into_iter().find(|sp| attr(sp, "suspect_node_id") == fp_id).cloned();
@@ -367,12 +360,11 @@ async fn a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat() {
     for (side, ns) in [("the other mesh", &from_other), ("the incumbent mesh", &from_incumbent), ("after the heal", &healed)] {
         assert_eq!(fabric_primary(ns).as_deref(), Some(fp.as_str()), "{side} names the unchanged holder: {ns:#?}");
     }
-    assert_eq!(attr(&concern, "seat"), "fabric-primary");
+    assert_eq!(attr(&looked, "trigger"), "silence");
+    assert!(named(&estate.spans(), "rdm.mesh.seat.update.via-concern").is_empty(), "no Concern on the wire");
     assert_ne!(attr(&looked, "finding"), "exit-proven", "a running birth is not a loss: {looked:#?}");
-    // A1: the Concern and the investigation carry iroh's local view of the holder.
-    for sp in [&concern, &looked] {
-        iroh_observation_shape(sp).unwrap_or_else(|why| panic!("{why}"));
-    }
+    // A1: the investigation carries iroh's local view of the holder.
+    iroh_observation_shape(&looked).unwrap_or_else(|why| panic!("{why}"));
 }
 
 fn at_ns(sp: &Value) -> u64 {

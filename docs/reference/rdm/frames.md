@@ -65,7 +65,7 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 8 | **`Seated`** |  |  | A seat changed hands: its new holder announces itself, once, on its own mesh channel and the |
 | 8.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-Seat) |  | The seat that changed hands. |
 | 8.1 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rdm_core-seat-SeatHolder) |  | Its new holder: the exact birth and the record's epoch. |
-| 9 | **`Concern`** |  |  | A mesh primary marked the exact birth `node_id`/`incarnation` of `seat`'s holder |
+| 9 | **`Concern`** |  |  | Reserved position 10 (Luke Q23): decoded only to refuse it by name. Gossip never |
 | 9.0 | `seat` | `Seat` → [`Seat`](#t-rdm_core-seat-Seat) |  | The seat whose holder looks silent. |
 | 9.1 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  | The silent holder's node. |
 | 9.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  | The silent holder's exact birth. |

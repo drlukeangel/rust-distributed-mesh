@@ -2100,8 +2100,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
 
                                     // The seat watch (ruling R-A2): a silent seat holder is looked at, never replaced for being
-                                    // silent. A mesh primary says the fabric primary's exact birth is silent (a Concern); the birth
-                                    // answers it; an admin of its mesh looks at it, down to its exact runtime.
+                                    // silent. Each admin measures silence in its own view and looks at the exact runtime;
+                                    // no gossip frame commands the investigation.
                                     {
                                         let watch = crate::seat_watch::Watch {
                                             gate: park_gate.clone(),
@@ -2109,11 +2109,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             me_id: node_id.clone(),
                                             incarnation: incarnation.clone(),
                                             membership: membership.clone(),
-                                            backbone: backbone.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
                                             looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
-                                            republish: republish.clone(),
                                             builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
                                         };

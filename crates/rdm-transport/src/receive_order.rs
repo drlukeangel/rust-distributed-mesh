@@ -42,7 +42,9 @@
 //! repeats emit `via-duplicate`. These receipts drive no checklist or lifecycle. Only the admin's
 //! existing open-round book decides whether an ordinary check-in is carried (Q21: x).
 //!
-//! Concern and reserved variants retain their existing handler data rules pending their rows.
+//! Concern is reserved position 10 (Q23). Receipt emits `via-reserved` and installs nothing;
+//! it carries nothing onward and never commands investigation. The remaining reserved variants
+//! retain their existing refusal names pending their row.
 
 use crate::membership::Frame;
 use crate::snapshot::PublisherId;

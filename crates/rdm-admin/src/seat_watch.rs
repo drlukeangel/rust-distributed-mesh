@@ -1,28 +1,22 @@
 //! A silent seat holder is looked at, never replaced for being silent (ruling R-A2).
 //!
 //! The fabric primary stays in its mesh until that mesh is proven unable to hold it, and silence
-//! proves nothing. So silence produces two things and neither moves a seat:
+//! proves nothing. Each admin uses its own view's silence evidence to investigate: an admin of
+//! the holder's mesh (a standby included), and any admin looking at the fabric holder's mesh
+//! from outside it, looks at the exact silent birth: a direct ping, the status kick when it answers, the same kick through up to two
+//! live members of its mesh at once, and last the provider's inspection of the birth's exact
+//! runtime (node-recovery.md step 2, ruling R-SW1). An answer from the exact birth (`Current`,
+//! `CurrentParked`, `Blocked`), or a runtime that still runs, ends it: the seat stays. Only a
+//! runtime found exited is a verified loss, its exit-proof row put (`Records::put_exit`); a failed ping, `NotSent`,
+//! a deadline, silence and the observer-inferred `Dead` are not.
 //!
-//! - a **Concern**: when a mesh primary marks the fabric primary's exact birth `PendingReconnect`
-//!   (the staleness floor already marks it; there is no new timeout) it says so on the backbone,
-//!   once per mark. The named birth, if it hears it, re-feeds its neighbours and says its seats
-//!   again. A Concern is a warning, never permission to take the seat.
-//! - an **investigation**: an admin of the holder's mesh (a standby included, it need not hold any
-//!   seat), and any admin looking at the fabric holder's mesh from outside it, looks at the exact
-//!   silent birth: a direct ping, the status kick when it answers, the same kick through up to two
-//!   live members of its mesh at once, and last the provider's inspection of the birth's exact
-//!   runtime (node-recovery.md step 2, ruling R-SW1). An answer from the exact birth (`Current`,
-//!   `CurrentParked`, `Blocked`), or a runtime that still runs, ends it: the seat stays. Only a
-//!   runtime found exited is a verified loss, its exit-proof row put (`Records::put_exit`); a failed ping, `NotSent`,
-//!   a deadline, silence and the observer-inferred `Dead` are not.
-//!
-//! [`plan`] decides what a pass owes, from the view and what was already said; [`run`] drives it.
+//! [`plan`] decides what a pass owes, from the view and births already inspected; [`run`] drives it.
 
 use crate::admin::Records;
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::topology::Topology;
-use rdm_core::{Seat, SeatHolder};
-use rdm_transport::membership::{Backbone, ConcernHeard, Membership};
+use rdm_core::SeatHolder;
+use rdm_transport::membership::Membership;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -33,38 +27,14 @@ type Birth = (NodeId, IncarnationId);
 /// What one pass over the view owes.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// Concerns to publish: the fabric primary's exact birth, newly marked silent.
-    pub concerns: Vec<Birth>,
-    /// Births to look at, each with why.
-    pub investigate: Vec<(Node, Trigger)>,
-    /// A Concern named this admin's own birth: re-feed the neighbours and say the seats again.
-    pub answer: bool,
+    /// Exact silent births to investigate from this admin's own view.
+    pub investigate: Vec<Node>,
 }
 
-/// Why a birth is looked at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Trigger {
-    /// A Concern named it.
-    Concern,
-    /// This admin's own view marked it silent.
-    Silence,
-}
-
-impl Trigger {
-    /// The trigger's name as it appears in spans.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Concern => "concern",
-            Self::Silence => "silence",
-        }
-    }
-}
-
-/// What this admin already said and looked at, by exact birth: a mark is spoken of once, and
-/// forgotten when the birth is heard again.
+/// Births already investigated during their current silence mark. Hearing the birth again
+/// removes the mark; a later silence can then be investigated from the view again.
 #[derive(Debug, Default)]
 pub struct Said {
-    concerned: HashSet<Birth>,
     investigated: HashSet<Birth>,
 }
 
@@ -123,35 +93,12 @@ fn seat_record(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &Hash
     }
 }
 
-/// The pass: `me` is this admin's exact birth, `heard` the Concerns drained since the last pass.
-pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHeard], said: &mut Said) -> Plan {
+/// The pass uses only this admin's exact birth, its view and the silent births already inspected.
+pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, said: &mut Said) -> Plan {
     let silent: HashSet<Birth> = view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::PendingReconnect).filter_map(birth).collect();
-    said.concerned.retain(|b| silent.contains(b));
     said.investigated.retain(|b| silent.contains(b));
     let mut plan = Plan::default();
     let mesh = &me.mesh;
-
-    // A mesh primary says the fabric primary's exact birth is silent, once per mark.
-    if view.holds_mesh_seat(mesh, &me_birth.0) {
-        for n in view.members().filter(|n| n.is_fabric_primary && n.status == NodeStatus::PendingReconnect) {
-            if let Some(b) = birth(n) {
-                if said.concerned.insert(b.clone()) {
-                    plan.concerns.push(b);
-                }
-            }
-        }
-    }
-
-    // What others said: the named birth looks to its neighbours when it is this admin; an admin of
-    // its mesh looks at it.
-    for c in heard.iter().filter(|c| c.seat == Seat::FabricPrimary) {
-        let Some(n) = view.births().find(|n| n.node_id == c.node_id && n.incarnation_id.as_ref() == Some(&c.incarnation)) else { continue };
-        if &c.node_id == &me_birth.0 && c.incarnation == me_birth.1 {
-            plan.answer = true;
-        } else if &n.mesh == mesh && n.kind == NodeKind::NodeAdmin {
-            plan.investigate.push((n.clone(), Trigger::Concern));
-        }
-    }
 
     // What this admin sees itself: a silent seat holder of its own mesh, any silent node-admin
     // of the mesh that holds the fabric seat (a standby, or a candidate looking from outside),
@@ -167,10 +114,8 @@ pub fn plan(view: &Topology, me: &PathName, me_birth: &Birth, heard: &[ConcernHe
             continue;
         }
         let Some(b) = birth(n) else { continue };
-        // A birth a Concern already sends us to is looked at once for both.
-        let marked = said.investigated.insert(b.clone());
-        if marked && !plan.investigate.iter().any(|(p, _)| birth(p).as_ref() == Some(&b)) {
-            plan.investigate.push((n.clone(), Trigger::Silence));
+        if said.investigated.insert(b) {
+            plan.investigate.push(n.clone());
         }
     }
     plan
@@ -376,24 +321,20 @@ pub struct Watch {
     pub incarnation: IncarnationId,
     /// Its mesh membership.
     pub membership: Membership,
-    /// Its place on the backbone.
-    pub backbone: Backbone,
     /// Its view of the topology.
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// Its records of births and exits.
     pub records: Arc<Records>,
     /// What it looks at a birth with.
     pub looker: Looker,
-    /// Re-publishes this admin's presence and re-joins its mesh's members (`status_rpc::Republish`).
-    pub republish: crate::status_rpc::Republish,
     /// This admin's Build log: its committed facts are handed on when the fabric seat's record names another birth.
     pub builds: Arc<crate::fabric_builds::FabricBuildStateAdapter>,
     /// The recovery submitter, used when the fabric-primary's hold on a hung peer-mesh primary expires (R-FM1).
     pub recovery: Option<crate::admin::RecoverySubmitter>,
 }
 
-/// Run the watch: a pass at each Concern heard and at the gossip interval (the cadence the view
-/// itself is refreshed at; nothing here announces on a timer).
+/// Run the watch on seat changes and the gossip cadence, from the admin's own silence evidence.
+/// Nothing here publishes an advisory or acts on receipt of one.
 pub async fn run(w: Watch) {
     let mut said = Said::default();
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
@@ -414,55 +355,25 @@ pub async fn run(w: Watch) {
         drop(turn.take());
         tokio::select! {
             _ = seats_changed.changed() => {}
-            _ = w.membership.concerns().heard() => {}
             _ = tokio::time::sleep(rdm_transport::membership::gossip_interval()) => {}
         }
         // Held here while the admin is parked: its own wait, outside every lock.
         turn = Some(w.gate.turn("seat-watch").await);
-        let heard = w.membership.concerns().drain();
         let view = w.topology.read().await.clone();
         // Any node-admin in the view whose digest has returned (`ReadyForTraffic`) ends its hold (R-FM1).
         for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
             w.records.clear_held_running(n).await;
         }
         let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
-        let plan = plan(&view, &me, &me_birth, &heard, &mut said);
-        for (node_id, incarnation) in plan.concerns {
-            let holder_key = view.births().find(|n| n.node_id == node_id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
-            w.backbone.concern(Seat::FabricPrimary, node_id, incarnation, holder_key).await;
-        }
-        if plan.answer {
-            // The Concern names this very birth: it is there, so it says so. Its neighbours are
-            // re-fed through the mechanisms that already exist, and each seat it holds is said again.
-            let span = tracing::info_span!("rdm.node_admin.seat.update.via-concern-answer", node = %me);
-            async {
-                if let Some(f) = w.republish.get() {
-                    f().await;
-                }
-                let admins: Vec<_> = w.membership.book.current(w.membership.book.staleness_floor()).iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(rdm_transport::membership::gossip_addr).collect();
-                let refed = admins.len();
-                w.backbone.join_admins(admins).await;
-                let seats = w.membership.seats();
-                let mut said_again = 0;
-                for (seat, held) in seats.meshes().into_values().map(|h| (Seat::MeshPrimary, h)).chain(seats.fabric().map(|h| (Seat::FabricPrimary, h))) {
-                    if held.is_birth(&me_birth.0, &me_birth.1) {
-                        w.backbone.announce_seat(seat, held).await;
-                        said_again += 1;
-                    }
-                }
-                tracing::info!(admins = refed, seats = said_again, "named by a Concern: neighbours re-fed, seats said again");
-            }
-            .instrument(span)
-            .await;
-        }
-        for (node, trigger) in plan.investigate {
+        let plan = plan(&view, &me, &me_birth, &mut said);
+        for node in plan.investigate {
             let span = tracing::info_span!(
                 "rdm.node_admin.seat.update.via-investigation",
                 node = %me,
                 suspect = %node.name,
                 suspect_node_id = %node.node_id,
                 suspect_incarnation = node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""),
-                trigger = trigger.name(),
+                trigger = "silence",
                 holds_fabric_seat = node.is_fabric_primary,
                 finding = tracing::field::Empty,
                 detail = tracing::field::Empty,
@@ -560,16 +471,9 @@ mod tests {
         Topology { fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process }, meshes: Vec::new(), nodes }
     }
 
-    fn concern(n: &Node) -> ConcernHeard {
-        ConcernHeard { seat: Seat::FabricPrimary, node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), observer: "mesh2.admin.1".into() }
-    }
-
     fn me_of(n: &Node) -> Birth {
         (n.node_id.clone(), n.incarnation_id.clone().unwrap())
     }
-
-    /// The shape: mesh1 holds the fabric seat (admin.1 silent), admin.2 is its standby, mesh2's
-    /// primary looks from outside.
     fn world() -> (Topology, Node, Node, Node) {
         let mut holder = admin("mesh1.admin.1", "300000000000", "h1", NodeStatus::PendingReconnect);
         holder.is_primary = true;
@@ -597,72 +501,51 @@ mod tests {
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me_of(&standby), &mut never, &t), None, "a birth that never held the record owes nothing");
     }
 
-    /// CONTRACT (R-A2 item 3): a mesh primary says the fabric primary's exact birth is silent once
-    /// per mark, and again only after the birth was heard and went silent again. A node that holds
-    /// no mesh primary seat says nothing.
+    /// CONTRACT (Q23): a silent fabric holder is investigated from each admin's own view,
+    /// including an admin in another mesh and a standby in the holder's mesh.
     #[test]
-    fn a_mesh_primary_publishes_one_concern_per_staleness_mark() {
+    fn an_admin_investigates_a_silent_fabric_holder_from_its_own_view() {
         let (t, holder, standby, outsider) = world();
-        let mut said = Said::default();
-        let first = plan(&t, &outsider.name, &me_of(&outsider), &[], &mut said);
-        assert_eq!(first.concerns, vec![me_of(&holder)], "the exact birth, once");
-        assert!(plan(&t, &outsider.name, &me_of(&outsider), &[], &mut said).concerns.is_empty(), "the same mark is not spoken of again");
-        assert!(plan(&t, &standby.name, &me_of(&standby), &[], &mut Said::default()).concerns.is_empty(), "a standby is no mesh primary");
-        // Heard again, then silent again: a new mark.
-        let mut heard_again = t.clone();
-        heard_again.nodes[0].status = NodeStatus::ReadyForTraffic;
-        assert!(plan(&heard_again, &outsider.name, &me_of(&outsider), &[], &mut said).concerns.is_empty());
-        assert_eq!(plan(&t, &outsider.name, &me_of(&outsider), &[], &mut said).concerns, vec![me_of(&holder)]);
+        for admin in [&standby, &outsider] {
+            let p = plan(&t, &admin.name, &me_of(admin), &mut Said::default());
+            assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)]);
+        }
     }
 
-    /// CONTRACT (R-A2 item 4): the named birth answers a Concern; an admin of its mesh looks at it,
-    /// standby included; an admin of another mesh does not act on the Concern.
+    /// CONTRACT (Q23): neither a ready holder nor the admin's own exact birth is an investigation
+    /// target. No gossip frame is needed to make either decision.
     #[test]
-    fn a_concern_makes_the_named_birth_answer_and_its_mesh_look_at_it() {
-        let (t, holder, standby, outsider) = world();
-        let c = [concern(&holder)];
-        let named = plan(&t, &holder.name, &me_of(&holder), &c, &mut Said::default());
-        assert!(named.answer && named.investigate.is_empty(), "the incumbent re-feeds and says its seats again, it investigates nobody");
-        let sibling = plan(&t, &standby.name, &me_of(&standby), &c, &mut Said::default());
-        assert!(!sibling.answer);
-        assert_eq!(sibling.investigate.iter().map(|(n, t)| (n.name.to_string(), *t)).collect::<Vec<_>>(), vec![("mesh1.admin.1".to_string(), Trigger::Concern)]);
-        let other = plan(&t, &outsider.name, &me_of(&outsider), &c, &mut Said::default());
-        assert!(!other.answer && other.investigate.iter().all(|(_, t)| *t == Trigger::Silence), "another mesh looks only for what its own view shows");
+    fn an_admin_investigates_neither_a_ready_holder_nor_its_own_birth() {
+        let (mut t, holder, standby, _) = world();
+        assert!(plan(&t, &holder.name, &me_of(&holder), &mut Said::default()).investigate.is_empty());
+        t.nodes[0].status = NodeStatus::ReadyForTraffic;
+        assert!(plan(&t, &standby.name, &me_of(&standby), &mut Said::default()).investigate.is_empty());
     }
 
     /// CONTRACT (R-A2 items 4-5): an admin looks at a silent birth of the incumbent mesh once per
-    /// mark whether or not a Concern came, and a silent admin of a mesh that holds no seat is
+    /// mark from its own view, and a silent admin of a mesh that holds no seat is
     /// nobody's business.
     #[test]
     fn a_silent_incumbent_birth_is_looked_at_once_per_mark_and_other_silence_is_not() {
         let (mut t, holder, standby, _) = world();
         let mut said = Said::default();
-        let own = plan(&t, &standby.name, &me_of(&standby), &[], &mut said);
-        assert_eq!(own.investigate.iter().map(|(n, _)| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()]);
-        assert!(plan(&t, &standby.name, &me_of(&standby), &[], &mut said).investigate.is_empty(), "once per mark");
+        let own = plan(&t, &standby.name, &me_of(&standby), &mut said);
+        assert_eq!(own.investigate.iter().map(|n| n.name.to_string()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()]);
+        assert!(plan(&t, &standby.name, &me_of(&standby), &mut said).investigate.is_empty(), "once per mark");
         // A silent admin of a third mesh that holds nothing.
         t.nodes.push(admin("mesh3.admin.1", "500000000000", "x1", NodeStatus::PendingReconnect));
-        assert!(plan(&t, &standby.name, &me_of(&standby), &[], &mut said).investigate.is_empty());
+        assert!(plan(&t, &standby.name, &me_of(&standby), &mut said).investigate.is_empty());
         let _ = holder;
     }
 
-    /// CONTRACT (R-RC1, node-replace.md "Successor | New node.id"): the view holds one row per
-    /// path.name (`admin::project_at` keys it by `PathName`), so after a replace of mesh2's primary
-    /// the row at mesh2.admin.1 can be the retired birth's, live and still seated, while the reborn
-    /// admin's own row is absent. The reborn admin decides its seat by the node id it was born with:
-    /// it holds no mesh primary seat and says no Concern. What must NOT happen: the retired birth's
-    /// seat read as this admin's, a Concern published as a mesh primary it is not.
+    /// CONTRACT: the silent former birth at this admin's path is not its own exact birth.
+    /// Investigation uses identity rather than a path match even before the view lists the successor.
     #[test]
-    fn a_reborn_admin_whose_view_seats_its_retired_birth_says_no_concern() {
-        let (mut t, holder, _, outsider) = world();
-        let mut retired = outsider.clone();
-        retired.status = NodeStatus::Draining;
-        t.nodes.retain(|n| n.node_id != outsider.node_id);
-        t.nodes.push(retired.clone());
-        let reborn = admin("mesh2.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
-        assert_eq!(t.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh2's seat in this view");
-        let p = plan(&t, &reborn.name, &me_of(&reborn), &[], &mut Said::default());
-        assert!(p.concerns.is_empty(), "the reborn admin holds no seat: it says no Concern about {}, got {:?}", holder.name, p.concerns);
+    fn an_admin_does_not_treat_a_former_birth_at_its_path_as_itself() {
+        let (t, holder, _, _) = world();
+        let successor = admin("mesh1.admin.1", "600000000000", "r2", NodeStatus::ReadyForTraffic);
+        let p = plan(&t, &successor.name, &me_of(&successor), &mut Said::default());
+        assert_eq!(p.investigate.iter().map(me_of).collect::<Vec<_>>(), vec![me_of(&holder)]);
     }
 
     mod ladder {

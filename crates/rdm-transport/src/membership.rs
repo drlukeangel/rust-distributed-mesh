@@ -481,9 +481,8 @@ pub enum Frame {
         /// Its new holder: the exact birth and the record's epoch.
         holder: SeatHolder,
     },
-    /// A mesh primary marked the exact birth `node_id`/`incarnation` of `seat`'s holder
-    /// `PendingReconnect` (silent past the staleness floor) and says so on the backbone, once per
-    /// mark. A WARNING: it names a birth to look at and never makes the seat vacant.
+    /// Reserved position 10 (Luke Q23): decoded only to refuse it by name. Gossip never
+    /// commands an investigation; the seat watch measures the holder's silence itself.
     Concern {
         /// The seat whose holder looks silent.
         seat: Seat,
@@ -1171,43 +1170,6 @@ impl SeatBook {
     }
 }
 
-/// A Concern heard on the backbone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConcernHeard {
-    /// The seat whose holder looks silent.
-    pub seat: Seat,
-    /// The silent holder's node.
-    pub node_id: NodeId,
-    /// The silent holder's exact birth.
-    pub incarnation: IncarnationId,
-    /// The mesh primary that marked the birth silent.
-    pub observer: String,
-}
-
-/// The Concerns a node heard and has not yet looked at, and what wakes the one looking.
-#[derive(Debug, Clone, Default)]
-pub struct ConcernInbox {
-    heard: Arc<Mutex<Vec<ConcernHeard>>>,
-    wake: Arc<tokio::sync::Notify>,
-}
-
-impl ConcernInbox {
-    fn put(&self, c: ConcernHeard) {
-        self.heard.lock().unwrap().push(c);
-        self.wake.notify_one();
-    }
-
-    /// Every Concern heard since the last drain.
-    pub fn drain(&self) -> Vec<ConcernHeard> {
-        std::mem::take(&mut *self.heard.lock().unwrap())
-    }
-
-    /// Resolves when a Concern has been heard since the last wake.
-    pub async fn heard(&self) {
-        self.wake.notified().await
-    }
-}
-
 /// The seats an update names, as a span carries them: `<seat>=<holder record>`, comma-separated.
 fn seats_named(seats: &[CommittedSeat]) -> String {
     seats.iter().map(|c| format!("{}={}", c.seat.name(), c.record())).collect::<Vec<_>>().join(",")
@@ -1889,7 +1851,6 @@ struct View {
     /// This node's path name, for the spans it emits.
     node: String,
     book: DigestBook,
-    concerns: ConcernInbox,
     /// Hook receipt identities shared by local apply, mesh and backbone.
     round_receipts: Arc<Mutex<crate::receive_order::RoundReceipts>>,
     /// Whether this node is its mesh's primary now: only a primary replays the statuses it holds.
@@ -2200,8 +2161,11 @@ impl View {
                     .in_scope(|| tracing::info!("new-fabric-primary is a reserved frame position (R-G3): a seat update is announced by primary updating and primary updated, and a birth's contacts ride its digest"));
                 Vec::new()
             }
-            Frame::Concern { seat, node_id, incarnation, observer } => {
-                self.concerns.put(ConcernHeard { seat: *seat, node_id: node_id.clone(), incarnation: incarnation.clone(), observer: observer.clone() });
+            Frame::Concern { .. } => {
+                tracing::info_span!(
+                    "rdm.mesh.membership.reject.via-reserved",
+                    node = %self.current_name(), frame = "concern", position = 10, via,
+                ).in_scope(|| tracing::info!("position 10 is reserved (Q23): nothing installed or carried"));
                 Vec::new()
             }
             _ => Vec::new(),
@@ -2923,11 +2887,6 @@ impl Membership {
     /// The seat holders this node holds.
     pub fn seats(&self) -> &SeatBook {
         &self.view.book.seats
-    }
-
-    /// The Concerns this node heard.
-    pub fn concerns(&self) -> &ConcernInbox {
-        &self.view.concerns
     }
 
     /// Hold the seat records an entry read named (`topology_read`): each only if it supersedes what
@@ -3918,27 +3877,6 @@ impl Backbone {
         tracing::Span::current().record("mesh_channel", mesh_channel.as_str());
     }
 
-
-    /// Say on the backbone that `seat`'s holder birth looks silent from here. A warning, once per
-    /// call; the caller decides when a call is owed.
-    ///
-    /// `holder_key` is the holder's iroh key, when known: the span carries iroh's local view of
-    /// it (`crate::iroh_obs`), read once; it decides nothing.
-    pub async fn concern(&self, seat: Seat, node_id: NodeId, incarnation: IncarnationId, holder_key: Option<iroh::EndpointId>) {
-        let seen = crate::iroh_obs::observe_remote(&self.channel.endpoint, holder_key).await;
-        let me_name = self.current_name();
-        tracing::info_span!(
-            "rdm.mesh.seat.update.via-concern",
-            node = %me_name,
-            seat = seat.name(),
-            holder_node_id = %node_id,
-            holder_incarnation = %incarnation.as_str(),
-            iroh_known_addrs = %seen.known_addrs,
-            iroh_active_addrs = %seen.active_addrs,
-        )
-        .in_scope(|| tracing::info!("a seat holder looks silent: Concern published"));
-        let _ = self.channel.broadcast(&Frame::Concern { seat, node_id, incarnation, observer: me_name }).await;
-    }
 
     /// Join the backbone through every node-admin known, once each.
     pub async fn join_admins(&self, admins: Vec<EndpointAddr>) {
