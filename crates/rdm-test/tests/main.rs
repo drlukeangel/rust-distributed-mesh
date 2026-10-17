@@ -274,6 +274,8 @@ fn declare_gossip_probe(membership: &rdm_transport::membership::Membership) {
 
 #[path = "gossip/envelope_receive.rs"]
 mod envelope_receive;
+#[path = "gossip/trace_context.rs"]
+mod trace_context;
 
 /// Encoding arguments for a synthetic sender: its supplied owned birth and declared fixture revision.
 async fn forward_gossip_probe(membership: &rdm_transport::membership::Membership, frame: &rdm_transport::membership::Frame) -> anyhow::Result<()> {
