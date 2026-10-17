@@ -307,7 +307,9 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   The receive path now ends with `StreamFailure::Violation("a response frame carries no transport
   position")`, then delivers nothing further. Original e2 RED preserved at
   `/home/admin/rust-distributed-mesh-deploy/i146-e2-red.log`. From this follow-up onward each RED is
-  committed before its receive-path change and cited by SHA. Pending concurrent landing gate.
+  committed before its receive-path change and cited by SHA. Candidate `55c015ab` held: its own
+  missing-position cell is green; concurrent gate red outside this unit, no rerun.
+- **Outside gate read (2026-10-17).** `probe_root_span::forty_probe_runs_direct_and_carried_each_export_their_root_span`, `crates/rdm-test/tests/probe_root_span.rs:101`: run 0 answered `Reply` (:99), including the server's unary proof-store `get` / `absent`, but left zero `.spans.jsonl` files (expected one); trace `9905221ef1e627287573a3a7d8c7812e`, only its transport diagnostic file exists; evidence `/home/admin/rust-distributed-mesh-deploy/kept/i146-position-55c015ab-red/`, gate `gates-e7s3-55c015ab.log.d/rdm-test:main.log`; cell untouched. This unary probe path does not enter the changed `ReplyStream::next` path. The separate status-string landing and then Q46 remain behind the first landing as directed.
 - **Earlier gate history.** This row's landing (with Q27's `forget_below` rename): its gate on tree
   `804af94f` red at `rdm-transport:main`, `collector_outage::an_unroutable_collector_changes_nothing`
   ("the child took 8.850569956s to end against http://10.255.255.1:4317: spawn to test entry 7 ms,

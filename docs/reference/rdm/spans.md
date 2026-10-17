@@ -704,7 +704,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.request.serve.via-carried-inner` | `crates/rdm-transport/src/forward.rs` | 127 |
 | `rdm.node_rpc.request.serve.via-direct` | `crates/rdm-transport/src/server.rs` | 120 |
 | `rdm.node_rpc.request.update.via-call` | `crates/rdm-transport/src/client.rs` | 714 |
-| `rdm.node_rpc.request.update.via-call` | `crates/rdm-transport/src/stream.rs` | 515 |
+| `rdm.node_rpc.request.update.via-call` | `crates/rdm-transport/src/stream.rs` | 517 |
 | `rdm.node_rpc.request.update.via-context-dropped` | `crates/rdm-transport/src/client.rs` | 397 |
 | `rdm.node_rpc.request.update.via-context-dropped` | `crates/rdm-transport/src/server.rs` | 873 |
 | `rdm.node_rpc.resolve_probe.serve.via-request` | `crates/rdm-test/src/resolve_probe.rs` | 224 |
@@ -721,7 +721,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.stream.serve.via-direct` | `crates/rdm-transport/src/stream.rs` | 295 |
 | `rdm.node_rpc.stream.serve.via-terminal` | `crates/rdm-transport/src/stream.rs` | 157 |
 | `rdm.node_rpc.stream.update.via-frame` | `crates/rdm-transport/src/stream.rs` | 239 |
-| `rdm.node_rpc.stream.update.via-received-frame` | `crates/rdm-transport/src/stream.rs` | 423 |
+| `rdm.node_rpc.stream.update.via-received-frame` | `crates/rdm-transport/src/stream.rs` | 425 |
 | `rdm.scenario.wedge.resolve.via-detector` | `crates/rdm-test/src/wedge.rs` | 486 |
 | `rdm.testkit.app.update.via-sync-state` | `crates/rdm-test/src/test_app.rs` | 75 |
 | `rdm.testkit.app.update.via-sync-state-taken` | `crates/rdm-test/src/test_app.rs` | 76 |
