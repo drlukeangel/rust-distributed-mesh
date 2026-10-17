@@ -237,150 +237,54 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
     let _cleanup = Fabric(fabric.clone());
     let store = std::env::temp_dir().join(format!("{fabric}-node-store"));
     std::fs::create_dir(&store).unwrap();
+    let control = store.join(".qualification");
+    std::fs::create_dir(&control).unwrap();
+    let probe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join(format!("rafka-store-root-probe{}", std::env::consts::EXE_SUFFIX));
+    assert!(probe.is_file(), "the workspace build must supply {}", probe.display());
     let mut a = launch(&p, &fabric, 0);
     let mut b = launch(&p, &fabric, 1);
-    for spec in [&mut a, &mut b] {
+    for (spec, role) in [(&mut a, "writer"), (&mut b, "reader")] {
+        spec.executable = probe.clone();
+        spec.args = vec![role.into()];
         spec.env.insert(rdm_core::launch::ENV_STORE_DIR.into(), store.display().to_string());
     }
-    let a = p.spawn(&a).await.expect("writer container");
-    let b = p.spawn(&b).await.expect("reader container");
-    store_command(&a, "hard-link insert and sync", r#"
-print('python entered hard-link phase', flush=True)
-import os, pathlib, time
-def mark(step):
-    print(f'{time.monotonic():.6f} {step}', flush=True)
-root = pathlib.Path(os.environ['RDM_STORE_DIR'])
-assert root.is_dir(), f'RDM_STORE_DIR {root} is not mounted'
-mark('before create_new')
-with (root / 'insert.tmp').open('xb') as f:
-    f.write(b'first'); f.flush()
-    mark('before first file fsync'); os.fsync(f.fileno()); mark('first file synced')
-mark('before hard link')
-os.link(root / 'insert.tmp', root / 'created')
-assert (root / 'insert.tmp').stat().st_ino == (root / 'created').stat().st_ino
-fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-mark('before first directory fsync'); os.fsync(fd); mark('first directory synced')
-(root / 'insert.tmp').unlink(); os.fsync(fd)
-mark('before initial atomic file')
-with (root / 'atomic').open('xb') as f:
-    f.write(b'A' * 131072); f.flush()
-    mark('before initial atomic file fsync'); os.fsync(f.fileno()); mark('initial atomic file synced')
-mark('before final directory fsync'); os.fsync(fd); os.close(fd)
-mark('hard-link insertion; file and directory fsync complete')
-"#).await;
-    store_command(&b, "collision and shared listing", r#"
-import os, pathlib
-root = pathlib.Path(os.environ['RDM_STORE_DIR'])
-assert (root / 'created').read_bytes() == b'first'
-assert set(p.name for p in root.iterdir()) == {'created', 'atomic'}
-with (root / 'collision.tmp').open('xb') as f:
-    f.write(b'second'); f.flush(); os.fsync(f.fileno())
-try:
-    os.link(root / 'collision.tmp', root / 'created')
-except FileExistsError:
-    pass
-else:
-    raise AssertionError('create_new overwrote an existing key')
-assert (root / 'created').read_bytes() == b'first'
-(root / 'collision.tmp').unlink()
-fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY); os.fsync(fd); os.close(fd)
-print('create_new refuses existing key; coherent read and listing')
-"#).await;
-    let writer = store_command(&a, "atomic replacement writer", r#"
-import os, pathlib, time
-root = pathlib.Path(os.environ['RDM_STORE_DIR'])
-end = time.monotonic() + 10
-while not (root / 'reader-ready').exists():
-    assert time.monotonic() < end, 'reader did not enter its observation'
-    time.sleep(.001)
-fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
-for n in range(64):
-    with (root / 'replace.tmp').open('xb') as f:
-        f.write((b'A' if n % 2 == 0 else b'B') * 131072)
-        f.flush(); os.fsync(f.fileno())
-    os.replace(root / 'replace.tmp', root / 'atomic'); os.fsync(fd)
-(root / 'done').write_bytes(b'done'); os.fsync(fd); os.close(fd)
-print('64 atomic replacements, each file and directory synced')
-"#);
-    let reader = store_command(&b, "concurrent whole-file reader", r#"
-import os, pathlib, time
-root = pathlib.Path(os.environ['RDM_STORE_DIR'])
-assert (root / 'atomic').read_bytes() == b'A' * 131072
-(root / 'reader-ready').write_bytes(b'ready')
-end = time.monotonic() + 10
-reads = 0
-while not (root / 'done').exists():
-    assert time.monotonic() < end, 'writer did not complete its replacements'
-    value = (root / 'atomic').read_bytes()
-    assert value in (b'A' * 131072, b'B' * 131072), f'torn replacement: {len(value)} bytes'
-    reads += 1
-    time.sleep(0)
-assert reads > 0, 'the reader observed no replacements'
-assert (root / 'atomic').read_bytes() == b'B' * 131072
-assert 'replace.tmp' not in {p.name for p in root.iterdir()}
-with (root / 'reader-created').open('xb') as f:
-    f.write(b'reader'); f.flush(); os.fsync(f.fileno())
-fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY); os.fsync(fd); os.close(fd)
-print(f'whole-file reads across concurrent replacements: {reads}')
-"#);
-    let (w, r) = tokio::join!(writer, reader);
-    println!("{w}\n{r}");
-    store_command(&a, "reverse read and listing", r#"
-import os, pathlib
-root = pathlib.Path(os.environ['RDM_STORE_DIR'])
-assert (root / 'reader-created').read_bytes() == b'reader'
-assert {'created', 'atomic', 'reader-created', 'reader-ready', 'done'} == {p.name for p in root.iterdir()}
-assert (root / 'created').read_bytes() == b'first'
-print('reverse write visible in read and listing on the writer container')
-"#).await;
+    let (a, b) = tokio::join!(p.spawn(&a), p.spawn(&b));
+    let a = a.expect("writer container");
+    let b = b.expect("reader container");
+    let actors = [&a, &b];
+    store_phase(&actors, &control, "native participants ready", None, &["writer-ready", "reader-ready"]).await;
+    store_phase(&actors, &control, "hard-link insert and sync", Some("start"), &["inserted"]).await;
+    store_phase(&actors, &control, "collision and shared listing", None, &["collision-complete"]).await;
+    store_phase(&actors, &control, "atomic replacements and concurrent reads", Some("atomic"), &["writer-atomic", "reader-complete"]).await;
+    store_phase(&actors, &control, "reverse read and listing", Some("reverse"), &["writer-complete"]).await;
+    let reads: usize = std::fs::read_to_string(control.join("reads")).unwrap().parse().unwrap();
+    assert!(reads > 0, "the reader observed concurrent whole-file replacements");
+    println!("64 atomic 128 KiB replacements, file/directory fsync, {reads} whole-file reads, coherent insert/refusal/read/listing in both directions");
     assert_eq!(std::fs::read(store.join("created")).unwrap(), b"first");
     assert_eq!(std::fs::read(store.join("atomic")).unwrap(), vec![b'B'; 131072]);
     assert!(rdm_admin::store_root::qualify(rdm_admin::model::ProviderKind::Container).is_ok(), "the proven container provider is admitted at boot");
     println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));
 }
 
-async fn read_store_output(mut pipe: impl tokio::io::AsyncRead + Unpin, output: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
-    use tokio::io::AsyncReadExt;
-    let mut chunk = [0; 4096];
-    loop {
-        let n = pipe.read(&mut chunk).await.expect("read the store command's evidence pipe");
-        if n == 0 { return; }
-        output.lock().unwrap().extend_from_slice(&chunk[..n]);
-    }
-}
-
-async fn store_command(handle: &DeploymentHandle, phase: &str, script: &str) -> String {
-    let id = container_id(handle);
+async fn store_phase(actors: &[&DeploymentHandle], control: &std::path::Path, phase: &str, command: Option<&str>, completed: &[&str]) {
     let started = std::time::Instant::now();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
-    eprintln!("container {id}, store-root {phase}: started");
-    let mut child = tokio::process::Command::new("docker").args(["exec", &id, "/usr/bin/python3", "-u", "-c", script])
-        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true)
-        .spawn().unwrap_or_else(|e| panic!("container {id} store-root {phase} could not execute: {e}"));
-    let spawn_elapsed = started.elapsed();
-    let stdout = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let stderr = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut read_out = tokio::spawn(read_store_output(child.stdout.take().unwrap(), stdout.clone()));
-    let mut read_err = tokio::spawn(read_store_output(child.stderr.take().unwrap(), stderr.clone()));
-    let status = tokio::time::timeout_at(deadline, async {
-        let status = child.wait().await;
-        let (out, err) = tokio::join!(&mut read_out, &mut read_err);
-        out.expect("the store stdout capture completed");
-        err.expect("the store stderr capture completed");
-        status
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        if let Some(command) = command { tokio::fs::write(control.join(command), b"start").await.unwrap(); }
+        loop {
+            if completed.iter().all(|name| control.join(name).is_file()) { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }).await;
-    if status.is_err() {
-        let _ = child.kill().await;
-        read_out.abort();
-        read_err.abort();
+    if let Err(e) = result {
+        let mut evidence = Vec::new();
+        for actor in actors {
+            let id = container_id(actor);
+            let out = tokio::process::Command::new("docker").args(["logs", &id]).output().await.unwrap();
+            evidence.push(format!("container {id}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        }
+        panic!("store-root {phase} exceeded its 15 s bound: {e}; participants: {}", evidence.join("; "));
     }
-    let stdout = String::from_utf8(stdout.lock().unwrap().clone()).unwrap();
-    let stderr = String::from_utf8_lossy(&stderr.lock().unwrap()).to_string();
-    let status = status.unwrap_or_else(|e| panic!("container {id} store-root {phase} exceeded 15 s: {e}; docker process spawned in {spawn_elapsed:?}; stdout {stdout}; stderr {stderr}"))
-        .unwrap_or_else(|e| panic!("container {id} store-root {phase} could not wait: {e}; stdout {stdout}; stderr {stderr}"));
-    assert!(status.success(), "container {id}, store-root {phase}, status {status}, stdout {stdout}, stderr {stderr}");
-    eprintln!("container {id}, store-root {phase}: complete in {:?}", started.elapsed());
-    stdout
+    println!("store-root {phase}: complete in {:?}", started.elapsed());
 }
 
 /// R14 item 8: the provider mounts the supplied store, never creates a missing namespace

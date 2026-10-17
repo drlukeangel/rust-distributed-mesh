@@ -62,6 +62,10 @@ path = "src/bin/faulted_node_admin.rs"
 name = "rafka-scenario"
 path = "src/bin/rafka_scenario.rs"
 
+[[bin]]
+name = "rafka-store-root-probe"
+path = "src/bin/store_root_probe.rs"
+
 [[test]]
 name = "main"
 path = "tests/main.rs"
