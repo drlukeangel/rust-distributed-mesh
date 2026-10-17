@@ -283,6 +283,113 @@ NO NEW ENTITY: `OsStopped` is a new value of an existing enum and the birth is a
 - **Acceptance cells.** `provider_state_survives_a_confirmed_seat_handover_and_its_return` (the canary, written first: two Ready admins, `node.primary.update` before the incumbent stops, the successor adopts and inspects both members, revalidation when the seat returns) and `provider_state_survives_a_node_admin_relaunch_under_the_recovery_identity_contract` (a new node.id at the path.name, never same-process `node.restart`); `the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate` (a `kill(2)` / `docker` call audit over the provider module's spans and a strace-free assertion through the testkit's fault door: a suspended child is never continued by RDM).
 - **Sizing.** One seat; `tests/provider_state.rs` only.
 
+#### e5 — one outcome code set: the 17 standard gRPC codes, RDM's named outcome as the detail (Luke Q26, 2026-10-16; folded from i148 on Luke's word: "this should really go in 144")
+
+- **Goal → gap.** node-rpc.md §25 standardised the transport layer only; every domain outcome is a per-protocol reply variant chosen by hand. The same defect as R24, which this epic generalises.
+- **Tracking issue:** [drlukeangel/rafka-v2#3131](https://github.com/drlukeangel/rafka-v2/issues/3131).
+- **Order.** After R24 lands; e5.1 (the code set, total classification, the name check) then e5.2 (the constructor library, spans, receipts); one seat each; independent of i146 and i147.
+- **State.** not started.
+
+## Context
+
+Node RPC standardised the transport layer (reset codes 421–424, 499; `ReplyKind`'s nine classes) and
+left every domain outcome to each protocol's own reply enum, chosen handler by handler
+(node-rpc.md §25: "Node RPC uses the classification for telemetry/outcome metadata only"; "every
+reply byte belongs to that protocol's codec"). So `Applied`, `AlreadyApplied`, `RejectedStale`,
+`RejectedNotAuthority`, `RequestNotHandled`, `already_carried`, `not_carried`, `closed` /
+`unknown` / `already-closed` are per-protocol inventions that `ReplyKind` lumps into
+`ProtocolRefusal` or `Success`. There is no library a handler calls to say "this already exists";
+there is a convention followed by hand. The same defect as R24 (dispatch), R-MSG1 (delivery) and
+i147 (gossip receive): a property decided per handler that must be decided once.
+
+**The rule.**
+
+Every reply of every directed Node RPC protocol classifies to exactly one of the 17 standard gRPC
+codes (`rdm_core::outcome::Code`, numbers 0–16, names as gRPC spells them). RDM adds no code. RDM's
+named outcome (the refusal name the pages define, the per-element lists) is the typed `detail`
+beside the code, never a new number. Handlers construct replies through one library
+(`reply::applied(..)`, `reply::already_applied(..)`, `reply::stale(..)`, …), never by picking an
+enum variant; the protocol's classifier maps every variant to its code and is proven total (no
+`Unclassified`). Clients, spans and Build receipts read the code; cells assert the detail.
+
+**The mapping (the page text, for the typed-object contract's new `code` column).**
+
+| gRPC code | RDM outcome |
+|---|---|
+| 0 `OK` | `Applied`, a read's result, a completion |
+| 6 `ALREADY_EXISTS` | `AlreadyApplied`; per element: `already_carried`, `already-closed` |
+| 5 `NOT_FOUND` | `SubjectUnknown`; per element: `not_carried`, an `unknown` id |
+| 10 `ABORTED` | `RejectedStale` (the revision is behind: a concurrency conflict) |
+| 9 `FAILED_PRECONDITION` | `RejectedInvalidTransition`, `ReceiverNotPrimary` (not the writer), a named refusal of state (`node-not-live`, `fabric-not-ready`, `rotation-in-progress`, `retire-before-rotated`) |
+| 14 `UNAVAILABLE` | `NotReady`, `Busy`, `ConnectionsDeleting`; transport `NotSent` |
+| 4 `DEADLINE_EXCEEDED` | the owner's bound lapsed |
+| 2 `UNKNOWN` | `Indeterminate` (crossed the commit cut; no evidence either way) |
+| 3 `INVALID_ARGUMENT` | `Malformed` (does not decode, `UnknownVariant`) |
+| 8 `RESOURCE_EXHAUSTED` | `Malformed(TooLarge)`, the admission bound |
+| 15 `DATA_LOSS` | `Corrupt` |
+| 12 `UNIMPLEMENTED` | `RequestNotHandled`, an `Unserved` op |
+| 1 `CANCELLED` | the owner cancelled the invocation (`CallerGone`) |
+| 13 `INTERNAL` | `INTERNAL_RPC_FAILURE` (the handler faulted) |
+| 7 `PERMISSION_DENIED`, 16 `UNAUTHENTICATED` | reserved: never sent inside the mesh (R-RX1, node-rpc.md §14) |
+| 11 `OUT_OF_RANGE` | reserved: no use |
+
+A per-element set answer (tags, named connections) keeps its lists and carries a code per element;
+the call's own code is `OK` when the call was served.
+
+**Requirements.**
+
+| # | Requirement | State | Evidence today | Epic |
+|---|---|---|---|---|
+| R1 | `rdm_core::outcome::Code`: the 17 codes, their numbers and names; a typed `detail` beside it carrying RDM's named outcome | BUILD | `ReplyKind` has nine classes, telemetry-only | e1 |
+| R2 | every protocol's classifier maps every reply variant to exactly one code; a codec cell proves totality (no `Unclassified`) per protocol | BUILD | `Unclassified` exists; `ProtocolRefusal` is a catch-all | e1 |
+| R3 | one constructor library; no handler picks a reply variant by hand for a shared outcome | BUILD | handlers construct variants directly | e2 |
+| R4 | spans carry `code` (the gRPC name) and `detail`; the Build receipts' `Failed { step, reason }` carries the code | BUILD | spans carry `outcome` strings per site | e2 |
+| R5 | `PERMISSION_DENIED` and `UNAUTHENTICATED` are never constructed inside the mesh; the land script's name check refuses an added runtime use (R24's rule generalised) | BUILD | the R24 check covers `unauthorized(..)` and `SenderNotSubject` | e1 |
+| R6 | no wire bytes change; existing reply enums and positions stand; the code is derived, not sent, until a wire change is ruled on its own | HOLDS | — | every epic |
+| R7 | Rafka's gateway can pass a mesh outcome to a client as the code it already speaks | HOLDS (consumer) | — | rafka-side, after e2 |
+
+**Open forks.**
+
+- *Is the code sent on the wire?* Not in i148: it is derived by the classifier on both ends from the
+  typed reply. Sending it (one byte in the transport header's Response shape) is its own packet if
+  a consumer needs it before decoding; it would ride the i146 header.
+- *Per-element codes on set answers*: the lists stay as they are; the per-element code is derived
+  from which list the element is in. No new field.
+
+**Implementation plan.**
+
+e5.1 — the code set and total classification
+
+- `Code` in `rdm_core::outcome`; `ReplyKind` becomes a view over it (its nine classes are codes or
+  code+detail); every protocol's classifier returns a `Code` and a `detail`; one codec cell per
+  protocol enumerates every reply variant and asserts a code, with `Unclassified` deleted; R5's name
+  check. Cells: `every_reply_variant_of_<protocol>_classifies_to_one_code` ×9 protocols;
+  `permission_denied_and_unauthenticated_are_never_constructed`.
+- **Page text.** node-rpc.md §25 (the shared classification is the code set; `ReplyKind` a view),
+  §40 (the error truth table gains a `code` column); the envelope's typed-object table gains `code`
+  per row. Exact old → new to Luke at e1's landing.
+- **State.** not started.
+
+e5.2 — the constructor library, spans and receipts
+
+- `reply::*` constructors; every handler's shared outcome goes through them (name, config, tags,
+  connections, seat rows, declarations, Build admission, the Status door's `RequestNotHandled`);
+  spans gain `code`; `Failed { step, reason }` receipts carry the code. Cells: one per handler
+  family that a shared outcome is constructed through the library (a grep-shaped unit cell over the
+  tree, like the dead-pub check); the spans' `code` attribute on the existing cells.
+- **Page text.** spans.md regenerated; node-rpc-envelope.md "Runtime spans" names `code`.
+- **State.** not started.
+
+**Dispatch ordering.**
+
+e1 after R24 lands (it generalises R24's name check and reuses its reseal shape); e2 after e1. One
+seat each. Independent of i146 and i147.
+
+**Cross-references.**
+
+- node-rpc.md §25, §40; node-rpc-envelope.md typed-object contract; `crates/rdm-core/src/outcome.rs`
+- R24 (`docs/plans/rulings/i144-rulings-2026-10-16-delivery.md` Q11), R-MSG1, i147 (the same defect, three other places)
+- Luke, 2026-10-16, Q25 (the two answer shapes, scalar put and set edit) and Q26 (the code set)
 ### Files likely to touch
 
 `crates/rdm-admin/src/deployment/{provider,process,container,pipeline}.rs`, `crates/rdm-admin/src/{offline,control_plane}.rs`, `crates/rdm-admin/src/admin/recovery.rs`, the inspect caller in `crates/rdm-admin/src/admin.rs`, `planned:crates/rdm-admin/tests/provider_state.rs`, `docs/architecture/deployment-provider.md`, `docs/architecture/lifecycles/{node-runtime-inspect,node-recovery,node-tickle,node-restart}.md`, `docs/reference/rdm/*.md` (regenerated), `CLAUDE.md` env table (no new variable expected).
