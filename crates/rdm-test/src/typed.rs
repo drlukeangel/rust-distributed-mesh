@@ -44,7 +44,14 @@ impl Estate {
             // hold a new birth.
             let (peers, after_an_ending) = match wire.take() {
                 Some(w) => (w.peers, w.stale),
-                None => (Arc::new(Peers::of(&[]).await), false),
+                None => {
+                    let birth = {
+                        let printed = self.printed.lock().unwrap();
+                        printed.iter().find(|b| b.name == self.admin).or_else(|| printed.first()).cloned().expect("the handover starts from a printed exact birth")
+                    };
+                    let peers = Peers::at(&birth).await.unwrap_or_else(|e| panic!("the handover to {} ({}): {e}", birth.name, birth.node_id));
+                    (Arc::new(peers), false)
+                },
             };
             self.reach_entry(&peers, after_an_ending).await;
             *wire = Some(Wire { peers, entry: self.admin.clone(), stale: false });

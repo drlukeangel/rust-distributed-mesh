@@ -50,13 +50,31 @@ pub struct Peers {
 }
 
 impl Peers {
-    /// A client that reaches every node of `views`.
+    /// A client over `views`, bound on the route to the first known address. An empty
+    /// local table binds loopback; a caller entering by an exact birth uses [`Self::at`].
     pub async fn of(views: &[NodeView]) -> Self {
-        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "0.0.0.0:0".parse().unwrap()).await.expect("the client endpoint binds");
+        let bind = match views.iter().find_map(|v| v.transport_addr) {
+            Some(target) => client_bind_for(target).expect("the client has a route to its view"),
+            None => "127.0.0.1:0".parse().unwrap(),
+        };
+        Self::bound(views, bind).await.expect("the client endpoint binds")
+    }
+
+    /// Enter at an exact birth, using the concrete local address the OS routes to it.
+    /// The route query sends no datagram and enumerates no interfaces (R-B2).
+    pub async fn at(birth: &MeshNode) -> Result<Self, String> {
+        let bind = client_bind_for(birth.transport_addr)?;
+        let peers = Self::bound(&[], bind).await?;
+        peers.learn_birth(birth)?;
+        Ok(peers)
+    }
+
+    async fn bound(views: &[NodeView], bind: std::net::SocketAddr) -> Result<Self, String> {
+        let endpoint = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), bind).await.map_err(|e| format!("the client endpoint at {bind} cannot bind: {e:#}"))?;
         let resolver = Arc::new(StaticResolver::new());
         let me = Self { rpc: Arc::new(NodeRpcClient::new(endpoint.clone(), resolver.clone()).with_caller_system("rdm")), resolver, held: Mutex::new(HashMap::new()), _endpoint: endpoint };
         me.learn(views);
-        me
+        Ok(me)
     }
 
     /// Make every node of `views` reachable.
@@ -137,4 +155,15 @@ impl Peers {
         }
         panic!("{} never reported: {fact}; its last report was {last}", peer.name);
     }
+}
+
+/// Ask the kernel for the concrete source address of this destination. The temporary socket
+/// is dropped before the endpoint binds; its ephemeral port is never advertised or reused.
+fn client_bind_for(target: std::net::SocketAddr) -> Result<std::net::SocketAddr, String> {
+    let unspecified: std::net::SocketAddr = if target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }.parse().unwrap();
+    let socket = std::net::UdpSocket::bind(unspecified).map_err(|e| format!("the client route to {target} cannot open a local socket: {e}"))?;
+    socket.connect(target).map_err(|e| format!("the client has no local route to {target}: {e}"))?;
+    let mut local = socket.local_addr().map_err(|e| format!("the client route to {target} has no local address: {e}"))?;
+    local.set_port(0);
+    Ok(local)
 }

@@ -26,8 +26,7 @@ impl Admin {
 
     /// The admin of `birth`.
     pub async fn at(birth: &MeshNode) -> Result<Admin, String> {
-        let peers = Arc::new(Peers::of(&[]).await);
-        peers.learn_birth(birth)?;
+        let peers = Arc::new(Peers::at(birth).await?);
         Ok(Admin { peers, entry: birth.name.clone() })
     }
 
