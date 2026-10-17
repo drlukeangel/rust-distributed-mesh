@@ -197,7 +197,7 @@ pub struct ServerStats {
     pub too_large: AtomicU64,
     /// Requests refused typed `Busy` by admission.
     pub busy: AtomicU64,
-    /// Requests refused typed `Draining` while the server drains.
+    /// Requests refused with `ConnectionsDeleting` while admission is closed.
     pub draining: AtomicU64,
     /// Requests refused typed `NotReady` by a closed ready gate.
     pub not_ready: AtomicU64,
@@ -585,12 +585,12 @@ impl NodeRpcServer {
         cut.len()
     }
 
-    /// Enter `Draining`: new calls get a typed `Draining` refusal.
-    pub fn drain(&self) {
+    /// Enter connections-deleting: new calls receive a typed `ConnectionsDeleting` refusal.
+    pub fn begin_connections_delete(&self) {
         self.inner.draining.store(true, Ordering::SeqCst);
     }
 
-    /// Leave `Draining`: a parked birth that starts again takes new calls.
+    /// Leave connections-deleting: a stopped birth that starts again takes new calls.
     pub fn resume(&self) {
         self.inner.draining.store(false, Ordering::SeqCst);
     }
