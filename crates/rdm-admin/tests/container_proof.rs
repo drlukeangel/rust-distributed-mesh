@@ -226,3 +226,128 @@ async fn an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_t
     assert_eq!(daemon_state(&id), "running", "a refusal touches nothing");
     assert_eq!(p.inspect(&launched).await, DeploymentStatus::Running);
 }
+
+/// R14 item 6: two independent runtimes see one mounted namespace. Hard-link insertion
+/// excludes an existing key; replacements are whole; file and directory fsync succeed;
+/// writes, removals and listings are coherent in both directions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacements_and_synced_files_and_directories() {
+    let fabric = fabric_name("store-root");
+    let Some(p) = provider(&fabric).await else { return };
+    let _cleanup = Fabric(fabric.clone());
+    let store = std::env::temp_dir().join(format!("{fabric}-node-store"));
+    std::fs::create_dir(&store).unwrap();
+    let mut a = launch(&p, &fabric, 0);
+    let mut b = launch(&p, &fabric, 1);
+    for spec in [&mut a, &mut b] {
+        spec.env.insert(rdm_core::launch::ENV_STORE_DIR.into(), store.display().to_string());
+    }
+    let a = p.spawn(&a).await.expect("writer container");
+    let b = p.spawn(&b).await.expect("reader container");
+    store_command(&a, r#"
+import os, pathlib
+root = pathlib.Path(os.environ['RDM_STORE_DIR'])
+assert root.is_dir(), f'RDM_STORE_DIR {root} is not mounted'
+with (root / 'insert.tmp').open('xb') as f:
+    f.write(b'first'); f.flush(); os.fsync(f.fileno())
+os.link(root / 'insert.tmp', root / 'created')
+assert (root / 'insert.tmp').stat().st_ino == (root / 'created').stat().st_ino
+fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+os.fsync(fd)
+(root / 'insert.tmp').unlink(); os.fsync(fd)
+with (root / 'atomic').open('xb') as f:
+    f.write(b'A' * 131072); f.flush(); os.fsync(f.fileno())
+os.fsync(fd); os.close(fd)
+print('hard-link insertion; file and directory fsync')
+"#).await;
+    store_command(&b, r#"
+import os, pathlib
+root = pathlib.Path(os.environ['RDM_STORE_DIR'])
+assert (root / 'created').read_bytes() == b'first'
+assert set(p.name for p in root.iterdir()) == {'created', 'atomic'}
+with (root / 'collision.tmp').open('xb') as f:
+    f.write(b'second'); f.flush(); os.fsync(f.fileno())
+try:
+    os.link(root / 'collision.tmp', root / 'created')
+except FileExistsError:
+    pass
+else:
+    raise AssertionError('create_new overwrote an existing key')
+assert (root / 'created').read_bytes() == b'first'
+(root / 'collision.tmp').unlink()
+fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+print('create_new refuses existing key; coherent read and listing')
+"#).await;
+    let writer = store_command(&a, r#"
+import os, pathlib, time
+root = pathlib.Path(os.environ['RDM_STORE_DIR'])
+end = time.monotonic() + 10
+while not (root / 'reader-ready').exists():
+    assert time.monotonic() < end, 'reader did not enter its observation'
+    time.sleep(.001)
+fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+for n in range(64):
+    with (root / 'replace.tmp').open('xb') as f:
+        f.write((b'A' if n % 2 == 0 else b'B') * 131072)
+        f.flush(); os.fsync(f.fileno())
+    os.replace(root / 'replace.tmp', root / 'atomic'); os.fsync(fd)
+(root / 'done').write_bytes(b'done'); os.fsync(fd); os.close(fd)
+print('64 atomic replacements, each file and directory synced')
+"#);
+    let reader = store_command(&b, r#"
+import os, pathlib, time
+root = pathlib.Path(os.environ['RDM_STORE_DIR'])
+assert (root / 'atomic').read_bytes() == b'A' * 131072
+(root / 'reader-ready').write_bytes(b'ready')
+end = time.monotonic() + 10
+reads = 0
+while not (root / 'done').exists():
+    assert time.monotonic() < end, 'writer did not complete its replacements'
+    value = (root / 'atomic').read_bytes()
+    assert value in (b'A' * 131072, b'B' * 131072), f'torn replacement: {len(value)} bytes'
+    reads += 1
+assert (root / 'atomic').read_bytes() == b'B' * 131072
+assert 'replace.tmp' not in {p.name for p in root.iterdir()}
+with (root / 'reader-created').open('xb') as f:
+    f.write(b'reader'); f.flush(); os.fsync(f.fileno())
+fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY); os.fsync(fd); os.close(fd)
+print(f'whole-file reads across concurrent replacements: {reads}')
+"#);
+    let (w, r) = tokio::join!(writer, reader);
+    println!("{w}\n{r}");
+    store_command(&a, r#"
+import os, pathlib
+root = pathlib.Path(os.environ['RDM_STORE_DIR'])
+assert (root / 'reader-created').read_bytes() == b'reader'
+assert {'created', 'atomic', 'reader-created', 'reader-ready', 'done'} == {p.name for p in root.iterdir()}
+assert (root / 'created').read_bytes() == b'first'
+print('reverse write visible in read and listing on the writer container')
+"#).await;
+    assert_eq!(std::fs::read(store.join("created")).unwrap(), b"first");
+    assert_eq!(std::fs::read(store.join("atomic")).unwrap(), vec![b'B'; 131072]);
+    println!("R14 item 6 qualified: store={}, containers={} and {}", store.display(), container_id(&a), container_id(&b));
+}
+
+async fn store_command(handle: &DeploymentHandle, script: &str) -> String {
+    let id = container_id(handle);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(15), tokio::process::Command::new("docker").args(["exec", &id, "/usr/bin/python3", "-c", script]).output())
+        .await.unwrap_or_else(|e| panic!("container {id} store-root observation exceeded 15 s: {e}"))
+        .unwrap_or_else(|e| panic!("container {id} store-root observation could not execute: {e}"));
+    assert!(out.status.success(), "container {id}, status {}, stdout {}, stderr {}", out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// R14 item 8: the provider mounts the supplied store, never creates a missing namespace
+/// through Docker's volume shorthand or substitutes the birth's data directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_container_store_root_is_refused_without_creating_it() {
+    let fabric = fabric_name("missing-store");
+    let Some(p) = provider(&fabric).await else { return };
+    let _cleanup = Fabric(fabric.clone());
+    let missing = std::env::temp_dir().join(format!("{fabric}-node-missing"));
+    let mut spec = launch(&p, &fabric, 0);
+    spec.env.insert(rdm_core::launch::ENV_STORE_DIR.into(), missing.display().to_string());
+    let err = p.spawn(&spec).await.expect_err("a missing store namespace is refused");
+    assert!(err.to_string().contains("RDM_STORE_DIR") && err.to_string().contains(missing.to_str().unwrap()), "{err}");
+    assert!(!missing.exists(), "the missing store namespace was not created");
+}
