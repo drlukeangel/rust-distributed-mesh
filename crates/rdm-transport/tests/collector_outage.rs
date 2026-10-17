@@ -28,6 +28,7 @@ async fn outage_child() {
     let init = Instant::now();
     let telemetry = rdm_transport::init_evidence_telemetry("rdm-outage-child");
     println!("INIT_MS={}", init.elapsed().as_millis());
+    println!("INIT_STEPS={}", rdm_transport::init_steps().map(|s| s.to_string()).unwrap_or_default());
     let started = Instant::now();
     for i in 0..SPANS {
         let span = tracing::info_span!("rdm.test.outage.update.via-child", i);
@@ -48,9 +49,10 @@ fn unix_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
 }
 
-/// Run the child against `endpoint`; its exit time, stdout and stderr. The child writes its spans
-/// to an evidence directory this call names and removes.
-fn run_child(endpoint: &str) -> (Duration, String, String) {
+/// Run the child against `endpoint`; its exit time, stdout, stderr and the evidence directory this
+/// call names, where the child writes its spans: the caller removes it once the cell passes, and a
+/// failing cell keeps it.
+fn run_child(endpoint: &str) -> (Duration, String, String, std::path::PathBuf) {
     static CHILDREN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let evidence = std::env::temp_dir().join(format!("rdm-outage-evidence-{}-{}", std::process::id(), CHILDREN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let spawned_at = unix_ms();
@@ -94,10 +96,24 @@ fn run_child(endpoint: &str) -> (Duration, String, String) {
     let ended_at = unix_ms();
     let (mut out, err) = (out_reader.join().unwrap(), err_reader.join().unwrap());
     out.push_str(&format!("SPAWNED_AT_MS={spawned_at}\nENDED_AT_MS={ended_at}\n"));
-    let _ = std::fs::remove_dir_all(&evidence);
     assert!(!killed, "the child was still running after {took:?}; it never exited: stdout={out} stderr tail={}", &err[err.len().saturating_sub(600)..]);
     assert!(status.success(), "the child failed: {status:?}\n{out}\n{err}");
-    (took, out, err)
+    (took, out, err, evidence)
+}
+
+/// The slowest step of the child's telemetry init (its `INIT_STEPS` line) and that step's own span
+/// from the child's evidence (`rdm.mesh.telemetry.create.via-init-step`), or why it is not there.
+fn slowest_init_step(out: &str, evidence: &std::path::Path) -> String {
+    let steps = out.lines().find_map(|l| l.strip_prefix("INIT_STEPS=")).unwrap_or_default();
+    let slowest = steps.split(' ').filter_map(|s| s.split_once('=')).max_by_key(|(_, ms)| ms.trim_end_matches("ms").parse::<u64>().unwrap_or(0));
+    let Some((step, ms)) = slowest else { return format!("no step report in the child's output (INIT_STEPS={steps:?})") };
+    let lines: Vec<String> = std::fs::read_dir(evidence).into_iter().flatten().flatten().filter(|e| e.path().to_string_lossy().ends_with(".spans.jsonl")).flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().map(str::to_string).collect::<Vec<_>>()).collect();
+    let span = lines
+        .iter()
+        .find(|l| l.contains("rdm.mesh.telemetry.create.via-init-step") && l.contains(&format!("\"step\":\"{step}\"")))
+        .cloned()
+        .unwrap_or_else(|| format!("not in the child's evidence {}", evidence.display()));
+    format!("slowest step {step} {ms}, its span {span}; every step: {steps}")
 }
 
 fn number(out: &str, key: &str) -> u128 {
@@ -108,13 +124,14 @@ fn number(out: &str, key: &str) -> u128 {
 /// emits spans and log lines ends within its drain bound, emitting 2000 spans never waits on the
 /// collector, and stderr names the outage once per signal, never once per span or batch.
 fn outage_changes_nothing(endpoint: &str) {
-    let (took, out, err) = run_child(endpoint);
+    let (took, out, err, evidence) = run_child(endpoint);
     let at = |k: &str| number(&out, k);
     assert!(
         took < EXIT_BOUND + Duration::from_secs(3),
-        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms, test entry to exit begun {} ms, exit begun to process ended {} ms (stdout: {out})",
+        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms ({}), test entry to exit begun {} ms, exit begun to process ended {} ms (stdout: {out})",
         at("ENTERED_AT_MS").saturating_sub(at("SPAWNED_AT_MS")),
         at("INIT_MS"),
+        slowest_init_step(&out, &evidence),
         at("EXITING_AT_MS").saturating_sub(at("ENTERED_AT_MS")),
         at("ENDED_AT_MS").saturating_sub(at("EXITING_AT_MS")),
     );
@@ -126,6 +143,7 @@ fn outage_changes_nothing(endpoint: &str) {
     assert!(failing <= 2, "the outage was named {failing} times (one per signal at most):\n{err}");
     let sdk_lines = err.lines().filter(|l| l.contains("ExportError") || l.contains("BatchSpanProcessor") || l.contains("BatchLogProcessor")).count();
     assert_eq!(sdk_lines, 0, "the SDK's own export-error lines reached stderr:\n{err}");
+    let _ = std::fs::remove_dir_all(&evidence);
 }
 
 #[test]

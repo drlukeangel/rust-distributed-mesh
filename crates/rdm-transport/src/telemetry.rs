@@ -431,16 +431,62 @@ pub fn jsonl_span_exporter(dir: &std::path::Path, service: &str) -> std::io::Res
     JsonlSpanExporter::create(dir, service)
 }
 
+/// How long each synchronous step of [`init_evidence_telemetry`] took, in the order it ran: the
+/// evidence file, the exporters, the stderr sink, the transport diagnostic file, the subscriber and
+/// the watchdog (i144 Q33). `Display`: `step=<ms>ms`, space-separated.
+#[derive(Debug, Clone, Default)]
+pub struct InitSteps(pub Vec<(&'static str, std::time::Duration)>);
+
+impl InitSteps {
+    fn timed(&mut self, step: &'static str, from: std::time::Instant) {
+        self.0.push((step, from.elapsed()));
+    }
+
+    /// The step that took longest.
+    pub fn slowest(&self) -> Option<(&'static str, std::time::Duration)> {
+        self.0.iter().copied().max_by_key(|(_, took)| *took)
+    }
+}
+
+impl std::fmt::Display for InitSteps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let steps: Vec<String> = self.0.iter().map(|(step, took)| format!("{step}={}ms", took.as_millis())).collect();
+        f.write_str(&steps.join(" "))
+    }
+}
+
+static INIT_STEPS: std::sync::OnceLock<InitSteps> = std::sync::OnceLock::new();
+
+/// The steps of this process's [`init_evidence_telemetry`], once it has run.
+pub fn init_steps() -> Option<&'static InitSteps> {
+    INIT_STEPS.get()
+}
+
+/// Each step of an init, once its subscriber is installed: one span per step carrying how long the
+/// step took (the steps ran before any subscriber could record them), under one span naming the
+/// slowest.
+fn report_init_steps(steps: InitSteps) {
+    let (slowest, slowest_ms) = steps.slowest().map_or(("", 0), |(step, took)| (step, took.as_millis() as u64));
+    tracing::info_span!("rdm.mesh.telemetry.create.via-init", steps = %steps, slowest, slowest_ms, "otel.kind" = "internal").in_scope(|| {
+        for (step, took) in &steps.0 {
+            tracing::info_span!("rdm.mesh.telemetry.create.via-init-step", step = *step, elapsed_ms = took.as_millis() as u64, "otel.kind" = "internal").in_scope(|| {});
+        }
+    });
+    let _ = INIT_STEPS.set(steps);
+}
+
 /// Telemetry for i143 binaries. Spans go to the JSONL evidence sink when
 /// `RDM_EVIDENCE_DIR` is set and to OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
 /// is set; with neither, only the fmt layer runs. Returns `None` when no
-/// exporter is configured.
+/// exporter is configured. Each step's time is reported ([`init_steps`]).
 pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     install_propagator();
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
     let mut builder = TracerProvider::builder().with_resource(build_resource(&service));
     let mut any = false;
+    let mut steps = InitSteps::default();
+    let step = std::time::Instant::now();
     if let Ok(dir) = std::env::var("RDM_EVIDENCE_DIR") {
         match JsonlSpanExporter::create(std::path::Path::new(&dir), &service) {
             Ok(e) => {
@@ -450,6 +496,8 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
             Err(e) => eprintln!("telemetry: RDM_EVIDENCE_DIR={dir} is unusable: {e}"),
         }
     }
+    steps.timed("evidence-file", step);
+    let step = std::time::Instant::now();
     let mut logs = None;
     if let Ok(endpoint) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
         let export_rt = ExportRuntime::get();
@@ -470,8 +518,11 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         builder = builder.with_span_processor(span_processor("otlp", build_exporter(endpoint)));
         any = true;
     }
+    steps.timed("exporters", step);
+    let step = std::time::Instant::now();
     let stderr_sink = log_sink::LogSink::start(std::io::stderr());
     let _ = STDERR_SINK.set(stderr_sink.clone());
+    steps.timed("stderr-sink", step);
     // The stderr log: INFO, RUST_LOG raises it; never the transport diagnostic target.
     macro_rules! stderr_layer {
         () => {
@@ -483,15 +534,20 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     // The transport diagnostic file (R-QH1), beside and apart from every other output, in an
     // evidence run only. Outside one the layer is not in the stack at all: added as `None`, a layer
     // that carries per-layer filters makes tracing-subscriber enable every callsite of the process.
+    let step = std::time::Instant::now();
     let diag = transport_diag::start::<tracing_subscriber::Registry>(&service).map(|(layer, sink)| {
         let _ = DIAG_SINK.set(sink);
         layer
     });
+    steps.timed("transport-diagnostic", step);
+    let step = std::time::Instant::now();
     if !any {
         let _ = match diag {
             Some(diag) => tracing_subscriber::registry().with(diag).with(stderr_layer!()).try_init(),
             None => tracing_subscriber::registry().with(stderr_layer!()).try_init(),
         };
+        steps.timed("subscriber", step);
+        report_init_steps(steps);
         return None;
     }
     let provider = builder.build();
@@ -510,7 +566,11 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         Some(diag) => tracing_subscriber::registry().with(diag).with(stderr_layer!()).with(span_export_layer(&provider, &service)).with(log_layer!()).try_init(),
         None => tracing_subscriber::registry().with(stderr_layer!()).with(span_export_layer(&provider, &service)).with(log_layer!()).try_init(),
     };
+    steps.timed("subscriber", step);
+    let step = std::time::Instant::now();
     let _ = watchdog::spawn();
+    steps.timed("watchdog", step);
+    report_init_steps(steps);
     Some(guard(provider, logs))
 }
 

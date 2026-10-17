@@ -283,7 +283,18 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   invocation's response frames by `seq` after that layer has deduplicated and ordered them") and §31
   the ack after the owner's recovery (Q22): nothing left to ask.
 - **Sizing.** One seat; `rdm-transport/src/stream.rs`, `rdm-core/src/node_command.rs`.
-- **State.** not started.
+- **State.** not started. This row's landing (with Q27's `forget_below` rename): its gate on tree
+  `804af94f` red at `rdm-transport:main`, `collector_outage::an_unroutable_collector_changes_nothing`
+  ("the child took 8.850569956s to end against http://10.255.255.1:4317: spawn to test entry 7 ms,
+  telemetry init 5279 ms, test entry to exit begun 6820 ms, exit begun to process ended 2038 ms",
+  `INIT_MS=5279 EMIT_MS=331 DRAINED_MS=3553`, `gates-e4s8-804af94f.log.detail`); the release gate
+  `99f83210` had all three outage cells red at telemetry init 5880, 5498 and 5877 ms. Q33 (Luke
+  2026-10-17, arm A): `init_evidence_telemetry` reports each step's time (evidence file, exporters,
+  stderr sink, transport diagnostic, subscriber, watchdog), each step its own span
+  (`rdm.mesh.telemetry.create.via-init-step`), and the cell's failure names the slowest with that
+  span; no change to telemetry's behaviour or the bound. A recurrence comes as a packet naming the
+  step. A synchronous disk wait at init would be Q30's defect in a second place: its own packet and
+  fix, R25's rule and its unit cell's shape.
 
 #### e3 — the owners move onto it, one at a time, each after its reconstruction cells
 
