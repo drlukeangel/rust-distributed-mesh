@@ -197,9 +197,12 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert!(named(&spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().all(|sp| sp["attributes"]["op"] != "node-left"), "no node-left call is made: left rides the stop reply");
     assert!(stopped_at < all_at && all_end <= cut_at, "the transport cut follows the whole All: stop {stopped_at} All {all_at}..{all_end} cut {cut_at}");
     assert!(left_at < terminal, "left is answered before the terminal proof: left {left_at} terminal {terminal}");
-    // The mesh primary publishes the departure from that reply, before the runtime exits.
-    let published = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).min().expect("the executor published NodeStopped from the left reply");
-    assert!(left_at <= published && published < terminal, "NodeStopped follows left and precedes the terminal proof");
+    // The mesh primary publishes the departure once, from the victim's declaration of its stop, which
+    // the victim sends after its transport cut and before its reply (node-stop.md steps 4-5, i146 Q36),
+    // and before the runtime exits.
+    let published: Vec<u64> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).collect();
+    assert_eq!(published.len(), 1, "NodeStopped is published once for the victim: {published:?}");
+    assert!(cut_at <= published[0] && published[0] < terminal, "NodeStopped follows the victim's transport cut and precedes the terminal proof: cut {cut_at} published {} terminal {terminal}", published[0]);
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["build_id"] == build_id).map(|sp| s(&sp["attributes"]["step"])).collect();
     assert!(!victim_steps.iter().any(|st| st == "ReleaseStorage"), "no step of the delete releases storage: {victim_steps:?}");
     // The All is the node's own, inside its stop: the delete composes no separate DeleteConnections step.

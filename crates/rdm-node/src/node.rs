@@ -812,6 +812,9 @@ impl crate::node_self::Session for NodeSession {
     async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation) -> Result<(), crate::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
+        // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
+        // this birth declares from here (its ReadyForTraffic names the start).
+        self.owed.lock().unwrap().owed = None;
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());

@@ -487,7 +487,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                     // node-admin's status authority applies it into its book: its node.started sets
                     // it ready-for-traffic. A birth the book does not hold yet is not known here: the
                     // member reports again.
-                    if let R::DeclareNodeState { node_id, incarnation, state, operation: None } = &req {
+                    if let R::DeclareNodeState { node_id, incarnation, state, .. } = &req {
                         let held = book.get(node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == *incarnation);
                         if !held {
                             return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });

@@ -985,12 +985,12 @@ impl NodeSelf {
         cut.record("turns_in_progress", report.turns_in_progress);
         // stopping is this node's own status from the moment its tasks are cut; nothing publishes it.
         let _ = (self.set_status)(MemberStatus::Leaving);
-        // 6. Parked, this birth owes its mesh-primary its state, naming this stop (i146 Q29, Q36): the
-        // owed twin of the reply's `stopped`, from which the mesh-primary publishes NodeStopped when
-        // the reply does not reach it. Owed, never awaited here: the reply is not held for it, and
-        // whichever reaches the mesh-primary first is the one it records.
+        // 6. Parked, this birth declares its state to its mesh-primary, naming this stop (i146 Q29, Q36;
+        // node-stop.md step 4): the owed twin of the reply's `stopped`, from which the mesh-primary
+        // publishes NodeStopped when the reply does not reach it. It is sent before the reply, so the
+        // mesh-primary never holds the reply, and never begins this birth's next cycle, ahead of it.
         if let Some(declare) = &self.declare {
-            tokio::spawn(declare(NodeState::Leaving, Some(declared(op))));
+            declare(NodeState::Leaving, Some(declared(op))).await;
         }
         cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
         receipt

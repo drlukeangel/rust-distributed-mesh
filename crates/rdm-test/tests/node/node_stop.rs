@@ -464,9 +464,10 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
 /// naming the unadmitted command, and the mesh-primary sets nothing: `node.get` lists the birth
 /// neither stopping nor parked, and no `from-command-admitted` sets it `Leaving`. Released (SIGCONT),
 /// the same stop submitted again is accepted, not refused `node-not-live`, and parks the same birth:
-/// its stopping follows the command's admission (`via-command-sent` admission `stopped`, then
-/// `from-command-admitted` status `Leaving`, then NodeStopped). Must NOT happen: stopping set before
-/// or without admission, a node-leaving frame sent or heard by anyone, a resubmission refused.
+/// the parked birth declares its stop before the stop's reply, so the mesh-primary publishes NodeStopped
+/// once, from that declaration (i146 Q36), and the admission that follows (`via-command-sent` admission
+/// `stopped`) sets nothing. Must NOT happen: stopping set before or without admission, NodeStopped
+/// twice, a node-leaving frame sent or heard by anyone, a resubmission refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth() {
     let test = "a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_parks_the_birth";
@@ -509,13 +510,14 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let Some(Frame::Started { build_id, .. }) = refused.first().cloned() else { panic!("{refused:?}") };
     assert!(matches!(refused.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the stop fails naming the unadmitted command: {refused:?}");
 
-    // Released: once its mesh-primary hears the birth again (its silence mark gone), node.get shows the
-    // status the mesh-primary authored. Nothing was admitted, so nothing is stopping.
+    // Released: once its mesh-primary hears the birth again (its unheard marks gone: PendingReconnect,
+    // and Dead with its os-stopped row while the offline ladder held it), node.get shows the status the
+    // mesh-primary authored. Nothing was admitted, so nothing is stopping.
     held.signal("-CONT", false);
     let until = std::time::Instant::now() + Duration::from_secs(30);
     let heard = loop {
         let v = view_of(&nodes, &path).await;
-        if v.status != NodeStatus::PendingReconnect {
+        if !matches!(v.status, NodeStatus::PendingReconnect | NodeStatus::Dead) {
             break v;
         }
         assert!(std::time::Instant::now() < until, "the released birth is heard again within 30 s: {v:?}");
@@ -544,13 +546,14 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let stopping = |attempt: &str| -> Vec<&Value> { of("rdm.mesh.membership.update.from-command-admitted", attempt).into_iter().filter(|sp| attr(sp, "member") == NODE && attr(sp, "status") == "Leaving").collect() };
     assert!(stopping(&first).is_empty(), "nothing set the unadmitted birth stopping: {:#?}", stopping(&first));
     let admitted_sent = vec![sent[1]];
-    let set = stopping(&second);
-    assert_eq!(set.len(), 1, "the admitted stop sets the birth stopping once: {set:#?}");
     let node_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "attempt") == second).expect("NodeStopped is published for the admitted stop");
-    // i146 Q36: once, from whichever of the birth's declaration and the stop stream's stopped reached
-    // the mesh-primary first.
+    // i146 Q36 (node-stop.md steps 4-5): the parked birth declares its stop before the stop's reply,
+    // so NodeStopped comes from that declaration, once, before the admission is taken; the admission
+    // then sets nothing, since the birth is already stopped and states move only forward.
     assert_eq!(named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).count(), 1, "NodeStopped is published once for the birth");
-    assert!(end_ns(admitted_sent[0]) <= start_ns(set[0]) && start_ns(set[0]) <= start_ns(node_stopped), "stopping is set on the admission, before NodeStopped");
+    assert!(start_ns(node_stopped) <= end_ns(admitted_sent[0]), "NodeStopped, from the birth's declaration, precedes the admission");
+    let set = stopping(&second);
+    assert!(set.is_empty(), "the admission after NodeStopped sets nothing: {set:#?}");
     for kind in ["node-leaving", "node-left"] {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| attr(sp, "kind") == kind && attr(sp, "subject") == NODE).collect();
         assert!(heard.is_empty(), "no {kind} frame is published or heard: {heard:#?}");

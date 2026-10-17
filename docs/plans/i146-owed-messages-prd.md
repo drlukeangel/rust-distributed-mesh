@@ -338,8 +338,9 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   the node's declaration naming the stop's operation). Cells: the Q29 cell as restated; the control; a
   declaration with no operation publishes no lifecycle frame.
   Built on `i146-e3-declaration`: `DeclaredOperation` on the wire (`rdm-core/src/status.rs`); the node
-  declares Leaving naming its stop after its transport cut, spawned (`node_self.rs` stop step 6), and
-  its start's ReadyForTraffic names the start (`node.rs` `Becoming`); the mesh-primary's stop stream
+  declares Leaving naming its stop after its transport cut and before its reply (`node_self.rs` stop
+  step 6), its start ends the stopped cycle's owed declaration, and its start's ReadyForTraffic names
+  the start (`node.rs` `Becoming`); the mesh-primary's stop stream
   records its `stopped` through the same declared-state row (`StatusAuthority::stop_received`), and
   NodeStopped is published only when that row is applied (`persist_then_commit`), never for a
   restart's stop. Cells: `status_rpc::tests::a_stops_leaving_publishes_node_stopped_once_from_whichever_reaches_the_mesh_primary_first`
@@ -363,6 +364,18 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   NodeStopped ever published twice, i147's receive rule makes the repeat of an operation fact do
   nothing at every receiver. Cell, same landing: a parked birth whose mesh seat moves re-declares its
   Leaving to the new holder, which publishes NodeStopped once across the move.
+  The landing's gate on `4c8c3cb7` red three times, read: the declaration then went out after the
+  reply, unawaited, so a restart's start (`begin_cycle`, `session.rs`) cleared the declared row and the
+  late Leaving applied over it, refusing the start's ReadyForTraffic as backward
+  (`build_op::a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_and_no_step_runs_twice`),
+  the declaration is now awaited before the reply, and a start ends the stopped cycle's owed
+  declaration. `node_delete_pipeline::retire_runs_every_step_in_order_and_the_ports_it_held_are_released`:
+  the rig admin's Status handler matched only declarations naming no operation (`rig.rs`, an edit of
+  this landing), so the delete's Leaving naming its stop was answered `request-not-handled`; it matches
+  every declaration. The never-admitted cell's longer hold put the held birth through the offline
+  ladder (`os-stopped`, listed Dead) at gate cadence; it now waits out both unheard marks. With the
+  declaration ahead of the reply, NodeStopped comes from it before the admission, which then sets
+  nothing; the cell says so.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
