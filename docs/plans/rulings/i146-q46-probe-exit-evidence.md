@@ -1,3 +1,5 @@
+**Q46: A — Luke, 2026-10-17. Preserve child status, stderr and the evidence directory listing beside the trace; bounds and telemetry unchanged.**
+
 # Q46 — probe exit without a span file: the first-flush hypothesis is not reproduced
 
 ### 1. Spec
