@@ -55,8 +55,11 @@ async fn a_carrier_that_is_gone_before_commit_is_not_sent() {
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
+/// CONTRACT: the inner call applied at the target, then the carrier exited. The origin's Forward is
+/// owed to the carrier until the carrier's exit is proven in the origin's view; the proof ends it
+/// `Indeterminate(ReceiverGone)`, never a lost stream or the origin's budget.
 #[tokio::test]
-async fn an_inner_call_applied_whose_outer_reply_is_lost_is_indeterminate() {
+async fn a_carrier_whose_exit_is_proven_after_the_inner_call_applied_leaves_the_origin_indeterminate_receiver_gone() {
     let r = rig().await;
     let target = r.target.resolved.node_id.clone();
     let carrier = carrier_of(&r);
@@ -64,9 +67,10 @@ async fn an_inner_call_applied_whose_outer_reply_is_lost_is_indeterminate() {
     let kill = async {
         r.applied.notified().await;
         r.carrier.router.shutdown().await.unwrap();
+        r.origin_view.remove_gone(&r.carrier.resolved.node_id);
     };
     let ((out, _), ()) = tokio::join!(call, kill);
-    assert!(matches!(&out, RpcOutcome::Indeterminate(_)), "the inner call applied, the outer reply was lost: {out:?}");
+    assert!(matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::ReceiverGone(_))), "the carrier's proven exit ends the Forward: {out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 1);
 }
 
@@ -79,8 +83,11 @@ async fn a_target_the_carrier_cannot_resolve_is_not_sent() {
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
+/// CONTRACT: the inner call applied at the target, then the target exited. The carrier's inner call
+/// is owed to the target until the target's exit is proven in the carrier's view; the proof ends it
+/// `Indeterminate(ReceiverGone)`, and the carrier hands that reason to the origin as `Carried`.
 #[tokio::test]
-async fn an_inner_reply_lost_at_the_target_is_indeterminate_through_the_carrier() {
+async fn a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone() {
     let r = rig().await;
     let target = r.target.resolved.node_id.clone();
     let carrier = carrier_of(&r);
@@ -88,12 +95,14 @@ async fn an_inner_reply_lost_at_the_target_is_indeterminate_through_the_carrier(
     let kill = async {
         r.applied.notified().await;
         r.target.router.shutdown().await.unwrap();
+        r.carrier_view.remove_gone(&target);
     };
     let ((out, _), ()) = tokio::join!(call, kill);
     assert!(
-        matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::Carried(_))),
-        "the carrier could not learn the inner outcome: {out:?}"
+        matches!(&out, RpcOutcome::Indeterminate(i) if matches!(i.reason(), IndeterminateReason::Carried(why) if why.starts_with("ReceiverGone("))),
+        "the carrier learned the target's proven exit and carried it: {out:?}"
     );
+    assert_eq!(r.handled.load(Ordering::SeqCst), 1);
 }
 
 /// A carrier's own account of its Direct edge to the final target.

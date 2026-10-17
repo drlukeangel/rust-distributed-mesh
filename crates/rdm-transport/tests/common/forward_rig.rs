@@ -104,16 +104,25 @@ pub async fn start(server: rdm_transport::NodeRpcServer, key: SecretKey, name: &
 }
 
 pub async fn client_with(nodes: &[&ResolvedNode]) -> NodeRpcClient {
+    client_and_view(nodes).await.0
+}
+
+/// A client over `nodes`, and its view: a cell publishes a node's exit there.
+pub async fn client_and_view(nodes: &[&ResolvedNode]) -> (NodeRpcClient, Arc<StaticResolver>) {
     let resolver = Arc::new(StaticResolver::new());
     for n in nodes {
         resolver.insert((*n).clone());
     }
     let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    NodeRpcClient::new(ep, resolver)
+    (NodeRpcClient::new(ep, resolver.clone()), resolver)
 }
 
 pub struct Rig {
     pub origin: NodeRpcClient,
+    /// The origin's view of the carrier and the target.
+    pub origin_view: Arc<StaticResolver>,
+    /// The carrier's view of the target.
+    pub carrier_view: Arc<StaticResolver>,
     pub carrier: Node,
     pub target: Node,
     pub handled: Arc<AtomicU64>,
@@ -167,7 +176,7 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
         seen.endpoint_id = SecretKey::generate().public();
     }
     carrier_resolver.insert(seen);
-    let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver));
+    let carrier_client = Arc::new(NodeRpcClient::new(carrier_ep.clone(), carrier_resolver.clone()));
     let carrier_birth = birth();
     let carrier_builder = ServerBuilder::new().ledger(test_ledger()).carry::<Probe>().carry::<Ping>();
     let carrier_server = match edges {
@@ -187,8 +196,8 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
             incarnation: carrier_birth.1,
         },
     };
-    let origin = client_with(&[&carrier.resolved, &target.resolved]).await;
-    Rig { origin, carrier, target, handled, applied, carrier_server }
+    let (origin, origin_view) = client_and_view(&[&carrier.resolved, &target.resolved]).await;
+    Rig { origin, origin_view, carrier_view: carrier_resolver, carrier, target, handled, applied, carrier_server }
 }
 
 pub fn probe(p: &[u8]) -> ProbeRequest {
