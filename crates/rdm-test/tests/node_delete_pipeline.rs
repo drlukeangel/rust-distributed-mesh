@@ -114,18 +114,15 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         }
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
             && f.get("pipeline").map(String::as_str) == Some("retire")));
-        // Each command was sent under its own operation, and the birth's completion call for that
-        // operation reached the commanding side (the server handler's own spans run on its tasks).
-        for (command, completion, operation, admission) in [("stop-node", "node-left", "node.stop:mesh1.rpc.1", "stopped")] {
-            assert!(
-                all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some(admission) && f.get("command").map(String::as_str) == Some(command)),
-                "no {admission} {command} span"
-            );
-            assert!(
-                all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some(completion)),
-                "no received {completion} span"
-            );
-        }
+        // The command owner records the stop's ordered stream under its operation. The rig
+        // calls that owner directly, so its evidence is the received frames, not the removed
+        // unary helper's command-sent span.
+        let operation = "node.stop:mesh1.rpc.1";
+        let mut reported: Vec<_> = all.values().filter(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-frame" && f.get("operation").map(String::as_str) == Some(operation))
+            .map(|(_, _, f)| (f.get("seq").and_then(|s| s.parse::<u32>().ok()).expect("a transport position"), f.get("frame").cloned().expect("a named frame"))).collect();
+        reported.sort_by_key(|(seq, _)| *seq);
+        assert_eq!(reported, vec![(0, "command-accepted".into()), (1, "stop-connections-deleted".into()), (2, "node-stopped".into())], "the directed stop reports its admission, closure and completion once");
+        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-completion-awaited" && f.get("operation").map(String::as_str) == Some(operation) && f.get("received").map(String::as_str) == Some("true") && f.get("completion").map(String::as_str) == Some("node-left")), "the pipeline receives the stop completion");
 
         // Create again on the same node.
         let again = pipeline.create(&create(publish_build(&builds, add_node()).await)).await.unwrap_or_else(|e| panic!("re-create: {e}"));
