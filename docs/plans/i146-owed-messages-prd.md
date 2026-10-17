@@ -777,6 +777,8 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 `crates/rdm-core/src/{framing,outcome,codes,node_command,status}.rs`; `crates/rdm-node/src/{node,node_self}.rs`;
 `crates/rdm-admin/src/{status_rpc,fabric_rounds}.rs`; `tools/mesh-audit`; `docs/reference/rdm/{wire,spans}.md`.
 
+- **Q52 = B** (arch, relayed by Luke, 2026-10-17; `docs/plans/rulings/i146-q52-owed-declaration-route.md`): the node's owed declaration is one `Budget::Owed` call; the owner supplies receiver and carrier policy, the route projection picks the carrier per attempt (§45), the Owed call re-resolves its route on every resend instead of once (`client.rs::owe`), direct first then carried; the declaration loop is deleted; the obligation ends on the holder's answer, proven exit or the owner's retarget on a seat move. Transport change authorized for this scope. Dev, lane e4s8.
+
 ## Verification
 
 - [ ] e1, e2, e3 green in the RDM gate (`rdm-gate-at.sh <lane> fast`, then `release`); each landing's
