@@ -45,3 +45,5 @@ Every arm assumes the settled status-authoring and takeover rules stand; no hear
 - **B:** The i144 owner fixes that existing shared-status acquisition path separately; Codex keeps s88 held, then rebases and runs the concurrent gate and land script. Wire/publisher/timer/tier/fork: as A; ownership and landing order change.
 
 No page replacement is proposed. The full gate RED and Q50 RED logs stay kept. i147 e5 follows s88’s successful landing.
+
+Approval boundary: Q50 explicitly says “No runtime change.” The canon in `/home/admin/rafka-v2/CLAUDE.md` says “No agent (lead or seat) changes gossip or the mesh without Luke’s explicit permission.” A fixes the existing product path; it needs that additional authorization. The [ruling-packet skill](/home/admin/rafka-v2/.claude/skills/ruling-packet/SKILL.md) supplies the packet format, not a separate approval requirement.
