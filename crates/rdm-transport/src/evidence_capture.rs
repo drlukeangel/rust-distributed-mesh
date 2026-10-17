@@ -12,13 +12,18 @@
 //! The capture owns its provider. Its `Drop` flushes the provider and then shuts it down, waiting
 //! as long as [`crate::export::bounded`] allows (an unreachable collector never holds a cell), before
 //! the dispatcher guard drops.
+//!
+//! A held capture ([`EvidenceCapture::start_held`]) is for a cell that makes more calls than its
+//! evidence can carry (a flood): each trace's spans wait until the cell decides the trace, and only
+//! the traces it keeps reach the file and the collector.
 
 use crate::pipeline::{span_export_layer, span_processor, CountingBatchProcessor, SpanLoss};
-use opentelemetry::trace::TraceResult;
+use opentelemetry::trace::{TraceId, TraceResult};
 use opentelemetry_sdk::export::trace::SpanData;
 use opentelemetry_sdk::trace::{Span, SpanProcessor, TracerProvider};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long [`EvidenceCapture::spans`] waits for the evidence file to hold every span ended
@@ -48,6 +53,77 @@ impl SpanProcessor for SharedEvidence {
     }
 }
 
+/// What a held capture holds: the spans of each trace its cell has not decided yet, and the traces it
+/// kept or forgot. A span of a decided trace that ends after the decision follows it (a served call's
+/// spans can end after its caller read the reply).
+#[derive(Debug, Default)]
+struct HeldState {
+    waiting: HashMap<TraceId, Vec<SpanData>>,
+    kept: HashSet<TraceId>,
+    forgotten: HashSet<TraceId>,
+}
+
+/// A held capture's one processor: a span of a kept trace goes on to the capture's file and collector,
+/// one of a forgotten trace is dropped, any other waits for its trace's decision.
+#[derive(Debug, Clone)]
+struct HeldTraces {
+    state: Arc<Mutex<HeldState>>,
+    sinks: Arc<Vec<Box<dyn SpanProcessor>>>,
+}
+
+impl HeldTraces {
+    fn send(&self, span: SpanData) {
+        for sink in self.sinks.iter() {
+            sink.on_end(span.clone());
+        }
+    }
+
+    /// Decide `trace` (its hex id): kept, its waiting spans go on and every later one follows;
+    /// forgotten, they are dropped and every later one is too.
+    fn decide(&self, trace: &str, keep: bool) {
+        let id = TraceId::from_hex(trace).unwrap_or_else(|e| panic!("{trace:?} is not a trace id: {e}"));
+        let waiting = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if keep {
+                state.kept.insert(id);
+            } else {
+                state.forgotten.insert(id);
+            }
+            state.waiting.remove(&id).unwrap_or_default()
+        };
+        if keep {
+            waiting.into_iter().for_each(|span| self.send(span));
+        }
+    }
+}
+
+impl SpanProcessor for HeldTraces {
+    fn on_start(&self, span: &mut Span, cx: &opentelemetry::Context) {
+        for sink in self.sinks.iter() {
+            sink.on_start(span, cx);
+        }
+    }
+
+    fn on_end(&self, span: SpanData) {
+        let id = span.span_context.trace_id();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.kept.contains(&id) {
+            drop(state);
+            self.send(span);
+        } else if !state.forgotten.contains(&id) {
+            state.waiting.entry(id).or_default().push(span);
+        }
+    }
+
+    fn force_flush(&self) -> TraceResult<()> {
+        self.sinks.iter().map(|sink| sink.force_flush()).fold(Ok(()), |all, r| all.and(r))
+    }
+
+    fn shutdown(&self) -> TraceResult<()> {
+        self.sinks.iter().map(|sink| sink.shutdown()).fold(Ok(()), |all, r| all.and(r))
+    }
+}
+
 /// A test cell's span capture; see the module docs.
 pub struct EvidenceCapture {
     provider: TracerProvider,
@@ -55,6 +131,8 @@ pub struct EvidenceCapture {
     loss: SpanLoss,
     path: PathBuf,
     dispatch: tracing::Dispatch,
+    /// A held capture's decisions ([`EvidenceCapture::start_held`]); `None`: every span goes on.
+    held: Option<HeldTraces>,
     /// Declared last: it drops after `Drop::drop` has flushed and shut the provider down.
     _default: tracing::dispatcher::DefaultGuard,
 }
@@ -70,6 +148,17 @@ impl EvidenceCapture {
     /// [`EvidenceCapture::start`], exporting to the collector at `otlp_endpoint` (OTLP/HTTP base
     /// URL) when it is `Some`, whatever the process environment says.
     pub fn start_with_collector(dir: &Path, service: &str, otlp_endpoint: Option<&str>) -> std::io::Result<Self> {
+        Self::open(dir, service, otlp_endpoint, false)
+    }
+
+    /// [`EvidenceCapture::start`], holding each trace's spans until the cell decides the trace:
+    /// [`EvidenceCapture::keep`] sends them on to the file and the collector, [`EvidenceCapture::forget`]
+    /// drops them. A trace never decided reaches neither.
+    pub fn start_held(dir: &Path, service: &str) -> std::io::Result<Self> {
+        Self::open(dir, service, std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok().as_deref(), true)
+    }
+
+    fn open(dir: &Path, service: &str, otlp_endpoint: Option<&str>, held: bool) -> std::io::Result<Self> {
         use tracing_subscriber::layer::SubscriberExt;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         crate::enable_callsites();
@@ -79,14 +168,42 @@ impl EvidenceCapture {
         let loss = evidence.0.loss();
         let mut resource = crate::build_resource(service);
         resource = resource.merge(&opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("rafka.evidence_file", path.display().to_string())]));
-        let mut builder = TracerProvider::builder().with_resource(resource).with_span_processor(evidence.clone());
-        if let Some(endpoint) = otlp_endpoint {
-            builder = builder.with_span_processor(span_processor("otlp", crate::build_exporter(endpoint.to_string())));
-        }
+        let otlp = otlp_endpoint.map(|endpoint| span_processor("otlp", crate::build_exporter(endpoint.to_string())));
+        let mut builder = TracerProvider::builder().with_resource(resource.clone());
+        let held = if held {
+            // The held processor owns its sinks, so the provider's resource reaches the collector's
+            // exporter here rather than through the provider.
+            let mut sinks: Vec<Box<dyn SpanProcessor>> = vec![Box::new(evidence.clone())];
+            if let Some(mut otlp) = otlp {
+                otlp.set_resource(&resource);
+                sinks.push(Box::new(otlp));
+            }
+            let h = HeldTraces { state: Arc::default(), sinks: Arc::new(sinks) };
+            builder = builder.with_span_processor(h.clone());
+            Some(h)
+        } else {
+            builder = builder.with_span_processor(evidence.clone());
+            if let Some(otlp) = otlp {
+                builder = builder.with_span_processor(otlp);
+            }
+            None
+        };
         let provider = builder.build();
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(span_export_layer(&provider, service)));
         let default = tracing::dispatcher::set_default(&dispatch);
-        Ok(Self { provider, evidence, loss, path, dispatch, _default: default })
+        Ok(Self { provider, evidence, loss, path, dispatch, held, _default: default })
+    }
+
+    /// Send the spans of `trace` (its hex id) on to the file and the collector, and every span of it
+    /// that ends later. Panics on a capture not started held.
+    pub fn keep(&self, trace: &str) {
+        self.held.as_ref().expect("keep is a held capture's decision (EvidenceCapture::start_held)").decide(trace, true);
+    }
+
+    /// Drop the spans of `trace` (its hex id), and every span of it that ends later. Panics on a
+    /// capture not started held.
+    pub fn forget(&self, trace: &str) {
+        self.held.as_ref().expect("forget is a held capture's decision (EvidenceCapture::start_held)").decide(trace, false);
     }
 
     /// Run the cell's `future` to completion on a multi-thread runtime of `worker_threads` workers

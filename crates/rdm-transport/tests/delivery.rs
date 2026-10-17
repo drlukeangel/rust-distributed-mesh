@@ -307,12 +307,12 @@ async fn eventually(what: &str, within: Duration, f: impl Fn() -> bool) {
 }
 
 /// The trace a span opened under this cell's capture belongs to.
-fn trace_of(span: &tracing::Span) -> String {
+pub(crate) fn trace_of(span: &tracing::Span) -> String {
     rdm_transport::traceparent_of(span).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context: its capture is installed")
 }
 
 /// The trace's Jaeger link.
-fn flame(trace: &str) -> String {
+pub(crate) fn flame(trace: &str) -> String {
     format!("{}/trace/{trace}", std::env::var("JAEGER_QUERY_URL").unwrap_or_else(|_| "http://192.168.68.99:16687".into()))
 }
 
