@@ -224,7 +224,7 @@ fn label(o: &RpcOutcome<PingReply>) -> String {
     match o {
         RpcOutcome::NotSent(n) => format!("NotSent({:?})", n.reason()),
         RpcOutcome::Indeterminate(i) => format!("Indeterminate({:?})", i.reason()),
-        RpcOutcome::Reply(r) => format!("Reply({:?})", r.class()),
+        RpcOutcome::Reply(r) => format!("Reply({})", r.class().code().name()),
         other => other.name().to_string(),
     }
 }
@@ -307,7 +307,7 @@ async fn incomplete_send(seed: u64) -> Report {
     let n = node().await;
     let c = caller(n.record.clone()).await;
     let (o, ev) = control(&c, b"control").await;
-    assert_eq!(r.saw("control", &o), "Reply(Success)");
+    assert_eq!(r.saw("control", &o), "Reply(OK)");
     assert!(ev.unwrap().committed);
     let len = 512 + r.s.draw("payload_len", 7680) as usize;
     let mut expected_dispatched = 1;
@@ -337,7 +337,7 @@ async fn incomplete_send(seed: u64) -> Report {
                 tap.set_to_server(Mode::Pass);
                 r.s.record("tap", "to_server=pass");
                 let (o, _) = p.call(b"healed", &CallOptions::default()).await;
-                assert_eq!(r.saw("healed_sibling", &o), "Reply(Success)");
+                assert_eq!(r.saw("healed_sibling", &o), "Reply(OK)");
                 expected_dispatched += 1;
             }
             _ => unreachable!("this cell plans only send cuts"),
@@ -345,7 +345,7 @@ async fn incomplete_send(seed: u64) -> Report {
         assert_eq!(ServerStats::get(&n.stats.dispatched), expected_dispatched, "the cut request never reached dispatch");
     }
     let (o, _) = c.call(b"sibling", &CallOptions::default()).await;
-    assert_eq!(r.saw("sibling", &o), "Reply(Success)");
+    assert_eq!(r.saw("sibling", &o), "Reply(OK)");
     let handled = n.hooks.handled();
     assert!(!handled.iter().any(|h| h == "partitioned"), "the partitioned request never ran a handler: {handled:?}");
     assert_eq!(handled.len() as u64, ServerStats::get(&n.stats.dispatched));
@@ -392,7 +392,7 @@ async fn reply_cut(seed: u64) -> Report {
         behind.transport_addr = tap.addr();
         let c = caller(behind).await;
         let (o, _) = control(&c, b"control").await;
-        assert_eq!(r.saw("control", &o), "Reply(Success)");
+        assert_eq!(r.saw("control", &o), "Reply(OK)");
         let value = format!("v{}", r.s.draw("value", 1000));
         let opts = CallOptions { budget: Budget::Split { send: Duration::from_secs(5), reply: Duration::from_millis(600) }, ..Default::default() };
         let mode = if cut == Cut::ReplyLost { Mode::Drop } else { Mode::Hold };
@@ -418,7 +418,7 @@ async fn reply_cut(seed: u64) -> Report {
         r.s.record("tap", "to_client=pass");
         // The stored mutation reconciles with what the node holds, read by a new invocation.
         let (o, _) = c.call(b"get", &CallOptions::default()).await;
-        assert_eq!(r.saw("reconcile", &o), "Reply(Success)");
+        assert_eq!(r.saw("reconcile", &o), "Reply(OK)");
         let held = match &o {
             RpcOutcome::Reply(rep) => rep.value().clone(),
             _ => unreachable!(),
@@ -427,7 +427,7 @@ async fn reply_cut(seed: u64) -> Report {
         let handled = n.hooks.handled();
         assert_eq!(handled.iter().filter(|h| h.starts_with("put:")).count(), 1, "the call was never replayed: {handled:?}");
         let (o, _) = c.call(b"sibling", &CallOptions::default()).await;
-        assert_eq!(r.saw("sibling", &o), "Reply(Success)");
+        assert_eq!(r.saw("sibling", &o), "Reply(OK)");
         counters.push(json!({"cut": cut.name(), "value": value, "dispatched": ServerStats::get(&n.stats.dispatched), "handled": n.hooks.handled(), "stored": n.hooks.store.lock().unwrap().clone()}));
     }
     r.report(Value::Array(counters))
@@ -456,7 +456,7 @@ async fn supersession(seed: u64) -> Report {
     let n = node().await;
     let c = caller(n.record.clone()).await;
     let (o, ev) = control(&c, b"control").await;
-    assert_eq!(r.saw("control", &o), "Reply(Success)");
+    assert_eq!(r.saw("control", &o), "Reply(OK)");
     let first = ev.unwrap();
     // A long call rides the old birth's pooled connection.
     let slow = {
@@ -499,10 +499,10 @@ async fn supersession(seed: u64) -> Report {
         r.s.record("slow", "released_after_stale_dial");
     }
     let (o, _) = slow.await.unwrap();
-    assert_eq!(r.saw("slow", &o), "Reply(Success)", "eviction never closes a connection a call is still using");
+    assert_eq!(r.saw("slow", &o), "Reply(OK)", "eviction never closes a connection a call is still using");
     // The healthy current sibling.
     let (o, ev) = c.call(b"sibling", &CallOptions::default()).await;
-    assert_eq!(r.saw("sibling", &o), "Reply(Success)");
+    assert_eq!(r.saw("sibling", &o), "Reply(OK)");
     let ev = ev.unwrap();
     assert!(!ev.reused && ev.connection != first.connection, "the sibling rode a connection of the current birth");
     assert!(c.client.pooled().iter().all(|k| k.incarnation.as_ref() == Some(&third.incarnation)), "{:?}", c.client.pooled());
