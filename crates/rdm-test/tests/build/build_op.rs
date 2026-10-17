@@ -258,6 +258,50 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 }
 
 /// What a `build.attempt.run` sent to `to` for `attempt` answers, whole: the refusal, or the first frame.
+/// CONTRACT (i146; build.md: "a live run is reattached, never re-claimed"; Q22: the reattach after a
+/// `Budget::Stream` connection closes is the owner's): a watched Build whose connection closes
+/// mid-stream is reattached by its build id from the attempt it carried and ends `Complete`, the run
+/// it watched left running: no second attempt, no step receipted twice. The Build grows mesh2 by an
+/// rpc node; its watcher reads the first frame, then every connection of the watching client is
+/// closed, the stream's with them. Must NOT happen: the watcher ending on the break, a second
+/// attempt, a step run twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_completes_with_no_step_run_twice() {
+    let test = "a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_completes_with_no_step_run_twice";
+    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
+    let caller = Caller::of(&estate).await;
+    let carrier = born(&estate, &caller, &SHAPE).await;
+    let grown = FabricDesired { fabric: FABRIC.into(), meshes: [("mesh1", 2, 1), ("mesh2", 2, 3)].iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
+    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts the change");
+    let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
+    let first = stream.next().await.expect("a frame").expect("the stream reads its first frame");
+    assert!(!matches!(first, BuildFrame::Complete { .. } | BuildFrame::Failed { .. }), "the Build is still running when its connection closes: {first:?}");
+
+    let closed = carrier.client().close_pooled("the cell closes the watcher's connection");
+    assert!(closed >= 1, "the watching client held the stream's connection");
+    let followed = carrier.follow(stream).await.expect("the watcher follows the Build to its terminal");
+    assert!(followed.reattached >= 1, "the watcher reattached after the close: {followed:?}");
+    assert!(matches!(followed.frames.last(), Some(BuildFrame::Complete { .. })), "the Build ends Complete: {followed:?}");
+
+    let receipts = Builds::new(carrier.clone()).get(&build_id).await.expect("build.get");
+    assert_eq!(receipts.attempt, attempt, "the close opened no second attempt: {receipts:?}");
+    let mut keys: Vec<(u32, String, String)> = receipts.steps.iter().map(|r| (r.attempt, r.operation.clone(), r.step.clone())).collect();
+    let all = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), all, "no step has two receipts: {receipts:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let build = build_id.to_string();
+    let reconcile = spans_named(&spans, "rdm.node_admin.build.update.via-reconcile")
+        .into_iter()
+        .find(|sp| s(&sp["attributes"]["build_id"]) == build)
+        .expect("the run");
+    println!("watched Build reattached {} time(s), Complete; flame http://192.168.68.99:16687/trace/{}", followed.reattached, s(&reconcile["trace_id"]));
+    estate.record_trace_url(reconcile["trace_id"].as_str().unwrap_or(""));
+}
+
 async fn attempt_run(caller: &Caller, to: &str, build: &BuildId, attempt: u32, executor: &str) -> BuildReply {
     let req = BuildRequest::AttemptRun { build_id: build.to_string(), attempt, executor: executor.into(), context: CallContext::default(), intent: Vec::new(), operations: Vec::new(), hand_off_to: None };
     let opts = CallOptions { budget: Budget::Stream { send: Duration::from_secs(10) }, ..CallOptions::default() };

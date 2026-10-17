@@ -545,25 +545,22 @@ impl Estate {
         self.follow(stream).await
     }
 
-    /// A Build stream to its `Complete`. A stream that ends `SeatMoved` (a planned fabric-primary
-    /// handover) is followed: the same Build is re-submitted at the seat the carrier reaches now,
-    /// from the attempt the stream carried.
-    pub async fn follow(&self, mut stream: BuildStream) -> Reconciled {
+    /// A Build stream to its `Complete`, followed by the client's watcher ([`rdm_client::follow_with`]):
+    /// a stream that breaks (its connection closed) or ends `SeatMoved` (a planned fabric-primary
+    /// handover) is reattached by its build id from the attempt it carried, at the seat the carrier
+    /// reaches now. A failed Build or a reattachment refused is a defect of the cell, named.
+    pub async fn follow(&self, stream: BuildStream) -> Reconciled {
         let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
-        let mut frames = Vec::new();
-        loop {
-            match Self::read_to_end(&mut stream).await {
-                Ok(done) => {
-                    frames.extend(done.frames);
-                    self.refresh().await;
-                    return Reconciled { build_id, attempt, frames };
-                }
-                Err(moved) => {
-                    frames.extend(moved.0);
-                    stream = self.carrier().await.resubmit(&build_id, attempt).await.unwrap_or_else(|e| panic!("the fabric-primary seat moved ({:?}) and the new seat does not stream Build {build_id} from attempt {attempt}: {e}", moved.1));
-                }
-            }
+        let followed = rdm_client::follow_with(stream, |id, from| async move { self.carrier().await.resubmit(&id, from).await })
+            .await
+            .unwrap_or_else(|e| panic!("Build {build_id} could not be followed to its terminal from attempt {attempt}: {e}"));
+        match followed.frames.last() {
+            Some(BuildFrame::Complete { .. }) => {}
+            Some(BuildFrame::Failed { attempt, operation, step, reason, .. }) => panic!("Build {build_id} attempt {attempt} failed at {operation} {step}: {reason}"),
+            other => panic!("Build {build_id} ended at {other:?}, not Complete: {:?}", followed.frames),
         }
+        self.refresh().await;
+        Reconciled { build_id, attempt, frames: followed.frames }
     }
 
     /// Reconcile the fabric to `meshes`, each `(name, node_admin, rpc_node)`.

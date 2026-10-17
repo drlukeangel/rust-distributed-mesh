@@ -679,6 +679,14 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   re-claimed"). The Build watcher is an owner that demonstrates reconstruction: reattach by `build_id`
   after a connection close, resume from the receipts. Cell: a watched Build whose connection closes
   mid-stream reattaches and ends `Complete` with no step run twice. Not part of R24's landing.
+  **State: done.** `rdm_client::follow_with` / `BuildCarrier::follow` read the stream; a break
+  (`Indeterminate`) or a `SeatMoved` frame reattaches by `build_id` with `resubmit(build_id, attempt)`,
+  steps de-duplicated by (attempt, operation, step), ending on `Complete | Failed | Got | Deleted`;
+  `Estate::follow` is the cells' watcher. Cell
+  `build_op::a_watched_build_whose_connection_closes_mid_stream_is_reattached_and_completes_with_no_step_run_twice`
+  (closes the pooled connection after the first frame): build_op 11/11 in one run (67.6 s). Flame
+  http://localhost:16686/trace/0ae31b6ff68f027ebb2d870e284ceadb: Build `ahjmn2e1qvry`,
+  `rdm.node_admin.build.serve.via-node-rpc` twice (the broken stream, the reattach), both `outcome=complete`.
 - **Acceptance cells (per owner, named for it).** `…_reconstructs_its_owed_<message>_from_its_rows_after_a_restart`;
   `…_regenerates_the_lost_<reply>_from_its_record`; `…_answers_already_applied_by_operation_identity_to_a_late_resend`;
   `…_no_longer_runs_its_own_retry_loop` (control). Plus the Q13 five, live: lost completion delivered;

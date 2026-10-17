@@ -240,7 +240,63 @@ fn refusal(reply: BuildReply) -> CallEnd {
     CallEnd::Rejected { reason, detail }
 }
 
+/// A followed Build: every frame of every attachment, in order, each step once, and how many times
+/// the watcher reattached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Followed {
+    /// The frames, the terminal last.
+    pub frames: Vec<BuildFrame>,
+    /// The reattachments made: one per stream that broke or ended `SeatMoved`.
+    pub reattached: u32,
+}
+
+/// Follow `stream` to its terminal (build.md: "a live run is reattached, never re-claimed"; i146 Q22:
+/// the reattach after a `Budget::Stream` connection closes is the owner's). A stream that breaks
+/// before its terminal (its connection closed: `Indeterminate`), ends without one, or ends
+/// `SeatMoved` is reattached through `reattach` by its `build_id` from the attempt it carried; a step a
+/// reattachment replays is kept once. The terminal is `Complete`, `Failed`, `Got` or `Deleted`. `Err`
+/// is a reattachment refused or not made, named: nothing here waits or tries again on its own.
+pub async fn follow_with<F, Fut>(mut stream: BuildStream, mut reattach: F) -> Result<Followed, CallEnd>
+where
+    F: FnMut(BuildId, u32) -> Fut,
+    Fut: std::future::Future<Output = Result<BuildStream, CallEnd>>,
+{
+    let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
+    let mut out = Followed { frames: Vec::new(), reattached: 0 };
+    let mut steps = HashSet::new();
+    loop {
+        while let Some(frame) = stream.next().await {
+            let frame = match frame {
+                Ok(f) => f,
+                Err(CallEnd::Indeterminate { .. }) => break,
+                Err(e) => return Err(e),
+            };
+            if let BuildFrame::Step { attempt, operation, step } = &frame {
+                if !steps.insert((*attempt, operation.clone(), step.clone())) {
+                    continue;
+                }
+            }
+            let moved = matches!(frame, BuildFrame::SeatMoved { .. });
+            let terminal = matches!(frame, BuildFrame::Complete { .. } | BuildFrame::Failed { .. } | BuildFrame::Got { .. } | BuildFrame::Deleted);
+            out.frames.push(frame);
+            if terminal {
+                return Ok(out);
+            }
+            if moved {
+                break;
+            }
+        }
+        out.reattached += 1;
+        stream = reattach(build_id.clone(), attempt).await?;
+    }
+}
+
 impl BuildCarrier {
+    /// [`follow_with`] through this carrier: a reattachment is a re-submit of the Build here.
+    pub async fn follow(&self, stream: BuildStream) -> Result<Followed, CallEnd> {
+        follow_with(stream, |id, from| async move { self.resubmit(&id, from).await }).await
+    }
+
     /// A carrier over `client`, starting at the fabric-primary `fabric_primary`.
     pub fn new(client: Arc<NodeRpcClient>, fabric_primary: PathName) -> Self {
         Self { client, fabric_primary }
