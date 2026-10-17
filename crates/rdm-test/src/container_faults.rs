@@ -102,29 +102,86 @@ pub fn address_of(estate: &impl ContainerEstate, id: &str) -> Result<String, Str
 /// The packet-filter chain a silence installs in each silenced container's own network namespace.
 pub const SILENCE_CHAIN: &str = "RDM-SILENCE";
 
-/// Run the host's selected filter tool in the exact existing container's namespace.
-/// Only this test process receives NET_ADMIN; the node's process and privileges stay as-is.
-/// A filter read or release never starts another container while the cut's clock runs.
-fn in_netns(id: &str, tool: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
-    use std::io::Write;
-    use std::process::Stdio;
-    // The runtime mounts /usr and its libraries. Resolve the host's alternatives link
-    // here: /etc/alternatives need not exist in the runtime image. Both xtables
-    // implementations accept the selected command as their first argument.
-    let binary = std::fs::canonicalize(format!("/usr/sbin/{tool}"))
-        .map_err(|e| format!("resolve the host's {tool}: {e}"))?;
-    let mut cmd = Command::new("docker");
-    cmd.args(["exec", "--user", "0", "--privileged", "-i", id]).arg(&binary).arg(tool).args(args);
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("{tool} in the namespace of {id}: {e}"))?;
-    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
-        pipe.write_all(text.as_bytes()).map_err(|e| format!("{tool} in the namespace of {id}: {e}"))?;
+/// One privileged test process, opened before the silence clock starts. Commands
+/// use its pipes, so Docker startup/teardown cannot delay a timed filter release.
+#[derive(Debug)]
+struct NamespaceTool {
+    child: std::process::Child,
+    input: Option<std::process::ChildStdin>,
+    output: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl NamespaceTool {
+    fn start(id: &str, install: &str, lift: &str) -> Result<Self, String> {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        let binary = std::fs::canonicalize("/usr/sbin/iptables")
+            .map_err(|e| format!("resolve the host's filter implementation: {e}"))?;
+        // Both selected xtables implementations accept the command as argv[1].
+        // Arguments, including the rules, are passed directly, never shell-expanded.
+        let script = r#"
+set -o pipefail
+printf 'RDM-TOOL-READY\n'
+while IFS= read -r command; do
+    case "$command" in
+        install) printf '%s' "$2" | "$1" iptables-restore --noflush 2>&1 ;;
+        rules) "$1" iptables -S 2>&1 ;;
+        lift) printf '%s' "$3" | "$1" iptables-restore --noflush 2>&1 ;;
+        *) printf 'unknown fixture command: %s\n' "$command"; false ;;
+    esac
+    status=$?
+    printf '\nRDM-TOOL-END:%s\n' "$status"
+done
+"#;
+        let mut child = Command::new("docker")
+            .args(["exec", "--user", "0", "--privileged", "-i", id, "/usr/bin/bash", "-c", script, "--"])
+            .arg(binary).arg(install).arg(lift)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().map_err(|e| format!("start the exact namespace tool for {id}: {e}"))?;
+        let input = child.stdin.take();
+        let output = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut tool = Self { child, input, output };
+        let mut ready = String::new();
+        tool.output.read_line(&mut ready).map_err(|e| format!("namespace {id} readiness: {e}"))?;
+        if ready.trim() != "RDM-TOOL-READY" {
+            return Err(tool.ended(&format!("namespace {id} did not become ready: {ready:?}")));
+        }
+        Ok(tool)
     }
-    let out = child.wait_with_output().map_err(|e| format!("{tool} in the namespace of {id}: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(format!("{tool} {} in the namespace of {id}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()))
+
+    fn ended(&mut self, context: &str) -> String {
+        use std::io::Read;
+        self.input.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut stderr = String::new();
+        if let Some(mut pipe) = self.child.stderr.take() { let _ = pipe.read_to_string(&mut stderr); }
+        format!("{context}; stderr {stderr}")
+    }
+
+    fn command(&mut self, command: &str) -> Result<String, String> {
+        use std::io::{BufRead, Write};
+        let input = self.input.as_mut().ok_or("the namespace tool has ended")?;
+        writeln!(input, "{command}").and_then(|()| input.flush()).map_err(|e| format!("send {command} to the namespace tool: {e}"))?;
+        let mut output = String::new();
+        loop {
+            let mut line = String::new();
+            if self.output.read_line(&mut line).map_err(|e| format!("read namespace {command}: {e}"))? == 0 {
+                return Err(self.ended(&format!("namespace tool ended during {command}: {output}")));
+            }
+            if let Some(status) = line.trim().strip_prefix("RDM-TOOL-END:") {
+                return if status == "0" { Ok(output.trim().to_string()) } else { Err(format!("namespace {command} refused ({status}): {output}")) };
+            }
+            output.push_str(&line);
+        }
+    }
+}
+
+impl Drop for NamespaceTool {
+    fn drop(&mut self) {
+        // EOF ends the fixture's shell; no process or helper container is left behind.
+        self.input.take();
+        let _ = self.child.wait();
     }
 }
 
@@ -154,6 +211,8 @@ pub struct Silenced {
     pub members: Vec<Member>,
     /// The containers the members no longer hear.
     pub unheard: Vec<Member>,
+    #[serde(skip)]
+    tools: std::sync::Arc<std::collections::BTreeMap<String, std::sync::Mutex<NamespaceTool>>>,
 }
 
 /// Silence `nodes` against the rest of the estate. `fabric_primary` is the node-admin holding the
@@ -180,7 +239,14 @@ pub fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fabric_p
     for (n, id) in estate.live_containers().into_iter().filter(|(n, _)| !nodes.contains(n)) {
         unheard.push(Member { node: n, ip: address_of(estate, &id)?, id });
     }
-    Ok(Silenced { network: network_of(estate), gateway, members, unheard })
+    let mut silenced = Silenced { network: network_of(estate), gateway, members, unheard, tools: Default::default() };
+    let install = silenced.install_rules();
+    let lift = lift_rules();
+    let tools: Result<std::collections::BTreeMap<_, _>, String> = on_members(&silenced.members, |m| {
+        NamespaceTool::start(&m.id, &install, &lift).map(|tool| (m.id.clone(), std::sync::Mutex::new(tool)))
+    }).into_iter().collect();
+    silenced.tools = std::sync::Arc::new(tools?);
+    Ok(silenced)
 }
 
 fn on_members<T: Send>(members: &[Member], action: impl Fn(&Member) -> T + Sync) -> Vec<T> {
@@ -192,14 +258,19 @@ fn on_members<T: Send>(members: &[Member], action: impl Fn(&Member) -> T + Sync)
 }
 
 impl Silenced {
+    fn command(&self, member: &Member, command: &str) -> Result<String, String> {
+        self.tools.get(&member.id).ok_or_else(|| format!("{}: no prepared namespace tool", member.node))?
+            .lock().map_err(|_| format!("{}: the namespace tool ended while held", member.node))?
+            .command(command).map_err(|e| format!("{}: {e}", member.node))
+    }
+
     /// Install each independent namespace's filter concurrently; restore successes on failure.
     pub fn install(&self) -> Result<(), String> {
-        let rules = self.install_rules();
-        let results = on_members(&self.members, |m| in_netns(&m.id, "iptables-restore", &["--noflush"], Some(&rules)));
+        let results = on_members(&self.members, |m| self.command(m, "install"));
         let failed: Vec<_> = self.members.iter().zip(&results).filter_map(|(m, r)| r.as_ref().err().map(|e| format!("{}: {e}", m.node))).collect();
         if failed.is_empty() { return Ok(()); }
         let applied: Vec<_> = self.members.iter().zip(&results).filter(|(_, r)| r.is_ok()).map(|(m, _)| m.clone()).collect();
-        let back: Vec<_> = on_members(&applied, |m| m.lift()).into_iter().filter_map(Result::err).collect();
+        let back: Vec<_> = on_members(&applied, |m| self.command(m, "lift")).into_iter().filter_map(Result::err).collect();
         Err(format!("{} ({} already silenced were restored; failures: {back:?})", failed.join("; "), applied.len()))
     }
 
@@ -220,7 +291,7 @@ impl Silenced {
 
     /// The rules each member holds now, as its own packet filter lists them.
     pub fn rules(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
-        on_members(&self.members, |m| Ok((m.node.clone(), in_netns(&m.id, "iptables", &["-S"], None)?))).into_iter().collect()
+        on_members(&self.members, |m| Ok((m.node.clone(), self.command(m, "rules")?))).into_iter().collect()
     }
 
     /// Every member holds the silence chain, referenced from INPUT and OUTPUT.
@@ -230,7 +301,7 @@ impl Silenced {
 
     /// Restore every member's packet filter. Every failure is named.
     pub fn lift(&self) -> Result<(), String> {
-        let failed: Vec<String> = on_members(&self.members, |m| m.lift().err().map(|e| format!("{}: {e}", m.node))).into_iter().flatten().collect();
+        let failed: Vec<String> = on_members(&self.members, |m| self.command(m, "lift").err().map(|e| format!("{}: {e}", m.node))).into_iter().flatten().collect();
         if failed.is_empty() {
             Ok(())
         } else {
@@ -239,11 +310,8 @@ impl Silenced {
     }
 }
 
-impl Member {
-    fn lift(&self) -> Result<(), String> {
-        let rules = format!("*filter\n-D INPUT -j {SILENCE_CHAIN}\n-D OUTPUT -j {SILENCE_CHAIN}\n-F {SILENCE_CHAIN}\n-X {SILENCE_CHAIN}\nCOMMIT\n");
-        in_netns(&self.id, "iptables-restore", &["--noflush"], Some(&rules)).map(|_| ())
-    }
+fn lift_rules() -> String {
+    format!("*filter\n-D INPUT -j {SILENCE_CHAIN}\n-D OUTPUT -j {SILENCE_CHAIN}\n-F {SILENCE_CHAIN}\n-X {SILENCE_CHAIN}\nCOMMIT\n")
 }
 
 /// Hold a container's processes in place (`docker pause`).
