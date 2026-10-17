@@ -6,7 +6,7 @@
 //! initialises telemetry, emits its spans and exits through `flush_before_exit` the way a short
 //! process does. The parent reads the child's evidence file and its stderr.
 
-use std::io::Read;
+use std::io::{BufRead, Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -40,9 +40,9 @@ fn exit_child() {
     let _telemetry = rdm_transport::init_evidence_telemetry(SERVICE);
     if case == "collector-down" {
         tracing::info_span!("rdm.test.telemetry.update.via-first-span").in_scope(|| tracing::info!("a span the first export carries to the refusing collector"));
-        // Past the batch delay (200 ms) that first export has failed against the refusing collector,
-        // which marks the collector down; stderr names it before EXITING.
-        std::thread::sleep(Duration::from_millis(1000));
+        // The parent releases this child only after it reads the named collector outage. The
+        // shared export thread may still be opening/writing evidence: elapsed time proves nothing.
+        std::io::stdin().read_exact(&mut [0u8; 1]).expect("the parent observed the collector outage");
         for i in 0..BURST {
             tracing::info_span!("rdm.test.telemetry.update.via-burst-span", i).in_scope(|| {});
         }
@@ -67,21 +67,38 @@ fn run_child(case: &str, env: &[(&str, &str)]) -> (String, String, u128, std::pa
         .env("RDM_EVIDENCE_DIR", &dir)
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (k, v) in env {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().unwrap();
-    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let (mut out, err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let mut release = child.stdin.take();
+    let awaiting_outage = case == "collector-down";
     let out_reader = std::thread::spawn(move || {
         let mut s = String::new();
         let _ = out.read_to_string(&mut s);
         s
     });
     let err_reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(err);
         let mut s = String::new();
-        let _ = err.read_to_string(&mut s);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if awaiting_outage && line.contains("telemetry: the OTLP span export to") {
+                        if let Some(mut stdin) = release.take() {
+                            stdin.write_all(&[1]).expect("release the child after the named outage");
+                        }
+                    }
+                    s.push_str(&line);
+                }
+            }
+        }
         s
     });
     // A child that never ends: this is how long the cell waits to say so.
