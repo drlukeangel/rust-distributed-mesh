@@ -457,7 +457,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   evicted by name (`rdm.mesh.membership.reject.via-chunk-incomplete`).
 - **Arch review, 2026-10-17 (four gaps, each closed above).** P1 boot-only declaration vs
   node-admin's dynamic union → rule (1)+(6): the declaration is on the join, node-admin joins
-  before it answers, cross-mesh by `types_hash` + `node.get`; no digest discovery, no race.
+  before it answers, cross-mesh by `held_hash` + `node.get`; no digest discovery, no race.
   P2 the 64/2048 bound → withdrawn: the measured set is 158 kinds, 4.4 KB of names, more than one
   gossip message, so no list rides a digest; the bound is on the JoinNode request (256 / 8 KiB
   encoded postcard bytes, under its 64 KiB ceiling) and the union has no bound of its own (it is
@@ -468,12 +468,12 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 - **The directed-path delta (wire format moved; node-rpc-envelope.md applied 2026-10-17 on Luke's
   yes).** Join op `0x1D`: `JoinNode { digest: MeshDigest }` → `JoinNode { digest: MeshDigest,
   types: Vec<String> }` with the bound sentence; node properties table: new row
-  `types` / `types_hash`, set by the birth's JoinNode, changed by nothing (a different declaration
+  `types` (declared, immutable per birth) and `held` / `held_hash` (joined, grows), `types` set by the birth's JoinNode, changed by nothing (a different declaration
   is a restart), answered whole by `node.get` beside `held`; the row's digest carries `held_hash` (32 bytes), never a list. Applied 2026-10-17 (Luke: yes).
 - **Page text (applied 2026-10-17 on Luke's instruction, this landing carries it).** gossip.md
   §3.4: one paragraph after the best-effort sentence (a declared app type rides this envelope, the
   receiver is the app, the carrier decides nothing, the chunk and queue rules). §8: the "Only
-  projected kinds gossip" paragraph (declared type, JoinNode carries the list, `types_hash`, join
+  projected kinds gossip" paragraph (declared type, JoinNode carries the list, `held_hash`, join
   before answer, cross-mesh `node.get`, topic id `f(fabric_id, type)`, one `Event` per write) and
   "The event rides the envelope (§3.4) and RDM decides nothing on it" (subject, sequence, data,
   the trace rule, the framework's comparator); "kind sets" → "declared types" in the node-admin
