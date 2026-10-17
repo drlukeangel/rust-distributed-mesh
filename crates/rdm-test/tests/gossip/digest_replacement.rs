@@ -45,7 +45,12 @@ fn story(story: Story) {
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let digest = MeshDigest { fabric_id: fabric, node: MeshNode { node_id: node_id.clone(), name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: EndpointId(key.to_string()), transport_addr: "127.0.0.1:12001".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
         if matches!(story, Story::ReadFloor) {
-            assert!(receiver.book.record_topology_at(digest.clone(), std::time::Instant::now()));
+            let read = rdm_transport::snapshot::Chunk {
+                mesh: "mesh1".into(), publisher: rdm_transport::snapshot::PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint() },
+                forwarded_by: None, topology_version: 5, snapshot_id: 1, chunk_index: 0, chunk_count: 1,
+                digests: vec![digest.clone()], in_flight: vec![], departed: vec![],
+            };
+            assert!(matches!(receiver.take_read_chunk(read, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)), "the real topology-read path installs the held digest");
         } else {
             send(&sender, &receiver, digest.clone(), 1).await;
         }
@@ -68,6 +73,10 @@ fn story(story: Story) {
             Story::NewBirth => { offered.digest_seq = 1; offered.node.incarnation = IncarnationId::mint(); offered.node.supersedes = Some(incarnation.clone()); }
         }
         send(&sender, &receiver, offered.clone(), 2).await;
+        if matches!(story, Story::ReadFloor) {
+            let mut even_older = offered.clone(); even_older.digest_seq = 80;
+            send(&sender, &receiver, even_older, 3).await;
+        }
         if matches!(story, Story::Newer | Story::NewBirth) {
             let held = receiver.book.get(node_id.as_str()).unwrap().0;
             assert_eq!(held.digest_seq, offered.digest_seq);
@@ -86,9 +95,18 @@ fn story(story: Story) {
         (node_id, incarnation)
     });
     let spans = capture.spans().unwrap();
-    for s in spans.iter().filter(|s| s["attributes"]["frame"] == "digest" || s["name"] == "rdm.mesh.membership.update.via-digest") { println!("{}", serde_json::to_string(s).unwrap()); }
+    for s in spans.iter().filter(|s| s["attributes"]["frame"] == "digest" || matches!(s["name"].as_str(), Some("rdm.mesh.membership.update.via-digest" | "rdm.mesh.membership.update.via-digest-receipt"))) { println!("{}", serde_json::to_string(s).unwrap()); }
     let apply_count = match story { Story::Newer | Story::NewBirth => 2, Story::ReadFloor => 0, _ => 1 };
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-digest" && s["attributes"]["node_id"] == node_id.to_string()).count(), apply_count);
+    {
+        let receipt = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-digest-receipt").last().unwrap();
+        let accepted = matches!(story, Story::Newer | Story::NewBirth);
+        assert_eq!(receipt["attributes"]["addresses_registered"], if accepted { "1" } else { "0" });
+        assert_eq!(receipt["attributes"]["applied"], if accepted { "true" } else { "false" });
+    }
+    if matches!(story, Story::ReadFloor) {
+        assert!(spans.iter().any(|s| s["name"] == "rdm.mesh.membership.reject.via-stale" && s["attributes"]["held_key"] == "digest_seq=100" && s["attributes"]["frame_key"] == "digest_seq=80"), "a refused frame never becomes the held floor; both refusals must name the installed 100");
+    }
     let subject = format!("{node_id}/{incarnation}");
     let outcome = match story { Story::Stale | Story::ReadFloor => "rdm.mesh.membership.reject.via-stale", Story::Duplicate => "rdm.mesh.membership.update.via-duplicate", Story::Inconsistent => "rdm.mesh.membership.reject.via-inconsistent", _ => return };
     let refusal = spans.iter().find(|s| s["name"] == outcome && s["attributes"]["frame"] == "digest").expect("the receive framework names the digest outcome");

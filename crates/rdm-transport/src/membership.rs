@@ -1381,11 +1381,10 @@ struct Channel {
     frames_received: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// The one ordering check of the receive path (R-RX3): whether `f`, heard on `channel` from `sender`,
-/// is handed to its handler. A frame received after a newer one of its source, by the node's one held
-/// version per source, is ignored by name with both keys. Lifecycle operation identities are
-/// recorded before that comparison: a carried revision refusal is `via-stale`, and the identity
-/// stays seen even though no handler runs. Other keyed families use `via-earlier-version`.
+/// Classify the families whose ordering state ReceiveOrder holds. Lifecycle identities are
+/// recorded before their carried revision is judged, even on a revision refusal. Digest is
+/// classified once, against its installed content under the digest book's lock; it has no
+/// second receive-history floor. Remaining keyed families retain their existing refusal names.
 fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str, sender: &dyn std::fmt::Display) -> bool {
     let first_fact = order.admit_lifecycle_identity(f);
     match order.admit(f) {
@@ -1395,7 +1394,7 @@ fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &st
                 tracing::info_span!(
                     "rdm.mesh.membership.reject.via-stale",
                     node, channel, frame = e.frame, subject = %e.source, held_key = %e.held, frame_key = %e.offered,
-                ).in_scope(|| tracing::info!("the carried projection revision is older; the operation identity remains seen"));
+                ).in_scope(|| tracing::info!("the frame's replacement revision is below the held one"));
                 return false;
             }
             tracing::info_span!(
@@ -1993,17 +1992,19 @@ impl View {
     fn take_with(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> (Vec<MeshDigest>, bool) {
         if let Frame::Digest { digest } = f {
             if &digest.fabric_id == fabric {
-                let fresh = self.book.record(digest.clone());
-                if fresh {
-                    self.note(digest, via);
-                    tracing::info_span!(
-                        "rdm.mesh.membership.update.via-digest",
-                        node = %self.current_name(), node_id = %digest.node.node_id,
-                        incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq, via,
-                    ).in_scope(|| tracing::info!("the birth's newer heartbeat projection was installed"));
+                let channel = if via == "mesh-channel" { format!("mesh:{}", self.mesh) } else { via.to_string() };
+                let fresh = self.book.record_with(digest.clone(), Instant::now(), &self.current_name(), &channel);
+                if !fresh {
+                    return (Vec::new(), false);
                 }
-                let held = fresh.then(|| self.book.get(digest.node.node_id.as_str()).map(|(d, _)| d)).flatten().unwrap_or_else(|| digest.clone());
-                return (vec![held], fresh);
+                self.note(digest, via);
+                tracing::info_span!(
+                    "rdm.mesh.membership.update.via-digest",
+                    node = %self.current_name(), node_id = %digest.node.node_id,
+                    incarnation_id = %digest.node.incarnation, digest_seq = digest.digest_seq, via,
+                ).in_scope(|| tracing::info!("the birth's newer heartbeat projection was installed"));
+                let held = self.book.get(digest.node.node_id.as_str()).map(|(d, _)| d).unwrap_or_else(|| digest.clone());
+                return (vec![held], true);
             }
         }
         (self.take_other(f, fabric, via), false)
@@ -5310,6 +5311,12 @@ impl DigestBook {
     /// the commands it admits, and every other member takes from its primary's projection. No
     /// heartbeat moves it, at the primary or anywhere.
     pub fn record_at(&self, d: MeshDigest, now: Instant) -> bool {
+        let node = self.holder.lock().unwrap().clone();
+        self.record_with(d, now, &node, "local")
+    }
+
+    /// The shared heartbeat installation door, with receipt context for its outcome spans.
+    fn record_with(&self, d: MeshDigest, now: Instant, node: &str, channel: &str) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "mesh-channel");
             return false;
@@ -5323,15 +5330,10 @@ impl DigestBook {
 
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
-            if runtime_changed(held, &d) {
+            if !crate::receive_order::admit_digest(held, &d, node, channel) {
                 return false;
             }
-            let older = if held.node.incarnation == d.node.incarnation {
-                d.digest_seq <= held.digest_seq
-            } else {
-                held.node.supersedes.as_ref() == Some(&d.node.incarnation)
-            };
-            if older {
+            if runtime_changed(held, &d) || (held.node.incarnation != d.node.incarnation && held.node.supersedes.as_ref() == Some(&d.node.incarnation)) {
                 return false;
             }
         }

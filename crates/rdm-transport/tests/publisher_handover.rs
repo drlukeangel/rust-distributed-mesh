@@ -225,7 +225,7 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
             ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7), "rdm.mesh.membership.reject.via-earlier-version".to_string()),
             ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1), "rdm.mesh.membership.reject.via-earlier-version".to_string()),
             ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1), "rdm.mesh.membership.reject.via-stale".to_string()),
-            ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.membership.reject.via-earlier-version".to_string()),
+            ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string(), "rdm.mesh.membership.reject.via-stale".to_string()),
         ];
         // The successor's delta stamp is the member's held key of mesh1: read it from the span itself.
         let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "members").map(|s| attr(s, "held")).unwrap_or_default();

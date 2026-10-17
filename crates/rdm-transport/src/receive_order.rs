@@ -8,9 +8,14 @@
 //! No publisher revision is inferred: the MeshStatus/FabricStatus publisher-revision gap (R10)
 //! remains open, including the existing timestamp comparison across publishers.
 //!
-//! [`ReceiveOrder`] holds the existing keyed families' ordering state, shared by all channels
+//! Digest uses [`admit_digest`] against the actual installed heartbeat under the digest book's
+//! lock, including a read-installed floor. Lower is `via-stale`; equal wire content is
+//! `via-duplicate`; equal sequence with different wire content is `via-inconsistent`.
+//! The primary's separately held membership status is not heartbeat content. A refused or
+//! repeated digest supplies no address and no clock observation to its caller.
+//!
+//! [`ReceiveOrder`] holds the remaining keyed families' ordering state, shared by all channels
 //! and topology-read installs:
-//! - Digest: `digest_seq` per exact birth; another incarnation starts its sequence again.
 //! - Members and MembersDelta: publication timestamp then topology version per mesh, with the
 //!   installed publisher/version floor also enforced regardless of publication timestamp.
 //! - NodeDeleting, NodeRestarting and NodeStopped: operation identity is recorded before the
@@ -22,8 +27,8 @@
 //! - PrimaryUpdating/PrimaryUpdated: committed revision per cohort, settled after updating at
 //!   one revision; every named cohort is checked before any held key moves.
 //!
-//! Equal keys in those keyed families remain admissible to their handlers, including distinct
-//! chunks of an unfinished publication. A Members or MembersDelta key advances only when the
+//! Equal keys in the remaining keyed families stay admissible to their handlers pending their
+//! rows; distinct chunks of an unfinished publication remain admissible. A Members or MembersDelta key advances only when the
 //! complete snapshot installs or the delta applies; [`ReceiveOrder::installed`] also records
 //! the source version installed by a topology read, whose chunks carry no publication timestamp.
 //!
@@ -83,6 +88,41 @@ pub(crate) fn admit_status(frame: &'static str, subject: &str, held: Option<(&st
                 identity = %format!("{subject} {publisher} changed_at_rafka_ms={revision}"),
                 outcome = "ignored",
             ).in_scope(|| tracing::info!("an identical status fact is ignored"));
+        }
+        return false;
+    }
+    true
+}
+
+/// Classify a heartbeat against the actual installed heartbeat while its installation lock is
+/// held. Sequence orders only the same exact birth. Compare the wire shape: the primary's held
+/// membership status is not carried by Digest and cannot make an identical heartbeat inconsistent.
+pub(crate) fn admit_digest(held: &rdm_core::MeshDigest, offered: &rdm_core::MeshDigest, node: &str, channel: &str) -> bool {
+    if held.node.node_id != offered.node.node_id || held.node.incarnation != offered.node.incarnation {
+        return true;
+    }
+    let subject = format!("{}/{}", offered.node.node_id, offered.node.incarnation);
+    if offered.digest_seq < held.digest_seq {
+        tracing::info_span!(
+            "rdm.mesh.membership.reject.via-stale",
+            node, channel, frame = "digest", subject = %subject,
+            held_key = %format!("digest_seq={}", held.digest_seq),
+            frame_key = %format!("digest_seq={}", offered.digest_seq),
+        ).in_scope(|| tracing::info!("the digest sequence is below the installed exact birth's sequence"));
+        return false;
+    }
+    if offered.digest_seq == held.digest_seq {
+        if rdm_core::wire::WireDigest::from(held) == rdm_core::wire::WireDigest::from(offered) {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-duplicate",
+                node, channel, frame = "digest", identity = %format!("{subject} digest_seq={}", offered.digest_seq),
+                outcome = "ignored",
+            ).in_scope(|| tracing::info!("the identical heartbeat is ignored, with no address registration"));
+        } else {
+            tracing::info_span!(
+                "rdm.mesh.membership.reject.via-inconsistent",
+                node, channel, frame = "digest", subject = %subject, revision = offered.digest_seq,
+            ).in_scope(|| tracing::info!("equal digest sequence with different heartbeat content: nothing installed"));
         }
         return false;
     }
@@ -222,8 +262,6 @@ impl RoundReceipts {
 /// The source a frame's order key orders within.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Source {
-    /// One exact birth's heartbeats.
-    Birth { node_id: String, incarnation: String },
     /// One mesh's publications.
     Mesh(String),
     /// One publisher's lifecycle facts of one mesh.
@@ -236,7 +274,6 @@ enum Source {
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Source::Birth { node_id, incarnation } => write!(f, "{node_id}/{incarnation}"),
             Source::Mesh(mesh) => f.write_str(mesh),
             Source::Lifecycle { publisher, mesh } => write!(f, "{publisher} {mesh}"),
             Source::Cohort { seat, mesh } if mesh.is_empty() => f.write_str(seat),
@@ -283,7 +320,6 @@ impl Ord for SeatStage {
 /// A frame's order key. One source only ever holds one kind of key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
-    DigestSeq(u64),
     Publication { published_at_rafka_ms: u64, topology_version: u64 },
     TopologyVersion(u64),
     /// A seat's revision; at one revision a settled record ("updated" or `Seated`) is after "updating".
@@ -293,7 +329,6 @@ enum Key {
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Key::DigestSeq(seq) => write!(f, "digest_seq={seq}"),
             Key::Publication { published_at_rafka_ms, topology_version } => write!(f, "published_at_rafka_ms={published_at_rafka_ms} topology_version={topology_version}"),
             Key::TopologyVersion(v) => write!(f, "topology_version={v}"),
             Key::Seat { revision, stage: SeatStage::Updating } => write!(f, "revision={revision} updating"),
@@ -321,7 +356,6 @@ fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
 /// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
     match f {
-        Frame::Digest { digest } => Some(("digest", Source::Birth { node_id: digest.node.node_id.to_string(), incarnation: digest.node.incarnation.to_string() }, Key::DigestSeq(digest.digest_seq))),
         Frame::Members { mesh, topology_version, published_at_rafka_ms, .. } => {
             Some(("members", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
@@ -582,14 +616,15 @@ mod tests {
     /// node's heartbeats ignored against its previous birth's sequence.
     #[test]
     fn a_heartbeat_below_the_held_digest_seq_of_its_birth_is_ignored_and_a_new_incarnation_starts_again() {
-        let mut order = ReceiveOrder::default();
+        let book = crate::membership::DigestBook::default();
         let d = birth("mesh1.rpc.1");
-        let at = |seq: u64| Frame::Digest { digest: MeshDigest { digest_seq: seq, ..d.clone() } };
-        assert_eq!(order.admit(&at(7)), Ok(()));
-        assert_eq!(order.admit(&at(7)), Ok(()), "a copy of the held heartbeat is the book's to absorb");
-        assert_eq!(order.admit(&at(3)), Err(Earlier { frame: "digest", source: format!("{}/{}", d.node.node_id, d.node.incarnation.as_str()), held: "digest_seq=7".into(), offered: "digest_seq=3".into() }));
+        let at = |seq| MeshDigest { digest_seq: seq, ..d.clone() };
+        assert!(book.record(at(7)));
+        assert!(!book.record(at(7)), "the installed heartbeat classifier ignores its identical repeat");
+        assert!(!book.record(at(3)), "a heartbeat below the installed exact birth's sequence is ignored");
+        assert_eq!(book.get(d.node.node_id.as_str()).unwrap().0.digest_seq, 7);
         let restarted = MeshDigest { node: MeshNode { incarnation: IncarnationId::mint(), ..d.node.clone() }, digest_seq: 1, ..d.clone() };
-        assert_eq!(order.admit(&Frame::Digest { digest: restarted }), Ok(()), "a new incarnation is another source");
+        assert!(book.record(restarted), "a new incarnation is another source");
     }
 
     /// CONTRACT (R-RX3: lifecycle facts order by `topology_version`; the version is the publisher's
