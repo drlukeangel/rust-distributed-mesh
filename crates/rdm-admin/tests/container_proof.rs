@@ -360,13 +360,20 @@ async fn store_command(handle: &DeploymentHandle, phase: &str, script: &str) -> 
     let spawn_elapsed = started.elapsed();
     let stdout = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let stderr = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let read_out = tokio::spawn(read_store_output(child.stdout.take().unwrap(), stdout.clone()));
-    let read_err = tokio::spawn(read_store_output(child.stderr.take().unwrap(), stderr.clone()));
-    let status = tokio::time::timeout_at(deadline, child.wait()).await;
-    if status.is_err() { let _ = child.kill().await; }
-    let (out, err) = tokio::join!(read_out, read_err);
-    out.expect("the store stdout capture completed");
-    err.expect("the store stderr capture completed");
+    let mut read_out = tokio::spawn(read_store_output(child.stdout.take().unwrap(), stdout.clone()));
+    let mut read_err = tokio::spawn(read_store_output(child.stderr.take().unwrap(), stderr.clone()));
+    let status = tokio::time::timeout_at(deadline, async {
+        let status = child.wait().await;
+        let (out, err) = tokio::join!(&mut read_out, &mut read_err);
+        out.expect("the store stdout capture completed");
+        err.expect("the store stderr capture completed");
+        status
+    }).await;
+    if status.is_err() {
+        let _ = child.kill().await;
+        read_out.abort();
+        read_err.abort();
+    }
     let stdout = String::from_utf8(stdout.lock().unwrap().clone()).unwrap();
     let stderr = String::from_utf8_lossy(&stderr.lock().unwrap()).to_string();
     let status = status.unwrap_or_else(|e| panic!("container {id} store-root {phase} exceeded 15 s: {e}; docker process spawned in {spawn_elapsed:?}; stdout {stdout}; stderr {stderr}"))
