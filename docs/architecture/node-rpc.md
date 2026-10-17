@@ -604,41 +604,35 @@ The runtime never automatically retries any outcome.
 
 ## 25. Shared reply classification, protocol-owned bytes
 
-There is no universal success/refusal wire envelope.
+There is no universal success/refusal wire envelope. Before dispatch, Node RPC has transport outcomes such as `Unserved`; after dispatch, every reply byte belongs to that protocol's codec.
 
-Before dispatch, Node RPC has transport outcomes such as `Unserved`.
+The shared classification is `rdm_core::outcome::Code`: exactly the 17 [standard gRPC codes](https://grpc.github.io/grpc/core/md_doc_statuscodes.html), numbers 0–16 and their standard names. RDM adds no code. `ReplyKind` is a view holding a `Code`. `Replied<R>` keeps it beside `R`, the protocol's original typed result or refusal, exposed by `detail()` and `value()`. The named RDM outcome and its fields live in that typed detail. The classifier is total: every decoded reply variant maps to exactly one code.
 
-After protocol dispatch, every reply byte belongs to that protocol's codec.
+| number | code | RDM meaning |
+|---:|---|---|
+| 0 | `OK` | Applied, a read result, a completion; a served set edit's call code |
+| 1 | `CANCELLED` | the owner cancelled the invocation (`CallerGone`, the delivery end) |
+| 2 | `UNKNOWN` | a lost reply or a reset after the commit cut, except the known handler-fault reset |
+| 3 | `INVALID_ARGUMENT` | malformed arguments or an unknown variant |
+| 4 | `DEADLINE_EXCEEDED` | any lapse of the owner's bound; the typed outcome retains NotSent before commit and Indeterminate after commit |
+| 5 | `NOT_FOUND` | SubjectUnknown, an unknown subject or id; per element, not-carried or not-open |
+| 6 | `ALREADY_EXISTS` | AlreadyApplied or an existing claimed name; per element, already-carried or an explicitly declared already-closed result |
+| 7 | `PERMISSION_DENIED` | reserved; never constructed by a mesh handler |
+| 8 | `RESOURCE_EXHAUSTED` | TooLarge or a bounded read/admission result past its size limit |
+| 9 | `FAILED_PRECONDITION` | an invalid transition, not-the-writer, NotForwardable, or a named refusal of state |
+| 10 | `ABORTED` | RejectedStale or a concurrent claim/revision conflict |
+| 11 | `OUT_OF_RANGE` | reserved; no current use |
+| 12 | `UNIMPLEMENTED` | RequestNotHandled or an unserved op |
+| 13 | `INTERNAL` | INTERNAL_RPC_FAILURE or a runtime/framing contract violation |
+| 14 | `UNAVAILABLE` | NotReady, Busy, ConnectionsDeleting; NotSent except an expired owner bound or NotForwardable; a receiving birth proven exited or removed, detail receiver-gone |
+| 15 | `DATA_LOSS` | Corrupt |
+| 16 | `UNAUTHENTICATED` | reserved; never constructed by a mesh handler |
 
-Shared semantics are represented by `ReplyKind`:
+A per-element set answer keeps its existing lists and derives a code per element; a served set call is `OK`. A requested tag in already_carried is `ALREADY_EXISTS`; one in not_carried is `NOT_FOUND`; the other requested labels were applied (`OK`). A named connection in closed is `OK`. The current not_open list names an id with no current open entry and deliberately includes both unknown and previously closed ids: its code is `NOT_FOUND`, and the decoder invents no distinction absent from that list. An `All` closure's Deadline receipt records an owner-bound lapse and is `DEADLINE_EXCEEDED`.
 
-```rust
-pub enum ReplyKind {
-    Success,
-    PeerUnresolved,
-    NotReady,
-    Busy,
-    ConnectionsDeleting,
-    Malformed(MalformedKind),
-    Unauthorized,
-    ProtocolRefusal,
-    Unclassified,
-}
-```
+The code describes the result; the typed certainty still decides whether the request reached dispatch. Cancellation adds no RpcOutcome variant or reply bytes. Forward's typed causes preserve that distinction across the carrier (Q40). Code is derived locally from the typed reply on both ends and is not added to these wire frames.
 
-`Malformed` carries the envelope's [`MalformedKind`](node-rpc-envelope.md#runtime-spans).
-
-The protocol supplies constructors for shared states and a classifier for decoded replies.
-
-Node RPC uses the classification for telemetry/outcome metadata only. It never infers meaning from reply bytes or strings and never automatically retries because of a class.
-
-Required codec tests prove every shared constructor survives:
-
-```text
-constructor -> encode -> decode -> classify
-```
-
-with the same class.
+Node RPC does not infer code from explanation text and does not retry a new execution because of a code. The existing delivery obligation remains §43. Each protocol's codec cell enumerates every reply position, checks its code before and after encode/decode, and retains its byte goldens. The landing name check refuses added runtime construction of PERMISSION_DENIED or UNAUTHENTICATED, including indirect numeric construction; exemptions are codec definitions, classifiers, fixtures and assertions, by code kind and never by source directory.
 
 ---
 
@@ -962,27 +956,34 @@ The span names, the attributes each records and the trace edge between caller an
 
 ## 40. Error truth table
 
-| fact | local outcome | handler ran? | automatic Node RPC retry? |
-|---|---|---:|---:|
-| resolver `Unknown/Gone` | `NotSent` | no | no |
-| caller knows pinned slot/freshness is superseded | `RejectedStale` | no | no |
-| dial/open/send failure before complete-send + finish | `NotSent` | no | no |
-| unserved op reset | `Unserved` | no | no |
-| `PeerUnresolved` typed reply | `Reply` | no domain handler | no |
-| `NotReady` typed reply | `Reply` | no domain handler when guard/refusal path | no |
-| `Busy` typed reply | `Reply` | no | no |
-| `ConnectionsDeleting` typed reply | `Reply` | no | no |
-| `TooLarge` typed reply | `Reply` | no | no |
-| `UnknownVariant` typed reply | `Reply` | no | no |
-| `Corrupt` typed reply | `Reply` | no | no |
-| `Unauthorized` typed reply (codec position only; a mesh receiver never sends it) | `Reply` | no | no |
-| domain refusal | `Reply` | yes or no per protocol semantics | no |
-| valid reply races with request write error | `Reply` wins | as reply says | no |
-| committed stream dies before valid reply | `Indeterminate` | unknown | no |
-| handler panic / `HandlerFault` | `Indeterminate` | yes/possibly partial | no |
-| streaming EOF after Started before Terminal | `Indeterminate` | yes/unknown completion | no |
+| fact | local outcome | code | handler ran? | automatic Node RPC retry? |
+|---|---|---|---:|---:|
+| resolver `Unknown` | `NotSent` | `NOT_FOUND` | no | no |
+| resolver `Gone` | `NotSent`, detail receiver-gone | `UNAVAILABLE` | no | no |
+| caller knows pinned slot/freshness is superseded | `RejectedStale` | `ABORTED` | no | no |
+| dial/open/send failure before complete-send + finish | `NotSent` | `UNAVAILABLE` | no | no |
+| owner's bound lapses before commit, including a permit wait | `NotSent` | `DEADLINE_EXCEEDED` | no | no |
+| owner's bound lapses after commit | `Indeterminate` | `DEADLINE_EXCEEDED` | unknown | no |
+| receiving birth proven exited or removed | `NotSent` before commit; `Indeterminate` after commit, detail receiver-gone | `UNAVAILABLE` | no before commit; unknown after | no |
+| owner cancels the invocation | `CallerGone` delivery end | `CANCELLED` | unknown after commit | no |
+| unserved op reset | `Unserved` | `UNIMPLEMENTED` | no | no |
+| `PeerUnresolved` typed reply | `Reply` | `NOT_FOUND` | no domain handler | no |
+| `NotReady` typed reply | `Reply` | `UNAVAILABLE` | no domain handler when guard/refusal path | no |
+| `Busy` typed reply | `Reply` | `UNAVAILABLE` | no | no |
+| `ConnectionsDeleting` typed reply | `Reply` | `UNAVAILABLE` | no | no |
+| `TooLarge` typed reply | `Reply` | `RESOURCE_EXHAUSTED` | no | no |
+| `UnknownVariant` typed reply | `Reply` | `INVALID_ARGUMENT` | no | no |
+| `Corrupt` typed reply | `Reply` | `DATA_LOSS` | no | no |
+| `Unauthorized` typed reply (codec position only; a mesh receiver never sends it) | `Reply` | `PERMISSION_DENIED` (reserved) | no | no |
+| a named domain refusal | `Reply` | the exact typed result's code in §25 | yes or no per protocol semantics | no |
+| valid reply races with request write error | `Reply` wins | the typed reply's code | as reply says | no |
+| committed stream dies before valid reply, or a non-fault reset after commit | `Indeterminate` | `UNKNOWN` | unknown | no |
+| handler panic / `HandlerFault` | `Indeterminate` | `INTERNAL` | yes/possibly partial | no |
+| corrupt reply bytes | `Indeterminate` | `DATA_LOSS` | unknown | no |
+| unknown reply variant | `Indeterminate` | `INVALID_ARGUMENT` | unknown | no |
+| streaming EOF after Started before Terminal | `Indeterminate` | `UNKNOWN` (lost connection after the commit cut) | yes/unknown completion | no |
 
-Node RPC communicates facts. State machines decide the next action.
+Node RPC communicates facts. State machines decide the next action. This table's retry column does not cancel §43's delivery of the same owed invocation; a standard code authorizes no new execution.
 
 ---
 
@@ -1002,7 +1003,7 @@ from each class:
 | `TooLarge` | only if request changes | no |
 | `Corrupt` | only if bug/data changes | no |
 | `Unauthorized` | never sent by a mesh receiver | no |
-| `ProtocolRefusal` | protocol-defined | protocol-defined |
+| named typed refusal (detail) | protocol-defined | protocol-defined |
 
 No branch of this table is a retry of the refused request; whether the caller sends a different
 request later is the domain's decision.

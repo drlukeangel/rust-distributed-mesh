@@ -1,6 +1,6 @@
 # Q41 — e5.1 outcome code page replacements for Luke
 
-Status: proposed, not applied. Q40 B’s separate Forward reseal is unchanged. The code view adds no reply fields or wire bytes. The current catalog has ten protocols: the plan’s nine plus NodeCommand.
+Status: Q41 approved by Luke, 2026-10-17, with the two §40 corrections below; applied with e5.1. Q40 B’s separate Forward reseal is unchanged. The code view adds no reply fields or wire bytes. The current catalog has ten protocols: the plan’s nine plus NodeCommand.
 
 The existing not_open union is stated explicitly below: it provides no already-closed discriminator, so it maps to NOT_FOUND for a missing current open entry. No decoder derives a distinction from text or local history.
 
@@ -133,7 +133,8 @@ New:
 
 | fact | local outcome | code | handler ran? | automatic Node RPC retry? |
 |---|---|---|---:|---:|
-| resolver `Unknown/Gone` | `NotSent` | `UNAVAILABLE` | no | no |
+| resolver `Unknown` | `NotSent` | `NOT_FOUND` | no | no |
+| resolver `Gone` | `NotSent`, detail receiver-gone | `UNAVAILABLE` | no | no |
 | caller knows pinned slot/freshness is superseded | `RejectedStale` | `ABORTED` | no | no |
 | dial/open/send failure before complete-send + finish | `NotSent` | `UNAVAILABLE` | no | no |
 | owner's bound lapses before commit, including a permit wait | `NotSent` | `DEADLINE_EXCEEDED` | no | no |
@@ -155,7 +156,7 @@ New:
 | handler panic / `HandlerFault` | `Indeterminate` | `INTERNAL` | yes/possibly partial | no |
 | corrupt reply bytes | `Indeterminate` | `DATA_LOSS` | unknown | no |
 | unknown reply variant | `Indeterminate` | `INVALID_ARGUMENT` | unknown | no |
-| streaming EOF after Started before Terminal | `Indeterminate` | `INTERNAL` for the ordering violation | yes/unknown completion | no |
+| streaming EOF after Started before Terminal | `Indeterminate` | `UNKNOWN` (lost connection after the commit cut) | yes/unknown completion | no |
 
 Node RPC communicates facts. State machines decide the next action. This table's retry column does not cancel §43's delivery of the same owed invocation; a standard code authorizes no new execution.
 

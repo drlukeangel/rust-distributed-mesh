@@ -137,7 +137,7 @@ async fn a_status_call_carried_to_a_target_the_admin_cannot_resolve_is_not_sent_
     match &out {
         RpcOutcome::NotSent(n) => {
             assert_eq!(n.reason(), &NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Unknown));
-            assert_eq!(n.code(), rdm_core::outcome::Code::Unavailable);
+            assert_eq!(n.code(), rdm_core::outcome::Code::NotFound);
         },
         other => panic!("not sent, naming the unresolved target: {other:?}"),
     }

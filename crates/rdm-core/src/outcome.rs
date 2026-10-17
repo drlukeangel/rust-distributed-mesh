@@ -214,6 +214,7 @@ impl NotSentReason {
     /// The local proving condition's code; an expired permit wait is an owner's bound too.
     pub fn code(&self) -> Code {
         match self {
+            Self::Resolve(ResolveFailure::Unknown) => Code::NotFound,
             Self::Deadline | Self::StreamBudget => Code::DeadlineExceeded,
             Self::NotForwardable { .. } => Code::FailedPrecondition,
             _ => Code::Unavailable,
@@ -259,7 +260,7 @@ impl IndeterminateReason {
             Self::ReceiverGone(_) => Code::Unavailable,
             Self::ReplyDeadline => Code::DeadlineExceeded,
             Self::ReplyLost(_) => Code::Unknown,
-            Self::Reset(n) if *n == u64::from(ResetCode::InternalRpcFailure.code()) => Code::Internal,
+            Self::Reset(n) if [ResetCode::InternalRpcFailure, ResetCode::ProtocolViolation].iter().any(|code| *n == u64::from(code.code())) => Code::Internal,
             Self::Reset(_) => Code::Unknown,
             Self::UnsupportedReplyVariant => Code::InvalidArgument,
             Self::CorruptReply => Code::DataLoss,

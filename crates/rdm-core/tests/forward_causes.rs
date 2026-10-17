@@ -47,6 +47,7 @@ fn every_indeterminate_cause_has_a_hand_written_golden_and_rebuilds_its_typed_or
         (ReplyDeadline, Code::DeadlineExceeded, "01"),
         (ReplyLost, Code::Unknown, "02"),
         (Reset(423), Code::Internal, "03 a7 03"),
+        (Reset(424), Code::Internal, "03 a8 03"),
         (Reset(501), Code::Unknown, "03 f5 03"),
         (UnsupportedReplyVariant, Code::InvalidArgument, "04"),
         (CorruptReply, Code::DataLoss, "05"),
@@ -66,7 +67,7 @@ fn every_indeterminate_cause_has_a_hand_written_golden_and_rebuilds_its_typed_or
 fn every_not_sent_cause_has_a_hand_written_golden_and_rebuilds_its_fields() {
     use NotSentCause::*;
     for (cause, code, suffix) in [
-        (Resolve(ResolveFailure::Unknown), Code::Unavailable, "00 00"),
+        (Resolve(ResolveFailure::Unknown), Code::NotFound, "00 00"),
         (Resolve(ResolveFailure::Gone), Code::Unavailable, "00 01"),
         (Resolve(ResolveFailure::Unavailable), Code::Unavailable, "00 02"),
         (Connection, Code::Unavailable, "01"),
