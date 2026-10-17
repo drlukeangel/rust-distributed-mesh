@@ -188,7 +188,7 @@ impl AdminRunner {
             // Explicit mode: the bound executable, re-hashed now; an unbound kind is refused, never
             // launched from the built-in set.
             Some(b) => {
-                let r = b.resolve(kind).map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
+                let r = resolve_bound(b, kind).await.map_err(|e| format!("{kind:?} in {mesh}: {e}", kind = kind.name()))?;
                 tracing::info!(launch_id = %r.launch_id, executable = %r.executable.display(), sha256 = %r.sha256, candidate = %r.candidate.sha, "launching from the explicit executable binding");
                 r.executable
             }
@@ -1150,4 +1150,72 @@ pub async fn apply_mesh_state(client: &rdm_transport::NodeRpcClient, resolver: &
     let span = if state == MeshState::Pending { handoff_span!("rdm.node_admin.mesh.update.via-pending-handoff") } else { handoff_span!("rdm.node_admin.mesh.update.via-state-handoff") };
     span.in_scope(|| tracing::info!("the fabric primary applies its mesh's state at the mesh's first admin"));
     verdict
+}
+
+/// The executable bound to `kind`, re-hashed now: the launch proves the bytes it launches are the
+/// bound ones. The hash reads the whole file, so it runs on the blocking pool, never on a worker of
+/// the runtime: a task the launching task woke just before waits in that worker's LIFO slot, which
+/// no other worker steals, until the worker is free (Q30).
+pub(crate) async fn resolve_bound(bindings: &rdm_core::binding::Validated, kind: NodeKind) -> Result<rdm_core::binding::Resolved, rdm_core::binding::BindingError> {
+    let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = kind.name(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+    let started = std::time::Instant::now();
+    let bound = bindings.clone();
+    let resolved = crate::record_store::blocking_io(move || bound.resolve(kind)).await;
+    span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+    span.record("outcome", if resolved.is_ok() { "hashed" } else { "refused" });
+    span.in_scope(|| tracing::info!("the bound executable's bytes are hashed against its binding"));
+    resolved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::binding::{Binding, BindingSet, Candidate, Expect, ProviderImage};
+
+    /// CONTRACT (Q30): a launch's executable hash never holds a task its worker woke. The hash reads
+    /// the whole file; a task the launching task woke just before waits in that worker's LIFO slot,
+    /// which no other worker steals, until the launch yields. The woken task runs while the hash
+    /// runs, never after it (an admin's endpoint held past the QUIC idle timeout otherwise: every
+    /// connection reset, trace 055c493a9ba3750bffc1854699ce7829).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_launch_hashing_its_executable_never_holds_a_task_its_worker_woke() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("resolve-bound-{}-{}", std::process::id(), rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("bound-node");
+        std::fs::write(&exe, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::OpenOptions::new().write(true).open(&exe).unwrap().set_len(16 << 20).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sha256 = rdm_core::binding::sha256_file(&exe).unwrap();
+        let bind = |id: &str| Binding { launch_id: id.into(), sha256: sha256.clone(), executable: exe.clone(), image: None };
+        let set = BindingSet {
+            candidate: Candidate { sha: "candidate".into(), build: "cell".into() },
+            launch_ids: vec!["node_admin".into(), "rpc_node".into()],
+            bindings: vec![bind("node_admin"), bind("rpc_node")],
+        };
+        let bindings = set.validate(&Expect { candidate_sha: "candidate", required: &[], provider_image: ProviderImage::Unchecked }).unwrap();
+
+        // A task parked on its channel, as a connection's driver is between packets.
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let woken = tokio::spawn(async move {
+            let _ = ready_tx.send(());
+            wake_rx.recv().await.unwrap();
+            std::time::Instant::now()
+        });
+        ready_rx.await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // The launch wakes it, then re-hashes its executable.
+        let hashed_at = tokio::spawn(async move {
+            wake_tx.send(()).unwrap();
+            let resolved = resolve_bound(&bindings, NodeKind::RpcNode).await;
+            assert!(resolved.is_ok(), "{resolved:?}");
+            std::time::Instant::now()
+        })
+        .await
+        .unwrap();
+        let ran_at = woken.await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(ran_at < hashed_at, "the woken task ran {:?} after the hash returned: it waited for the hash", ran_at.saturating_duration_since(hashed_at));
+    }
 }

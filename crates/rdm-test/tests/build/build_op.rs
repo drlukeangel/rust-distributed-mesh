@@ -758,3 +758,59 @@ async fn a_successor_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its
     }
     assert!(matches!(receipts.as_slice(), [(at, step, true)] if *at >= lost.attempt && step == "Complete"), "create-mesh:mesh2 is receipted once, by the successor's run, after the cut: {receipts:?}");
 }
+
+/// CONTRACT (Q30): a launch whose executable hash outlasts the QUIC idle timeout keeps every open
+/// connection of its admin alive. `rpc_node` is bound to an executable that `exec`s the rpc node and
+/// is padded to 8 GiB (sparse: its zeros cost the hash CPU, not disk), so the launching admin's re-hash of it
+/// (`rdm.node_admin.deployment.resolve.via-executable-hash`) runs longer than the staleness floor,
+/// the QUIC idle timeout (node-rpc.md §21), on a bootstrap admin whose runtime has one worker. The
+/// hash runs off the runtime's workers: no member goes
+/// stale at that admin while it runs (no `via-refeed` "stale-held-member"), and the caller's Build
+/// stream ends `Complete`. Must NOT happen: a stream `ReplyLost` "reset by peer", a member stale
+/// during the hash. The before: trace 055c493a9ba3750bffc1854699ce7829 (R24's gate on `1959eb2b`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_connection_alive() {
+    use std::os::unix::fs::PermissionsExt;
+    let test = "a_launch_whose_executable_hash_outlasts_the_idle_timeout_keeps_every_connection_alive";
+    let sha = candidate_sha();
+    let mut set = binding_set(&sha);
+    let real = set.bindings.iter().find(|b| b.launch_id == "rpc_node").expect("the rpc node is bound").executable.clone();
+    let dir = std::env::temp_dir().join(format!("q30-bound-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wrapper = dir.join("rafka-rpc-node-padded");
+    std::fs::write(&wrapper, format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", real.display())).unwrap();
+    std::fs::OpenOptions::new().write(true).open(&wrapper).unwrap().set_len(8 << 30).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let sha256 = rdm_core::binding::sha256_file(&wrapper).unwrap();
+    for b in set.bindings.iter_mut().filter(|b| b.launch_id == "rpc_node") {
+        b.executable = wrapper.clone();
+        b.sha256 = sha256.clone();
+    }
+    // One worker: a hash held on it holds every task of the admin, its endpoint's included, so the
+    // cell fails whenever the hash runs on a worker, never only when a woken task happens to sit in
+    // the hashing worker's LIFO slot (with ~20 workers the defect needs that; R24's gate had it).
+    let mut estate = Estate::bootstrap_external_with_env(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"], &[("TOKIO_WORKER_THREADS", "1")])
+        .await
+        .expect("the padded binding set is accepted");
+    let caller = Caller::of(&estate).await;
+    born(&estate, &caller, &[("mesh1", 1, 1)]).await;
+    estate.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let spans = estate.spans();
+    let floor_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
+    let hashes: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.resolve.via-executable-hash").into_iter().filter(|sp| s(&sp["attributes"]["launch_id"]) == "rpc_node").collect();
+    assert!(!hashes.is_empty(), "the rpc node's launch re-hashed its executable");
+    for h in &hashes {
+        let elapsed: u64 = s(&h["attributes"]["elapsed_ms"]).parse().unwrap_or(0);
+        assert!(elapsed > floor_ms, "the hash outlasts the idle timeout ({floor_ms} ms), or the cell proves nothing: {h}");
+        let (from, to) = (h["start_unix_nano"].as_u64().unwrap_or(0), h["end_unix_nano"].as_u64().unwrap_or(0));
+        let stale: Vec<&Value> = spans_named(&spans, "rdm.mesh.connection.update.via-refeed")
+            .into_iter()
+            .filter(|sp| s(&sp["attributes"]["reason"]) == "stale-held-member" && (from..=to).contains(&sp["start_unix_nano"].as_u64().unwrap_or(0)))
+            .collect();
+        assert!(stale.is_empty(), "no member went stale while the launch hashed its executable: {stale:#?}");
+    }
+    estate.record_trace_url(hashes[0]["trace_id"].as_str().unwrap_or(""));
+    println!("executable hash flame: http://192.168.68.99:16687/trace/{}", s(&hashes[0]["trace_id"]));
+}
