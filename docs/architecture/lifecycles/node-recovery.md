@@ -20,7 +20,7 @@ crashed mesh, on exact provider exit proof.)
 | Detection | The mesh-primary's tick (every gossip interval) reads the members its view marks `PendingReconnect`: unheard past the staleness floor, or marked at once when a command to them was never sent for a reachability reason (step 1) |
 | Investigation | The tickle ladder (`offline.rs`), then the provider's exact-exit proof |
 | Trigger | Exact provider proof only. Silence, a failed tickle and TRUE OFFLINE are not proof |
-| Execution | The mesh-primary opens the recovery as the next attempt of the current Build in its mesh's lane, claims it on its mesh's rows and runs it; no call to the fabric-primary, which learns it from the Build topic |
+| Execution | The mesh-primary opens the recovery as the next attempt of the current Build in its mesh's lane, claims it on its mesh's rows and runs it; no call to the fabric-primary, which learns it from the Build channel |
 | Steps | node.delete of the exited instance, node.create at the same path.name over the inherited data dir; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
 | Retained | path.name, placement, inherited data dir and endpoint key (unless the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), config (seeded from the deleted row) |
 | New | node.id, incarnation, OS-assigned port, exact runtime, and (when the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`) a newly allocated data dir and endpoint key |
