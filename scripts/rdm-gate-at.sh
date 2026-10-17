@@ -313,7 +313,7 @@ echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-cha
 echo "doctests cargo:--doc $PKGS" >> $D/jobs
 echo "workspace-check sh:cargo check --workspace --tests --no-default-features" >> $D/jobs
 # Container jobs require the Docker host; absence is a refusal, never a skip.
-echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: && $(exe $SCENARIO_PKG main) -q container_kill::" >> $D/jobs
+echo "container-proof sh:export RDM_REQUIRE_CONTAINER=1 RAFKA_REQUIRE_CONTAINER=1; $(exe rdm-admin main) -q container_proof:: provider_state::container:: & provider_pid=\$!; $(exe $SCENARIO_PKG main) -q container_kill:: & kill_pid=\$!; proof_rc=0; wait \$provider_pid || proof_rc=1; wait \$kill_pid || proof_rc=1; exit \$proof_rc" >> $D/jobs
 # The Rafka-shaped (R-shape) canonical process jobs: each >1 min, so release gate only (run between epics).
 for j in i143-rshape-composition-process i143-rshape-authority-chaos-process i143-rshape-lifecycle-chaos-process i143-rshape-routing-chaos-process i143-rshape-partition-chaos-process; do
     grep -q "\"$j\"" tools/mesh-audit/i143-acceptance-jobs.json && echo "rshape-${j#i143-rshape-} sh:scripts/i143-acceptance-gate.sh $j" >> $D/jobs
@@ -362,9 +362,6 @@ one(){
     done
     wait $jp 2>/dev/null; rc=$?
     [ $r = ok ] && [ $rc -ne 0 ] && r=FAIL
-    case "$r" in FAIL*)
-        K=$DEPLOY/kept/gate-$(basename $O .log)-$name; mkdir -p $K; cp -r crates/$SCENARIO_PKG/tests/artifacts $K/ 2>/dev/null
-    ;; esac
     echo "$r $name $(( $(date +%s)-s ))s" | tee -a $O
 }
 export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_STALENESS_MS RDM_GOSSIP_INTERVAL_MS RDM_BACKBONE_INTERVAL_MS RAFKA_STALENESS_MS RAFKA_GOSSIP_INTERVAL_MS RAFKA_BACKBONE_INTERVAL_MS
@@ -422,4 +419,10 @@ cat $D/*.log >> $O.detail
 LANE_ROOT=$(pwd)
 leaked=$(ps -eo pid,ppid,args | awk -v r="$LANE_ROOT/target/debug/" '$2!=0 && index($0, r) && /(rafka-node-admin|rafka-rpc-node|rshape-node-admin|rafka-broker|rafka-gateway|rafka-compute)/ {print $1":"$2}' | while IFS=: read pid ppid; do pcomm=$(ps -o comm= -p $ppid 2>/dev/null); case "$pcomm" in systemd|init) echo $pid;; esac; done)
 if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" | tee -a $O; for p in $leaked; do echo "leaked: $(ps -o pid=,etimes=,args= -p $p | cut -c1-160)" >> $O.detail; kill -9 $p 2>/dev/null; done; fi
+# Preserve once after all live tests and their runtimes ended. Per-job copies during the
+# concurrent batch multiply every artifact by every red and perform disk work inside other
+# cells' bounds. Each refused job instead points at this gate's one immutable snapshot.
+if grep -q '^FAIL' "$O"; then
+    step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept"'
+fi
 echo "DONE $(( $(date +%s)-t0 ))s" | tee -a $O
