@@ -387,7 +387,7 @@ Rafka persists each accepted Build (its complete topology), written once, with i
 
 The current Build cannot be deleted (build.delete refuses by name); an older Build is deletable history once a newer Build is current.
 
-A recovery-critical Build fact (the accepted Build, an attempt claim, a step receipt, a completion) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the lanes on the fabric's shared store root (§5.3), each written by the seat that owns it, so a successor reads them there; they also reach every admin through the Build topic and FetchBuildFacts (`0x1F`).
+A recovery-critical Build fact (the accepted Build, an attempt claim, a step receipt, a completion) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. The Build facts are the lanes on the fabric's shared store root (§5.3), each written by the seat that owns it, so a successor reads them there; they also reach every admin through the Build channel and FetchBuildFacts (`0x1F`).
 
 Acceptance is crash-safe because a Build is accepted by one durable write of the Build itself:
 

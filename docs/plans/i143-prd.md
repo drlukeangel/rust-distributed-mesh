@@ -760,7 +760,7 @@ Canonical gossip bootstrap and rejoin use explicit EndpointId/address knowledge 
 
 Application repair uses held-member stale coverage as described in §6.2. Do not add another peer scheduler on top of iroh-gossip.
 
-RuntimeFact is compact current-birth identity state and rides ordinary membership convergence. Required runtime-management metadata may ride beside it in the current birth/Node projection. Do not add a completed Build-receipt archive to the Build topic; the 4032-byte gossip frame budget remains a hard boundary.
+RuntimeFact is compact current-birth identity state and rides ordinary membership convergence. Required runtime-management metadata may ride beside it in the current birth/Node projection. Do not add a completed Build-receipt archive to the Build channel; the 4032-byte gossip frame budget remains a hard boundary.
 
 ---
 

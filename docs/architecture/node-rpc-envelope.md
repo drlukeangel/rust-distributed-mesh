@@ -1287,7 +1287,7 @@ REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
 | build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
 
 The fabric-primary accepts **every** Build and drives every topology Build: it claims each topology attempt through its claim door, then calls the executor named by
-`executor_for`. A drift attempt of the current Build inside a mesh (a node recovery) is opened, claimed and run by that mesh's primary, with no call to the fabric-primary, which learns it from the Build topic. The executor validates and records the won claim through
+`executor_for`. A drift attempt of the current Build inside a mesh (a node recovery) is opened, claimed and run by that mesh's primary, with no call to the fabric-primary, which learns it from the Build channel. The executor validates and records the won claim through
 `adopt_claim`; it does not claim or pick up work autonomously from a projection.
 A call covers one contiguous run of operations with the same executor, in plan
 order. Mesh creation and deletion, plus members of any mesh with no mesh-primary,
