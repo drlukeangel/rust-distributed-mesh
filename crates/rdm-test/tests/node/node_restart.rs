@@ -6,6 +6,7 @@ use rdm_client::{CallEnd, Frame, NodeEvent, NodeSelector, NodeStatus, NodeView, 
 use rdm_core::PathName;
 use rdm_test::canary::restart_canary;
 use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde_json::Value;
 use std::path::Path;
@@ -71,6 +72,17 @@ async fn view_of(nodes: &Nodes, node: &PathName) -> NodeView {
 /// seat (its stop or restart moves no seat first) and its exact runtime.
 async fn mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    member_of(estate).await
+}
+
+/// [`mesh_with_a_member`] with faulted node-admins: a cell holds the fabric-primary at its fault cuts.
+async fn faulted_mesh_with_a_member(test: &str) -> (Estate, PathName, ExactRuntime) {
+    let sha = candidate_sha();
+    let estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    member_of(estate).await
+}
+
+async fn member_of(estate: Estate) -> (Estate, PathName, ExactRuntime) {
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -148,8 +160,9 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
 /// CONTRACT (R-PV1: "when the restart's stop was never admitted, the uncompleted stop-then-start
 /// sequence runs again through the caller's resubmit or the lane's next attempt"; node-rpc-envelope.md
 /// build.create: "existing build_id for resubmission"; PRD i144 R11, R12): a member the operating system
-/// holds suspended is restarted; the restart's stop-node is never admitted and the attempt ends
-/// `Failed` naming it. The member is continued. Nothing reopens the failed attempt on its own: two
+/// holds suspended is restarted; the restart's attempt is dispatched only once the mesh-primary marks
+/// the held member unheard (its connection to the member has outlived the idle timeout), so the
+/// restart's stop-node is never sent, never admitted, and the attempt ends `Failed` naming it. The member is continued. Nothing reopens the failed attempt on its own: two
 /// staleness floors later the Build's attempt is the failed one, no step ran for the member, and
 /// `node.get` lists the same birth `restarting` (its restart is open: commanded silence its executor
 /// owns). A fresh `node.restart` of it is refused `node-not-live` naming the open restart; the caller's
@@ -162,13 +175,27 @@ async fn a_fresh_restart_of_a_stopped_node_is_refused_by_name_and_node_start_is_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission() {
     let test = "a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission";
-    let (mut estate, member, rt) = mesh_with_a_member(test).await;
+    let (mut estate, member, rt) = faulted_mesh_with_a_member(test).await;
     let nodes = estate.nodes_obj().await;
     let before = view_of(&nodes, &member).await;
+    let fp = estate.node_values().await.into_iter().find(|n| n["is_fabric_primary"] == true).and_then(|n| n["name"].as_str().map(str::to_string)).expect("a fabric-primary");
+    let door = Door::at(&estate, &fp).await;
+    door.arm("claimed", serde_json::json!({"kind": "claimed-attempt"})).await;
     let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
     let stream = nodes.restart(&member).await.expect("the restart was accepted");
     let accepted = stream.accepted().clone();
+    door.wait_held("claimed").await;
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let v = view_of(&nodes, &member).await;
+        if matches!(v.status, NodeStatus::PendingReconnect | NodeStatus::Dead) {
+            break;
+        }
+        assert!(std::time::Instant::now() < until, "the mesh-primary marks the held member unheard within 30 s: {v:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    door.release("claimed").await;
     let failed = frames(stream).await;
     assert!(matches!(failed.last(), Some(Frame::Failed { reason, .. }) if reason.contains("stop-node was not admitted")), "the restart fails naming the unadmitted stop: {failed:?}");
     // A queued stop may run before Continue returns; mark the release before sending it.
@@ -179,7 +206,17 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     tokio::time::sleep(rdm_transport::membership::staleness_floor() * 2).await;
     let build = estate.builds_obj().await.get(&accepted.build_id).await.unwrap_or_else(|e| panic!("build.get of {}: {e}", accepted.build_id));
     assert_eq!(build.attempt, accepted.attempt, "no attempt after the failed one: {build:?}");
-    let open = view_of(&nodes, &member).await;
+    // The held member's unheard marks (PendingReconnect, and Dead with its os-stopped row while the
+    // offline ladder held it) end once its mesh-primary hears it again.
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    let open = loop {
+        let v = view_of(&nodes, &member).await;
+        if !matches!(v.status, NodeStatus::PendingReconnect | NodeStatus::Dead) {
+            break v;
+        }
+        assert!(std::time::Instant::now() < until, "the continued member is heard again within 30 s: {v:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    };
     assert_eq!((open.status, &open.node_id, &open.incarnation_id), (NodeStatus::Restarting, &before.node_id, &before.incarnation_id), "the same birth, its restart open: {open:?}");
     match nodes.restart(&member).await {
         Err(CallEnd::Rejected { reason, .. }) => assert_eq!(reason, "node-not-live", "a fresh restart of a birth whose restart is open is refused by name"),

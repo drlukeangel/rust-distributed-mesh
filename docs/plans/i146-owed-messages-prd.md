@@ -389,6 +389,13 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   declaration is the connection the start then rode; the cell counts a dial after the cut by either
   end. The same gate's `flood` red, its reason named (`Indeterminate(ReplyLost("the request's attempts
   ended"))`, trace `953088dfb155d2b745f9b890aef34316`), went to Luke as a packet (Q32's rule).
+  The Q33 split's gate (`8360d55e`) red at
+  `node_restart::a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission:183`
+  (red before e3 too: `184aa116`, `c393b290`): the suspended member's first stop-node is sent or not
+  by timing, and when it is sent it runs on release and the member parks (listed Leaving, its
+  declaration applied), not held restarting. The cell now dispatches the attempt only once the
+  mesh-primary marks the held member unheard (the faulted fabric-primary's claimed-attempt cut), so
+  its stop-node is never sent, and waits out the member's unheard marks before reading its status.
 - **Order (Q29).** (1) the owed declaration (`node.rs:651-670`, `declare_once`), the first live proof
   being the node_stop cell above; (2) the member → mesh-primary round check-in (`node_self::check_in`);
   (3) the mesh-primary → fabric-primary check-in. For each, first the owner's cells: reconstruction of its pending messages from its
