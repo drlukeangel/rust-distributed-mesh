@@ -492,6 +492,68 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   `a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once` (compile-fail cell);
   `a_full_topic_queue_drops_the_newest_by_name_and_the_carrier_keeps_receiving`. The envelope
   ratchet gains the app and chunk branches; the join and node.get goldens reseal.
+- **Arch review 3, 2026-10-17: the projection contract (the migration's real risk), and the
+  inventory corrected.** The lead's gap list of the same day proposed a facts stream, a seat watch,
+  a node-admin registration surface and drop-oldest; all four withdrawn. What exists: node-admin's
+  `Wiring` (`crates/rdm-admin/src/wiring.rs`: `serve_app`, `hydration`, lifecycle `hooks`,
+  `fabric_hooks`, `round_actions`); `Membership::seats()` + `subscribe()` + `cohort()`; the round
+  participation in `crates/rdm-node/src/rounds.rs` (`RoundActions`) that replaces Rafka's
+  broker state-commit watcher. What is decided here:
+  1. **One comparator for a kind, applied by every holder.** Rafka's raw store
+     (`rafka-entity-framework/src/raw_projection.rs::wins`) compares `(version, offset, tombstone)`
+     and ignores the `OrderKey` it stores; the typed store applies `OrderKey`. node-admin can
+     therefore serve a different winning row than a live typed projection. An entity `Event`'s
+     `data` is a fixed header `(offset, order_key, version, tombstone)` followed by the opaque
+     value, so the one comparator reads the header without decoding the value, and the raw store
+     and the typed store apply the same rule by construction. Rafka decides the rule once per kind
+     (i141 e11; a durable-format move there).
+  2. **Snapshot and live reconcile under that one rule.** The topic is joined before the snapshot
+     pull (the `HydrateCtx` order), and every row, pulled or live, goes through the one apply; so
+     arrival order never matters and a tombstone is a row that wins like any other.
+  3. **Loss is a generation, not a message.** Every event RDM loses locally for a topic, a drop on
+     a full queue or an assembly evicted incomplete, advances `Topic::lost()`, a `watch<u64>` the
+     app reads; the drop stays drop-newest and named. A loss that cannot name a subject is still
+     counted. Recovery is the app's and is one thing: re-pull the kind's snapshot and apply under
+     the one rule; the hook does not return ready while `lost` advanced across its pull.
+  4. **The entry pull is a Rafka projection op, served through `serve_app` on node-admin, not
+     `node.topology.get`** (which keeps its membership-repair contract and carries no app rows).
+     RDM holds no app row and decides nothing on one; node-admin, embedding the framework, holds
+     the rows as a `Topic` subscriber under rule 1. This changes the i142 "Moved from RDM i143" row
+     (awaits Luke's yes) and gossip.md §8's third and "Entry ends with a pull" paragraphs (text
+     below, awaits Luke's yes).
+  5. **node-admin takes its declared types and ALPNs through `Wiring`**, beside `hydration` and
+     `serve_app`; no second registration surface.
+  6. **`dataschema`** rides `Event` and `Received` as an opaque `Option<String>`, carried both
+     ways; application compatibility is the app's. `datacontenttype` stays `application/octet-stream`
+     (the code refuses any other), since `data` is postcard bytes. The §3.4 table gains both rows.
+  7. **Diagnostics** (`ChaosArm`, `OtelDebug`) become Rafka ops in its family served only when
+     `RDM_DEPLOYMENT != prod`, the `RDM_DEV_*` gate; never a sender check.
+  8. **Inventory, corrected.** Each old message splits into the information it carries and the
+     behaviour that consumed it: `NodeHealthReport` carries application `store_statuses` and
+     `GatewayAnnounce` a client Kafka address, so they are product information (a product op pair,
+     or `config` on the node row), not deletions; `ElectionHeartbeat`, `BrokerHealthVote` and both
+     `RetiredPartition*` variants are retained compatibility remnants with no behaviour, removed with
+     the old protocol, never redesigned. Old paths are deleted only after their information and
+     behaviour have a demonstrated replacement.
+  9. **Demo acceptance for e5**, the i148 bar, in the pinned demo consumer through public API only:
+     late topic discovery (a node declaring a type after its admin started); concurrent snapshot and
+     live updates converging to one row under the one rule; overflow with `lost` advancing and a
+     re-pull healing; a missing chunk evicted, counted and healed; the ordinary broker round
+     participation through `RoundActions` with no watcher.
+  - **§8 text (old → new, awaits Luke's yes).** Third paragraph "**node-admin holds every channel
+    raw.** ... where a higher `version` wins, then a higher `offset`. Tombstones and clear-projection
+    apply to it like any other row." → "**node-admin holds every channel, as the app.** node-admin
+    holds the union of its members' declared types (`held`), so every projected kind reaches it; it
+    is a Rafka binary embedding RDM, and the rows it keeps are the app's: the entity framework runs
+    in node-admin as a `Topic` subscriber and applies the kind's one comparator, the same one its
+    typed stores apply, read from the event's header `(offset, order_key, version, tombstone)`
+    without decoding the value. RDM holds none of them and decides nothing on them." The "Entry
+    ends with a pull" paragraph: "it reads its kind set from node-admin with node.topology.get.
+    node-admin answers with the current rows of exactly those kinds: a kind node-admin holds as a
+    store is served from that store, every other kind raw," → "it pulls its kinds' current rows from
+    node-admin with Rafka's projection op, served through node-admin's `serve_app`; node-admin
+    answers from its stores and its raw projection under the one comparator,". The rest of the
+    paragraph stands; `node.topology.get` is not named in §8 again.
 - **The Rafka side** is rafka-v2 i141 e11: `kind_topics`, `entity_gossip`'s broadcast and frame
   encoding, the `ChunkAssembler`, the membership digest loop and the six direct iroh-gossip
   dependencies go; the entity frame becomes an `Event` with the row's version as `sequence`.
