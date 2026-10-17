@@ -140,6 +140,7 @@ async fn carry_once(
         budget: Budget::Overall(std::time::Duration::from_millis(inner_ms)),
         context: Some(peer.context.clone()),
         carried: peer.delivery.clone(),
+        unsent_is_final: true,
         ..CallOptions::default()
     };
     let (out, _evidence) = client

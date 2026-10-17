@@ -195,6 +195,22 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     connect, direct; if that fails, the same kick through up to two eligible live peers"): the
     ladder retargets, never the runtime. The gate's `role_wedge` showed the direct ping resending
     for its whole budget (10 s against the page's one connect).
+  - A carrier's one inner call answers from its first unsent attempt (`CallOptions::unsent_is_final`):
+    a dial or reach that fails before the commit cut ends it `NotSent`, never resent, so the carrier
+    refuses `CarrierEdgeLost` (or `InnerNotSent`) directly from its failed dial (node-rpc-envelope.md
+    Forward, "directly from its failed dial"; connections.md §8, "refuses the carried call by name";
+    node-rpc.md §36.1, "exactly one direct inner call"). Committed, it is owed as any call. The
+    resend's stop is the owning workflow's: the named refusal is what retargets the source's route
+    (connections.md §8 J). Gate 7 timed the misdial cells at 9.9 s and the Proxy-retirement cell at
+    19.8 s and the unreachable-target cell at 9.9 s: the carrier resent its failed dial to its budget
+    and answered inside the reply reserve. After: 0.02 s, 0.02 s and 3.0 s (the handshake's idle
+    timeout at the gate's cadence, as on main); rdm-transport main 137/137 in 10.48 s. RED with the
+    option off in `carry_once`: 5 resends in each misdial cell.
+  - A carried inner call that ends by its budget (a committed request to a silent target with no
+    proven exit) answers with what is left of the 100 ms reply reserve on the origin's clock
+    (node-rpc-envelope.md:625). Gate 7's red (`caff0fc8`) was the origin's own `ReplyDeadline`
+    winning that window: http://192.168.68.99:16687/trace/e1ce71f335858f6c0b916eaccb2443f1, the
+    carrier's inner call 22 → 9920 ms, the origin's call 20 → 9921 ms of its 10 s.
   - A target the view does not name at the call is `NotSent(Resolve)` at once: nothing is minted or
     owed. Once owed, absence from the view ends nothing; `Gone` or another incarnation (the view's
     proof) ends it, `ReceiverGone`.
@@ -210,8 +226,8 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   `rdm-core/src/{framing,outcome,codes}.rs`, `tools/mesh-audit`.
 - **State.** BUILT on `i146-e1-delivery-layer` (lane e4s8), not landed: it lands with Q18's page lines (applied `d29733f7`) and node-rpc.md §23, §27, §31 and §34's, on Luke's yes. Commits: rdm-core header and rules `5ec825ea`; the runtime, cells and ratchet `91233112`; fixes `936ff10e`; the bounded cells after it.
   - RED. The runtime was written before its cells, so each cell's RED is shown two ways. The first run of the 21 on the runtime: 6 red (5, 9, 10, 17, 20, 21) from three defects, fixed: a reply frame raced the end of the attempt task, a request frame that arrived whole skipped the ready gate, connections-deleting and admission checks, and a frame over the reply ceiling reached no invocation. Then each mechanism switched off in the tree, the cells run, the tree restored (`mutate.py`, the run's evidence in the lead's scratchpad): batch A (duplicate suppression, response order, completed invocations, ack-stream acks, read-only acceptance, the receiver-gone proof) turns 2, 3, 4, 5, 6, 7, 10, 12, 13, 14, 15, 16, 17, 18 red and the rdm-core order units; batch B (request resend, response resend, admission before the demultiplexer, sender-window retirement, the reorder bound and the reply ceiling, cancellation that stops the attempts) turns 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 19, 20, 21 red. Every cell fails under at least one; 8 and 20 hung under B until bounded (they now fail inside 4 s).
-  - GREEN. 21/21 in 2.3 s; rdm-transport main 137/137 (19.98 s, as before e1), rdm-core lib 108, main 61, rdm-mesh-audit 105, rdm-admin lib 438, main 410, rdm-node lib 21, rdm-test lib 38.
-  - Cells whose contract the pages moved, restated, never loosened: `pool::a_connection_closed_under_a_committed_call_is_evicted_and_reported_broken_once` (a lost stream ends no invocation: the call waits out its own reply budget); the withhold seam of `status_declarations` holds the reply before it becomes a frame (the request stays unaccepted until the release).
+  - GREEN. 21/21 in 2.3 s; rdm-transport main 137/137 (10.48 s; 19.98 s on main), rdm-core lib 108, main 61, rdm-mesh-audit 105, rdm-admin lib 439, main 410, rdm-node lib 21, rdm-test lib 38.
+  - Cells whose contract the pages moved, restated, never loosened: `pool::a_connection_closed_under_a_committed_call_is_evicted_and_reported_broken_once` (a lost stream ends no invocation: the call waits out its own reply budget); the withhold seam of `status_declarations` holds the reply before it becomes a frame (the request stays unaccepted until the release); `forward::a_target_whose_exit_is_proven_after_it_applied_answers_the_origin_carried_receiver_gone` and `forward::a_carrier_whose_exit_is_proven_after_the_inner_call_applied_leaves_the_origin_indeterminate_receiver_gone` (a node's shutdown proves nothing: its exit, published in the caller's view, ends the owed call `ReceiverGone`, and the carrier carries that reason; RED with the receiver-gone proof off, both `ReplyDeadline` at 10 s).
 
 #### e2 — the ordered stream: identity and sequence on every frame
 

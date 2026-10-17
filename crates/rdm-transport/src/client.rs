@@ -73,6 +73,11 @@ pub struct CallOptions {
     /// request is never resent; the call ends when its one connect fails or its stream is lost, and
     /// otherwise waits for its answer within its budget. Its owner retargets, never this runtime.
     pub once: bool,
+    /// The owner answers from its first unsent attempt (a carrier's one inner call: node-rpc.md
+    /// §36.1, and the envelope's Forward, "CarrierEdgeLost directly from its failed dial"): a dial
+    /// or reach that fails before the commit cut ends the call `NotSent`, never resent. Once
+    /// committed the request is owed as any other.
+    pub unsent_is_final: bool,
 }
 
 /// The origin's delivery identity a carrier's inner call keeps.
@@ -94,6 +99,7 @@ impl Default for CallOptions {
             context: None,
             carried: None,
             once: false,
+            unsent_is_final: false,
         }
     }
 }
@@ -1106,6 +1112,10 @@ impl Attempts {
             let deadline = if committed { self.deadlines.1.unwrap_or(started + pacing.floor) } else { self.deadlines.0 };
             let node = match self.client.reach(&self.target) {
                 Ok(n) => n,
+                Err(r) if self.opts.unsent_is_final && !committed => {
+                    let _ = self.tx.send(Attempted::EndedPreCommit(PreCommit::begin(self.op).not_sent(r)));
+                    return;
+                }
                 Err(r) => {
                     last = r.clone();
                     let _ = self.tx.send(Attempted::NotSent(r));
@@ -1118,9 +1128,12 @@ impl Attempts {
             match phase {
                 Phase::Done(out) => {
                     // The owner's cut, a source that admits no new connection (nothing was sent, and
-                    // nothing is owed for a request this source refuses to originate) and a request
-                    // asked once end the call; any other unsent attempt is resent.
-                    let resend = !self.opts.once && matches!(&out, RpcOutcome::NotSent(n) if !matches!(n.reason(), NotSentReason::FrameNotSent | NotSentReason::AdmissionBlocked(_)));
+                    // nothing is owed for a request this source refuses to originate), a request
+                    // asked once and an owner that answers from its first unsent attempt end the
+                    // call; any other unsent attempt is resent.
+                    let resend = !self.opts.once
+                        && !(self.opts.unsent_is_final && !committed)
+                        && matches!(&out, RpcOutcome::NotSent(n) if !matches!(n.reason(), NotSentReason::FrameNotSent | NotSentReason::AdmissionBlocked(_)));
                     if resend {
                         if let RpcOutcome::NotSent(n) = out {
                             last = n.reason().clone();

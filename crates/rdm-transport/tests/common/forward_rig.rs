@@ -123,6 +123,8 @@ pub struct Rig {
     pub origin_view: Arc<StaticResolver>,
     /// The carrier's view of the target.
     pub carrier_view: Arc<StaticResolver>,
+    /// The client the carrier makes its inner calls with.
+    pub carrier_client: Arc<NodeRpcClient>,
     pub carrier: Node,
     pub target: Node,
     pub handled: Arc<AtomicU64>,
@@ -180,8 +182,8 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
     let carrier_birth = birth();
     let carrier_builder = ServerBuilder::new().ledger(test_ledger()).carry::<Probe>().carry::<Ping>();
     let carrier_server = match edges {
-        Some(e) => carrier_builder.serve_forward_with_edges(carrier_client, e),
-        None => carrier_builder.serve_forward(carrier_client),
+        Some(e) => carrier_builder.serve_forward_with_edges(carrier_client.clone(), e),
+        None => carrier_builder.serve_forward(carrier_client.clone()),
     }
     .seal(served(&carrier_birth))
     .unwrap();
@@ -197,7 +199,7 @@ pub async fn rig_with(edges: Option<Arc<dyn CarrierEdges>>, carrier_misdials: bo
         },
     };
     let (origin, origin_view) = client_and_view(&[&carrier.resolved, &target.resolved]).await;
-    Rig { origin, origin_view, carrier_view: carrier_resolver, carrier, target, handled, applied, carrier_server }
+    Rig { origin, origin_view, carrier_view: carrier_resolver, carrier_client, carrier, target, handled, applied, carrier_server }
 }
 
 pub fn probe(p: &[u8]) -> ProbeRequest {
