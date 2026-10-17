@@ -131,7 +131,9 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
 
     let spans: String = std::fs::read_dir(&run).unwrap().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
     assert!(!spans.is_empty(), "neither process exported a span");
-    for leaked in ["noq.packet", "\"connect-failed\"", "\"accept-failed\"", "\"endpoint-bound\"", "transport_diag", "noq_proto", "iroh::"] {
+    // A diagnostic line in span evidence is an event of the diagnostic target (`"target":"transport_diag"`),
+    // never the bare word: this cell's thread, which exports spans of its own, is named after its module.
+    for leaked in ["noq.packet", "\"connect-failed\"", "\"accept-failed\"", "\"endpoint-bound\"", "\"target\":\"transport_diag\"", "noq_proto", "iroh::"] {
         assert!(!spans.contains(leaked), "{leaked:?} reached span evidence");
     }
     // The dial's line names its trace, and that trace is the dial span the dialler exported.
