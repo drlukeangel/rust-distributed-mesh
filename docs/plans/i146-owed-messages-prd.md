@@ -246,6 +246,10 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
     are read-only, as are the topology client read, the probe and the test consumers. Cell 22, RED
     first on `1922df2f` ("read, not yet recovered: neither frame is acked", left 0 right 2), GREEN in
     0.64 s.
+  - A unary reply is acked as it is delivered to its owner's call (`delivery.rs` `on_response`): the
+    call returns it to its owner in the owner's own process, with no reconnect between the two for a
+    resend to arrive in, and an earlier birth's response never reaches a new birth (§43: "a relaunch
+    as a new birth follows lifecycle recovery, never a replay").
   - The commit cut is the complete request frame written; the request direction stays open for the
     caller's acks (node-rpc.md §23, §24, §34, Q22).
 - **Sizing.** Two seats; `rdm-transport/src/{client,server,framer,wire,stream}.rs`,
