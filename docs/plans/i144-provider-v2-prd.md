@@ -320,10 +320,10 @@ enum variant; the protocol's classifier maps every variant to its code and is pr
 | 6 `ALREADY_EXISTS` | `AlreadyApplied`; per element: `already_carried`, `already-closed` |
 | 5 `NOT_FOUND` | `SubjectUnknown`; per element: `not_carried`, an `unknown` id |
 | 10 `ABORTED` | `RejectedStale` (the revision is behind: a concurrency conflict) |
-| 9 `FAILED_PRECONDITION` | `RejectedInvalidTransition`, `ReceiverNotPrimary` (not the writer), a named refusal of state (`node-not-live`, `fabric-not-ready`, `rotation-in-progress`, `retire-before-rotated`) |
-| 14 `UNAVAILABLE` | `NotReady`, `Busy`, `ConnectionsDeleting`; transport `NotSent` |
-| 4 `DEADLINE_EXCEEDED` | the owner's bound lapsed |
-| 2 `UNKNOWN` | `Indeterminate` (crossed the commit cut; no evidence either way) |
+| 9 `FAILED_PRECONDITION` | `RejectedInvalidTransition`, `ReceiverNotPrimary` (not the writer), a named refusal of state (`node-not-live`, `fabric-not-ready`, `rotation-in-progress`, `root-still-chained`) |
+| 14 `UNAVAILABLE` | `NotReady`, `Busy`, `ConnectionsDeleting`; transport `NotSent`; a receiver proven exited or removed (detail `receiver-gone`) |
+| 4 `DEADLINE_EXCEEDED` | the owner's bound lapsed, before or after the commit cut (the detail keeps not-sent versus indeterminate) |
+| 2 `UNKNOWN` | `Indeterminate` other than a deadline: a lost reply, a reset after the commit cut |
 | 3 `INVALID_ARGUMENT` | `Malformed` (does not decode, `UnknownVariant`) |
 | 8 `RESOURCE_EXHAUSTED` | `Malformed(TooLarge)`, the admission bound |
 | 15 `DATA_LOSS` | `Corrupt` |

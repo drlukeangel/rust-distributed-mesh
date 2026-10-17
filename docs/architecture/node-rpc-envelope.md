@@ -29,8 +29,8 @@ Every frame on a Node RPC stream, in either direction, begins with a transport h
 consumes before any protocol bytes are parsed. Three shapes, tagged by kind, each field held once:
 
 ```text
-Request  { sender: Birth, delivery_seq: u64, retire_below: u64 }                             then sections 0-2
-Response { sender: Birth, delivery_seq: u64, retire_below: u64, invocation_id: DeliveryId, seq: u32 } then the protocol's reply bytes
+Request  { sender: Birth, delivery_seq: u64, forget_below: u64 }                             then sections 0-2
+Response { sender: Birth, delivery_seq: u64, forget_below: u64, invocation_id: DeliveryId, seq: u32 } then the protocol's reply bytes
 Ack      { sender: Birth, delivery_seq: u64 }                                                nothing follows
 ```
 
@@ -39,7 +39,7 @@ Ack      { sender: Birth, delivery_seq: u64 }                                   
 A frame's delivery identity is `(sender, delivery_seq)`, minted by its sender, the same on every resend
 ([node-rpc.md §43](node-rpc.md#43-owed-messages-delivery-is-the-runtimes)): `delivery_seq` is a
 per-receiver sequence the sending birth never reuses. Every frame carries the sender's
-`retire_below`, the lowest `delivery_seq` it still holds unacked toward that receiver and a promise
+`forget_below`, the lowest `delivery_seq` it still holds unacked toward that receiver and a promise
 never to resend anything below it; the receiver forgets duplicate state only below that watermark or
 on the sender birth's proven exit or accepted removal, never by time elapsed. Until then a resend keeps
 its identity and cannot dispatch again. A carried call keeps its origin's identity: the duplicate
@@ -316,7 +316,7 @@ These are adapter mappings, not new enum definitions.
 | node.config.get/update | Application config read / full-map put; the [config update sequence](lifecycles/node-config-update.md); dedicated request mapping is open | read result / node.config.updated |
 | [node.cert.renew](lifecycles/node-cert-renew.md) | The issuing authority to the exact birth: [Status 0x1B](#status-op-0x1b-rdm) `RenewCert { node_id, incarnation, cert }`, answered `CertRenewed`; the node installs the cert and presents it on every connection it opens after; nothing is terminated | node.cert.renewed; a named refusal for another birth or an undecodable cert |
 | [node.issuer.update](lifecycles/node-issuer-update.md) | The fabric-primary to one node-admin, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateIssuer { node_id, incarnation, key, cert }`, answered `IssuerUpdated`; refused by name for another mesh or another birth | node.issuer.updated |
-| [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) | The fabric-primary to one node, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoots { node_id, incarnation, roots, phase }`, answered `RootsUpdated`; a set that drops a root the node still admits a chain under is refused `retire-before-rotated` | node.roots.updated |
+| [node.roots.update](lifecycles/fabric-ca-renew.md#noderootsupdate-the-primitive) | The fabric-primary to one node, exact birth: [Status 0x1B](#status-op-0x1b-rdm) `UpdateRoots { node_id, incarnation, roots, phase }`, answered `RootsUpdated`; a set that drops a root the node still admits a chain under is refused `root-still-chained` | node.roots.updated |
 | node.cert.get | A field of node.get: `NodeView.cert { issued_at, expires_at, issuer_expires_at }` on the `Nodes` reply, from the birth's cert row ([fabric-certs.md](fabric-certs.md#tracking)) | read result; no event |
 | [node.connections.admit](lifecycles/node-connections-admit.md) | The acceptor's verification of the dialer's member cert on the first bi-stream of an inbound connection of a registered product ALPN; RDM framing, not a Node RPC op | `admitted` or `refused { reason }`, a connection fact ([connections.md](connections.md#12-connection-state)) |
 | mesh.get, mesh.update, mesh.nodes.get, mesh.config.get/update | mesh.get answers one mesh, or every mesh of a fabric; mesh.update puts the full mesh meta as a blind put and never changes status; mesh.nodes.get answers the mesh's members; mesh.config.get/update hold the application's attributes on the mesh row, as node.config does on a node; a mesh's tags are its own property, mesh.tags.get / mesh.tags.create { label | [labels] } / mesh.tags.delete { All | [labels] }, the same shape and label grammar as node.tags; dedicated request mapping is open | read result / mesh.updated / mesh.config.updated |

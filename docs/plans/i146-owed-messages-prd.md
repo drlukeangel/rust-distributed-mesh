@@ -98,7 +98,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   (`:56` `staleness_floor`); the operation receipts for recovery (the round checklist counts a
   completion once, `rdm-admin/src/fabric_state.rs:426`; the Build's receipts). Added only: the `Ack`,
   delivery tracking (the per-receiver `delivery_seq` counter per (sender birth, receiver birth), the
-  in-flight table, `retire_below`) and the duplicate window. Heartbeat sequence numbers are never
+  in-flight table, `forget_below`) and the duplicate window. Heartbeat sequence numbers are never
   reused for `delivery_seq`: they order heartbeats, not command receipt. Operation receipts and
   transport duplicate suppression both stay: the transport suppresses repeated delivery of one
   invocation; receipts stop an operation repeating during recovery.
@@ -107,8 +107,8 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   every other, its declared length checked against 128 bytes before it is read:
   ```text
   TransportHeader (postcard enum, discriminant a varint position):
-    0  Request  { sender: Birth, delivery_seq: u64, retire_below: u64 }                                   then sections 0-2
-    1  Response { sender: Birth, delivery_seq: u64, retire_below: u64, invocation_id: DeliveryId, seq: u32 } then reply_len | reply
+    0  Request  { sender: Birth, delivery_seq: u64, forget_below: u64 }                                   then sections 0-2
+    1  Response { sender: Birth, delivery_seq: u64, forget_below: u64, invocation_id: DeliveryId, seq: u32 } then reply_len | reply
     2  Ack      { sender: Birth, delivery_seq: u64 }      the acknowledged frame's identity; nothing follows
   Birth      { node_id: NodeId, incarnation: IncarnationId }   each its existing postcard string (len + 12)
   DeliveryId { sender: Birth, delivery_seq: u64 }              u64 and u32 are postcard varints
@@ -128,7 +128,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   and is never reused by the sending birth: each receiver sees its own frames in increasing order, and
   a carried call's identity is unique at its carrier and at its final target alike (per-receiver
   counters would mint the same `(origin, n)` twice at a receiver reached both directly and carried).
-  `retire_below` is the lowest `delivery_seq` the sender holds unacked toward that receiver; a carried
+  `forget_below` is the lowest `delivery_seq` the sender holds unacked toward that receiver; a carried
   frame is held toward its carrier and its final target, so its watermark is valid at both. The receiver retires duplicate state only below the watermark, or on the sender birth's
   proven exit or accepted removal; never by time. A carried call keeps its origin's `(sender,
   delivery_seq)`: the window is per origin birth. Schedule: send at once; first resend at the publish
@@ -151,7 +151,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   and the original's result arrives; (13) two different frames at one `(invocation_id, seq)` are refused
   424; (14) a terminal is held while an earlier position is missing; (15) a response for a completed
   invocation is acked and dropped, and one for an invocation merely absent from the map is not; (16)
-  duplicate state outlives the staleness floor until the sender's `retire_below` passes it; (17) a
+  duplicate state outlives the staleness floor until the sender's `forget_below` passes it; (17) a
   carried call's resend through another carrier is suppressed by its origin's identity; (18) an `Ack` on
   an Ack stream of the current connection is consumed and correlates by identity; (19) an endpoint
   that admits no new command (connections-deleting) still receives an owed response; (20) reordering

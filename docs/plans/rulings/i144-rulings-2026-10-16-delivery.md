@@ -69,7 +69,7 @@ semantics, and implement no delivery-retry loops of their own.
 
 The delivery id never enters the observability context. Every frame in both directions carries a
 transport header (`Request { delivery_id }`, `Response { delivery_id, invocation_id, seq }`,
-`Ack { delivery_id }`; re-frozen 2026-10-16 as `(sender birth, delivery_seq)` with `retire_below`: duplicate
+`Ack { delivery_id }`; re-frozen 2026-10-16 as `(sender birth, delivery_seq)` with `forget_below`: duplicate
 state is retired only below the sender's watermark or on its birth's end, never by time), one
 authoritative copy of each field, consumed below protocol parsing; the
 target section is unchanged. Responses are owed messages: routed by `invocation_id` across
