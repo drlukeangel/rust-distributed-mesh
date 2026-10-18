@@ -1854,7 +1854,8 @@ pub struct FileJournal {
     log: Mutex<FactLog>,
     /// The writer's turn: decide on a snapshot, insert the fact's key on the blocking pool, then
     /// publish, holding the derivation each publication runs. An async lock, so a writer waiting on
-    /// another's insert or derivation yields its worker; readers never take it.
+    /// another's insert or derivation yields its worker. A reader takes it only when no turn holds it,
+    /// to take what it read from the lanes, and holds it across no disk.
     writer: tokio::sync::Mutex<Derived>,
     /// The turn holding `writer` and since when: what a turn that waits names as its holder.
     turn_of: Mutex<Option<(&'static str, std::time::Instant)>>,
@@ -1890,7 +1891,8 @@ impl std::ops::Deref for Turn<'_> {
     }
 }
 
-/// A reader's sync holding the writer, named as its holder until it ends ([`FileJournal::sync_for_read`]).
+/// A reader taking what it read from the lanes, holding the writer, named as its holder until it ends
+/// ([`FileJournal::sync_for_read`]).
 struct ReadHolder<'a> {
     journal: &'a FileJournal,
     op: &'static str,
@@ -2148,12 +2150,22 @@ impl FileJournal {
         Ok(())
     }
 
-    /// Sync from the store root when no push is mid-derivation: a reader never waits behind a writer.
-    /// While it holds the writer, `op` (the reader) is the holder a waiting turn names.
+    /// Sync from the store root for a read: the lanes are read from the disk holding no lock, so a
+    /// writer's turn never waits behind a reader's disk; what was read is taken under the writer, with
+    /// no disk, only when no turn holds it (a turn that holds it reads the lanes itself), so a reader
+    /// never waits behind a writer either. While it takes, `op` (the reader) is the holder a waiting
+    /// turn names.
     async fn sync_for_read(&self, op: &'static str) -> Result<(), BuildStateError> {
+        let mut reads = Vec::new();
+        for lane in self.read_lanes().await? {
+            reads.push(self.lanes.peek_new(&lane).await.map_err(lane_io)?);
+        }
         if let Ok(w) = self.writer.try_lock() {
             let _holder = ReadHolder::name(self, op);
-            self.sync(&w).await?;
+            for read in reads {
+                let read = self.lanes.take(read);
+                self.take_read(&w, read);
+            }
         }
         Ok(())
     }

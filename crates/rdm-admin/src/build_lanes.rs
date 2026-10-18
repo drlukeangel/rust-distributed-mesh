@@ -151,6 +151,21 @@ struct Rev {
     sealed: Option<(u64, LaneSeal)>,
 }
 
+/// A read of one lane past each revision's cursor, not yet taken ([`Lanes::peek_new`], [`Lanes::take`]).
+pub struct LaneRead {
+    lane: LaneId,
+    revs: Vec<RevRead>,
+}
+
+/// What a [`LaneRead`] found in one revision: from the cursor it began at to the next unread sequence.
+struct RevRead {
+    revision: u64,
+    from: u64,
+    next: u64,
+    sealed: Option<(u64, LaneSeal)>,
+    facts: Vec<(LaneKey, BuildFact)>,
+}
+
 /// The Build lanes of one fabric's store root, as one process reads and writes them.
 pub struct Lanes {
     root: crate::store_root::StoreRoot,
@@ -240,27 +255,53 @@ impl Lanes {
     }
 
     /// Every fact of `lane` not read before, in order: each revision ascending, from its next unread
-    /// sequence to its first unwritten one or its seal.
+    /// sequence to its first unwritten one or its seal. [`Self::peek_new`], then [`Self::take`].
     pub async fn read_new(&self, lane: &LaneId) -> Result<Vec<(LaneKey, BuildFact)>, StorageError> {
-        let mut out = Vec::new();
+        let read = self.peek_new(lane).await?;
+        Ok(self.take(read))
+    }
+
+    /// What [`Self::read_new`] would answer, read from the disk without moving any revision's cursor:
+    /// a read that holds no lock, taken (or not) by [`Self::take`].
+    pub async fn peek_new(&self, lane: &LaneId) -> Result<LaneRead, StorageError> {
+        let mut revs = Vec::new();
         for revision in self.revisions(lane).await? {
-            let mut rev = self.rev(lane, revision).await?;
+            let rev = self.rev(lane, revision).await?;
             if rev.sealed.is_some() {
                 continue;
             }
-            while let Some(e) = read_entry(&rev.store, rev.next).await? {
+            let (from, mut next, mut sealed, mut facts) = (rev.next, rev.next, None, Vec::new());
+            while let Some(e) = read_entry(&rev.store, next).await? {
                 match e {
-                    Entry::Fact(f) => out.push((LaneKey { lane: lane.clone(), revision, seq: rev.next }, f)),
+                    Entry::Fact(f) => facts.push((LaneKey { lane: lane.clone(), revision, seq: next }, f)),
                     Entry::Seal(s) => {
-                        rev.sealed = Some((rev.next, s));
+                        sealed = Some((next, s));
                         break;
                     }
                 }
-                rev.next += 1;
+                next += 1;
             }
-            self.keep(lane, revision, rev);
+            revs.push(RevRead { revision, from, next, sealed, facts });
         }
-        Ok(out)
+        Ok(LaneRead { lane: lane.clone(), revs })
+    }
+
+    /// Take `read`: each revision whose cursor is still where the read began moves past what the read
+    /// found, and its facts are answered, in order. A revision another take moved meanwhile answers
+    /// nothing of this read: that take answered its facts, and the next read begins where it left off.
+    pub fn take(&self, read: LaneRead) -> Vec<(LaneKey, BuildFact)> {
+        let mut out = Vec::new();
+        let mut revs = self.revs.lock().unwrap_or_else(|e| e.into_inner());
+        for r in read.revs {
+            let Some(rev) = revs.get_mut(&(read.lane.clone(), r.revision)) else { continue };
+            if rev.next != r.from || rev.sealed.is_some() {
+                continue;
+            }
+            rev.next = r.next;
+            rev.sealed = r.sealed;
+            out.extend(r.facts);
+        }
+        out
     }
 
     /// The seal of `revision` of `lane` this process has read, with its key.
@@ -439,6 +480,28 @@ mod tests {
             assert_eq!(read.len(), 1, "round {round}: the loser reads the winner's fact");
             assert_eq!(loser.append(&LaneId::Fabric, 3, &its).await.unwrap(), Appended::At(LaneKey { seq: 2, ..key.clone() }), "round {round}: then its own lands at the next key");
         }
+    }
+
+    /// CONTRACT (the Build journal's read path; i144 e6, `fabric_primary.rs:204`): a lane read from the
+    /// disk (`peek_new`) moves no cursor; its take moves each revision's cursor only from where the read
+    /// began. Two reads of the same facts: the first taken answers them, the second answers nothing,
+    /// and a read after both begins past them. Must NOT happen: a fact answered twice, or one skipped.
+    #[tokio::test]
+    async fn a_lane_read_moves_no_cursor_until_taken_and_is_taken_once_from_where_it_began() {
+        let d = crate::record_store::tempdir("lane-read-take");
+        let (writer, reader) = (lanes(&d), lanes(&d));
+        let lane = LaneId::Fabric;
+        assert!(matches!(writer.append(&lane, 3, &fact(1)).await.unwrap(), Appended::At(_)));
+        assert!(matches!(writer.append(&lane, 3, &fact(2)).await.unwrap(), Appended::At(_)));
+        let attempts = |read: &[(LaneKey, BuildFact)]| read.iter().map(|(_, f)| match f { BuildFact::Attempt(a) => a.attempt, _ => 0 }).collect::<Vec<_>>();
+        // Two reads of the same facts, neither taken yet: a read moves no cursor.
+        let (first, second) = (reader.peek_new(&lane).await.unwrap(), reader.peek_new(&lane).await.unwrap());
+        assert_eq!(attempts(&reader.take(first)), vec![1, 2], "the first read taken answers what it found");
+        assert!(reader.take(second).is_empty(), "the second began where the first's take moved from: it answers nothing");
+        // A read after both begins past them: nothing answered twice, nothing skipped.
+        assert!(matches!(writer.append(&lane, 3, &fact(3)).await.unwrap(), Appended::At(_)));
+        assert_eq!(attempts(&reader.read_new(&lane).await.unwrap()), vec![3]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// CONTRACT (Q28 A, Q35 x cells: "an old-authority writer meeting the seal is refused stale and
