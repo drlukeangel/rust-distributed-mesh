@@ -147,7 +147,7 @@ NodeConnection {
     carrier_incarnation_id
 
     // Direct Failed only
-    recovery_epoch
+    recovery_round
     attempt_ordinal
 
     reason
@@ -481,7 +481,7 @@ exist. If the carrier disappears, restoring Direct is still desirable.
 
 ### 9.2 Recovery round
 
-A new independent direct-failure incident starts a new `recovery_epoch`.
+A new independent direct-failure incident starts a new `recovery_round`.
 
 ```text
 E1: Failed 1 -> Failed 2 -> Failed 3 -> Direct Connected
@@ -496,7 +496,7 @@ E2 does not inherit E1's ordinal.
 Every failed reconnect attempt appends a new `Direct Failed` event with:
 
 ```text
-recovery_epoch = E
+recovery_round = E
 attempt_ordinal = N + 1
 event_time      = T
 reason          = exact transport refusal/failure
