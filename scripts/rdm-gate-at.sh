@@ -143,10 +143,18 @@ json.dump(pkgs, open(out_path, "w"), indent=2, sort_keys=True)
 PY
         fi
     fi
-    python3 - "$MAIN_DISC" "$CAND_DISC" <<'PY'
+    # Cells deleted with their code are named in the landing's commit bodies, one per line,
+    # `removed: <module>::<cell>` (the name `--list` prints), and only those may leave discovery.
+    REMOVED="$D/discovery-removed.txt"
+    git log --format=%b origin/main..HEAD 2>/dev/null | sed -n 's/^removed: *//p' > "$REMOVED"
+    python3 - "$MAIN_DISC" "$CAND_DISC" "$REMOVED" <<'PY'
 import collections, json, sys
 base = json.load(open(sys.argv[1]))
 cand = json.load(open(sys.argv[2]))
+# The named removals: a missing cell named here (full name, or its fn name) is a deletion, not a drop.
+allowed_full = collections.Counter(l.strip() for l in open(sys.argv[3]) if l.strip())
+allowed_leaf = collections.Counter(t.split("::")[-1] for t in allowed_full.elements())
+allowed_used = 0
 base_tot = sum(b["count"] for p in base.values() for b in p.values())
 cand_tot = sum(b["count"] for p in cand.values() for b in p.values())
 print(f"[discovery] origin/main={base_tot} tests across {len(base)} packages; candidate={cand_tot} tests across {len(cand)} packages")
@@ -190,14 +198,23 @@ for pkg, bins in sorted(base.items()):
                 added_leaf[leaf] -= n
             elif added_leaf[leaf] >= n:
                 added_leaf[leaf] -= n
+            elif allowed_full[t] >= n:
+                allowed_full[t] -= n
+                allowed_leaf[leaf] -= n
+                allowed_used += n
+                print(f"[discovery] removed by name: {pkg}:{tname} {t}")
+            elif allowed_leaf[leaf] >= n:
+                allowed_leaf[leaf] -= n
+                allowed_used += n
+                print(f"[discovery] removed by name: {pkg}:{tname} {t}")
             else:
                 missing.append(t)
-        if missing or cand_tot < base_tot or (c_info is None and pkg in cand and m_cnt == 0):
+        if missing or cand_tot + allowed_used < base_tot or (c_info is None and pkg in cand and m_cnt == 0):
             sample = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
-            reason = f"missing tests: {sample}" if missing else ("binary missing from package" if c_info is None else f"workspace total fell {base_tot} -> {cand_tot}")
+            reason = f"missing tests: {sample}" if missing else ("binary missing from package" if c_info is None else f"workspace total fell {base_tot} -> {cand_tot} beyond the {allowed_used} removed by name")
             errors.append(f"{pkg}:{tname} ({b_info['kind']}) count fell {m_cnt} -> {c_cnt} ({reason})")
-if cand_tot < base_tot and not errors:
-    errors.append(f"workspace total test discovery fell {base_tot} -> {cand_tot}")
+if cand_tot + allowed_used < base_tot and not errors:
+    errors.append(f"workspace total test discovery fell {base_tot} -> {cand_tot} beyond the {allowed_used} removed by name")
 if errors:
     for e in errors:
         print(f"FAIL test-discovery: {e}", file=sys.stderr)
