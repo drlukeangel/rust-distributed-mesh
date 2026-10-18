@@ -48,7 +48,9 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q66 | DevX (rafka-v2) | i141 U3 / RDM block 1b | where the storage parity suite lives: the same cells against memory, file and the topic backend | a (the lead, 2026-10-18): RDM's storage cells become one suite in `rdm-test`, generic over `StorageBackend` (each cell takes a backend factory), run in RDM's gate against memory and file; rafka-v2 runs the identical suite against the topic backend as a node-admin functional stem on a live mesh. Built in block 1b. b refused (two copies drift), c refused (rafka's crates would enter RDM) | asked and ruled 2026-10-18 |
 
-Next free number: **Q67**.
+| Q67 | DevX (rafka-v2) | i141 U3 / rafka i144 writer lifecycle | may a committed seat move close the previous (seat, revision) writer while its process lives on | a (Luke, 2026-10-18): rafka's R9 gains one trigger, for seat writers only: the committed seat-move row that supersedes the (seat, revision), decided by the one writer of the seat-move sequence; a certified fact, never silence; the process's own writer stays under R9 unchanged; R8 untouched (the close is node-admin's op 69). b refused (a read-then-append race returns), c refused (stops a living member's own writes). The R9 line lands in rafka-v2 | asked and ruled 2026-10-18 |
+
+Next free number: **Q68**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
