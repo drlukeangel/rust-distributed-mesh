@@ -13,16 +13,17 @@ rounds are [States](lifecycles/states.md#states); each workflow is its page in t
 
 ## 1. The model
 
-Every rafka node — gateway, broker, compute, node-admin — is a `rafka-node-base` process.
-Node-base owns identity, the iroh mesh transport, gossip, the topology projection and the
-lifecycle state machine; the node type layers its own boot (stores, listeners, shards) on top.
+Every node, whatever its kind, is an `rdm-node` process; a node-admin is `rdm-admin` on it. The
+node runtime owns identity, the iroh mesh transport, gossip, the topology projection and the
+lifecycle state machine; the application layers its own boot on top through the
+[hooks](fabric-node-hooks.md) and `Wiring`.
 The lifecycle architecture rests on five design rules:
 
 1. **One status writer per node.** Its mesh-primary sets a node's status from the node's reports
    on its workflow's reply stream ([node status](lifecycles/node-status.md)); absence, a failed
    dial or RPC, a transport drop or an unheard peer mesh never proves an exact runtime gone
    ([States](lifecycles/states.md#routing)).
-2. **Aliveness and readiness are separate axes** ([state-model.md](/home/admin/rafka-v2/docs/architecture/state-model.md)): readiness is
+2. **Aliveness and readiness are separate axes** (§4): readiness is
    the status a node's row holds, liveness the `NodeState` peers observe from its digests (§4).
 3. **Observation and exact departure are different facts.** Local NodeState::Dead/stale vocabulary may
    describe an observer's routing view, but destructive recovery and Node RPC Gone require canonical
@@ -36,18 +37,18 @@ The lifecycle architecture rests on five design rules:
 5. **A gossip struct is DURABLE, and adding a field MOVES the format.** `GossipDigest`,
    `GossipEnvelope`, `NodeState` and `NodeDigest` are postcard-positional. Postcard does not
    honour `#[serde(default)]` for a missing trailing field: an old-shaped frame EOF-errors and
-   is dropped whole (`crates/rafka-node-base/src/lib.rs::GossipDigest`, the `kind_set` field's
-   own doc). So a new field is a **hard cutover** — the commit says "durable format moved" and
+   is dropped whole ([gossip.md §3.1](gossip.md#31-frame-catalog)). So a new field is a **hard cutover** — the commit says "durable format moved" and
    every live mesh is taken down and deployed again, never redeployed in place, before anything
    attaches.
 
 ## 2. A node is an ENTITY, and it has three ids
 
-**A node is one entity.** All four node types — gateway, broker, compute, node-admin — are one
-record shape, `node`, living in the ONE `<system-org>.ops.nodes` — the fabric's single master
-record, MAINTAINED (not merely seeded) in every mesh, one writer per mesh, never a separate
-per-mesh store (§2.5). It is an ordinary entity-framework record: it is minted by the one minter,
-it is read through the ordinary read path, and its fields are the node's durable facts. **The
+**A node is one entity.** Every node, whatever its kind, is one record shape, the node row
+(`NodeRecord`, `rdm-admin/src/storage.rs`: `node_id`, `fabric_id`, `name`, `mesh_id`, the
+incarnation, the status and the config), living in the ONE nodes store of the fabric
+(`NodesStorage` on the fabric's shared store root; Rafka binds it to its `<system-org>.ops.nodes`),
+one writer per mesh, never a separate per-mesh store (§2.5). Its id is minted by the one minter and
+its fields are the node's durable facts. **The
 gossip digest is a PROJECTION of that record**, not a second source for it — which is why a key
 rotation lands in the record first and gossips afterwards, and never the reverse.
 
@@ -56,14 +57,14 @@ minted id. THE FABRIC IS ALL MESHES**, so the endpoint identity is globally uniq
 mesh-unique. A mesh is the named group of nodes a node belongs to; `mesh_id` is the mesh's own id
 and is never a node's. The id IS the minted id (the short Crockford id), one thing with one name;
 nothing is ever derived from the `endpoint_id`. Only the id is shown on public interfaces (REST, wire,
-logs), and it does not change on restart; a topic's replication target stores the node's `path.name` (§2.2).
+logs), and it does not change on restart; anything that refers to a node durably stores its `path.name` (§2.2).
 The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that same `id`.
 
 | id | what it is | uniqueness | who sees it |
 |---|---|---|---|
 | **`endpoint_id`** | the node's iroh key (ed25519 public key, hex) — its identity on the FABRIC, the thing a dial resolves to. A FIELD of the node record | globally unique across every mesh | **THE TRANSPORT ONLY.** Never on a public interface — not a REST body, not a wire response, not an audit row, not a log line or span attribute NAMING a node (§9 rule 4). The one exception is a span whose SUBJECT is the routing key itself — a dial's target, the handshake, the identity load/mint before an id exists to log — never a narrative "which node did this" field. Exposing the routing id outside those is a security breach |
 | **`path.name`** | path and name are the node's two fields, joined only as the path.name index key; both are free text the caller chooses at node.create (`<mesh>.<kind>.<name>` by convention, a name, never an ordinal); the node's type is its own field, `node_type` (§2), never read from the path | unique per (path, node), by the ordinary name claim | what topic placement and `replica.targets` store (§2.2); a Build step key names its target by it (`node.create:<path.name>`) |
-| **`id` — the node's minted id** | the `node` record's own id — `crates/rafka-entity-framework/src/identity.rs::mint_id`, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `node_type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
+| **`id` — the node's minted id** | the node row's own id — minted once, 60 bits, 12 Crockford characters, bare internally | globally unique, by the same property every minted id in the platform has | **the PUBLIC, STORED and AUDIT identity.** It names one node instance: what the audit log names a node by (§2.4) and what REST and the wire render for a node. Its external form renders the type prefix from `node_type`; a client only ever names a BROKER, so **`brk_<crockford>` is the only form a client sees** |
 
 - **One minter, no second form.** The id is `mint_id()` like every other entity's — no short form,
   no per-mesh structured mint, no separate allocator. Random collision is n²/2⁶¹ and negligible
@@ -71,17 +72,17 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 - **The id is MINTED, not derived.** Nothing computes it from the `endpoint_id`: a derived id would
   change when the identity changes, and a node's public name must not move because its key did.
 - **`endpoint_id` is ROUTING-ONLY.** Gossip digests, the topology projection, the mesh handshake and
-  the dial itself key on it — nothing stored on behalf of a customer does. Replica sets and the
-  placement in path-config carry the node's `path.name`, and a dial resolves `path.name` →
-  `endpoint_id` at DIAL time (§2.2), never from a stored copy. A replica set carrying a 64-hex
-  `endpoint_id` is refused by name.
+  the dial itself key on it — nothing stored on behalf of an application does. A stored reference
+  to a node (Rafka's replica sets and placement among them) carries the node's `path.name`, and a
+  dial resolves `path.name` → `endpoint_id` at DIAL time (§2.2), never from a stored copy. A stored
+  64-hex `endpoint_id` is refused by name.
 - **The id names one node INSTANCE and is never reissued.** A stop, start or restart keeps the id,
   incarnation, endpoint and port; a new bin is a new node with a fresh id (the replace recipe), and so
   is a node that replaces another or is added (§2.3).
 - **A node PROCESS has an incarnation.** The `Node` row carries `incarnation_id`, an opaque id minted by the
   one minter at node.create, naming the exact runtime that serves the node's id and `path.name`. It stays the
   same through stop, start and restart (the process never exits) and ends at delete; recover and replace create
-  a new node with its own. The process reads it once at boot (`rafka_node_base::own_incarnation_id`). A reader
+  a new node with its own. The process reads it once at boot (`RDM_INCARNATION_ID`, written by node-admin at launch). A reader
   compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
   a writer's rows. `node.get` returns it per node.
 - **A node has a `node_type`.** `node_type` is a field of the node record, a string the caller sets in
@@ -91,51 +92,45 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
 - **A node's `path.name` is what placement references.** Nodes use the same
   `path.name` mechanism as every entity: the path and the name are free text set at node.create;
   nothing is derived from either. A single node is created, for example, as `mesh1.broker.north`. A node advertises its `path.name`, its `endpoint_id` and its minted
-  id; the last two change, the `path.name` does not. Topic placement and `replica.targets` store the
-  `path.name`, so a new `endpoint_id` or minted id has no effect on replication.
+  id; the last two change, the `path.name` does not. An application that stores a node reference
+  stores the `path.name`, so a new `endpoint_id` or minted id has no effect on it.
   A re-attach or a growth changes nothing: the nodes are created at the same `path.name`s, and the
   routes to the new nodes materialize with no update to any topic. There are two renames, both
   node.name.update under its [rename precondition](lifecycles/node-name-update.md): a stopped predecessor to or from
   `<name>.old`, and a stopped successor created as `<name>.new` to or from `<name>` ([node replace](lifecycles/node-replace.md)). Nodes are system
   entities, never renamed by hand.
 - **A path is a path.** A path is dotted segments, minted once and immutable, with no structural meaning. The segments in use are a convention (`mesh1.broker`, `fabric1.meshes`). The link from a node to its mesh is the `MeshId` on the node row, and where a row is stored says nothing about the entity's path.
-- **The external form appears at exactly two boundaries** — REST responses and the audit log —
-  and is stripped once, at ingress, like every other entity's.
+- **The external form appears only on public interfaces** (an API answer, a log line, a span) and
+  is stripped once, at ingress; the application's own boundaries (Rafka: REST and its audit log) are
+  the application's.
 
 ### 2.0 One id space, four HUMAN-READABLE prefixes — so the DECODER enforces the type, not the renderer
 
 The prefix renders from `node_type` over ONE 12-character id space, human-readable by node type: `brk_` = broker, `adm_` = node admin,
 `gtw_` = gateway, `cmp_` = compute. A Build id is the bare 12-character Crockford60 on the wire, in every store row and in every page example, and renders `bid_xxxx-xxxx-xxxx` (`BuildId::log()`) in log lines and span fields only; nothing parses or stores that form.
 
-### 2.2 The node `path.name` is what placement STORES — the `endpoint_id` is resolved at dial time
+### 2.2 The node `path.name` is what a reference STORES — the `endpoint_id` is resolved at dial time
 
-Users name nodes in replication, so placement names a node by its `path.name`
-(`mesh1.broker.1`), not by its minted id or its iroh key.
+An application names nodes in its own configuration (Rafka: a topic's `replica.targets` and its
+placement, [`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3), so a stored reference to
+a node is its `path.name` (`mesh1.broker.1`), not its minted id or its iroh key.
 
-- **`replica.targets` is a LIST of node `path.name`s** (`mesh1.broker.1`, `mesh1.broker.2`, …) — the
-  brokers a topic replicates to, one topic config key on both surfaces
-  ([`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3).
-- **A topic's placement (`Topic.partition_replica_sets`, on the topic record alone, written by
-  `crates/rafka-gateway-core/src/routing/partition_assignment.rs::write_replica_set_placement_at`)** stores node `path.name`s too, and the replica sets the routing table checks are
-  sets of `path.name`s.
 - **Every dial resolves `path.name` → the node → its `endpoint_id` from the `topology-nodes`
-  projection** (§2.6), which every node already holds in memory when it routes: the routing table's
-  live-broker check, the replication and copy dials, the writer's originate, the repair job. The
+  projection** (§2.6), which every node already holds in memory when it routes. The
   projection carries a `path.name` index, so a node whose `endpoint_id` moved (§2.3), or a `path.name` a
-  new node now holds (§2.1), is reached without a single config changing.
+  new node now holds (§2.3), is reached without a single config changing.
 - **The node owns its name**: it is the authority on the name it publishes, and what it publishes is the row's name. A
   member never writes its row merely because it is the subject (§2.5).
-- **A 64-hex `endpoint_id` or a minted node id in a config or a replica set is a defect** and is refused
+- **A 64-hex `endpoint_id` or a minted node id in a stored reference is a defect** and is refused
   by name at the reader.
-- **The stored `path.name` does not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.1,
-  §2.3): a re-attached or grown node is created at its `path.name`; a stopped predecessor is renamed
-  `<path.name>.old` and its successor, created as `<path.name>.new`, takes the `path.name`. No topic
-  replicating to it is ever rewritten.
+- **The stored `path.name` does not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path.name`; a stopped predecessor is renamed
+  `<path.name>.old` and its successor, created as `<path.name>.new`, takes the `path.name`. No stored
+  reference to it is ever rewritten.
 
 ### 2.3 A new node is a new id — a REPLACE takes the old node's `path.name`, an ADD takes its own
 
-A node's id follows the INSTANCE, so every replacement is traceable, and routing
-follows the `path.name` (§2.2), so no topic changes when a node is replaced.
+A node's id follows the INSTANCE, so every replacement is traceable, and every stored reference
+follows the `path.name` (§2.2), so nothing stored changes when a node is replaced.
 
 | path | node ids |
 |---|---|
@@ -146,36 +141,15 @@ follows the `path.name` (§2.2), so no topic changes when a node is replaced.
 | a new node that… | its id | its `path.name` | the node it relieves | placement |
 |---|---|---|---|---|
 | REPLACES a node in the topology | fresh | created as `mesh1.broker.1.new`, then takes over `mesh1.broker.1` | stopped, renamed `mesh1.broker.1.old` or deleted | stays as it is |
-| is ADDED (a hot-loaded broker) | fresh | its own next one (`mesh1.broker.4`) | none | `mesh1.broker.4` joins a topic's `replica.targets` only by an explicit placement change |
+| is ADDED | fresh | its own next one (`mesh1.broker.4`) | none | an application refers to it only by an explicit change of its own configuration |
 
 - **A replace is [node replace](lifecycles/node-replace.md).** Insert-and-fail on each of its
   renames means two nodes never hold one `path.name`.
 - **Node certs:** [fabric-certs.md](fabric-certs.md).
-- **An add can start from a WAL snapshot.** Snapshot a broker's WAL, restore it onto the new broker,
-  and add the new broker's `path.name` to a topic's placement as one more replica: brokers store by
-  `topic_hash` and partition, so the restored WAL already holds those partitions, and the per-topic
-  re-sync closes the gap from the snapshot's offset ([`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md) §6–§7).
 - **node.delete releases the node's identity and name; its row stays.** The node's mesh-primary
   writes the row with status deleted, keeping the record and its config; the deleted row releases
   the `path.name`, so a node created there afterwards claims it with a fresh id and seeds its
   config from it. The workflow is [node delete](lifecycles/node-delete.md).
-
-### 2.4 The AUDIT LOG names a node by its id
-
-Every audit row that records node information carries the node's id in its
-external form (`brk_…`, `adm_…`, `gtw_…`, `cmp_…`) — never a `endpoint_id`, never a bare name. The
-emitting gateway names itself by the id its node.create handed it at launch (§ Day zero), adopted at boot
-and rendered through the same renderer as `Node::id_display`
-(`crates/rafka-gateway-core/src/audit.rs::resolve_own_node_id`); no broker's copy of `ops.nodes` is
-read for it. A node that was handed no id writes a NAMED placeholder, never a key. The audit log is one of the two boundaries where an id's
-external form appears (CLAUDE.md: REST outputs and the audit log).
-
-### 2.1 What the public id is FOR
-
-**It names one broker instance.** A replication target names the broker by its `path.name`
-(§2.2), never by the id, and a client names a broker's `path.name` as a topic config on either
-surface. Kafka's `BrokerId`, Metadata, FindCoordinator and the gateway's shards keep their own
-numbering, untouched by this id ([`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3).
 
 ### Day zero
 
@@ -188,10 +162,11 @@ came down with it.
 
 ### 2.5 ONE system org, one projection, one writer per mesh
 
-The fabric has one system org, replicated to and maintained in every mesh
-([`system-org.md`](/home/admin/rafka-v2/docs/architecture/system-org.md) §1), so a mesh whose peer goes unheard keeps serving with a
-complete record of the fabric as it last knew it. Its one `<system-org>.ops.nodes` is the fabric's
-record of every node in every mesh, and each mesh-primary writes its own mesh's rows into it.
+The fabric has one nodes store on its shared store root (R14), held by every mesh, so a mesh whose
+peer goes unheard keeps serving with a complete record of the fabric as it last knew it. It is the
+fabric's record of every node in every mesh, and each mesh-primary writes its own mesh's rows into
+it. How an application replicates its own copy of that record to every mesh is the application's
+(Rafka: [`system-org.md`](/home/admin/rafka-v2/docs/architecture/system-org.md) §1).
 
 **This is what the one-writer-per-mesh rule buys.** Because a mesh-primary only ever authors its
 OWN mesh's rows, two meshes that could not hear each other cannot have written conflicting versions
@@ -209,14 +184,6 @@ history rather than as a competing claim about a node this side owns.
 only over node-RPC.** N meshes means N writers, one per mesh, never more — the writers are
 divided by mesh, so two of them can never contend for the same node. A multi-mesh fabric has
 two primaries, neither owning the other's members.
-
-#### How the master record REACHES a second mesh
-
-A new mesh receives the system org by extension: its brokers join every system topic's
-`replica.targets`, a list of `path.name`s (§2.2), and a job backfills them before the mesh takes
-traffic ([`system-org.md`](/home/admin/rafka-v2/docs/architecture/system-org.md) §1, [`broker-re-sync.md`](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md) §5). No
-cross-mesh mechanism is involved: a dial resolves the `path.name` to an `endpoint_id` at dial time
-(§2.2).
 
 <a id="the-projection-differs-from-every-other-projection-in-exactly-two-ways"></a>
 #### The projection is filled from two gossip channels
@@ -275,7 +242,8 @@ field precisely so the durable half stays distinct from the noisy half.
 #### What a peer mesh's primary takes from the fabric-primary, and what it keeps
 
 A mesh-primary takes rafka-time and the fabric-level projections from the fabric-primary when it
-enters the fabric and each time the fabric seat moves ([origin-ordering.md](/home/admin/rafka-v2/docs/architecture/origin-ordering.md)).
+enters the fabric ([node.mesh.join](lifecycles/node-mesh-join.md): the join answer's rafka-time, the
+entry answer's projections) and each time the fabric seat moves.
 
 ### 2.6 The projection is `topology-nodes`, and it is fed like any other projection
 
@@ -291,40 +259,28 @@ reader actually reads — one flat list, one row per thing, typed `node`, `mesh`
     "status": "ready-for-traffic", "is_primary": true, "is_fabric_primary": true } ]
 ```
 
-Node rows come from `ops.nodes` (this projection); a mesh's status is its mesh-primary's `MeshStatus` frame
-(§2.7, from the stored `ops.meshes` row); the fabric row is the `Fabric` entity, carried by gossip (§2.8).
+Node rows come from the nodes store (this projection); a mesh's status is its mesh-primary's `MeshStatus` frame
+(§2.7); the fabric row is the fabric's identity, carried by gossip (§2.8).
 `node.get` returns the node rows.
 
-**Rafka's WAL reset tombstones every topology record.** The WAL reset is a Rafka operation, outside the RDM lifecycle and its name rules. The reset writes a tombstone for every record in every topic that
-holds topology data — `<system_org>.ops.nodes`, `ops.meshes`, `ops.nodes.connections` and `ops.fabrics` — whatever
-mesh each record names, so every reader and every replica converges on the records being gone. Each owner then writes
-its own records again: every mesh primary (the seat holder, and no other node-admin of its mesh) its live members'
-`Node` rows (with their path.name claims) and its mesh row, every node its connection rows ([connections.md](connections.md)), and the
-fabric-primary the fabric row (§2.8).
-
-**A rewrite is lossless for every field its writer knows.** A rewritten `Node` row carries every field the writer
-holds authoritatively, written once, complete; a default from the row constructor never stands in for a known value.
-A row carries the `incarnation_id` of the process node-admin last launched for the node, from node-admin's own record of it; a writer that holds no record of a node's incarnation refuses that row by name and never writes an empty one. A node-admin's row carries its `admin_api_base` in that same write, from the endpoint's authoritative source: the
-writer's own bound admin API address for its own row, the recorded spawn bind address for a node-admin it spawned. A
-node-admin row whose endpoint the writer cannot determine is not rewritten; the rewrite refuses it by name rather than
-replace a known endpoint with none. A later change to `admin_api_base` is a `node.config.update` through the node's mesh-primary: the
-row is written, then the node applies it (`ApplyNodeConfig`). It is stored and gossiped as given; nothing
-checks it.
+An application's reset of its own copies of these records (Rafka's WAL reset) is the application's
+operation, outside the RDM lifecycle and its name rules.
 
 **The primary node-admin is the one writer, because it does all of its mesh's node provisioning.**
-It writes `ops.nodes` when a node workflow step or a node.update reaches it, and when a status change happens
+It writes the nodes store when a node workflow step or a node.update reaches it, and when a status change happens
 INORGANICALLY — a node lost, a role moved, anything the mesh observes rather than was asked for.
 Those are the two events that author a row; nothing else does.
 
 **Day zero is the one special case.** Until the fabric's state-commit, the mesh-primary holds its
-members' rows in the scratchpad; state-commit writes them to `ops.nodes`
-([States](lifecycles/states.md#states)). Before that moment there is no store to take the write,
+members' rows in the scratchpad; state-commit writes them to the nodes store
+([States](lifecycles/states.md#states)), the Build facts and the declared state excepted (Q61, Q54).
+Before that moment there is no store to take the write,
 which is why a node carries its identity down with it (§ Day zero) rather than reading it from a
 store that cannot yet exist.
 
 **After day zero there is no special case.** Every update to the projection follows the ordinary
-entity path: the write goes to the `nodes` topic, the broker ACKS it, and the projection updates
-from the record — the same read-through CRUD any entity gets, with no bespoke node path.
+path: the write goes to the nodes store, is durable before its caller is answered, and the projection
+updates from the record; no bespoke node path.
 
 **In steady state gossip carries most of the traffic, and that is not a second source.** Nodes are
 not launched often, so in a running fabric the predominant update is a digest arriving, and the
@@ -334,22 +290,19 @@ the record and gossips afterwards, never the reverse.
 
 ### 2.7 A mesh is an entity, and node-admin owns it
 
-**A mesh is an entity**: `Mesh`, `KIND = "mesh"`, one row per
-mesh on the shared platform plane `<system_org>.ops.meshes`, which is extended into every mesh
-with the rest of `ops.*` ([`system-org.md`](/home/admin/rafka-v2/docs/architecture/system-org.md) §1).
+**A mesh is an entity**: one row per mesh in the fabric's mesh store (`MeshStorage` on the shared
+store root; Rafka binds it to its `<system_org>.ops.meshes`).
 
 - **Its id is minted** (bare Crockford internally, displayed `msh_xxxx-xxxx-xxxx`), and
   `Node.mesh_id` holds that minted id. A mesh id is what an address names wherever a mesh must be
   named: a store's audit topic is `<store>.adt_<mesh id>` in every fabric, one mesh or ten.
 - **Its name is `mesh<#>`, its position in the shape**: node-admin's own mesh
-  takes `RAFKA_MESH_NAME` (`mesh1` when unset, `node-admin/src/lib.rs::own_mesh_name`), and a mesh
-  a Build creates takes the Build's `mesh_name`
-  (`node-admin/src/lib.rs::MeshRegistry::name_mesh`). The name is never derived from the mesh's
+  takes `RDM_MESH` (`mesh1` when unset), and a mesh a Build creates takes the Build's `mesh_name`. The name is never derived from the mesh's
   channel. It is the first segment of every member's path.name (`mesh1.broker.1`, §2.2). The mesh's
   own path is opaque (§2).
 - **The mesh's primary node-admin claims the mesh's name and writes its row, at creation and at
   state-commit.** The mesh's first node-admin is its primary (the only candidate of its election),
-  and the mesh-primary keeps that mesh's row in `ops.meshes`: it claims the mesh's name by insert-and-fail on the key
+  and the mesh-primary keeps that mesh's row in the mesh store: it claims the mesh's name by insert-and-fail on the key
   `(path, name)`, unique within its path, the path opaque (a deployment may name it after the
   fabric, as it names a node's after its mesh; that is its choice, not the key's shape), writes
   the row when the mesh is created (the scratchpad before state-commit, the store after) and
@@ -365,14 +318,11 @@ with the rest of `ops.*` ([`system-org.md`](/home/admin/rafka-v2/docs/architectu
 - **It carries tags** as its own property (mesh.tags.get / create / delete, the same shape as a node's tags), so an application selector resolves a mesh by tag before it
   submits mesh.delete or any other Build intent.
 
-- **Its store is created at day 0.** `ops.meshes` is a declared need of the system org, so day 0
-  creates the store with its `path.name` index and its virtual topics — never on first write.
 - **Its lifecycle states and declaring authority are defined only in [States](lifecycles/states.md#states).** Each status has a virtual topic, so "which meshes are ready-for-traffic" is one filtered read.
 
-The entity is `crates/rafka-entity-topology/src/record.rs::Mesh`, its store
-`crates/rafka-entity-topology/src/store.rs::mesh_store`, and `Node.mesh_id` is a
-`rafka_iam_types::MeshId`. Besides its id, name, path and tags, a row carries its `channel`, the
-membership channel derived from its MeshId, and its `status`, one virtual topic per value.
+The row is `MeshRecord` (`rdm-admin/src/storage.rs`: `mesh_id`, `name`, `dead`); `Node.mesh_id`
+holds the minted `MeshId`. The mesh's channel is derived from its MeshId and its status is its
+mesh-primary's `MeshStatus`.
 
 - **Who mints it.** The Build that creates a mesh's first node-admin mints the mesh id, never
   reissued; the fabric-primary drives that node.create and decides from the accepted topology whether
@@ -387,14 +337,13 @@ membership channel derived from its MeshId, and its `status`, one virtual topic 
   nothing is rewritten; the successor rebuilds from its mesh's rows in the fabric's store before it
   writes. A node-admin without the seat writes no row.
 - **The write.** The mesh-primary writes the `Mesh` row and every member's `Node` row once the fabric is
-  `state-commit` ([States](lifecycles/states.md#states)), by the topology write (`node-admin/src/lib.rs::write_mesh_topology`), and every
+  `state-commit` ([States](lifecycles/states.md#states)), through the mesh rows writer, and every
   node writes its connections rows; each finishes its writes before its state-committed check-in. Before then
-  `system.ops.nodes` and `system.ops.meshes` do not exist. After that it writes each create and update at once. The
-  row's write is the create door's: the `path-name` claim, then the record
-  (`crates/rafka-entity-topology/src/store.rs::write_mesh`). A refused write stays held, named, with
-  the same hold reasons as a `Node` row's (`node-admin/src/lib.rs::MeshRegistry`). A mesh whose
-  name another mesh's row already holds stays held as `name-taken`, naming the holder
-  (`node-admin/src/lib.rs::write_owned_mesh`); it is never renamed, and the id never moves.
+  the rows wait in the scratchpad. After that it writes each create and update at once. The
+  row's write is the claim then the record (`rdm-admin/src/admin/rows_writer.rs`,
+  `rdm.node_admin.mesh.create.via-mesh-row`: `row-written`, `row-held-by-mesh` for the same MeshId,
+  `name-held` naming the holder). A mesh whose name another mesh's row already holds stays held,
+  naming the holder; it is never renamed, and the id never moves.
 - **Every node holds its mesh's status** from the mesh-primary's `MeshStatus`
   ([gossip.md §3.1](gossip.md#31-frame-catalog)).
 - **A member that exits outside a workflow** is its mesh-primary's
@@ -402,12 +351,12 @@ membership channel derived from its MeshId, and its `status`, one virtual topic 
 
 ### 2.8 A fabric is an entity, and the fabric-primary owns it
 
-**A fabric is an entity**: `Fabric`, `KIND = "fabric"`, one row per fabric on the shared platform plane
-`<system_org>.ops.fabrics`, the same shape as `Mesh` on `ops.meshes` (§2.7). A fabric exists from the first node: one
+**A fabric is an entity**: one row per fabric in the fabric store (`FabricStorage` on the shared
+store root; Rafka binds it to its `<system_org>.ops.fabrics`). A fabric exists from the first node: one
 node in one mesh is a fabric of one mesh.
 
-- **Its fields** are `id`, `name`, `path`, `state` and `status` (`crates/rafka-entity-topology/src/record.rs::Fabric`). It carries no
-  pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
+- **Its row** is `FabricIdentity` (`rdm-admin/src/fabric_storage.rs`: `fabric_id`, `name`); its status is the
+  fabric-primary's `FabricStatus` frame. It carries no pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 - **Its id is minted** (bare Crockford internally, displayed `fab_xxxx-xxxx-xxxx`). Its path is `""`, the root every
   mesh and node sits under, so its path.name is its name. A row that names the fabric it belongs to carries that id in
   a field named `fabric`; `endpoint_id` is a node's routing key (§2) and never names a fabric.
@@ -417,7 +366,7 @@ node in one mesh is a fabric of one mesh.
 - **It is written at Day 0 and at state-commit.** The fabric-primary claims the fabric's name by
   insert-and-fail on its `(path, name)`, the path opaque, idempotent for the same FabricId and
   `NameHeld` naming a different one, and writes the fabric's row at Day 0, into the scratchpad, and
-  writes it durably to `ops.fabrics` when the fabric can first take a write, during fabric
+  writes it durably to the fabric store when the fabric can first take a write, during fabric
   state-commit once the required system stores are established. See [States](lifecycles/states.md#states). Nothing writes the row again until
   [fabric.delete](lifecycles/fabric-delete.md).
 - **Every node holds it through gossip.** The fabric row lives in `topology-nodes` (§2.6), filled from gossip only;
@@ -426,8 +375,7 @@ node in one mesh is a fabric of one mesh.
 - **Its status** is the fabric's, set by the fabric-primary as [States](lifecycles/states.md#states) defines.
 - **`fabric.get` answers from memory.** Any node-admin answers it from the fabric row and mesh rows it holds in
   `topology-nodes`, plus the fabric-primary's observed-down overlay (§2.7), with no store read: the fabric's id, its status, every mesh with its status, the meshes below
-  ready, and the fabric-primary node-admin. The answer emits
-  `rafka.node_admin.fabric.resolve.via-mesh-rows` (`node-admin/src/lib.rs::emit_fabric_resolve_span`).
+  ready, and the fabric-primary node-admin.
 
 <a id="3-the-three-gossip-planes-and-two-non-wire-adjuncts"></a>
 ## 3. The three gossip planes (and a non-wire adjunct)
@@ -472,7 +420,7 @@ A status change is written as a blind put of the row the mesh-primary holds, and
 primary writes it: a row of a mesh this node-admin does not own (`MeshWriteGate::NotOwned`) is never
 put.
 
-`crates/rafka-node-base/src/lib.rs::NodeState`, postcard-positional:
+`NodeState` (`rdm-core/src/digest.rs`), postcard-positional:
 
 ```
 Joining → Alive ⇄ Overloaded          self-published (auto, every tick)
@@ -498,9 +446,8 @@ absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `Node
   rejoins, never exits, and the overlay clears on that same incarnation's `node.started`. A node
   holding `Restarting` is EXEMPT from the staleness sweep's flip to `PendingReconnect`: overwriting a
   fact with an inference loses information.
-- **Shutdown is signal-driven.** `crates/rafka-node-base/src/lib.rs::wait_for_signal` selects on
-  `crates/rafka-node-base/src/lib.rs::os_shutdown_signal` — SIGINT everywhere, plus SIGTERM via
-  `tokio::signal::unix` on Unix. No file poll, no timer.
+- **Shutdown is signal-driven.** SIGINT and SIGTERM run the node's own stop steps
+  ([node stop](lifecycles/node-stop.md), the signal stop). No file poll, no timer.
 
 ### 4.1 State effects
 
@@ -508,8 +455,8 @@ absence, or set from its mesh-primary's lifecycle overlays (`NodeStopped`, `Node
 |---|---|---|
 | `Joining` | self-published until published-once ∧ self-ready | the traffic/membership filters — routed no traffic |
 | `Alive` | self-published, default | the rebind path; every traffic and membership filter |
-| `Overloaded` | self-published, over CPU or RAM budget (`crates/rafka-node-base/src/lib.rs::overloaded_reason`) | `node.get`; the span reason |
-| `Degraded` | self-published while routing reaches a broker only through a peer or node-admin (§8, `crates/rafka-node-base/src/lib.rs::routing_degraded_reason`) | routing's peer choice, which prefers a source that is not `Degraded`; the span reason naming each such broker |
+| `Overloaded` | self-published, over CPU or RAM budget | `node.get`; the span reason |
+| `Degraded` | self-published while the node reaches a peer only through a forward (§8) | routing's peer choice, which prefers a source that is not `Degraded`; the span reason naming each such broker |
 | `Leaving` | set by the mesh-primary on `node.stopped` (overlay `NodeStopped`) | the routing rule: routed no traffic |
 | `Dead` | never sent; receiver-side vocabulary | the traffic/membership filters |
 | `PendingReconnect` | the staleness sweep; the mesh-primary, at once, for a member a command was never sent to for a reachability reason ([node recovery](lifecycles/node-recovery.md) step 1) | the mesh-primary's recovery tick ([node recovery](lifecycles/node-recovery.md)) |
@@ -519,19 +466,18 @@ Every state in that table has a reader. That is the bar a state has to clear to 
 
 ### 4.2 Two state models, and they do not meet
 
-`NodeState` (`crates/rafka-node-base/src/lib.rs::NodeState`) and the entity lifecycle
-(`crates/rafka-entity-framework/src/lifecycle.rs`) are separate state families that never share an
-enum or a type ([state-model.md](/home/admin/rafka-v2/docs/architecture/state-model.md)).
+`NodeState` (`rdm-core/src/digest.rs`) and a node's status (its row, §1 rule 2) are separate state
+families that never share an enum or a type; an application's own entity lifecycle (Rafka's
+[state-model.md](/home/admin/rafka-v2/docs/architecture/state-model.md)) is a third, the application's.
 
-### 4.3 A returning broker re-syncs per topic, never as a node
+### 4.3 A returning node's catch-up is the application's, never a node status
 
-A broker has no catch-up node status: Rafka re-syncs it per topic inside its start hook
-([`broker-re-sync.md`](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md), [`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md) §6). Its
-admission is the [Join schema](node-rpc-envelope.md#join-op-0x1d-rdm), and its addressability
-during its own entry is [`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md) §4. A day-0-complete WAL alone
-grants no readiness.
+A node has no catch-up status. What an application copies to a returning node of its own kind
+(Rafka's per-topic broker re-sync, [`broker-re-sync.md`](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md))
+runs after the node is ready-for-traffic, with the application's own routing keeping clients off it, and
+grants no readiness of its own (Q69). Its admission is the [Join schema](node-rpc-envelope.md#join-op-0x1d-rdm).
 
-- **The mesh-primary is the one writer of its mesh's `<system_org>.ops.nodes` rows**, its own
+- **The mesh-primary is the one writer of its mesh's node rows**, its own
   included. A create's name claim and row are written by it when the Build reaches it, before
   anything is launched; an update goes caller → the node's mesh-primary (Forward `0x1A` when not
   directly reachable). The fabric-primary writes a row only as acting primary of a mesh with no
@@ -544,67 +490,39 @@ Fabric and mesh states, the checklist rounds, state-sync, state-commit and traff
 
 ## 5. Readiness — when a node takes traffic
 
-Readiness is an **aggregate of truthful per-store hydration**, owned by node-base and reported by
-the node's `node.started`.
+Readiness is the end of [node start](lifecycles/node-start.md), reported by the node's
+`node.started` and set by its mesh-primary as ReadyForTraffic on that report.
 
-1. **Per-store local event.** Every participating store emits hydration-complete when it can SERVE
-   — for a resident-tier store that means its boot load has reached the high-water mark it observed
-   at boot, and the store says so honestly either way
-   (`crates/rafka-entity-framework/src/factory.rs::mark_ready`; the roster reads the event at
-   `crates/rafka-node-base/src/hydration_roster.rs::note_untracked`). Participation is the
-   **resident-with-tail set only** (the earned-residency set,
-   [`entity-framework.md`](/home/admin/rafka-v2/docs/architecture/entity-framework.md)); a point-read store never registers and is
-   trivially ready, because a store that reads through has nothing to wait for.
+1. **The gates are the start's.** The join (its cert and rafka-time, the mesh channel joined), the
+   application's [`before_ready` hook](fabric-node-hooks.md) returning Ok, complete topology
+   installed, the required Build floor held, rafka-time refreshed last. Nothing else makes a node
+   ready; a partial snapshot or a Blocked hook makes none.
+2. **The application's one contribution is the hook.** Whatever an application must hold before it
+   can serve (Rafka: its resident stores hydrated, [`entity-framework.md`](/home/admin/rafka-v2/docs/architecture/entity-framework.md))
+   it does inside `before_ready`, which it may answer Ok, Blocked with a retry event, or Failed by
+   name ([Outcomes and the gate](fabric-node-hooks.md#outcomes-and-the-gate)). A node with nothing to
+   hold is trivially ready.
+3. **The node reports `node.started` once every gate holds** — not on listener-bind, not on a
+   timeout; its mesh-primary sets ReadyForTraffic on that report.
+4. **Failure surfaces; nothing times out.** A failed hook fails the start by name
+   (`Failed { step, reason }`); a blocked one answers `Blocked` until its retry event. The node stays
+   pending. There is no timeout fallback: a flip that can fire with nothing held means nothing.
+5. **No surface is readier than another.** A node is ready or it is not; an application that
+   served on one surface before the report would be a defect.
 
-   Readiness is **the aggregate of every participating store being able to SERVE**.
-2. **The roster DERIVES from construction; no node type hand-maintains a list.** The
-   entity-store factory is the single point every store is constructed, and constructing a
-   resident-tier store emits a registration on the health stream
-   (`crates/rafka-entity-framework/src/health.rs::subscribe_store_events`). The factory knows
-   each store's tier, so only participating stores register.
-3. **The aggregator lives in node-base** —
-   `crates/rafka-node-base/src/hydration_roster.rs` subscribes to that stream: registration →
-   roster, a store's able-to-serve event → done, and flips on sealed ∧ roster == done. The expected total
-   is in-process node-base meta — boot-local, reset every boot, never persisted.
-4. **The node type contributes exactly ONE call:**
-   `crates/rafka-node-base/src/hydration_roster.rs::seal_hydration_roster`, at the end of its
-   store-construction phase. "I am done constructing" is the only thing the node type knows that
-   node-base does not; the seal kills the N-of-M-registered early-flip race.
-5. **The node reports `node.started` once the aggregate completes** — hydrated, nothing pending —
-   not on listener-bind, not on a timeout; its mesh-primary sets ReadyForTraffic on that report
-   ([node start](lifecycles/node-start.md)). A zero-store node is trivially hydrated.
-6. **One-way boot latch.** Stores constructed after boot (a new org's residency at ingress)
-   hydrate on demand and never un-ready the node. The aggregator still tracks them for
-   observability.
-7. **Failure surfaces; nothing times out.** A failed hydration fails the start by name
-   (`Failed { step, reason }`); a blocked one answers Status `Blocked` until its retry event
-   ([fabric-node-hooks.md](fabric-node-hooks.md#outcomes-and-the-gate)). The node stays pending.
-   There is no timeout fallback and no
-   non-fatal wait: a flip that can fire with nothing hydrated is a readiness signal that means
-   nothing.
-8. **REST == wire.** The REST listener serves and the Kafka proxy shards accept on the SAME
-   aggregate. No surface is readier than another.
-
-**There is exactly ONE readiness mechanism**, and it is a checked property, not a convention:
-`crates/rafka-node-base/tests/functional/readiness_single_gate.rs` proves
-`crates/rafka-entity-framework/src/health.rs::subscribe_store_events` has exactly one downstream subscriber outside the crate that
-defines it — the hydration roster.
+**There is exactly ONE readiness mechanism**: the start's gates and the `node.started` report; a
+second path to ReadyForTraffic is a defect.
 
 - **Internal node work begins when that node itself is ready-for-traffic**; node, mesh and fabric
   readiness are separate scopes ([States](lifecycles/states.md#states)), and what a start completes
-  is [node start](lifecycles/node-start.md). A node's internal workers — compute's job claim loop and
-  its stale scan among them — wait on that node's own readiness and nothing else
-  (`compute/src/job_claim_loop.rs`), so the jobs that bring a joining mesh up (the system org's
-  extension, its brokers' re-sync) run on that mesh's own compute.
+  is [node start](lifecycles/node-start.md). An application's internal workers (Rafka: compute's
+  job loop, [`jobs.md`](/home/admin/rafka-v2/docs/architecture/jobs.md)) wait on their own node's
+  readiness and nothing else; once open it stays open, and a later status change stops no work
+  already started.
   - **node-admin does not admit an incomplete birth.** Missing prerequisite topology or
     unreadable storage prevents completion with the schema's typed readiness refusal. A fabric
     of one mesh does not wait for a peer mesh that does not exist. Admission, not a socket or
     an unanswered stream, establishes completion.
-  - **A work starter waits once, inside its own task, on its own node.**
-    `crates/rafka-node-base/src/lib.rs::await_node_ready_for_internal_work` resolves when this node is
-    ready for traffic; span `rafka.mesh.topology.resolve.via-node-ready-for-internal-work`. Compute's
-    job claim loop and stale scan await it before their first read. It never waits on the mesh or the
-    fabric. Once open it stays open: a later status change does not stop work already started.
 
 ### 5.x Readiness has separate scopes
 
@@ -617,42 +535,31 @@ Departure removes a node from the ROUTING view. It does not release anything the
 node keeps its identity, its replica-set membership and its data across every class below. Only
 node.delete releases its identity and name; its storage stays with the spec (§7.3).
 
-All removal funnels through `crates/rafka-node-base/src/lib.rs::evict_node`, which captures
-`was_live` / `was_seeded` / `last_digest_age_ms` BEFORE any teardown and emits
-`rafka.mesh.connection.resolve.via-node-evict-attempt` — so a genuine dead peer and an immediate
-`neighbor_down` eviction of a millisecond-old peer are distinguishable. The teardown itself is
-`crates/rafka-node-base/src/lib.rs::purge_departure_captured`: finish and close the peer's data
-connections, purge the iroh address book, close the control connection, drop the mesh-id
-registry row, remove `last_seen`/`live_digests`, tombstone the topology row
-(`crates/rafka-node-base/src/topology.rs::tombstone_node_digest`, span
-`rafka.mesh.topology.remove.via-tombstone`), emit
-`rafka.mesh.connection.remove.from-eviction`, and hand the id to the registered peer-eviction
-hook.
+All removal from the view is the membership book's (`rdm-transport/src/membership.rs`): a member
+unheard past the staleness floor is held, not current (`rdm.mesh.membership.update.via-member-stale`);
+a stopped birth leaves the book at `NodeStopped` (`rdm.mesh.membership.remove.via-node-stopped`); a
+deleted birth leaves at `NodeDeleted` and its id is held deleted for the retention
+([gossip.md §6.1](gossip.md#61-deletions-an-event-for-promptness-members-for-retention)). A member
+whose silence a lifecycle event the view applied explains is expected silence, neither stale nor
+counted ([gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours), Q58).
 
-| Class | source | Trigger | Latency |
-|---|---|---|---|
-| **Stopped** | the mesh-primary's `NodeStopped` overlay | node.stop's `node.stopped` | on receipt |
-| **Inferred** (observer) | `staleness_dead` | the pruner sweep; `last_seen_ms` past the staleness floor (local receive-time, clock-skew-safe) | ~30 s |
-| **Inferred** (transport) | `neighbor_down` | iroh QUIC connection drop | ~1-2 s |
-| **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after exact provider proof | node.delete | on receipt |
-| **Rebind** (identity) | `name_rebind` | same `path.name`, new id and `endpoint_id` — the predecessor's entry is evicted so the projection holds one entry per `path.name`; this is a replace hand-off seen from the topology (§2.3) | on receipt |
+| Class | Trigger | Latency |
+|---|---|---|
+| **Stopped** | the mesh-primary's `NodeStopped` overlay, from node.stop's `node.stopped` | on receipt |
+| **Stale** (observer) | unheard past the staleness floor (local receive-time, clock-skew-safe): held, not current | the staleness floor |
+| **Deleted** | the executor's `NodeDeleting`, then `NodeDeleted` after exact provider proof | on receipt |
+| **Re-born** | the same `path.name` under a new node.id ([node recovery](lifecycles/node-recovery.md)): the predecessor is deleted by the recovery Build, so the projection holds one entry per `path.name` | on receipt |
 
-The "Inferred" rows above are **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license destructive Build recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `Members.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
+The "Stale" row above is **local routing/view eviction only**. They do not publish a deletion, do not make ExactNode resolve Gone, and do not license destructive Build recovery. A retained Gone deletion is produced only by canonical exact deletion proof, published as `NodeDeleted` by the Mesh executor that holds the operation and retained in `Members.deleted`, as defined by [gossip.md](gossip.md) §3.1 and §6.1.
 
 A removal by [node.delete](lifecycles/node-delete.md), [mesh.delete](lifecycles/mesh-delete.md)
 or [fabric.delete](lifecycles/fabric-delete.md) is its workflow's.
 
 **A node's topology row — any type — is never RELEASED by a liveness gap or a same-identity
 restart.** It goes `Restarting` or `PendingReconnect` and stays in the projection's kind index,
-because that index is what the write path reads to resolve a replica set: a row removed on a
-heartbeat gap leaves a partition with no resolvable broker, and an identity read that cannot
-resolve a replica set closes a SASL connection mid-auth. Only node.delete releases it, and then
-the row stays with status deleted while the WAL stays in the data dir. `crates/rafka-node-base/src/topology.rs`'s own contract states it and
-`crates/rafka-node-base/tests/restart_classification.rs` is the cell that asserts
-`remove.via-tombstone` does NOT fire for a same-identity restart.
-
-The **topology fill loop** mirrors — never drives — the gossip maps into the `NodeDigest`
-entity store, which is the data-plane-facing view `fabric.nodes.get` answers from.
+because that index is what every reader resolves a node from: a row removed on a heartbeat gap
+leaves a stored reference with no resolvable node. Only node.delete releases it, and then the row
+stays with status deleted while the data dir stays.
 
 ### 6.9 The stopped-node garbage collector
 
@@ -684,10 +591,9 @@ start modes are [node-admin-lifecycle.md](node-admin-lifecycle.md), the seats it
 [gossip.md §3.1](gossip.md#31-frame-catalog), and the node workflows it executes as a Build step are
 the [typed node objects](node-rpc-envelope.md#typed-object-contract).
 
-**Attribution rule:** `rafka.mesh.*` spans are node-base's, emitted inside whichever process runs
-node-base — including node-admin's own. `rafka.node_admin.*` spans are node-admin's orchestration
-layer. node-admin *queries* Jaeger for node-base spans to render its timeline; it does not
-re-emit them.
+**Attribution rule:** `rdm.mesh.*` and `rdm.node.*` spans are the node runtime's, emitted inside
+whichever process runs it, node-admin's own included. `rdm.node_admin.*` spans are node-admin's
+orchestration layer.
 
 ### 7.1 One node-admin; meshes are channels
 
@@ -711,19 +617,17 @@ start modes and replacement rules are [node-admin-lifecycle.md](node-admin-lifec
 seats move as [elections §4.4](fabric-node-lifecycle-elections.md#44-explicit-committed-fabric-handover-r-a2--r-st2)
 defines.
 
-- **The full shape on one mesh is 2 node-admin, 2 compute, 3 gateway, 3 broker.** A mesh may run N
-  node-admins for HA; scaling up never implies a paired deletion.
+- **The shape is the accepted Build's.** A mesh may run N node-admins for HA; scaling up never
+  implies a paired deletion.
 - **Every mesh always has a LISTENING node-admin**: ready-for-traffic and holding a live backbone
-  aggregate it RECEIVED from every other mesh
-  (`crates/rafka-node-base/src/lib.rs::run_backbone`, `backbone_summaries()`). No delete, restart or
+  aggregate it RECEIVED from every other mesh. No delete, restart or
   replace leaves a mesh without one; the separate node.delete of a mesh's last node-admin after
   mesh.deleted is the one exception ([mesh delete](lifecycles/mesh-delete.md)).
 - **A node-admin roll replaces a non-primary admin first**, so the mesh keeps another listening
   admin before the current primary goes; the next primary is whatever the election resolves.
-- **A created node-admin HYDRATES, it does not mint.** Only the day-0 bin mints the
-  platform-bootstrap record; every later node-admin reads the seeded record (same `system` org)
-  and pulls its current control projections on entry. A second admin that mints a divergent
-  bootstrap is a defect.
+- **A created node-admin adopts, it does not mint.** Only the bootstrap admin mints the fabric and
+  its mesh; every later node-admin takes its mesh's held state from its maker's entry answer (Q56)
+  and pulls the current projections on entry. A second admin that mints a divergent fabric is a defect.
 - **A node-admin never writes its own row as the subject**; its mesh-primary writes every row of the
   mesh, its own included (§2.7).
 
@@ -733,49 +637,21 @@ defines.
 **Observed death means UNAVAILABLE, not gone** (§6): a broker or a compute that stops being
 reachable serves again on return under its own identity. Only
 [node.delete](lifecycles/node-delete.md) releases a node's identity and name, never its storage.
-The offline verdict writes no job: Rafka's replica-set eviction keys on `node.deleted`, and only a
-release files the `replica-catch-up` job
-([`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2, §2.2). Connections record state;
-the jobs record the work owed. A silent member is its mesh-primary's
+The offline verdict writes no application work of its own; what an application does on a node's
+release is the application's (Rafka: [`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2).
+A silent member is its mesh-primary's
 [node recovery](lifecycles/node-recovery.md); a peer mesh is the fabric-primary's
 [mesh investigation](lifecycles/mesh-investigation.md#mesh-investigation).
 
-**The offline record** (`crates/rafka-entity-topology/src/offline.rs::NodeOfflineRecord`) is one OBSERVER's verdict about one OBSERVED node:
-
-| field | what it holds |
-|---|---|
-| `observed` | the observed node's whole topology `Node` (§2: `id`, `endpoint_id`, `name`, `node_type`, `mesh_id`) |
-| `observer` | the `Node` of the node-admin that wrote the verdict |
-| `reason` | `unreachable` or `reachable-silent` |
-| `down_instant_ms`, `up_instant_ms` | the episode's open and close, in rafka-time; a `reachable-silent` row carries neither |
-| `outage_ms` | `up_instant_ms - down_instant_ms`, set by the close |
-| `refill_size`, `refill_job_id_slot` | a broker's refill class and its reserved job-id slot, set by the close |
-
-- **Key:** `(observed.id, observer.id)`, the two minted ids. An observer's close writes the same
-  key as its open, so an episode is one evolving row; two observers of one node hold two rows.
-- **Indexes:** `observed-node`, `observed-mesh` and `observer`, each a key-prefix index whose
-  member is the row's own key. Every read is one key-prefix read of one index and a point read of
-  each row it names; the store keeps no projection.
-- **Encoding:** schema-versioned Avro, subject `io.rafka.node_offline_record`, version 3
-  (`docs/architecture/schemas/node-offline-record.v3.avsc`), framed from the plane's first row; a
-  version 1 or 2 row, or a row of a version this build does not declare, is refused by name.
-- **Clock:** the instants are rafka-time. A node-admin that has not adopted rafka-time builds no
-  record and names why on `rafka.node_admin.node.reject.via-offline-record-not-built`; the local
-  clock is never read for an instant.
-- **Spans:** a landed write is `rafka.node_admin.node.update.via-offline-record-written`, a failed
-  one `rafka.node_admin.node.reject.via-offline-record-write-failed`; both name the observed node,
-  the observer, the address and the entity kind.
-
-The node's return closes the same row with `up_instant_ms` and `outage_ms`: the seat holder reads
-the node's rows through the `observed-node` index and closes each open one, keeping its observer
-and its `down_instant_ms`, whichever node-admin opened it. A reader that acts on one episode
-(compute's release check, `compute/src/job_claim_loop.rs::broker_catchup_release_superseded`) takes
-the row with the latest `down_instant_ms`. A broker's close also stamps the outage's refill class on
-the row (`short` up to 10 min, else `long`,
-`crates/rafka-entity-topology/src/offline.rs::refill_size_for`) and reserves a job-id slot there. What the broker missed is copied by its per-topic re-sync,
-which its start hook runs (§4.3). A deleted node's identity never takes its name back: a digest from
-a deleted incarnation is refused by name as deleted and by the peer-location book
-([gossip.md §3.1](gossip.md#31-frame-catalog)); its WAL stays in its data dir.
+**What a mesh-primary records of a silent member** is its status rows: the `PendingReconnect` and
+`Dead` marks ([States](lifecycles/states.md#states), node row silence marks), the `held-running`,
+`os-stopped`, `data-dir-lost` and `data-dir-unreadable` facts and the exit-proof row
+([node recovery](lifecycles/node-recovery.md), [deployment provider](deployment-provider.md) §2.5),
+each a typed keyed row written and removed by the mesh-primary and revalidated by a successor's own
+inspection. An application's own record of an outage and the work it owes on a return (Rafka's
+`NodeOfflineRecord` and its refill job) is the application's. A deleted node's identity never takes
+its name back: a digest from a deleted incarnation is refused by name as deleted and by the
+peer-location book ([gossip.md §3.1](gossip.md#31-frame-catalog)); its data dir stays.
 
 **A replace across a STORAGE-FORMAT move is not a replace.** Preserved data under
 new-format binaries refuses at the record header's checksum on the first read — the correct
@@ -791,46 +667,23 @@ resolved fabric-primary alone accepts a Fabric topology change
 ## 8. Connections are a kept log, and routing reads them
 
 Node-to-node connections, their durable log, indexes and proxy routes are
-[connections.md](connections.md). Which broker serves a topic operation, and how this node reaches
-it, is [`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md) §3; a write leg's forward through a gateway is
-[`broker-write-execution.md`](/home/admin/rafka-v2/docs/architecture/broker-write-execution.md) §6.2; a write whose replica cannot be
-reached is answered by its rung, and placement never changes on the write path
-([`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §1.2); the `replica-catch-up` job a
-release files is [`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2.2; a member that is
-actually down is its mesh-primary's [node recovery](lifecycles/node-recovery.md).
+[connections.md](connections.md). Which node serves an application operation and how the caller
+reaches it is the application's routing (Rafka: [`replica-routing.md`](/home/admin/rafka-v2/docs/architecture/replica-routing.md) §3);
+a member that is actually down is its mesh-primary's [node recovery](lifecycles/node-recovery.md).
 
-**The calling node stays in service, and it is `Degraded` while a broker is reached only through a
-forward**. A forward marks the broker
-(`crates/rafka-node-base/src/lib.rs::note_broker_routed_away`), and the node publishes `Degraded` with
-a reason naming each such broker; the broker's next answered direct dial clears it
-(`crates/rafka-node-base/src/lib.rs::note_broker_direct`), and the node returns to `Alive` when no
-broker is left. A `Degraded` node stays `ready-for-traffic`; the CPU/RAM over-budget state is
-`Overloaded`.
+**The calling node stays in service, and it is `Degraded` while a peer is reached only through a
+forward**. A forward marks the peer, and the node publishes `Degraded` with a reason naming each
+such peer; the peer's next answered direct dial clears it, and the node returns to `Alive` when none
+is left. A `Degraded` node stays `ready-for-traffic`; the CPU/RAM over-budget state is `Overloaded`.
 
 ## 9. The event taxonomy
 
 Design rule: **every lifecycle transition is observable as a span**. Span names, the verb
-whitelist, the `via-`/`from-` reasons and the `node`, `connection` and `topology` entities are
-[`../eng/observability-conventions.md`](/home/admin/rafka-v2/docs/eng/observability-conventions.md).
+whitelist and the `via-`/`from-` reasons are the [runtime spans](node-rpc-envelope.md#runtime-spans);
+the generated reference of every span name and its source line is `docs/reference/rdm/spans.md`.
 
-**Node-base, state-machine level:** `rafka.mesh.connection.update.via-node-state-changed` ·
-`.via-node-joining` · `rafka.mesh.connection.evict.via-node-evicted` ·
-`rafka.mesh.connection.resolve.via-node-evict-attempt` ·
-`rafka.mesh.connection.remove.from-eviction` · `rafka.mesh.topology.remove.via-tombstone` ·
-`rafka.mesh.connection.resolve.via-node-pending-delete-received` ·
-`rafka.mesh.connection.update.via-node-restarting-marked` ·
-`rafka.mesh.connection.create.via-primary-changed` ·
-`rafka.mesh.connection.delete.via-gossip-pending-delete-broadcast` ·
-`rafka.mesh.connection.resolve.via-backbone-received` ·
-`rafka.mesh.connection.remove.via-seed-retired`.
-
-**Hydration and readiness (node-base):**
-`rafka.mesh.connection.resolve.via-hydration-cache-ready` (`entity_kind`, `records`) · `rafka.mesh.connection.resolve.via-hydration-complete` (`roster_size`, `sealed`,
-`elapsed_ms`) · `rafka.mesh.connection.reject.via-hydration-failed` (`entity_kind`, `reason` —
-`reject`, because a failed hydration is a refusal to become ready, not a resolution), all from
-`crates/rafka-node-base/src/hydration_roster.rs`; and
-`rafka.gateway.connection.resolve.via-ready-for-traffic` (`gated_on_hydration`, `roster_size`)
-from `crates/rafka-gateway-core/src/boot_hydration.rs`.
+**The node runtime** — `rdm.mesh.*` and `rdm.node.*`: membership, the topology projection,
+connections and the node's own lifecycle steps, each named on its lifecycle page.
 
 **node-admin** — component `node_admin`, entity `node`: every primitive and workflow step emits
 `rdm.node_admin.node.<verb>.via-…`; each [lifecycle page](fabric-mesh-node-lifecycles.md) lists its
@@ -838,28 +691,27 @@ step spans.
 
 Four rules the taxonomy enforces:
 
-1. **The component is a node type or a shared crate**
-   ([observability-conventions.md](/home/admin/rafka-v2/docs/eng/observability-conventions.md#full-span-name-shape)). There
+1. **The component is a node kind or a shared crate.** There
    is no `ui` component: a span named for the surface that renders it is named for its reader
    instead of its emitter.
 2. **The verb is on the whitelist, the reason carries the discriminator, and every span name is a
-   literal** ([observability-conventions.md](/home/admin/rafka-v2/docs/eng/observability-conventions.md#verb-whitelist)).
+   literal** ([runtime spans](node-rpc-envelope.md#runtime-spans)).
 3. **A span that names an ATTEMPT must not read as a success.** An outcome belongs in an
    `outcome` attribute or in the reason, never in a name that is silent about which way it went.
 4. **A span, a log line or an audit row that names a node names it by its ID and its `name`,
-   never by its `endpoint_id`.** Logs are a public interface (§2: REST, wire, logs); the
+   never by its `endpoint_id`.** Logs are a public interface (§2); the
    routing key stays inside the transport. **The id attribute is the SAME prefixed, dashed
-   external form REST renders** (`brk_abcd-1234-5678`, `Node::id_display` —
-   `crates/rafka-entity-topology/src/record.rs::display_prefix_for_node_type`), never the bare minted id and never a
-   hand-assembled prefix: logs use the same mechanism as REST. The `endpoint_id`
+   external form an API answer renders** (`brk_abcd-1234-5678`, §2.0), never the bare minted id and
+   never a hand-assembled prefix: logs use the same renderer as the API. The `endpoint_id`
    stays on a span ONLY where the span's subject IS the routing key itself (a dial's target, the
    handshake, the identity load/mint before an id exists to log).
 
 ## Cross-references
 
-- **The delete contract's consumer:** [`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2
-- **Resident set = the §5 roster:** [`entity-framework.md`](/home/admin/rafka-v2/docs/architecture/entity-framework.md)
-- **Placement by a broker's `path.name`, as a topic config on both surfaces:** [`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3
-- **Transport and identity:** [`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md)
+Rafka's pages that build on this one: the delete contract's consumer
+([`replication-and-failover.md`](/home/admin/rafka-v2/docs/architecture/replication-and-failover.md) §2), its resident stores and the hook
+([`entity-framework.md`](/home/admin/rafka-v2/docs/architecture/entity-framework.md)), placement by `path.name`
+([`topics.md`](/home/admin/rafka-v2/docs/architecture/topics.md) §6.3), its data plane
+([`data-plane-transport.md`](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md)).
+
 - **Gossip — delivery, topics, membership, the JoinNode (op `0x1D`), every gossiped kind:** [`gossip.md`](gossip.md)
-- **The lane's mesh, and how a lane mesh is brought up, restaged and torn down:** [`../eng/testing-mesh-lifecycle.md`](/home/admin/rafka-v2/docs/eng/testing-mesh-lifecycle.md)

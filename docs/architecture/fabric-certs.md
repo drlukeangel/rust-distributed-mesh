@@ -30,8 +30,8 @@ node holds (one, or two during a root rotation). A mesh's node-admin without the
 (`MemberOutlivesIssuer`). The root stays where its launcher put it: a node-admin of another mesh
 holds its mesh's issuing key, never the root.
 
-Rafka's verification (`crates/rafka-node-transport/src/cert.rs::verify_cert_sig_expiry`) checks
-the chain in this order and refuses at the first failure:
+Verification (Rafka's accept loop today, RDM's at i145 e2) checks the chain in this order and
+refuses at the first failure:
 
 1. `IssuerBadSignature`: the root does not verify the issuing cert;
 2. `IssuerExpired`: the issuing cert has expired;

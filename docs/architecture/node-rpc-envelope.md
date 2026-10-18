@@ -480,8 +480,8 @@ call span's SpanId. Handler spans belong to the serving process. The invocation'
 `rdm.node_rpc.stream.serve.via-terminal` or refusal, a unary fault or panic — is a child of its serve span.
 Stream result frames and the invocation's end record their own `code` and `detail`; workflow step
 spans retain the step's code and named detail, and a failed Build receipt carries that code beside
-its step and explanation. Compatibility adapters emit their own diagnostics as stated below;
-they do not acquire canonical spans merely by being reserved in the ledger.
+its step and explanation. An application's compatibility adapters emit their own diagnostics, stated
+on its pages; they do not acquire canonical spans merely by being reserved in the ledger.
 
 Each call carries the operation trace; the child calls of one workflow share it, each with its
 own caller span. Correlate events and receipts by `build_id`, `attempt`, `operation`, `step`,
@@ -1605,7 +1605,8 @@ The owner records each frame before acknowledging recovery; repeated frames caus
 
 A transitional catalog entry uses its compatibility codec; being live in the ledger does not
 turn a struct, raw snapshot or fire-and-forget message into a postcard request/reply enum.
-The sections below give those exact bodies and typed replies where the adapter has them.
+The exact bodies and typed replies of Rafka's adapters are rafka-v2's
+[`node-rpc-rafka-ops.md`](/home/admin/rafka-v2/docs/architecture/node-rpc-rafka-ops.md).
 A compatibility rail without a typed reply enum has none. Numeric domain fields named fabric_id do not key transport;
 transport uses endpoint_id.
 

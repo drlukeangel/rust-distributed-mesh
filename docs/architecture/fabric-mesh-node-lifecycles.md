@@ -24,7 +24,6 @@ stated on exactly one page, its owner; every other page links it. Source paths u
 | [Fabric authority](fabric-authority.md) | fabric authority: the mesh roster from the accepted Build, takeover as hydration, the complete-view gate, fabric identity hydration, the event-distinction table |
 | [Node identity and state](node-identity-and-state.md) | node identity (ids, endpoint_id, path.name, incarnation, prefixes), node/mesh/fabric rows and their writers, the NodeState liveness enum, the hydration roster, local eviction, the stopped-node collector |
 | [Connections](connections.md) | connections, routes, reach and reroute |
-| [Data-plane transport](/home/admin/rafka-v2/docs/architecture/data-plane-transport.md) | Rafka's tag-byte data plane |
 
 ## Three mechanisms
 

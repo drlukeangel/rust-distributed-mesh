@@ -358,12 +358,8 @@ The generic Node RPC certainty rule remains: a request may choose another route 
 The connections subsystem is generic. A protocol decides whether proxying is allowed and which node types may
 carry it.
 
-Current broker data policy is:
-
-```text
-FORWARDABLE = true
-eligible carrier type = gateway
-```
+A protocol's policy is the application's (§14); Rafka's broker-data policy, forwardable with gateway
+carriers only, is stated on Rafka's pages.
 
 A non-forwardable protocol never consumes Proxy as a legal route even if one exists.
 
@@ -747,26 +743,10 @@ Switch effective reachability Direct -> Proxy -> Direct without changing the sem
 
 ## 14. Ownership and RDM target
 
-Current Rafka implementation homes:
-
-```text
-crates/rafka-mesh-ops/src/connections.rs
-    durable shape, declared indexes/VTs, connection projection contracts
-
-crates/rafka-node-base/src/connection_rows.rs
-    source-owned connection event writes
-
-crates/rafka-node-base/src/connection_reconnect.rs
-    per-node reconnect and proxy-retirement reconciliation
-
-crates/rafka-reach-reroute/
-    downstream consumer/adapter during migration
-```
-
-The generic model ultimately moves upstream with the RDM mesh/entity/transport/Node-RPC substrate. RDM owns the
-generic Direct/Proxy connection model, incarnation-bound reachability, reconnect reconciliation, and protocol
-carrier-policy hook. Rafka owns Rafka protocol descriptors and product-specific carrier policy such as
-`broker_data: gateway carriers only`.
+RDM owns the generic Direct/Proxy connection model, incarnation-bound reachability, reconnect
+reconciliation and the protocol carrier-policy hook (`rdm-transport/src/connections.rs`,
+`rdm-node/src/connection_reconnect.rs`). An application owns its protocol descriptors and its carrier
+policy; Rafka's, and where its copies lived before i148, are Rafka's pages.
 
 ---
 

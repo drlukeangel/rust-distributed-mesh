@@ -168,7 +168,8 @@ The layers are deliberately three, not two:
 
 `rafka-reach-reroute` adapts Rafka's callers to the middle layer and owns no route truth.
 
-Write attempt policy stays in writer ingress; the replica walk stays in the reader ([readers-and-writers.md](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md)).
+Write attempt policy and read walks are the application's (Rafka: writer-ingress and its readers,
+[readers-and-writers.md](/home/admin/rafka-v2/docs/architecture/readers-and-writers.md)), never this layer's.
 
 A future maintainer must not "simplify" this by moving retries into the connections layer or fallbacks into node-rpc.
 
@@ -943,11 +944,11 @@ A server-streaming op is never forwardable: the [seal](node-rpc-envelope.md#the-
 
 ---
 
-## 37. Broker data is one protocol family
+## 37. Application data families ride this runtime
 
-Broker data is the Rafka [data-frame op](node-rpc-envelope.md#data-frame-op-0x12-rafka); it runs on the runtime with no broker-specific runtime crate, and its move onto the runtime is the [i142 plan](/home/admin/rafka-v2/docs/plans/i142-node-rpc-migrations-prd.md#9-u6---broker_data-and-proxy-carried-execution). The layers around it are §7's.
-
-The reader's `ReadHooks::data_rpc` and writer's `NodeWriteHooks::data_rpc`/`forward_rpc` transport duplication disappears because both use Node RPC.
+An application's data op (Rafka's data-frame family) rides the runtime like every op, with no
+runtime crate of its own; its schema and its migration are the application's
+([the rafka op families](node-rpc-envelope.md#the-rafka-op-families-0x10-to-0x19)).
 
 ---
 

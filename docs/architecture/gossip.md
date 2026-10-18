@@ -221,7 +221,7 @@ composition and invents no wall clock of its own; the product supplies the adopt
 Size:
 
 - every frame fits one gossip message; a backbone aggregate and a forwarded full are each chunked under one `snapshot_id`, and every list they carry (`digests`, `in_flight`, `deleted`) is inside that sizing; neither snapshot is installed until every chunk is held;
-- a node's `config` map rides every heartbeat, so it is capped at 32 keys and 2048 bytes (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`, `rust-distributed-mesh/crates/rafka-mesh-entity/src/digest.rs`) and refused by name, with the measured size and the bound, as `ConfigOverCap`. The two numbers are set, not computed from the 4032-byte gossip message: config takes about half of it and the digest's other fields the rest. A change to them is a change to that budget in the code, never a runtime percentage. [Meta and config](node-rpc-envelope.md#node-properties) owns the config rules;
+- a node's `config` map rides every heartbeat, so it is capped at 32 keys and 2048 bytes (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`, `crates/rdm-core/src/digest.rs`) and refused by name, with the measured size and the bound, as `ConfigOverCap`. The two numbers are set, not computed from the 4032-byte gossip message: config takes about half of it and the digest's other fields the rest. A change to them is a change to that budget in the code, never a runtime percentage. [Meta and config](node-rpc-envelope.md#node-properties) owns the config rules;
 - there is no ACK, no per-peer resend, no deletion queue and no gossip-level replay: a lost push is repaired by iroh-gossip; a node that missed an event learns the state from the next delta, full or top-up (§3.3).
 
 #### Reserved lifecycle frame positions
@@ -884,18 +884,15 @@ network never share a kind; its first neighbour is its own mesh's node-admin, al
 receives a gateway-only kind (`principal`, `service_account`, `path_config` and the rest).
 
 **The event rides the envelope (§3.4) and RDM decides nothing on it.** `subject` is the row key,
-`<org>/<kind>/<key>`; `sequence` is the row's own version
-(`crates/rafka-entity-framework/src/traits.rs::Entity::gossip_version`: `0` for a kind ordered by
-offset, the generation stamp for a compiled ACL cell); `data` is the row, `offset`, `order_key`
+`<org>/<kind>/<key>`; `sequence` is the row's own version as the application defines it; `data` is the row, `offset`, `order_key`
 and `value` (`None` is a tombstone), opaque to RDM. RDM authors `id`, `source` and `time`, takes
 `traceparent` and `tracestate` from the span the publisher is in (the write is the author; RDM
 starts no trace of its own and no byte of `data` enters a span), chunks `data` over
 `MAX_MESSAGE_BYTES` under one `id`, and hands the receiver the whole event with a span parented
 to the author's. Stale, duplicate and gap for a row are the framework's comparator over
-`sequence` and `order_key`, across authors (`crates/rafka-entity-framework/src/types.rs`,
-`OrderKey`), never RDM's. The receive seam holds the row under the subject's org and refuses an
-empty org by name (`crates/rafka-entity-framework/src/gossip.rs::entity_projection_gossip_in_org`,
-`rafka.entity_store.projection.reject.via-org-unstamped`). An undeclared type is refused by name
+`sequence` and `order_key`, across authors, never RDM's (Rafka's comparator is its
+[entity framework](/home/admin/rafka-v2/docs/architecture/entity-framework.md)). The receive seam holds the row under
+the subject's org and refuses an empty org by name. An undeclared type is refused by name
 on publish and dropped by name on receive.
 
 **node-admin holds every channel, as the app.** node-admin holds its own declared types and the union
