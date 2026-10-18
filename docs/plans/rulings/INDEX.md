@@ -46,7 +46,9 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q65 | DevX (rafka-v2) | i141 U3 (topic-backed storage backend) | insert-and-fail decided across writers, which topics lack (the name and mesh claims, node rows, lane appends, the seal, the seat-move row at max(T)+1) | a (Luke, 2026-10-18). Rafka decides who, RDM decides how: RDM's boundary contract is the how (a claim at a key is insert-and-fail, one wins and the loser is refused by name; a fact is committed before its caller is answered; a writer that lost its seat is refused thereafter; Q28's fence and Q35's one sequence unchanged); rafka decides who, and on topics that is writer-ingress, the one writer of a key family, where the first claim is admitted and the second refused at admission. How rafka mints and closes that writer is rafka's (the topic-backed-storage-backend proposal), not this record's. b and c refused |asked and ruled 2026-10-18 |
 
-Next free number: **Q66**.
+| Q66 | DevX (rafka-v2) | i141 U3 / RDM block 1b | where the storage parity suite lives: the same cells against memory, file and the topic backend | a (the lead, 2026-10-18): RDM's storage cells become one suite in `rdm-test`, generic over `StorageBackend` (each cell takes a backend factory), run in RDM's gate against memory and file; rafka-v2 runs the identical suite against the topic backend as a node-admin functional stem on a live mesh. Built in block 1b. b refused (two copies drift), c refused (rafka's crates would enter RDM) | asked and ruled 2026-10-18 |
+
+Next free number: **Q67**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
