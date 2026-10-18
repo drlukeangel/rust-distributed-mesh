@@ -2623,6 +2623,11 @@ open (added 2026-10-15 from the `7257ff09` release run). Landed: `f877a260` (For
     - The first run on `18bf0ffa` passed this checkpoint.
     - Read: one backbone member's feed from mesh1 was not repaired for 3 s after one of mesh1's admins left its gossip neighbours and rejoined.
   - The s89 landing's first gate (`7f9b1f1d`) was red on `admin_start_declares`, i146 e3's cell, not this landing's: four landing gates red, the mechanism read from its own spans for the first time. It is tied to Q58 (`i146-owed-messages-prd.md`).
+  - Its second gate (`b3891e0b`) was red on `fabric_primary::losing_the_fabric_primary_mesh_moves_control` (`fabric_primary.rs:204`, i144 e6's cell; kept `gate-gates-e4s8-b3891e0b-fabric_primary`), the same mechanism as Q56's gate `1dbe530c`:
+    - The new fabric-primary's change spent 6,729 ms in acceptance (`via-accepted` 42.934 s, busy 57 ms, idle 6,673 ms). Its lane seal came at 49.193 s, and its drive opened at 50.003 s, after the verdict (49.769 s). So the drive never met the fence the cell asserts.
+    - Both times the acceptance ended within 0.3 s of the investigation's verdict.
+    - Every holder of the Build journal's writer lock (`build_state.rs` `FileJournal`) does file I/O only (sync, append, seal). None waits on the network.
+    - The acceptance's wait is not yet named. Its writer-lock wait and its I/O wait are not spanned apart, and that span is what the next read needs. i144 e6's, owned by this dev.
 - [x] `i143-rshape-lifecycle-chaos-process` (the i144 dev's, read 2026-10-17 from `release-run-8c2e79c6.log`): green 3/3 on `18bf0ffa`.
   - Its three reds in that run, and the authority job's `mock_recovery_retains_build_and_advances_attempt`, failed one precondition, `rshape_burn_in.rs:323`: the cell's provider state counted every `rshape-*` process on the box, so another job's estate's node-admins were taken for its own.
   - A cell's provider state is now its own estate's: a process whose environment names the estate root, a container mounting under it, and the provider actions read under it (`e3942be0`).
