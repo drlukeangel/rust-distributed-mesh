@@ -464,6 +464,8 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
 
 - **e6 landed (dev, 2026-10-17):** e6.1 `2f10e419`, e6.2 `afff4d44`, e6.3 (R-FM2 fabric lane, Q51) `8b0e58d0`; all on green gates. Tracking issue #3129 stays open for i146's release-suite run.
 
+- **Dev queue after e6 (lead, 2026-10-17):** (1) Q56, the held Mesh state a successor needs after its pre-commit writer ends (Codex's packet `i143-q56-held-mesh-state-acquisition.md`, the class Q54 named): trace the acquisition path, write the packet with its delta, A if the existing contracts carry it, else the page line to Luke. (2) Land e2b (`i144-e2b-connections-deleting-from-the-node`, built, rebased over e6 and the stop/join landings). (3) Read the release run's authority and lifecycle reds (`release-run-8c2e79c6.log`, the s89 split). (4) The rafka-v2 absorption, i141/i142, begins after i147 e5 and i148 land, so Rafka absorbs once; the pin is 2,643 commits behind and names crates that no longer exist, so it is not a landing.
+
 ## Verification
 
 - [ ] Seed assertion (§ Seed spec) green in both mods at gate cadence; traces cited in e1's row.
