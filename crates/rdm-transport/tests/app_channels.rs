@@ -19,23 +19,71 @@ struct Node {
     _router: Router,
 }
 
-async fn node(fabric: &FabricId, mesh: &MeshId, name: &str, seeds: Vec<iroh::EndpointAddr>) -> Node {
+async fn node(
+    fabric: &FabricId,
+    mesh: &MeshId,
+    name: &str,
+    seeds: Vec<iroh::EndpointAddr>,
+) -> Node {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-    let ep = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+    let ep = rdm_transport::endpoint::bind_exact(
+        iroh::SecretKey::generate(),
+        "127.0.0.1:0".parse().unwrap(),
+        vec![iroh_gossip::ALPN.to_vec()],
+        transport,
+    )
+    .await
+    .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    let author = PublisherId { node: name.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-    let membership = Membership::join(&gossip, &ep, fabric, "mesh1", mesh, name, rdm_transport::clock::os_clock(), seeds, &[TYPE]).await.unwrap();
+    let router = Router::builder(ep.clone())
+        .accept(iroh_gossip::ALPN, gossip.clone())
+        .spawn();
+    let author = PublisherId {
+        node: name.into(),
+        node_id: NodeId::mint(),
+        incarnation: IncarnationId::mint(),
+    };
+    let membership = Membership::join(
+        &gossip,
+        &ep,
+        fabric,
+        "mesh1",
+        mesh,
+        name,
+        rdm_transport::clock::os_clock(),
+        seeds,
+        &[TYPE],
+    )
+    .await
+    .unwrap();
     membership.set_author(&author);
-    Node { ep, gossip, membership, author, _router: router }
+    Node {
+        ep,
+        gossip,
+        membership,
+        author,
+        _router: router,
+    }
 }
 
 fn address(n: &Node) -> iroh::EndpointAddr {
-    let port = n.ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap().port();
+    let port =
+        n.ep.bound_sockets()
+            .into_iter()
+            .find(|a| a.is_ipv4())
+            .unwrap()
+            .port();
     iroh::EndpointAddr::new(n.ep.id()).with_ip_addr(([127, 0, 0, 1], port).into())
 }
 
-async fn pair() -> (Node, Node, Channel, Channel, iroh_gossip::api::GossipSender, iroh_gossip::api::GossipReceiver) {
+async fn pair() -> (
+    Node,
+    Node,
+    Channel,
+    Channel,
+    iroh_gossip::api::GossipSender,
+    iroh_gossip::api::GossipReceiver,
+) {
     let fabric = FabricId::mint();
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, "mesh1.rpc.1", vec![]).await;
@@ -43,33 +91,67 @@ async fn pair() -> (Node, Node, Channel, Channel, iroh_gossip::api::GossipSender
     let ca = a.membership.join_channel(TYPE).await.unwrap();
     let cb = b.membership.join_channel(TYPE).await.unwrap();
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
-    let mut raw = a.gossip.subscribe(channel_id(&fabric, TYPE), vec![b.ep.id()]).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), raw.joined()).await.expect("the app-channel neighbour joins").unwrap();
-    let mut other = b.gossip.subscribe(channel_id(&fabric, TYPE), vec![a.ep.id()]).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), other.joined()).await.expect("the publishing app-channel neighbour joins").unwrap();
+    let mut raw = a
+        .gossip
+        .subscribe(channel_id(&fabric, TYPE), vec![b.ep.id()])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), raw.joined())
+        .await
+        .expect("the app-channel neighbour joins")
+        .unwrap();
+    let mut other = b
+        .gossip
+        .subscribe(channel_id(&fabric, TYPE), vec![a.ep.id()])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), other.joined())
+        .await
+        .expect("the publishing app-channel neighbour joins")
+        .unwrap();
     let (sender, receiver) = raw.split();
     (a, b, ca, cb, sender, receiver)
 }
 
 fn event(sequence: u64, data: Vec<u8>) -> Event {
-    Event { subject: "org/proof/row".into(), sequence: Some(sequence), dataschema: Some("proof.v1".into()), data: Bytes::from(data) }
+    Event {
+        subject: "org/proof/row".into(),
+        sequence: Some(sequence),
+        dataschema: Some("proof.v1".into()),
+        data: Bytes::from(data),
+    }
 }
 
 async fn receive(channel: &mut Channel) -> rdm_transport::gossip::Received {
-    tokio::time::timeout(Duration::from_secs(10), channel.recv()).await.expect("the event arrives within the cell's bound").expect("the channel remains open")
+    tokio::time::timeout(Duration::from_secs(10), channel.recv())
+        .await
+        .expect("the event arrives within the cell's bound")
+        .expect("the channel remains open")
 }
 
 fn encoded(n: &Node, kind: &str, id: &str, subject: &str, data: Vec<u8>, reverse: bool) -> Vec<u8> {
     let birth = n.membership.author_birth().unwrap();
     let mut attributes = vec![
-        ("specversion".to_string(), "1.0".to_string()), ("id".into(), id.into()),
-        ("source".into(), format!("rdm://{}/{}/{}", birth.fabric, birth.node, birth.incarnation)),
-        ("type".into(), kind.into()), ("subject".into(), subject.into()),
+        ("specversion".to_string(), "1.0".to_string()),
+        ("id".into(), id.into()),
+        (
+            "source".into(),
+            format!(
+                "rdm://{}/{}/{}",
+                birth.fabric, birth.node, birth.incarnation
+            ),
+        ),
+        ("type".into(), kind.into()),
+        ("subject".into(), subject.into()),
         ("time".into(), "1970-01-01T00:00:00.001Z".into()),
         ("datacontenttype".into(), "application/octet-stream".into()),
     ];
-    if kind == TYPE { attributes.push(("sequence".into(), "00000000000000000001".into())); }
-    if reverse { attributes.reverse(); }
+    if kind == TYPE {
+        attributes.push(("sequence".into(), "00000000000000000001".into()));
+    }
+    if reverse {
+        attributes.reverse();
+    }
     postcard::to_allocvec(&(attributes, data)).unwrap()
 }
 
@@ -77,7 +159,9 @@ fn encoded(n: &Node, kind: &str, id: &str, subject: &str, data: Vec<u8>, reverse
 async fn an_undeclared_type_is_refused_by_name_on_join() {
     let fabric = FabricId::mint();
     let n = node(&fabric, &MeshId::mint(), "mesh1.rpc.1", vec![]).await;
-    assert!(matches!(n.membership.join_channel("rafka.entity.unknown").await, Err(ChannelError::UndeclaredType { r#type }) if r#type == "rafka.entity.unknown"));
+    assert!(
+        matches!(n.membership.join_channel("rafka.entity.unknown").await, Err(ChannelError::UndeclaredType { r#type }) if r#type == "rafka.entity.unknown")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -90,7 +174,10 @@ async fn a_lower_sequence_from_the_same_source_is_handed_to_the_app_not_dropped(
     let older = receive(&mut receiver).await;
     assert_eq!(older.sequence, Some(1));
     assert_eq!(older.data, Bytes::from_static(&[1]));
-    assert_eq!(older.source, rdm_transport::envelope::Birth::publisher(a.membership.fabric_id(), &b.author));
+    assert_eq!(
+        older.source,
+        rdm_transport::envelope::Birth::publisher(a.membership.fabric_id(), &b.author)
+    );
     assert_eq!(older.dataschema.as_deref(), Some("proof.v1"));
 }
 
@@ -110,11 +197,22 @@ async fn an_event_whose_data_fits_but_whose_complete_frame_does_not_is_chunked()
     sender.publish(event(1, data.clone())).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), data.as_slice());
     loop {
-        let ev = tokio::time::timeout(Duration::from_secs(10), events.next()).await.unwrap().unwrap().unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         if let iroh_gossip::api::Event::Received(message) = ev {
-            assert!(message.content.len() <= rdm_transport::membership::MAX_FRAME, "every complete chunk includes metadata and both vector prefixes");
-            let (attributes, _): (Vec<(String, String)>, Vec<u8>) = postcard::from_bytes(&message.content).unwrap();
-            assert_eq!(attributes.iter().find(|(k, _)| k == "type").unwrap().1, "rdm.gossip.chunk");
+            assert!(
+                message.content.len() <= rdm_transport::membership::MAX_FRAME,
+                "every complete chunk includes metadata and both vector prefixes"
+            );
+            let (attributes, _): (Vec<(String, String)>, Vec<u8>) =
+                postcard::from_bytes(&message.content).unwrap();
+            assert_eq!(
+                attributes.iter().find(|(k, _)| k == "type").unwrap().1,
+                "rdm.gossip.chunk"
+            );
             break;
         }
     }
@@ -128,16 +226,56 @@ async fn a_chunked_event_arrives_whole_when_its_chunks_are_reordered_and_one_is_
     let chunks: Vec<_> = whole.chunks(1800).map(Vec::from).collect();
     for i in (0..chunks.len()).rev() {
         let body = postcard::to_allocvec(&(i as u16, chunks.len() as u16, &chunks[i])).unwrap();
-        raw.broadcast(encoded(&a, "rdm.gossip.chunk", &format!("reordered/{i}"), "reordered", body.clone(), false).into()).await.unwrap();
+        raw.broadcast(
+            encoded(
+                &a,
+                "rdm.gossip.chunk",
+                &format!("reordered/{i}"),
+                "reordered",
+                body.clone(),
+                false,
+            )
+            .into(),
+        )
+        .await
+        .unwrap();
         if i == 1 {
             // Reordered attributes change the gossip message bytes, while the declared chunk id
             // and content stay identical: transport byte dedupe cannot stand in for assembly dedupe.
-            raw.broadcast(encoded(&a, "rdm.gossip.chunk", &format!("reordered/{i}"), "reordered", body, true).into()).await.unwrap();
+            raw.broadcast(
+                encoded(
+                    &a,
+                    "rdm.gossip.chunk",
+                    &format!("reordered/{i}"),
+                    "reordered",
+                    body,
+                    true,
+                )
+                .into(),
+            )
+            .await
+            .unwrap();
         }
     }
     assert_eq!(receive(&mut receiver).await.data.as_ref(), data.as_slice());
-    raw.broadcast(encoded(&a, TYPE, "control", "org/proof/control", b"control".to_vec(), false).into()).await.unwrap();
-    assert_eq!(receive(&mut receiver).await.data.as_ref(), b"control", "no second event was delivered for the duplicate chunk");
+    raw.broadcast(
+        encoded(
+            &a,
+            TYPE,
+            "control",
+            "org/proof/control",
+            b"control".to_vec(),
+            false,
+        )
+        .into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        receive(&mut receiver).await.data.as_ref(),
+        b"control",
+        "no second event was delivered for the duplicate chunk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -145,17 +283,55 @@ async fn a_chunked_event_with_a_missing_chunk_advances_lost_after_the_staleness_
     let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
     let mut lost = receiver.lost();
     let first = *lost.borrow();
-    let whole = encoded(&a, TYPE, "incomplete", "org/proof/row", vec![0x7c; 7000], false);
+    let whole = encoded(
+        &a,
+        TYPE,
+        "incomplete",
+        "org/proof/row",
+        vec![0x7c; 7000],
+        false,
+    );
     let chunks: Vec<_> = whole.chunks(1800).map(Vec::from).collect();
     for (i, chunk) in chunks.iter().enumerate().take(chunks.len() - 1) {
         let body = postcard::to_allocvec(&(i as u16, chunks.len() as u16, chunk)).unwrap();
-        raw.broadcast(encoded(&a, "rdm.gossip.chunk", &format!("incomplete/{i}"), "incomplete", body, false).into()).await.unwrap();
+        raw.broadcast(
+            encoded(
+                &a,
+                "rdm.gossip.chunk",
+                &format!("incomplete/{i}"),
+                "incomplete",
+                body,
+                false,
+            )
+            .into(),
+        )
+        .await
+        .unwrap();
     }
     let bound = rdm_core::cadence::staleness_floor() + Duration::from_secs(2);
-    tokio::time::timeout(bound, lost.changed()).await.expect("unfinished assembly is evicted after the declared floor").unwrap();
+    tokio::time::timeout(bound, lost.changed())
+        .await
+        .expect("unfinished assembly is evicted after the declared floor")
+        .unwrap();
     assert!(*lost.borrow() > first);
-    raw.broadcast(encoded(&a, TYPE, "after-loss", "org/proof/control", b"after-loss".to_vec(), false).into()).await.unwrap();
-    assert_eq!(receive(&mut receiver).await.data.as_ref(), b"after-loss", "the carrier continues after the eviction");
+    raw.broadcast(
+        encoded(
+            &a,
+            TYPE,
+            "after-loss",
+            "org/proof/control",
+            b"after-loss".to_vec(),
+            false,
+        )
+        .into(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        receive(&mut receiver).await.data.as_ref(),
+        b"after-loss",
+        "the carrier continues after the eviction"
+    );
 }
 
 #[allow(dead_code)]
@@ -171,55 +347,142 @@ async fn the_channel_surface_has_one_owned_receiver(mut channel: Channel, event:
 
 #[test]
 fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
-    if crate::own_process::delegated(module_path!(), "the_receive_span_parents_to_the_publishers_span_and_carries_no_data") { return; }
+    if crate::own_process::delegated(
+        module_path!(),
+        "the_receive_span_parents_to_the_publishers_span_and_carries_no_data",
+    ) {
+        return;
+    }
     use tracing::Instrument;
-    let capture=rdm_transport::EvidenceCapture::start(&crate::evidence_dir(),"app-channel-trace").unwrap();
-    capture.run(4,async {
-        let (_a,_b,mut receiver,mut sender,raw,_events)=pair().await;
-        let author=tracing::info_span!("rdm.mesh.channel.update.via-author");
-        let context=author.in_scope(rdm_transport::current_traceparent).expect("author context");
-        sender.publish(event(7,b"secret-app-body-123".to_vec())).instrument(author.clone()).await.unwrap();
-        let got=receive(&mut receiver).await;
-        got.span.in_scope(||tracing::info!("application applies"));drop(got);drop(author);
+    let capture =
+        rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "app-channel-trace").unwrap();
+    capture.run(4, async {
+        let (_a, _b, mut receiver, mut sender, raw, _events) = pair().await;
+        let author = tracing::info_span!("rdm.mesh.channel.update.via-author");
+        let context = author
+            .in_scope(rdm_transport::current_traceparent)
+            .expect("author context");
+        sender
+            .publish(event(7, b"secret-app-body-123".to_vec()))
+            .instrument(author.clone())
+            .await
+            .unwrap();
+        let got = receive(&mut receiver).await;
+        got.span.in_scope(|| tracing::info!("application applies"));
+        drop(got);
+        drop(author);
         // A malformed context is observed by name but does not discard the data.
-        let mut attrs:(Vec<(String,String)>,Vec<u8>)=postcard::from_bytes(&encoded(&_a,TYPE,"bad-context","bad-context",vec![42],false)).unwrap();
-        attrs.0.push(("traceparent".into(),"broken".into()));raw.broadcast(postcard::to_allocvec(&attrs).unwrap().into()).await.unwrap();
-        assert_eq!(receive(&mut sender).await.data.as_ref(),&[42]);
-        let spans=capture.spans().unwrap();
-        let received=spans.iter().find(|s|s["name"]=="rdm.mesh.membership.update.via-frame"&&s["attributes"]["subject"]=="org/proof/row").expect("received event span");
-        assert_eq!(received["trace_id"].as_str(),Some(&context[3..35]));
-        assert_eq!(received["parent_span_id"].as_str(),Some(&context[36..52]));
-        assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-context-dropped"));
-        assert!(!serde_json::to_string(&spans).unwrap().contains("secret-app-body-123"));
+        let mut attrs: (Vec<(String, String)>, Vec<u8>) = postcard::from_bytes(&encoded(
+            &_a,
+            TYPE,
+            "bad-context",
+            "bad-context",
+            vec![42],
+            false,
+        ))
+        .unwrap();
+        attrs.0.push(("traceparent".into(), "broken".into()));
+        raw.broadcast(postcard::to_allocvec(&attrs).unwrap().into())
+            .await
+            .unwrap();
+        assert_eq!(receive(&mut sender).await.data.as_ref(), &[42]);
+        let spans = capture.spans().unwrap();
+        let received = spans
+            .iter()
+            .find(|s| {
+                s["name"] == "rdm.mesh.membership.update.via-frame"
+                    && s["attributes"]["subject"] == "org/proof/row"
+            })
+            .expect("received event span");
+        assert_eq!(received["trace_id"].as_str(), Some(&context[3..35]));
+        assert_eq!(received["parent_span_id"].as_str(), Some(&context[36..52]));
+        assert!(spans
+            .iter()
+            .any(|s| s["name"] == "rdm.mesh.membership.update.via-context-dropped"));
+        assert!(!serde_json::to_string(&spans)
+            .unwrap()
+            .contains("secret-app-body-123"));
     });
 }
 
 #[test]
 fn an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies() {
-    if crate::own_process::delegated(module_path!(), "an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies") { return; }
-    let capture=rdm_transport::EvidenceCapture::start(&crate::evidence_dir(),"app-channel-type").unwrap();
-    capture.run(4,async {
-        let (a,_b,_unused,mut receiver,raw,_events)=pair().await;
-        raw.broadcast(encoded(&a,"app.undeclared","wrong","wrong",vec![1],false).into()).await.unwrap();
-        raw.broadcast(encoded(&a,TYPE,"next","next",vec![2],false).into()).await.unwrap();
-        assert_eq!(receive(&mut receiver).await.subject,"next");
-        assert!(capture.spans().unwrap().iter().any(|s|s["name"]=="rdm.mesh.channel.reject.via-undeclared-type"));
+    if crate::own_process::delegated(
+        module_path!(),
+        "an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies",
+    ) {
+        return;
+    }
+    let capture =
+        rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "app-channel-type").unwrap();
+    capture.run(4, async {
+        let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
+        raw.broadcast(encoded(&a, "app.undeclared", "wrong", "wrong", vec![1], false).into())
+            .await
+            .unwrap();
+        raw.broadcast(encoded(&a, TYPE, "next", "next", vec![2], false).into())
+            .await
+            .unwrap();
+        assert_eq!(receive(&mut receiver).await.subject, "next");
+        assert!(capture
+            .spans()
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "rdm.mesh.channel.reject.via-undeclared-type"));
     });
 }
 
 /// Compile a positive control first, then reject each forbidden receiver ownership shape.
 #[test]
 fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
-    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let artifacts=std::env::var_os("I143_PREBUILT_ARTIFACTS").map(std::path::PathBuf::from).unwrap_or_else(||root.join("target/cells/artifacts.json"));
-    let records=std::fs::read_to_string(artifacts).unwrap();
-    let rlib=records.lines().filter_map(|l|serde_json::from_str::<serde_json::Value>(l).ok()).filter(|m|m["reason"]=="compiler-artifact"&&m["target"]["name"]=="rdm_transport").flat_map(|m|m["filenames"].as_array().cloned().unwrap_or_default()).filter_map(|v|v.as_str().map(str::to_string)).find(|f|f.ends_with(".rlib")).expect("the current build's transport library");
-    let dir=std::env::temp_dir().join(format!("channel-ownership-{}",NodeId::mint()));std::fs::create_dir_all(&dir).unwrap();
-    let compile=|body:&str| {
-        let source=dir.join("ownership.rs");std::fs::write(&source,format!("use rdm_transport::gossip::Channel; {body}")).unwrap();
-        std::process::Command::new("rustc").args(["--edition=2021","--crate-type=lib","--emit=metadata","--crate-name=ownership"]).arg(&source).arg("--out-dir").arg(&dir).arg("--extern").arg(format!("rdm_transport={rlib}")).arg("-L").arg(format!("dependency={}",std::path::Path::new(&rlib).parent().unwrap().display())).output().unwrap()
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let artifacts = std::env::var_os("I143_PREBUILT_ARTIFACTS")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| root.join("target/cells/artifacts.json"));
+    let records = std::fs::read_to_string(artifacts).unwrap();
+    let rlib = records
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|m| m["reason"] == "compiler-artifact" && m["target"]["name"] == "rdm_transport")
+        .flat_map(|m| m["filenames"].as_array().cloned().unwrap_or_default())
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .find(|f| f.ends_with(".rlib"))
+        .expect("the current build's transport library");
+    let dir = std::env::temp_dir().join(format!("channel-ownership-{}", NodeId::mint()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let compile = |body: &str| {
+        let source = dir.join("ownership.rs");
+        std::fs::write(
+            &source,
+            format!("use rdm_transport::gossip::Channel; {body}"),
+        )
+        .unwrap();
+        std::process::Command::new("rustc")
+            .args([
+                "--edition=2021",
+                "--crate-type=lib",
+                "--emit=metadata",
+                "--crate-name=ownership",
+            ])
+            .arg(&source)
+            .arg("--out-dir")
+            .arg(&dir)
+            .arg("--extern")
+            .arg(format!("rdm_transport={rlib}"))
+            .arg("-L")
+            .arg(format!(
+                "dependency={}",
+                std::path::Path::new(&rlib).parent().unwrap().display()
+            ))
+            .output()
+            .unwrap()
     };
-    let good=compile("pub async fn valid(mut channel: Channel) { let _ = channel.recv().await; let (_, mut subscriber) = channel.split(); let _ = subscriber.recv().await; }");assert!(good.status.success(),"{}",String::from_utf8_lossy(&good.stderr));
+    let good=compile("pub async fn valid(mut channel: Channel) { let _ = channel.recv().await; let (_, mut subscriber) = channel.split(); let _ = subscriber.recv().await; }");
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
     for (body,code) in [
         ("pub fn invalid(channel: Channel) { let _other = channel.clone(); }","E0599"),
         ("pub async fn invalid(channel: &Channel) { let _ = channel.recv().await; }","E0596"),
@@ -231,11 +494,28 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
 /// Holding a member's channel permits receipt, but does not declare its type for this author.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_it() {
-    let n=node(&FabricId::mint(),&MeshId::mint(),"mesh1.admin.1",vec![]).await;
-    let kind="app.member-owned";
-    let member=NodeId::mint();let birth=IncarnationId::mint();
-    n.membership.learn_app_types(member,birth,[kind.to_string()].into(),[kind.to_string()].into()).await.unwrap();
-    assert!(n.membership.held_types().contains(kind));assert!(!n.membership.app_types().contains(kind));
-    let channel=n.membership.join_channel(kind).await.expect("a learned type has a receiver");
-    assert!(matches!(channel.publish(event(1,vec![1])).await,Err(ChannelError::UndeclaredType{r#type})if r#type==kind),"holding a member's channel does not let this birth author its events");
+    let n = node(&FabricId::mint(), &MeshId::mint(), "mesh1.admin.1", vec![]).await;
+    let kind = "app.member-owned";
+    let member = NodeId::mint();
+    let birth = IncarnationId::mint();
+    n.membership
+        .learn_app_types(
+            member,
+            birth,
+            [kind.to_string()].into(),
+            [kind.to_string()].into(),
+        )
+        .await
+        .unwrap();
+    assert!(n.membership.held_types().contains(kind));
+    assert!(!n.membership.app_types().contains(kind));
+    let channel = n
+        .membership
+        .join_channel(kind)
+        .await
+        .expect("a learned type has a receiver");
+    assert!(
+        matches!(channel.publish(event(1,vec![1])).await,Err(ChannelError::UndeclaredType{r#type})if r#type==kind),
+        "holding a member's channel does not let this birth author its events"
+    );
 }

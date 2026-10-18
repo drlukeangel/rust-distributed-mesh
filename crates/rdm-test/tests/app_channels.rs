@@ -2,84 +2,234 @@
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, Hydration};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_core::{NodeId, IncarnationId};
-use rdm_core::status::{StatusReply, StatusRequest, NodeSelect};
-use std::{collections::BTreeSet, sync::{Arc,Mutex}, time::Duration};
-const BASE:&str="app.base";
-const LATE:&str="app.late";
-const BOUND:Duration=Duration::from_secs(60);
+use rdm_core::status::{NodeSelect, StatusReply, StatusRequest};
+use rdm_core::{IncarnationId, NodeId};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+const BASE: &str = "app.base";
+const LATE: &str = "app.late";
+const BOUND: Duration = Duration::from_secs(60);
 #[derive(Default)]
-struct Hook { channel:Mutex<Option<rdm_transport::gossip::Channel>>, observed:Mutex<Option<BTreeSet<String>>> }
+struct Hook {
+    channel: Mutex<Option<rdm_transport::gossip::Channel>>,
+    observed: Mutex<Option<BTreeSet<String>>>,
+}
 #[async_trait::async_trait]
 impl HydrateBeforeReady for Hook {
-    async fn hydrate_before_ready(&self,ctx:&HydrateCtx)->HookOutcome {
-        let types=ctx.membership.app_types();
-        assert_eq!(types.len(),1);
-        assert!(types.is_subset(&ctx.membership.held_types()),"the role joined its declaration before hydration");
-        let channel=ctx.membership.join_channel(types.first().unwrap()).await.expect("the own declared channel is already joined");
-        *self.observed.lock().unwrap()=Some(ctx.membership.held_types());
-        *self.channel.lock().unwrap()=Some(channel);
+    async fn hydrate_before_ready(&self, ctx: &HydrateCtx) -> HookOutcome {
+        let types = ctx.membership.app_types();
+        assert_eq!(types.len(), 1);
+        assert!(
+            types.is_subset(&ctx.membership.held_types()),
+            "the role joined its declaration before hydration"
+        );
+        let channel = ctx
+            .membership
+            .join_channel(types.first().unwrap())
+            .await
+            .expect("the own declared channel is already joined");
+        *self.observed.lock().unwrap() = Some(ctx.membership.held_types());
+        *self.channel.lock().unwrap() = Some(channel);
         HookOutcome::Ok
     }
 }
-fn config(dir:&std::path::Path)->AdminConfig {
-    AdminConfig::from_env(|k|match k {
-        "RDM_DATA_DIR"|"RDM_STORE_DIR"|"RDM_BIN_DIR"=>Some(dir.display().to_string()),
-        "RDM_NODE_ADMIN_API_BIND"=>Some("127.0.0.1:0".into()),"MESH_SPAWN_TYPE"=>Some("process".into()),_=>None,
-    }).unwrap()
+fn config(dir: &std::path::Path) -> AdminConfig {
+    AdminConfig::from_env(|k| match k {
+        "RDM_DATA_DIR" | "RDM_STORE_DIR" | "RDM_BIN_DIR" => Some(dir.display().to_string()),
+        "RDM_NODE_ADMIN_API_BIND" => Some("127.0.0.1:0".into()),
+        "MESH_SPAWN_TYPE" => Some("process".into()),
+        _ => None,
+    })
+    .unwrap()
 }
-async fn until_held(r:&Running,expected:&BTreeSet<String>) {
-    let mut changes=r.membership.book.digest_changes();
-    tokio::time::timeout(BOUND,async {loop {if expected.is_subset(&r.membership.held_types()){return;} changes.changed().await.unwrap();}}).await.expect("the declared held set is learned within the read bound");
+async fn until_held(r: &Running, expected: &BTreeSet<String>) {
+    let mut changes = r.membership.book.digest_changes();
+    tokio::time::timeout(BOUND, async {
+        loop {
+            if expected.is_subset(&r.membership.held_types()) {
+                return;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the declared held set is learned within the read bound");
 }
-async fn own_view(r:&Running)->rdm_core::views::NodeView {
-    let mut changes=r.membership.book.digest_changes();
-    tokio::time::timeout(BOUND,async { loop {
-        let answer=r.status_authority().unwrap().apply(None,&StatusRequest::GetNodes{select:NodeSelect::Id(r.birth().node_id.clone())}).await;
-        let StatusReply::Nodes{mut nodes}=answer else{panic!("{answer:?}")};
-        if nodes.len()==1 {return nodes.remove(0);}
-        assert!(nodes.is_empty());changes.changed().await.unwrap();
-    }}).await.expect("the admin's own projection is installed within the read bound")
+async fn own_view(r: &Running) -> rdm_core::views::NodeView {
+    let mut changes = r.membership.book.digest_changes();
+    tokio::time::timeout(BOUND, async {
+        loop {
+            let answer = r
+                .status_authority()
+                .unwrap()
+                .apply(
+                    None,
+                    &StatusRequest::GetNodes {
+                        select: NodeSelect::Id(r.birth().node_id.clone()),
+                    },
+                )
+                .await;
+            let StatusReply::Nodes { mut nodes } = answer else {
+                panic!("{answer:?}")
+            };
+            if nodes.len() == 1 {
+                return nodes.remove(0);
+            }
+            assert!(nodes.is_empty());
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the admin's own projection is installed within the read bound")
 }
 #[test]
 fn a_node_admin_joins_its_wiring_types_before_hydration_and_node_get_answers_its_own_declaration() {
     let cell="a_node_admin_joins_its_wiring_types_before_hydration_and_node_get_answers_its_own_declaration";
-    if crate::own_process::delegated(module_path!(),cell){return;}
-    let cap=crate::common::capture(cell);
-    cap.run(crate::common::Threads::Workers(4),async {
-        let dir=std::env::temp_dir().join(format!("app-admin-{}",NodeId::mint()));let hook=Arc::new(Hook::default());
-        let root=start_with(config(&dir),Wiring{types:vec![BASE.into()],hydration:Hydration::new(hook.clone()),fabric_hooks:FabricHooks::no_app_work(),..Wiring::no_certs()}).await.unwrap();root.stop_reconciling();
-        tokio::time::timeout(BOUND,root.hydration().unwrap().settled()).await.unwrap();
-        assert_eq!(hook.observed.lock().unwrap().as_ref(),Some(&BTreeSet::from([BASE.into()])));
-        let view=own_view(&root).await;assert_eq!(view.types,BTreeSet::from([BASE.into()]));assert_eq!(view.held,view.types);assert_eq!(view.held_hash,rdm_core::app_types::hash(&view.held));
-        hook.channel.lock().unwrap().take();root.leave().await;let _=std::fs::remove_dir_all(dir);
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let cap = crate::common::capture(cell);
+    cap.run(crate::common::Threads::Workers(4), async {
+        let dir = std::env::temp_dir().join(format!("app-admin-{}", NodeId::mint()));
+        let hook = Arc::new(Hook::default());
+        let root = start_with(
+            config(&dir),
+            Wiring {
+                types: vec![BASE.into()],
+                hydration: Hydration::new(hook.clone()),
+                fabric_hooks: FabricHooks::no_app_work(),
+                ..Wiring::no_certs()
+            },
+        )
+        .await
+        .unwrap();
+        root.stop_reconciling();
+        tokio::time::timeout(BOUND, root.hydration().unwrap().settled())
+            .await
+            .unwrap();
+        assert_eq!(
+            hook.observed.lock().unwrap().as_ref(),
+            Some(&BTreeSet::from([BASE.into()]))
+        );
+        let view = own_view(&root).await;
+        assert_eq!(view.types, BTreeSet::from([BASE.into()]));
+        assert_eq!(view.held, view.types);
+        assert_eq!(view.held_hash, rdm_core::app_types::hash(&view.held));
+        hook.channel.lock().unwrap().take();
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(dir);
     });
 }
 #[test]
 fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_get_to_grow_held() {
     let cell="a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_get_to_grow_held";
-    if crate::own_process::delegated(module_path!(),cell){return;}
-    let cap=crate::common::capture(cell);
-    cap.run(crate::common::Threads::Workers(4),async {
-        let root_dir=std::env::temp_dir().join(format!("app-discovery-a-{}",NodeId::mint()));let joiner_dir=std::env::temp_dir().join(format!("app-discovery-b-{}",NodeId::mint()));
-        let root=start_with(config(&root_dir),Wiring{types:vec![BASE.into()],fabric_hooks:FabricHooks::no_app_work(),..Wiring::no_certs()}).await.unwrap();root.stop_reconciling();
-        let root_digest=root.digest.lock().unwrap().clone();
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let cap = crate::common::capture(cell);
+    cap.run(crate::common::Threads::Workers(4), async {
+        let root_dir = std::env::temp_dir().join(format!("app-discovery-a-{}", NodeId::mint()));
+        let joiner_dir = std::env::temp_dir().join(format!("app-discovery-b-{}", NodeId::mint()));
+        let root = start_with(
+            config(&root_dir),
+            Wiring {
+                types: vec![BASE.into()],
+                fabric_hooks: FabricHooks::no_app_work(),
+                ..Wiring::no_certs()
+            },
+        )
+        .await
+        .unwrap();
+        root.stop_reconciling();
+        let root_digest = root.digest.lock().unwrap().clone();
         std::fs::create_dir_all(&joiner_dir).unwrap();
-        let runtime=rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-discovery")).unwrap();runtime.write_record(&joiner_dir).unwrap();
-        let key=rdm_test::node::load_or_mint_key(&joiner_dir).unwrap();
-        let launch=rdm_core::launch::Launch{fabric:config(&root_dir).fabric,fabric_id:root_digest.fabric_id.clone(),name:"mesh1.admin.2".parse().unwrap(),node_id:NodeId::mint(),incarnation:IncarnationId::mint(),supersedes:None,bind_addr:"127.0.0.1:0".parse().unwrap(),listeners:vec![("control".into(),"127.0.0.1:0".parse().unwrap())],seeds:vec![(root_digest.node.endpoint_id.0.clone(),root_digest.node.transport_addr)],launcher:Some(rdm_core::launch::Launcher{name:root_digest.node.name.clone(),node_id:root_digest.node.node_id.clone(),incarnation:root_digest.node.incarnation.clone()}),data_dir:joiner_dir.clone(),store_dir:root_dir.clone(),mesh_id:root_digest.mesh_id.clone(),mesh_issuer:None,connections_delete_deadline:rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE};
-        let _report=root.runner.joins.expect(rdm_admin::join::Deployed{name:launch.name.clone(),node_id:launch.node_id.clone(),incarnation:launch.incarnation.clone(),supersedes:None,endpoint_id:rdm_core::EndpointId(key.public().to_string()),runtime,data_dir:joiner_dir.display().to_string(),last_accepted_name:None,held:false});
-        let env=launch.to_env();let hook=Arc::new(Hook::default());
-        let joiner=start_with(AdminConfig::from_env(|k|env.get(k).cloned()).unwrap(),Wiring{types:vec![LATE.into()],hydration:Hydration::new(hook.clone()),fabric_hooks:FabricHooks::no_app_work(),..Wiring::no_certs()}).await.unwrap();joiner.stop_reconciling();
-        assert!(root.membership.held_types().contains(LATE),"the launching admin joined the new type before returning JoinNode");
-        let expected=BTreeSet::from([BASE.into(),LATE.into()]);until_held(&joiner,&expected).await;
-        let first=own_view(&root).await;let second=own_view(&joiner).await;
-        assert_eq!(first.types,BTreeSet::from([BASE.into()]));assert_eq!(second.types,BTreeSet::from([LATE.into()]));assert_eq!(first.held,expected);assert_eq!(second.held,expected);
-        assert_eq!(second.held_hash,rdm_core::app_types::hash(&expected));
-        tokio::time::timeout(BOUND,joiner.hydration().unwrap().settled()).await.unwrap();
-        hook.channel.lock().unwrap().take();joiner.leave().await;root.leave().await;
-        let _=std::fs::remove_dir_all(joiner_dir);let _=std::fs::remove_dir_all(root_dir);
+        let runtime =
+            rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-discovery"))
+                .unwrap();
+        runtime.write_record(&joiner_dir).unwrap();
+        let key = rdm_test::node::load_or_mint_key(&joiner_dir).unwrap();
+        let launch = rdm_core::launch::Launch {
+            fabric: config(&root_dir).fabric,
+            fabric_id: root_digest.fabric_id.clone(),
+            name: "mesh1.admin.2".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![("control".into(), "127.0.0.1:0".parse().unwrap())],
+            seeds: vec![(
+                root_digest.node.endpoint_id.0.clone(),
+                root_digest.node.transport_addr,
+            )],
+            launcher: Some(rdm_core::launch::Launcher {
+                name: root_digest.node.name.clone(),
+                node_id: root_digest.node.node_id.clone(),
+                incarnation: root_digest.node.incarnation.clone(),
+            }),
+            data_dir: joiner_dir.clone(),
+            store_dir: root_dir.clone(),
+            mesh_id: root_digest.mesh_id.clone(),
+            mesh_issuer: None,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        let _report = root.runner.joins.expect(rdm_admin::join::Deployed {
+            name: launch.name.clone(),
+            node_id: launch.node_id.clone(),
+            incarnation: launch.incarnation.clone(),
+            supersedes: None,
+            endpoint_id: rdm_core::EndpointId(key.public().to_string()),
+            runtime,
+            data_dir: joiner_dir.display().to_string(),
+            last_accepted_name: None,
+            held: false,
+        });
+        let env = launch.to_env();
+        let hook = Arc::new(Hook::default());
+        let joiner = start_with(
+            AdminConfig::from_env(|k| env.get(k).cloned()).unwrap(),
+            Wiring {
+                types: vec![LATE.into()],
+                hydration: Hydration::new(hook.clone()),
+                fabric_hooks: FabricHooks::no_app_work(),
+                ..Wiring::no_certs()
+            },
+        )
+        .await
+        .unwrap();
+        joiner.stop_reconciling();
+        assert!(
+            root.membership.held_types().contains(LATE),
+            "the launching admin joined the new type before returning JoinNode"
+        );
+        let expected = BTreeSet::from([BASE.into(), LATE.into()]);
+        until_held(&joiner, &expected).await;
+        let first = own_view(&root).await;
+        let second = own_view(&joiner).await;
+        assert_eq!(first.types, BTreeSet::from([BASE.into()]));
+        assert_eq!(second.types, BTreeSet::from([LATE.into()]));
+        assert_eq!(first.held, expected);
+        assert_eq!(second.held, expected);
+        assert_eq!(second.held_hash, rdm_core::app_types::hash(&expected));
+        tokio::time::timeout(BOUND, joiner.hydration().unwrap().settled())
+            .await
+            .unwrap();
+        hook.channel.lock().unwrap().take();
+        joiner.leave().await;
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(joiner_dir);
+        let _ = std::fs::remove_dir_all(root_dir);
     });
     cap.flush().unwrap();
-    assert!(cap.spans.0.lock().unwrap().values().any(|(name,_,_)|name=="rdm.node_admin.node.update.via-held-types"),"a changed backbone hash drove a peer node.get, not a digest list");
+    assert!(
+        cap.spans
+            .0
+            .lock()
+            .unwrap()
+            .values()
+            .any(|(name, _, _)| name == "rdm.node_admin.node.update.via-held-types"),
+        "a changed backbone hash drove a peer node.get, not a digest list"
+    );
 }
