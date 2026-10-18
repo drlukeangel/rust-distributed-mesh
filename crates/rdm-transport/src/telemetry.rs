@@ -93,7 +93,7 @@ impl Exporters {
         if !export::bounded_until(what, jobs, true, deadline) {
             export::name_abandoned(what);
         }
-        flush_log_sinks();
+        flush_log_sinks(deadline);
     }
 }
 
@@ -112,10 +112,14 @@ static EXIT_FLUSH: std::sync::OnceLock<Exporters> = std::sync::OnceLock::new();
 /// The transport diagnostic file's writer ([`transport_diag`]), drained with the fmt log's.
 static DIAG_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock::new();
 
-/// Returns once every line handed to the stderr log and the transport diagnostic file is written.
-fn flush_log_sinks() {
-    for sink in [STDERR_SINK.get(), DIAG_SINK.get()].into_iter().flatten() {
-        sink.flush();
+/// Flush both logs within the same process deadline as the evidence and collector.
+fn flush_log_sinks(deadline: std::time::Instant) {
+    for (name, sink) in [("stderr log", STDERR_SINK.get()), ("transport diagnostic log", DIAG_SINK.get())] {
+        if let Some(sink) = sink {
+            if !sink.flush_until(deadline) {
+                eprintln!("telemetry: the {name} flush ended at its bound ({} ms); queued lines not confirmed written", export::DRAIN_BOUND.as_millis());
+            }
+        }
     }
 }
 
@@ -126,7 +130,7 @@ fn flush_log_sinks() {
 pub fn flush_before_exit() {
     match EXIT_FLUSH.get() {
         Some(exporters) => exporters.drain("the exit drain"),
-        None => flush_log_sinks(),
+        None => flush_log_sinks(std::time::Instant::now() + export::DRAIN_BOUND),
     }
 }
 

@@ -55,6 +55,14 @@ impl LogSink {
         Self { tx }
     }
 
+    /// Flush the lines already handed over, within the process drain's remaining
+    /// deadline. A held writer leaves them unconfirmed instead of holding the exit.
+    pub(crate) fn flush_until(&self, deadline: std::time::Instant) -> bool {
+        let (ack, done) = channel();
+        self.tx.send(Msg::Flush(ack)).is_ok()
+            && done.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_ok()
+    }
+
     /// Returns once every line handed over before the call is in the sink.
     pub(crate) fn flush(&self) {
         let (ack, done) = channel();
