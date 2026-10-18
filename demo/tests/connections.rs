@@ -29,6 +29,7 @@ use std::{
 const ALPN_A: &[u8] = b"demo/framing/1";
 const ALPN_B: &[u8] = b"demo/bulk/1";
 const BOUND: Duration = Duration::from_secs(30);
+static CELL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn config(dir: &Path) -> AdminConfig {
     AdminConfig::from_env(|k| match k {
@@ -43,8 +44,8 @@ fn config(dir: &Path) -> AdminConfig {
 fn forwardable_gateway(alpn: &'static [u8]) -> Alpn {
     Alpn {
         name: alpn.to_vec(),
-        forwardable: false,
-        carriers: vec![],
+        forwardable: true,
+        carriers: vec![NodeKind::Gateway],
     }
 }
 
@@ -185,28 +186,53 @@ async fn wait_for_members(nodes: &[&rdm_node::node::RunningNode], names: &[&str]
     .expect("all nodes must resolve every member in the mesh");
 }
 
-fn read_row(path: &Path) -> Option<NodeConnection> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+fn alpn_hex(alpn: &[u8]) -> String {
+    alpn.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn direct_index_path(fabric_root: &Path, source: &str, destination: &str) -> PathBuf {
+fn read_row(path: &Path) -> Option<NodeConnection> {
+    let bytes = std::fs::read(path).ok()?;
+    let val: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    serde_json::from_value(val.get("record")?.clone()).ok()
+}
+
+async fn wait_for_row(path: &Path, expected: ConnectionState) -> NodeConnection {
+    tokio::time::timeout(BOUND, async {
+        loop {
+            if let Some(row) = read_row(path) {
+                if row.state == expected {
+                    break row;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {expected:?} at {}", path.display()))
+}
+
+fn direct_index_path(
+    fabric_root: &Path,
+    source: &str,
+    destination: &str,
+    alpn: &[u8],
+) -> PathBuf {
     fabric_root
         .join("connections")
         .join(source)
-        .join(format!("{destination}--direct.json"))
+        .join(format!("{source}--{destination}--{}--direct.json", alpn_hex(alpn)))
 }
 
 fn proxy_index_path(
     fabric_root: &Path,
     source: &str,
     destination: &str,
-    alpn_token: &str,
+    alpn: &[u8],
 ) -> PathBuf {
     fabric_root
         .join("connections")
         .join(source)
-        .join(format!("{destination}--{alpn_token}--proxy.json"))
+        .join(format!("{source}--{destination}--{}--proxy.json", alpn_hex(alpn)))
 }
 
 fn read_history(fabric_root: &Path, source: &str) -> Vec<NodeConnection> {
@@ -240,9 +266,12 @@ async fn open_pair(
 }
 
 async fn establish_direct_edge(
+    fabric_root: &Path,
+    source: &str,
     dialer_conns: &Connections,
     acceptor_conns: &mut Connections,
     dest: &Birth,
+    alpn: &[u8],
 ) {
     let (client, server) = open_pair(dialer_conns, acceptor_conns, dest).await;
     assert_eq!(client.kind(), ConnectionKind::Direct);
@@ -254,6 +283,53 @@ async fn establish_direct_edge(
     s_send.write_all(b"warmed").await.unwrap();
     s_send.finish().unwrap();
     assert_eq!(c_recv.read_to_end(64).await.unwrap(), b"warmed");
+    let path = direct_index_path(fabric_root, source, &dest.name.to_string(), alpn);
+    wait_for_row(&path, ConnectionState::Connected).await;
+}
+
+async fn delete_connections_command(
+    root: &Running,
+    birth: &Birth,
+    scope: rdm_core::status::ConnectionScope,
+) -> Vec<rdm_core::ConnectionId> {
+    use rdm_core::node_command::{NodeCommand, NodeCommandReply, NodeCommandRequest};
+    use rdm_transport::stream::StreamItem;
+    let req = NodeCommandRequest::DeleteConnections {
+        node_id: birth.node_id.clone(),
+        incarnation: birth.incarnation.clone(),
+        scope,
+    };
+    let (mut stream, _) = root
+        .node_rpc
+        .client
+        .call_stream::<NodeCommand>(
+            &NodeTarget::ExactNode(birth.node_id.clone()),
+            &req,
+            &rdm_transport::CallOptions::default(),
+        )
+        .await
+        .map(|(s, e)| (s.read_only(), e))
+        .expect("DeleteConnections NodeCommand stream must open");
+    let mut frames = Vec::new();
+    while let Some(item) = stream.next().await {
+        match item {
+            StreamItem::Frame(kind, frame) => {
+                frames.push(frame);
+                if matches!(
+                    kind,
+                    rdm_core::streaming::FrameKind::Terminal
+                        | rdm_core::streaming::FrameKind::Refusal(_)
+                ) {
+                    break;
+                }
+            }
+            StreamItem::Failed(f) => panic!("DeleteConnections stream failed: {f:?}"),
+        }
+    }
+    match frames.pop() {
+        Some(NodeCommandReply::ConnectionsDeleted { closed, .. }) => closed,
+        other => panic!("expected ConnectionsDeleted terminal frame, got: {other:?}"),
+    }
 }
 
 /// Row 1 — `false Proxy establishment`:
@@ -261,9 +337,202 @@ async fn establish_direct_edge(
 /// create **no** `Proxy Connected`; the destination's `Opened` at the exact birth does.
 #[test]
 fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_exact_birth_answers_opened() {
+    let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    const ROW1_ALPNS: [&[u8]; 6] = [
+        b"demo/framing/1",
+        b"demo/framing/2",
+        b"demo/framing/3",
+        b"demo/framing/4",
+        b"demo/framing/5",
+        b"demo/framing/6",
+    ];
     let dir = std::env::temp_dir().join(format!("demo-conn-row1-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row1").unwrap();
+    capture.run(4, async {
+        let root_dir = dir.join("admin");
+        let (root, fabric_root) = boot_admin_with_committed_store_root(&root_dir).await;
+        let alpn_defs: Vec<Alpn> = ROW1_ALPNS.iter().map(|a| forwardable_gateway(a)).collect();
+        let gw1 = spawn_member(
+            &root,
+            &dir.join("gw1"),
+            &root_dir,
+            "mesh1.gateway.1",
+            alpn_defs.clone(),
+        )
+        .await;
+        let rpc1 = spawn_member(
+            &root,
+            &dir.join("rpc1"),
+            &root_dir,
+            "mesh1.rpc.1",
+            alpn_defs.clone(),
+        )
+        .await;
+        let rpc2 = spawn_member(
+            &root,
+            &dir.join("rpc2"),
+            &root_dir,
+            "mesh1.rpc.2",
+            alpn_defs,
+        )
+        .await;
+        wait_for_members(
+            &[&gw1, &rpc1, &rpc2],
+            &["mesh1.gateway.1", "mesh1.rpc.1", "mesh1.rpc.2"],
+        )
+        .await;
+
+        let gw1_birth = birth_of(&gw1);
+        let rpc2_birth = birth_of(&rpc2);
+        let rpc2_name = rpc2_birth.name.clone();
+
+        let mut rpc1_conns = Vec::new();
+        let mut gw1_conns = Vec::new();
+        let mut rpc2_conns = Vec::new();
+        for alpn in ROW1_ALPNS {
+            let r1 = rpc1.connections(alpn).unwrap();
+            let mut g1 = gw1.connections(alpn).unwrap();
+            let mut r2 = rpc2.connections(alpn).unwrap();
+            establish_direct_edge(&fabric_root, "mesh1.rpc.1", &r1, &mut g1, &gw1_birth, alpn)
+                .await;
+            establish_direct_edge(&fabric_root, "mesh1.gateway.1", &g1, &mut r2, &rpc2_birth, alpn)
+                .await;
+            block_direct(&rpc1, &rpc2_name, alpn);
+            rpc1_conns.push(r1);
+            gw1_conns.push(g1);
+            rpc2_conns.push(r2);
+        }
+
+        // 1. Carrier admission alone (gateway.1 admits rpc.1's tunnel, then closes before destination Opened):
+        let alpn1 = ROW1_ALPNS[0];
+        block_direct(&gw1, &rpc2_name, alpn1);
+        let err1 = rpc1_conns[0].open(&rpc2_birth).await.unwrap_err();
+        assert!(
+            matches!(err1, ConnectError::NotSent { .. }),
+            "carrier admission alone without reaching destination must fail before Opened, got: {err1:?}"
+        );
+        assert!(
+            read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn1)).is_none(),
+            "carrier admission alone must write no Proxy Connected row"
+        );
+        unblock_direct(&gw1, &rpc2_name, alpn1);
+
+        // 2. Application bytes on the control stream before Opened:
+        let alpn2 = ROW1_ALPNS[1];
+        fault_pre_opened_once(
+            &rpc2,
+            alpn2,
+            PreOpenedFault::ApplicationBytes(b"premature-app-frame".to_vec()),
+        );
+        let err2 = rpc1_conns[1].open(&rpc2_birth).await.unwrap_err();
+        assert!(
+            matches!(err2, ConnectError::NotSent { .. }),
+            "application bytes before Opened must fail handshake, got: {err2:?}"
+        );
+        assert!(
+            read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn2)).is_none(),
+            "application bytes before Opened must write no Proxy Connected row"
+        );
+
+        // 3. EOF on the control stream before Opened:
+        let alpn3 = ROW1_ALPNS[2];
+        fault_pre_opened_once(&rpc2, alpn3, PreOpenedFault::Eof);
+        let err3 = rpc1_conns[2].open(&rpc2_birth).await.unwrap_err();
+        assert!(
+            matches!(err3, ConnectError::NotSent { .. }),
+            "EOF before Opened must fail handshake, got: {err3:?}"
+        );
+        assert!(
+            read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn3)).is_none(),
+            "EOF before Opened must write no Proxy Connected row"
+        );
+
+        // 4. Wrong birth before Opened:
+        let alpn4 = ROW1_ALPNS[3];
+        let wrong_birth = Birth {
+            incarnation: IncarnationId::mint(),
+            ..rpc2_birth.clone()
+        };
+        let err4 = rpc1_conns[3].open(&wrong_birth).await.unwrap_err();
+        assert!(
+            matches!(
+                err4,
+                ConnectError::WrongIncarnation { ref held, ref found }
+                    if held == &wrong_birth.incarnation && found == &rpc2_birth.incarnation
+            ),
+            "wrong birth at destination must return WrongIncarnation, got: {err4:?}"
+        );
+        assert!(
+            read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn4)).is_none(),
+            "a wrong birth must write no Proxy Connected row"
+        );
+
+        // 5. Handshake lapse before Opened:
+        let alpn5 = ROW1_ALPNS[4];
+        fault_pre_opened_once(&rpc2, alpn5, PreOpenedFault::HandshakeLapse);
+        let err5 = rpc1_conns[4].open(&rpc2_birth).await.unwrap_err();
+        assert!(
+            matches!(err5, ConnectError::NotSent { .. }),
+            "handshake lapse before Opened must fail handshake, got: {err5:?}"
+        );
+        assert!(
+            read_row(&proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn5)).is_none(),
+            "a handshake lapse must write no Proxy Connected row"
+        );
+
+        // 6. Now destination's exact birth answers Opened: Proxy Connected is written and carries bytes.
+        let alpn6 = ROW1_ALPNS[5];
+        let (client, server) = open_pair(&rpc1_conns[5], &mut rpc2_conns[5], &rpc2_birth).await;
+        assert_eq!(
+            client.kind(),
+            ConnectionKind::Proxy {
+                via: gw1_birth.clone()
+            }
+        );
+        let proxy_file = proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", alpn6);
+        let proxy_row = wait_for_row(&proxy_file, ConnectionState::Connected).await;
+        assert_eq!(proxy_row.kind, CoreKind::Proxy);
+        assert_eq!(proxy_row.state, ConnectionState::Connected);
+        assert_eq!(proxy_row.alpn, alpn6);
+        assert_eq!(proxy_row.carrier.as_ref().unwrap().name, gw1_birth.name);
+
+        let (mut c_send, mut c_recv) = client.open_bi().await.unwrap();
+        c_send.write_all(b"exact-birth-opened").await.unwrap();
+        c_send.finish().unwrap();
+        let (mut s_send, mut s_recv) = server.accept_bi().await.unwrap();
+        assert_eq!(
+            s_recv.read_to_end(64).await.unwrap(),
+            b"exact-birth-opened"
+        );
+        s_send.write_all(b"ack:exact-birth-opened").await.unwrap();
+        s_send.finish().unwrap();
+        assert_eq!(
+            c_recv.read_to_end(64).await.unwrap(),
+            b"ack:exact-birth-opened"
+        );
+
+        drop(client);
+        drop(server);
+        drop(rpc1_conns);
+        drop(gw1_conns);
+        drop(rpc2_conns);
+        rpc1.stop().await;
+        rpc2.stop().await;
+        gw1.stop().await;
+        root.leave().await;
+    });
+}
+
+/// Row 2 — `application outcome confused with transport success`:
+/// Establish the tunnel, apply a counter mutation, lose its reply: RDM reports no application
+/// success and replays nothing; the counter shows one execution.
+#[test]
+fn tunnel_stream_reply_loss_after_counter_mutation_reports_error_and_replays_nothing() {
+    let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("demo-conn-row2-{}", NodeId::mint()));
+    let capture =
+        rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row2").unwrap();
     capture.run(4, async {
         let root_dir = dir.join("admin");
         let (root, fabric_root) = boot_admin_with_committed_store_root(&root_dir).await;
@@ -305,187 +574,17 @@ fn false_proxy_establishment_creates_no_proxy_connected_until_the_destinations_e
         let mut gw1_a = gw1.connections(ALPN_A).unwrap();
         let mut rpc2_a = rpc2.connections(ALPN_A).unwrap();
 
-        // Establish active Direct Connected edges rpc.1 -> gateway.1 and gateway.1 -> rpc.2 in the shared store.
-        establish_direct_edge(&rpc1_a, &mut gw1_a, &gw1_birth).await;
-        establish_direct_edge(&gw1_a, &mut rpc2_a, &rpc2_birth).await;
-        assert_eq!(
-            read_row(&direct_index_path(&fabric_root, "mesh1.gateway.1", "mesh1.rpc.2"))
-                .unwrap()
-                .state,
-            ConnectionState::Connected
-        );
-
-        let proxy_file =
-            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", "demo_framing_1");
-
-        // Block Direct rpc.1 -> rpc.2 on ALPN_A.
-        block_direct(&rpc1, &rpc2_name, ALPN_A);
-
-        // 1. Carrier admission alone (gateway.1 admits rpc.1's tunnel, then closes before destination Opened):
-        block_direct(&gw1, &rpc2_name, ALPN_A);
-        let err1 = rpc1_a.open(&rpc2_birth).await.unwrap_err();
-        assert!(
-            matches!(err1, ConnectError::NotSent { ref reason } if reason.contains("carrier closed control stream before tunnel answer")),
-            "carrier admission alone without reaching destination must fail before Opened, got: {err1:?}"
-        );
-        assert!(
-            read_row(&proxy_file).is_none(),
-            "carrier admission alone must write no Proxy Connected row"
-        );
-        unblock_direct(&gw1, &rpc2_name, ALPN_A);
-
-        // 2. Application bytes on the control stream before Opened:
-        fault_pre_opened_once(
-            &rpc2,
-            ALPN_A,
-            PreOpenedFault::ApplicationBytes(b"premature-app-frame".to_vec()),
-        );
-        let err2 = rpc1_a.open(&rpc2_birth).await.unwrap_err();
-        assert!(
-            matches!(err2, ConnectError::NotSent { .. }),
-            "application bytes before Opened must fail handshake, got: {err2:?}"
-        );
-        assert!(
-            read_row(&proxy_file).is_none(),
-            "application bytes before Opened must write no Proxy Connected row"
-        );
-
-        // 3. EOF on the control stream before Opened:
-        fault_pre_opened_once(&rpc2, ALPN_A, PreOpenedFault::Eof);
-        let err3 = rpc1_a.open(&rpc2_birth).await.unwrap_err();
-        assert!(
-            matches!(err3, ConnectError::NotSent { .. }),
-            "EOF before Opened must fail handshake, got: {err3:?}"
-        );
-        assert!(
-            read_row(&proxy_file).is_none(),
-            "EOF before Opened must write no Proxy Connected row"
-        );
-
-        // 4. Wrong birth before Opened:
-        let wrong_birth = Birth {
-            incarnation: IncarnationId::mint(),
-            ..rpc2_birth.clone()
-        };
-        let err4 = rpc1_a.open(&wrong_birth).await.unwrap_err();
-        assert!(
-            matches!(
-                err4,
-                ConnectError::WrongIncarnation { ref held, ref found }
-                    if held == &wrong_birth.incarnation && found == &rpc2_birth.incarnation
-            ),
-            "wrong birth at destination must return WrongIncarnation, got: {err4:?}"
-        );
-        assert!(
-            read_row(&proxy_file).is_none(),
-            "a wrong birth must write no Proxy Connected row"
-        );
-
-        // 5. Handshake lapse before Opened:
-        fault_pre_opened_once(&rpc2, ALPN_A, PreOpenedFault::HandshakeLapse);
-        let err5 = rpc1_a.open(&rpc2_birth).await.unwrap_err();
-        assert!(
-            matches!(err5, ConnectError::NotSent { .. }),
-            "handshake lapse before Opened must fail handshake, got: {err5:?}"
-        );
-        assert!(
-            read_row(&proxy_file).is_none(),
-            "a handshake lapse must write no Proxy Connected row"
-        );
-
-        // 6. Now destination's exact birth answers Opened: Proxy Connected is written and carries bytes.
-        let (client, server) = open_pair(&rpc1_a, &mut rpc2_a, &rpc2_birth).await;
-        assert_eq!(
-            client.kind(),
-            ConnectionKind::Proxy {
-                via: gw1_birth.clone()
-            }
-        );
-        let proxy_row =
-            read_row(&proxy_file).expect("Opened at the exact birth writes Proxy Connected");
-        assert_eq!(proxy_row.kind, CoreKind::Proxy);
-        assert_eq!(proxy_row.state, ConnectionState::Connected);
-        assert_eq!(proxy_row.alpn, ALPN_A);
-        assert_eq!(proxy_row.carrier.as_ref().unwrap().name, gw1_birth.name);
-
-        let (mut c_send, mut c_recv) = client.open_bi().await.unwrap();
-        c_send.write_all(b"exact-birth-opened").await.unwrap();
-        c_send.finish().unwrap();
-        let (mut s_send, mut s_recv) = server.accept_bi().await.unwrap();
-        assert_eq!(
-            s_recv.read_to_end(64).await.unwrap(),
-            b"exact-birth-opened"
-        );
-        s_send.write_all(b"ack:exact-birth-opened").await.unwrap();
-        s_send.finish().unwrap();
-        assert_eq!(
-            c_recv.read_to_end(64).await.unwrap(),
-            b"ack:exact-birth-opened"
-        );
-
-        drop(client);
-        drop(server);
-        drop(rpc1_a);
-        drop(gw1_a);
-        drop(rpc2_a);
-        rpc1.stop().await;
-        rpc2.stop().await;
-        gw1.stop().await;
-        root.leave().await;
-    });
-}
-
-/// Row 2 — `application outcome confused with transport success`:
-/// Establish the tunnel, apply a counter mutation, lose its reply: RDM reports no application
-/// success and replays nothing; the counter shows one execution.
-#[test]
-fn tunnel_stream_reply_loss_after_counter_mutation_reports_error_and_replays_nothing() {
-    let dir = std::env::temp_dir().join(format!("demo-conn-row2-{}", NodeId::mint()));
-    let capture =
-        rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row2").unwrap();
-    capture.run(4, async {
-        let root_dir = dir.join("admin");
-        let (root, _fabric_root) = boot_admin_with_committed_store_root(&root_dir).await;
-        let gw1 = spawn_member(
-            &root,
-            &dir.join("gw1"),
-            &root_dir,
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_a, &mut gw1_a, &gw1_birth, ALPN_A)
+            .await;
+        establish_direct_edge(
+            &fabric_root,
             "mesh1.gateway.1",
-            vec![forwardable_gateway(ALPN_A)],
+            &gw1_a,
+            &mut rpc2_a,
+            &rpc2_birth,
+            ALPN_A,
         )
         .await;
-        let rpc1 = spawn_member(
-            &root,
-            &dir.join("rpc1"),
-            &root_dir,
-            "mesh1.rpc.1",
-            vec![forwardable_gateway(ALPN_A)],
-        )
-        .await;
-        let rpc2 = spawn_member(
-            &root,
-            &dir.join("rpc2"),
-            &root_dir,
-            "mesh1.rpc.2",
-            vec![forwardable_gateway(ALPN_A)],
-        )
-        .await;
-        wait_for_members(
-            &[&gw1, &rpc1, &rpc2],
-            &["mesh1.gateway.1", "mesh1.rpc.1", "mesh1.rpc.2"],
-        )
-        .await;
-
-        let gw1_birth = birth_of(&gw1);
-        let rpc2_birth = birth_of(&rpc2);
-        let rpc2_name = rpc2_birth.name.clone();
-
-        let rpc1_a = rpc1.connections(ALPN_A).unwrap();
-        let mut gw1_a = gw1.connections(ALPN_A).unwrap();
-        let mut rpc2_a = rpc2.connections(ALPN_A).unwrap();
-
-        establish_direct_edge(&rpc1_a, &mut gw1_a, &gw1_birth).await;
-        establish_direct_edge(&gw1_a, &mut rpc2_a, &rpc2_birth).await;
 
         block_direct(&rpc1, &rpc2_name, ALPN_A);
         let (client, server) = open_pair(&rpc1_a, &mut rpc2_a, &rpc2_birth).await;
@@ -546,6 +645,7 @@ fn tunnel_stream_reply_loss_after_counter_mutation_reports_error_and_replays_not
 /// streams are unchanged.
 #[test]
 fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged() {
+    let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("demo-conn-row3-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row3").unwrap();
@@ -594,10 +694,28 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
         let mut rpc2_a = rpc2.connections(ALPN_A).unwrap();
         let mut rpc2_b = rpc2.connections(ALPN_B).unwrap();
 
-        establish_direct_edge(&rpc1_a, &mut gw1_a, &gw1_birth).await;
-        establish_direct_edge(&gw1_a, &mut rpc2_a, &rpc2_birth).await;
-        establish_direct_edge(&rpc1_b, &mut gw1_b, &gw1_birth).await;
-        establish_direct_edge(&gw1_b, &mut rpc2_b, &rpc2_birth).await;
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_a, &mut gw1_a, &gw1_birth, ALPN_A)
+            .await;
+        establish_direct_edge(
+            &fabric_root,
+            "mesh1.gateway.1",
+            &gw1_a,
+            &mut rpc2_a,
+            &rpc2_birth,
+            ALPN_A,
+        )
+        .await;
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_b, &mut gw1_b, &gw1_birth, ALPN_B)
+            .await;
+        establish_direct_edge(
+            &fabric_root,
+            "mesh1.gateway.1",
+            &gw1_b,
+            &mut rpc2_b,
+            &rpc2_birth,
+            ALPN_B,
+        )
+        .await;
 
         // Block Direct on both ALPN_A and ALPN_B from rpc.1 to rpc.2; establish Proxy on both.
         block_direct(&rpc1, &rpc2_name, ALPN_A);
@@ -618,6 +736,12 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
                 via: gw1_birth.clone()
             }
         );
+        let proxy_a_file =
+            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_A);
+        let proxy_b_file =
+            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_B);
+        wait_for_row(&proxy_a_file, ConnectionState::Connected).await;
+        wait_for_row(&proxy_b_file, ConnectionState::Connected).await;
 
         // Open a live stream on B's Proxy before A restores Direct.
         let (mut b_send, mut b_recv) = proxy_b_client.open_bi().await.unwrap();
@@ -633,24 +757,21 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
         drop(in_c);
         drop(in_s);
 
-        // Wait for A's Proxy index to be Disconnected(direct-restored) on disk while B's Proxy index stays Connected.
-        let proxy_a_file =
-            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", "demo_framing_1");
-        let proxy_b_file =
-            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", "demo_bulk_1");
-        tokio::time::timeout(BOUND, async {
-            loop {
-                if let Some(row_a) = read_row(&proxy_a_file) {
-                    if row_a.state == ConnectionState::Disconnected {
-                        assert_eq!(row_a.reason.as_deref(), Some("direct-restored"));
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
+        // Drain the reconnect probe connection accepted by rpc.2 on ALPN_A, and wait for A's Proxy
+        // index to be Disconnected(direct-restored) on disk while B's Proxy index stays Connected.
+        let probe_on_a = tokio::time::timeout(BOUND, rpc2_a.accept())
+            .await
+            .expect("rpc.1's reconnect scheduler must probe rpc.2 on ALPN_A")
+            .unwrap();
+        drop(probe_on_a);
+
+        let row_a = wait_for_row(&proxy_a_file, ConnectionState::Disconnected).await;
+        assert_eq!(row_a.reason.as_deref(), Some("direct-restored"));
+        wait_for_row(
+            &direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_A),
+            ConnectionState::Connected,
+        )
+        .await;
 
         let row_b = read_row(&proxy_b_file).unwrap();
         assert_eq!(
@@ -659,7 +780,16 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
             "restoring ALPN_A must leave ALPN_B's Proxy Connected"
         );
 
-        // Next open on A is Direct; next open on B is still Proxy (via gateway.1), and B's in-flight stream continues!
+        // B's in-flight stream continues while A has restored Direct!
+        b_send.write_all(b"-and-after").await.unwrap();
+        b_send.finish().unwrap();
+        assert_eq!(bs_recv.read_to_end(64).await.unwrap(), b"-and-after");
+        bs_send.write_all(b"b-proxy-intact").await.unwrap();
+        bs_send.finish().unwrap();
+        assert_eq!(b_recv.read_to_end(64).await.unwrap(), b"b-proxy-intact");
+
+        // Next open on A is Direct; next open on B is still Proxy (via gateway.1)!
+        tokio::time::sleep(Duration::from_millis(50)).await;
         let (next_a_c, next_a_s) = open_pair(&rpc1_a, &mut rpc2_a, &rpc2_birth).await;
         assert_eq!(next_a_c.kind(), ConnectionKind::Direct);
 
@@ -670,13 +800,6 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
                 via: gw1_birth.clone()
             }
         );
-
-        b_send.write_all(b"-and-after").await.unwrap();
-        b_send.finish().unwrap();
-        assert_eq!(bs_recv.read_to_end(64).await.unwrap(), b"-and-after");
-        bs_send.write_all(b"b-proxy-intact").await.unwrap();
-        bs_send.finish().unwrap();
-        assert_eq!(b_recv.read_to_end(64).await.unwrap(), b"b-proxy-intact");
 
         drop(next_a_c);
         drop(next_a_s);
@@ -698,12 +821,13 @@ fn restoring_direct_on_alpn_a_leaves_alpn_bs_proxy_route_and_streams_unchanged()
 /// codes hold through the carrier.
 #[test]
 fn concurrent_streams_from_both_ends_preserve_pairing_finish_reset_and_stop_codes_through_the_carrier() {
+    let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("demo-conn-row4-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row4").unwrap();
     capture.run(4, async {
         let root_dir = dir.join("admin");
-        let (root, _fabric_root) = boot_admin_with_committed_store_root(&root_dir).await;
+        let (root, fabric_root) = boot_admin_with_committed_store_root(&root_dir).await;
         let gw1 = spawn_member(
             &root,
             &dir.join("gw1"),
@@ -742,8 +866,17 @@ fn concurrent_streams_from_both_ends_preserve_pairing_finish_reset_and_stop_code
         let mut gw1_a = gw1.connections(ALPN_A).unwrap();
         let mut rpc2_a = rpc2.connections(ALPN_A).unwrap();
 
-        establish_direct_edge(&rpc1_a, &mut gw1_a, &gw1_birth).await;
-        establish_direct_edge(&gw1_a, &mut rpc2_a, &rpc2_birth).await;
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_a, &mut gw1_a, &gw1_birth, ALPN_A)
+            .await;
+        establish_direct_edge(
+            &fabric_root,
+            "mesh1.gateway.1",
+            &gw1_a,
+            &mut rpc2_a,
+            &rpc2_birth,
+            ALPN_A,
+        )
+        .await;
 
         block_direct(&rpc1, &rpc2_name, ALPN_A);
         let (client, server) = open_pair(&rpc1_a, &mut rpc2_a, &rpc2_birth).await;
@@ -862,6 +995,7 @@ fn concurrent_streams_from_both_ends_preserve_pairing_finish_reset_and_stop_code
 /// three-node flame (`rpc.1` → `gateway.1` → `rpc.2`).
 #[test]
 fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_delete_intact() {
+    let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("demo-conn-row5-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row5").unwrap();
@@ -914,11 +1048,23 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
             destination = "mesh1.rpc.2"
         );
 
-        establish_direct_edge(&rpc1_a, &mut gw1_a, &gw1_birth).await;
-        establish_direct_edge(&gw1_a, &mut rpc2_a, &rpc2_birth).await;
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_a, &mut gw1_a, &gw1_birth, ALPN_A)
+            .await;
+        establish_direct_edge(
+            &fabric_root,
+            "mesh1.gateway.1",
+            &gw1_a,
+            &mut rpc2_a,
+            &rpc2_birth,
+            ALPN_A,
+        )
+        .await;
 
         block_direct(&rpc1, &rpc2_name, ALPN_A);
-        let proxy_client = tracing::Instrument::instrument(rpc1_a.open(&rpc2_birth), flow.clone()).await.unwrap();
+        let proxy_client =
+            tracing::Instrument::instrument(rpc1_a.open(&rpc2_birth), flow.clone())
+                .await
+                .unwrap();
         let proxy_server = tokio::time::timeout(BOUND, rpc2_a.accept()).await.unwrap().unwrap();
         let tunnel_id = proxy_client.id().clone();
         assert_eq!(
@@ -927,6 +1073,9 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
                 via: gw1_birth.clone()
             }
         );
+        let proxy_file =
+            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_A);
+        wait_for_row(&proxy_file, ConnectionState::Connected).await;
 
         // Open a long-running stream on the Proxy before Direct is restored.
         let (mut long_send, mut long_recv) = proxy_client.open_bi().await.unwrap();
@@ -941,27 +1090,29 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
 
         // Restore Direct by unblocking rpc.1 -> rpc.2 and having rpc.2 dial rpc.1 (inbound recovery trigger).
         unblock_direct(&rpc1, &rpc2_name, ALPN_A);
-        let in_c = tracing::Instrument::instrument(rpc2_a.open(&rpc1_birth), flow.clone()).await.unwrap();
+        let in_c =
+            tracing::Instrument::instrument(rpc2_a.open(&rpc1_birth), flow.clone())
+                .await
+                .unwrap();
         let in_s = tokio::time::timeout(BOUND, rpc1_a.accept()).await.unwrap().unwrap();
         drop(in_c);
         drop(in_s);
 
-        // Wait for the Proxy row to become Disconnected(direct-restored) on disk.
-        let proxy_file =
-            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", "demo_framing_1");
-        tokio::time::timeout(BOUND, async {
-            loop {
-                if let Some(row) = read_row(&proxy_file) {
-                    if row.state == ConnectionState::Disconnected {
-                        assert_eq!(row.reason.as_deref(), Some("direct-restored"));
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
+        // Drain the reconnect probe connection accepted by rpc.2 on ALPN_A, and wait for the Proxy
+        // row to become Disconnected(direct-restored) on disk.
+        let probe_on_a = tokio::time::timeout(BOUND, rpc2_a.accept())
+            .await
+            .expect("rpc.1's reconnect scheduler must probe rpc.2 on ALPN_A")
+            .unwrap();
+        drop(probe_on_a);
+
+        let retired_row = wait_for_row(&proxy_file, ConnectionState::Disconnected).await;
+        assert_eq!(retired_row.reason.as_deref(), Some("direct-restored"));
+        wait_for_row(
+            &direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_A),
+            ConnectionState::Connected,
+        )
+        .await;
 
         // 1. The long-running Proxy stream continues across Direct restoration!
         long_send
@@ -980,34 +1131,25 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         assert_eq!(&ack_part, b"ack-from-long-proxy-stream");
 
         // 2. The next open() goes Direct!
-        let direct_client = tracing::Instrument::instrument(rpc1_a.open(&rpc2_birth), flow.clone()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let direct_client =
+            tracing::Instrument::instrument(rpc1_a.open(&rpc2_birth), flow.clone())
+                .await
+                .unwrap();
         let direct_server = tokio::time::timeout(BOUND, rpc2_a.accept()).await.unwrap().unwrap();
         assert_eq!(direct_client.kind(), ConnectionKind::Direct);
 
         // 3. `node.connections.delete` by the tunnel's ConnectionId still closes the live tunnel and its stream!
-        let del_req = rdm_core::status::StatusRequest::DeleteConnections {
-            node_id: rpc1_birth.node_id.clone(),
-            incarnation: rpc1_birth.incarnation.clone(),
-            scope: rdm_core::status::ConnectionScope::Connections(vec![tunnel_id.clone()]),
-        };
-        let (del_out, _) = root
-            .node_rpc
-            .client
-            .call::<rdm_core::status::Status>(
-                &NodeTarget::ExactNode(rpc1_birth.node_id.clone()),
-                &del_req,
-                &rdm_transport::CallOptions::default(),
-            )
-            .await;
-        match del_out.reply().map(|r| r.value()) {
-            Some(rdm_core::status::StatusReply::ConnectionsDeleted { closed, .. }) => {
-                assert!(
-                    closed.contains(&tunnel_id),
-                    "DeleteConnections by tunnel_id must close the still-live Proxy connection, closed={closed:?}"
-                );
-            }
-            other => panic!("expected ConnectionsDeleted reply, got: {other:?}"),
-        }
+        let closed = delete_connections_command(
+            &root,
+            &rpc1_birth,
+            rdm_core::status::ConnectionScope::Connections(vec![tunnel_id.clone()]),
+        )
+        .await;
+        assert!(
+            closed.contains(&tunnel_id),
+            "DeleteConnections by tunnel_id must close the still-live Proxy connection, closed={closed:?}"
+        );
         let closed_reason = tokio::time::timeout(BOUND, proxy_client.closed())
             .await
             .expect("the tunnel must close when deleted by its ConnectionId");
@@ -1029,8 +1171,20 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
             b"ack:direct-still-alive"
         );
 
+        drop(direct_client);
+        drop(direct_server);
+        drop(proxy_client);
+        drop(proxy_server);
+        rpc1.stop().await;
+        rpc2.stop().await;
+        gw1.stop().await;
+        root.leave().await;
+
         drop(flow);
         let spans = capture.spans().unwrap();
+        if let Ok(dump) = std::env::var("RDM_DEMO_SPANS_OUT") {
+            std::fs::write(dump, serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+        }
         assert!(
             spans
                 .iter()
@@ -1048,18 +1202,6 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
                 >= 3,
             "three-node trace must include the three admission spans across source, carrier, and destination"
         );
-        if let Ok(dump) = std::env::var("RDM_DEMO_SPANS_OUT") {
-            std::fs::write(dump, serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
-        }
-
-        drop(direct_client);
-        drop(direct_server);
-        drop(proxy_client);
-        drop(proxy_server);
-        rpc1.stop().await;
-        rpc2.stop().await;
-        gw1.stop().await;
-        root.leave().await;
     });
 }
 
@@ -1068,6 +1210,7 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
 /// its obligation with no duplicate attempt.
 #[test]
 fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_and_resumes_the_right_alpn() {
+    let _serial = CELL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = std::env::temp_dir().join(format!("demo-conn-row6-{}", NodeId::mint()));
     let capture =
         rdm_transport::EvidenceCapture::start(&dir.join("evidence"), "demo-conn-row6").unwrap();
@@ -1106,6 +1249,7 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
         .await;
 
         let gw1_birth = birth_of(&gw1);
+        let rpc1_birth = birth_of(&rpc1);
         let rpc2_birth = birth_of(&rpc2);
         let rpc2_name = rpc2_birth.name.clone();
 
@@ -1116,20 +1260,25 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
         let _rpc2_a = rpc2.connections(ALPN_A).unwrap();
         let mut rpc2_b = rpc2.connections(ALPN_B).unwrap();
 
-        establish_direct_edge(&rpc1_a, &mut gw1_a, &gw1_birth).await;
-        establish_direct_edge(&rpc1_b, &mut gw1_b, &gw1_birth).await;
-        establish_direct_edge(&gw1_b, &mut rpc2_b, &rpc2_birth).await;
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_a, &mut gw1_a, &gw1_birth, ALPN_A)
+            .await;
+        establish_direct_edge(&fabric_root, "mesh1.rpc.1", &rpc1_b, &mut gw1_b, &gw1_birth, ALPN_B)
+            .await;
+        establish_direct_edge(
+            &fabric_root,
+            "mesh1.gateway.1",
+            &gw1_b,
+            &mut rpc2_b,
+            &rpc2_birth,
+            ALPN_B,
+        )
+        .await;
 
-        // Block Direct on ALPN_B from rpc.1 -> rpc.2 and fail Direct 3 times (the first 2 while
-        // gw1 -> rpc.2 is also blocked so open() returns NotSent after recording Direct Failed
-        // ordinals 1 and 2; the 3rd with gw1 -> rpc.2 unblocked so ordinal 3 is recorded and Proxy
-        // is established on ALPN_B). That gives ordinal 3 (~4 s backoff) so restarting before
-        // `next_due` has a wide deterministic window!
+        // Block Direct on ALPN_B from rpc.1 -> rpc.2, open Proxy on ALPN_B (recording Direct
+        // Failed ordinal 1 + Proxy Connected), and wait for rpc.1's reconnect scheduler (while
+        // Direct remains blocked on rpc.1) to advance the persisted Direct Failed row to
+        // ordinal 3 (~4 s backoff) so restarting before `next_due` has a wide deterministic window!
         block_direct(&rpc1, &rpc2_name, ALPN_B);
-        block_direct(&gw1, &rpc2_name, ALPN_B);
-        let _ = rpc1_b.open(&rpc2_birth).await;
-        let _ = rpc1_b.open(&rpc2_birth).await;
-        unblock_direct(&gw1, &rpc2_name, ALPN_B);
         let (proxy_b_client, proxy_b_server) = open_pair(&rpc1_b, &mut rpc2_b, &rpc2_birth).await;
         assert_eq!(
             proxy_b_client.kind(),
@@ -1138,8 +1287,21 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
             }
         );
 
-        let failed_row = read_row(&direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2"))
-            .expect("Direct Failed row must be persisted on the shared store root");
+        let direct_b_file = direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_B);
+        let failed_row = tokio::time::timeout(BOUND, async {
+            loop {
+                if let Some(row) = read_row(&direct_b_file) {
+                    if row.state == ConnectionState::Failed
+                        && row.recovery.map(|r| r.attempt_ordinal) == Some(3)
+                    {
+                        break row;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("Direct Failed row at ordinal 3 must be persisted on the shared store root");
         assert_eq!(failed_row.state, ConnectionState::Failed);
         assert_eq!(
             failed_row.alpn, ALPN_B,
@@ -1153,22 +1315,29 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
             "ordinal 3 backoff places next_due at least 4 s after logged_at_ms"
         );
 
-        let history_before_restart = read_history(&fabric_root, "mesh1.rpc.1");
-        let direct_events_before = history_before_restart
-            .iter()
-            .filter(|r| r.destination.name == rpc2_name && r.kind == CoreKind::Direct)
-            .count();
-
-        // Stop rpc.1 (`stop_commanded`) so its connection rows remain on disk across the restart.
+        // Stop rpc.1 (`DeleteConnections { All }` + `stop_commanded`) so its Direct Failed row
+        // remains on disk across the restart while its old registry is disarmed.
         let prev_birth = (
             rpc1.digest.node.node_id.clone(),
             rpc1.digest.node.incarnation.clone(),
         );
+        let _ = delete_connections_command(
+            &root,
+            &rpc1_birth,
+            rdm_core::status::ConnectionScope::All,
+        )
+        .await;
         drop(proxy_b_client);
         drop(proxy_b_server);
         drop(rpc1_a);
         drop(rpc1_b);
         rpc1.stop_commanded().await;
+
+        let history_before_restart = read_history(&fabric_root, "mesh1.rpc.1");
+        let direct_events_before = history_before_restart
+            .iter()
+            .filter(|r| r.destination.name == rpc2_name && r.kind == CoreKind::Direct)
+            .count();
 
         // Restart rpc.1 before its persisted `next_due`.
         let rpc1_restarted = spawn_member_with_time(
@@ -1210,32 +1379,19 @@ fn source_restart_before_persisted_next_due_makes_no_early_or_duplicate_attempt_
             "restarting before persisted next_due must not trigger an early reconnect attempt"
         );
 
-        // Now wait until `due_ms` arrives: the scheduler fires once on ALPN_B (the right ALPN),
-        // establishes Direct Connected, and retires ALPN_B's Proxy with no duplicate attempt.
+        // Now wait until `due_ms` arrives: the scheduler fires once on ALPN_B (the right ALPN) and
+        // establishes Direct Connected with no duplicate attempt.
         let accepted_on_b = tokio::time::timeout(BOUND, rpc2_b.accept())
             .await
             .expect("the reconnect scheduler must dial on ALPN_B once next_due is reached")
             .unwrap();
         drop(accepted_on_b);
 
-        let proxy_b_file =
-            proxy_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", "demo_bulk_1");
-        tokio::time::timeout(BOUND, async {
-            loop {
-                if let Some(row) = read_row(&proxy_b_file) {
-                    if row.state == ConnectionState::Disconnected {
-                        assert_eq!(row.reason.as_deref(), Some("direct-restored"));
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
-
-        let direct_after =
-            read_row(&direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2")).unwrap();
+        let direct_after = wait_for_row(
+            &direct_index_path(&fabric_root, "mesh1.rpc.1", "mesh1.rpc.2", ALPN_B),
+            ConnectionState::Connected,
+        )
+        .await;
         assert_eq!(direct_after.state, ConnectionState::Connected);
         assert_eq!(
             direct_after.alpn, ALPN_B,
