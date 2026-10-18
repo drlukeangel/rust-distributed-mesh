@@ -428,9 +428,21 @@ def score(line):
             return i
     return len(PRIORITY)
 lines.sort(key=score)
-open(path, "w").writelines(lines)
+# Each line carries its start index: the stems start on a ramp, not all at T=0 (below).
+open(path, "w").writelines(f"{i} {l}" for i, l in enumerate(lines))
 PY
+# The start ramp (i143 record, the birth storm read 13618d44): every journal-space wait of a gate
+# falls in the minute its stems start together (425 births, 15 842 files, up to 308 threads waiting
+# for ext4 journal space). The stems start GATE_START_STAGGER_MS apart in priority order, heavy
+# first, so the births spread over the ramp instead of one minute; the concurrency is unchanged
+# (GATE_JOBS), the ramp's whole length is bounded, and 0 turns it off.
+STAGGER_MS="${GATE_START_STAGGER_MS:-750}"
+RAMP_CAP_MS="${GATE_START_RAMP_CAP_MS:-30000}"
+export STAGGER_MS RAMP_CAP_MS
 xargs -P "$JOBS" -L1 bash -c '
+    idx=$1; shift
+    delay=$(( idx * STAGGER_MS )); [ $delay -gt $RAMP_CAP_MS ] && delay=$RAMP_CAP_MS
+    [ $delay -gt 0 ] && sleep $(awk -v d=$delay "BEGIN{printf \"%.3f\", d/1000}")
     case "$1" in rshape-*|i143-2784-chaos-container|i143-2777-container|container-proof)
         export GATE_JOB_SECS=${GATE_HEAVY_JOB_SECS:-900} ;;
     esac
