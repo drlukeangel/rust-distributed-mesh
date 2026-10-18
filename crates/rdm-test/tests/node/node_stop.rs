@@ -762,6 +762,10 @@ fn end_ns(sp: &Value) -> u64 {
     sp["end_unix_nano"].as_u64().unwrap_or(0)
 }
 
+fn unix_nanos() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the epoch").as_nanos() as u64
+}
+
 /// mesh1 {1 node-admin, 1 rpc node} and mesh2 {`admins` node-admins, 1 rpc node}, settled and
 /// ready-for-traffic, through the typed objects: the fabric-primary is mesh1.admin.1.
 async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
@@ -1136,9 +1140,12 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
 /// primary never took, the node live and its declaration owed. Then mesh2's primary is stopped,
 /// which moves mesh2's seat to mesh2's other admin first. The node hears the move: its call to the
 /// old holder is cancelled (`via-seat-moved`) and it declares to the new holder, which applies it
-/// once; the old holder decides nothing of it (its cut holds the one call it took). Must NOT happen:
-/// the node.started applied twice, applied by the old holder, or addressed to an admin that does not
-/// hold the seat.
+/// once; the old holder decides nothing of it (its cut holds the one call it took). The create's
+/// failure leaves the node surplus to the accepted topology, so the fabric-primary's drift pass is held
+/// at its drift seam until the declaration is delivered; released, drift's attempt deletes the surplus
+/// node as a removal does: the provider's exit proof, then NodeDeleted. Must NOT happen: the
+/// node.started applied twice, applied by the old holder, or addressed to an admin that does not hold
+/// the seat; a drift attempt before the release, or a second one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder() {
     let test = "a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder";
@@ -1152,8 +1159,13 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_
     assert!(!views.iter().any(|n| n.name == holder && n.is_fabric_primary), "mesh2's primary is not the fabric primary: the entry admin stays put");
     let node: PathName = "mesh2.rpc.2".parse().unwrap();
     let (node_s, holder_s, successor_s) = (node.to_string(), holder.to_string(), successor.to_string());
+    let fp = views.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("a fabric-primary");
     let nodes = estate.nodes_obj().await;
 
+    // The fabric-primary's drift pass is held: the failed create leaves its node surplus, and drift's
+    // removal of it waits for the release.
+    let drift = Door::at(&estate, &fp).await;
+    drift.arm("drift-pass", serde_json::json!({"kind": "drift-pass", "node": fp})).await;
     // The old holder holds the node's node.started at its status door: the declaration stays owed.
     let door = Door::at(&estate, &holder_s).await;
     door.arm("declaration", serde_json::json!({"kind": "declaration", "node": node_s, "state": "ReadyForTraffic"})).await;
@@ -1177,9 +1189,34 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_
         assert!(std::time::Instant::now() < until, "the new holder sets the node ready from its declaration within 30 s: {v:?}");
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    // Released: drift's attempt deletes the node the failed create left surplus.
+    drift.wait_held("drift-pass").await;
+    let released_at = unix_nanos();
+    drift.release("drift-pass").await;
+    estate.until_node(&node_s, "drift deletes the surplus node", SETTLE, |n| n.is_none().then_some(())).await;
 
     estate.stop().await;
     let spans = estate.spans();
+    // The hold is the drift pass's own span on the fabric-primary, naming the cut, as long as the hold.
+    let held: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drift-held").into_iter().filter(|sp| attr(sp, "node") == fp).collect();
+    assert!(!held.is_empty() && held.iter().all(|sp| attr(sp, "by") == "the testkit cut drift-pass"), "the fabric-primary's held drift pass names the cut: {held:#?}");
+    let bare = |id: String| id.trim_start_matches("bid_").replace('-', "");
+    let removal: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| attr(sp, "scope") == format!("surplus: {node_s}")).collect();
+    assert_eq!(removal.len(), 1, "one drift attempt removes the surplus node: {removal:#?}");
+    assert!(start_ns(removal[0]) >= released_at, "the drift attempt opened after the release, never before: {:#?}", removal[0]);
+    let (build, attempt) = (bare(attr(removal[0], "build_id")), attr(removal[0], "attempt"));
+    // The failed create leaves the birth Build accepted: the stop ran as its attempt, and so does drift's removal.
+    let (Some(Frame::Started { build_id: birth, .. }), Some(Frame::Started { build_id: create, .. })) = (moved.first(), restarted.first()) else { panic!("{moved:?} {restarted:?}") };
+    assert_eq!(build, birth.to_string(), "drift's attempt is of the accepted birth Build the stop ran on, never of the failed create's {create}: {:#?}", removal[0]);
+    let exit =named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .find(|sp| bare(attr(sp, "build_id")) == build && attr(sp, "attempt") == attempt && attr(sp, "node") == node_s && attr(sp, "step") == "TerminateRuntime")
+        .unwrap_or_else(|| panic!("drift's attempt {attempt} of {build} proves {node_s} exited"));
+    assert_eq!(attr(exit, "outcome"), "complete", "{exit:#?}");
+    let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
+    assert_eq!(deleted.len(), 1, "NodeDeleted once for the surplus node: {deleted:#?}");
+    assert_eq!((bare(attr(deleted[0], "build_id")), attr(deleted[0], "attempt")), (build.clone(), attempt.clone()), "NodeDeleted names drift's attempt: {:#?}", deleted[0]);
+    assert!(end_ns(exit) <= start_ns(deleted[0]), "NodeDeleted follows the exit proof: {exit:#?} vs {:#?}", deleted[0]);
     let ready: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
         // A first start names no operation; its measured Ready remains owed without an open command stream.
@@ -1196,6 +1233,13 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_
     assert!(early.is_empty(), "no declaration to {successor_s} before it held the seat: {early:#?}");
     let cancelled: Vec<&Value> = named(&spans, "rdm.node_rpc.status.remove.via-seat-moved").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
     assert!(!cancelled.is_empty(), "the call to the old holder was cancelled when the seat moved");
-    println!("declaration across a seat move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}", attr(applied[0], "to"), attr(applied[0], "route"), s(&applied[0]["trace_id"]));
+    println!(
+        "declaration across a seat move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}; drift held {} pass(es), then attempt {attempt} of {build} deleted {node_s}: flame http://192.168.68.99:16687/trace/{}",
+        attr(applied[0], "to"),
+        attr(applied[0], "route"),
+        s(&applied[0]["trace_id"]),
+        held.len(),
+        s(&removal[0]["trace_id"])
+    );
     estate.record_trace_url(applied[0]["trace_id"].as_str().unwrap_or(""));
 }

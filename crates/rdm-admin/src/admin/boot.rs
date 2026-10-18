@@ -2485,11 +2485,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let drift_nodes = nodes_storage.clone();
                                         let ladder = ladder.clone();
                                         let park = park_gate.clone();
+                                        let drift_seam = wiring.drift_seam.take();
                                         executor = tokio::spawn(async move {
                                             let mut started = HashSet::new();
                                             let mut held = HashSet::new();
                                             let exit_verdicts = ExitVerdicts::default();
                                             loop {
+                                                // The drift seam's hold, awaited before the pass's turn and outside every lock, inside
+                                                // a span that names what held the pass and lasts as long as the hold.
+                                                if let Some(hold) = drift_seam.as_ref().and_then(|seam| seam.before_drift_pass(&me.to_string())) {
+                                                    let span = tracing::info_span!("rdm.node_admin.build.update.via-drift-held", node = %me, by = %hold.by);
+                                                    async {
+                                                        hold.released.await;
+                                                        tracing::info!("the reconcile pass was held by the drift seam and runs now");
+                                                    }
+                                                    .instrument(span)
+                                                    .await;
+                                                }
                                                 // Held here while the admin is parked: its own wait, outside every lock.
                                                 let turn = park.turn("executor").await;
                                                 // Decide on, and plan from, the view as it is now: a cached view
