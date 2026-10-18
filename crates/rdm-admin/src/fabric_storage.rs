@@ -305,8 +305,8 @@ pub trait FabricStorage: Send + Sync {
 /// A fabric store held in memory.
 #[derive(Default)]
 pub struct MemoryFabricStorage {
-    identity: std::sync::Arc<Mutex<Option<FabricIdentity>>>,
-    moves: std::sync::Arc<Mutex<MoveLog>>,
+    identity: Mutex<Option<FabricIdentity>>,
+    moves: Mutex<MoveLog>,
     /// The fabric-primary seat's cut-off the identity writes read.
     cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
     /// The committed fabric seat record the identity writes read, once set.
@@ -328,12 +328,6 @@ impl MemoryFabricStorage {
     /// An empty store whose identity writes are cut off by `cut_off` (the fabric-primary seat's scope).
     pub fn cut_off_by(cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
         Self { cut_off, ..Self::default() }
-    }
-
-    /// Another admin's view of this store's rows (the Fabric identity, its name, the seat moves), its
-    /// identity writes cut off by `cut_off` and read against the seat record it is given.
-    pub fn view(&self, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
-        Self { identity: self.identity.clone(), moves: self.moves.clone(), cut_off, seat: std::sync::OnceLock::new() }
     }
 
     /// A write of the Fabric identity or its name (`fabric/<what>`): refused while the fabric-primary

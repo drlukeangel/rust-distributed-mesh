@@ -12,7 +12,7 @@
 //! RDM adapters:
 //! - [`MemoryBuildStateAdapter`]: the in-memory fact log that backs the live
 //!   fabric control projection;
-//! - [`LaneJournal`]: the file adapter's journal on the fabric's shared store
+//! - [`FileJournal`]: the file adapter's journal on the fabric's shared store
 //!   root (`fabric/builds/` written by the fabric-primary, `meshes/<mesh>/builds/`
 //!   written by each mesh's primary under the writer ladder; R-BI6), so a
 //!   successor reads it there.
@@ -1799,8 +1799,9 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
-impl LocalBuildLog for LaneJournal {
+impl LocalBuildLog for FileJournal {
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
         let mut w = self.turn("derive_on_every_fact").await;
         let _ = self.sync(&w).await;
@@ -1823,11 +1824,11 @@ impl LocalBuildLog for LaneJournal {
     }
 
     async fn put_attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError> {
-        self.contexts.put(&attempt_context_key(build_id, lane, attempt), context).await
+        self.contexts.write(&attempt_context_key(build_id, lane, attempt), CONTEXT_FORMAT, context).await
     }
 
     async fn attempt_context(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError> {
-        self.contexts.get(&attempt_context_key(build_id, lane, attempt)).await
+        self.contexts.read(&attempt_context_key(build_id, lane, attempt), CONTEXT_FORMAT).await
     }
 
     fn hold_seats(&self, seats: JournalSeats) {
@@ -1948,45 +1949,6 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 }
 
-/// Where a Build journal keeps its attempts' contexts: local to its admin, one row per attempt key.
-#[async_trait]
-pub(crate) trait ContextRows: Send + Sync {
-    /// A blind put of `context` at `key`.
-    async fn put(&self, key: &str, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError>;
-    /// The context at `key`, when one was put.
-    async fn get(&self, key: &str) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError>;
-}
-
-/// Attempt contexts held in this process.
-#[derive(Default)]
-struct MemoryContextRows(Mutex<BTreeMap<String, rdm_core::context::CallContext>>);
-
-#[async_trait]
-impl ContextRows for MemoryContextRows {
-    async fn put(&self, key: &str, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError> {
-        self.0.lock().unwrap().insert(key.to_string(), context.clone());
-        Ok(())
-    }
-    async fn get(&self, key: &str) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError> {
-        Ok(self.0.lock().unwrap().get(key).cloned())
-    }
-}
-
-#[cfg(feature = "file-backend")]
-/// Attempt contexts in the admin's own data dir, `attempt-context/`.
-struct FileContextRows(crate::record_store::FileRecords);
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl ContextRows for FileContextRows {
-    async fn put(&self, key: &str, context: &rdm_core::context::CallContext) -> Result<(), crate::storage_error::StorageError> {
-        self.0.write(key, CONTEXT_FORMAT, context).await
-    }
-    async fn get(&self, key: &str) -> Result<Option<rdm_core::context::CallContext>, crate::storage_error::StorageError> {
-        self.0.read(key, CONTEXT_FORMAT).await
-    }
-}
-
 #[cfg(feature = "file-backend")]
 /// Where a node-admin keeps its attempts' contexts in its own data dir, and their format.
 const CONTEXT_DIR: &str = "attempt-context";
@@ -2097,15 +2059,17 @@ pub struct LaneSeat {
 /// move. A revision an election stepped holds no seal: its holder is proven gone.
 pub type SealsOwed = Arc<dyn Fn(LaneId, u64) -> futures_util::future::BoxFuture<'static, Result<Vec<LaneSeal>, String>> + Send + Sync>;
 
+#[cfg(feature = "file-backend")]
 /// `builds.storage`: the Build facts on the fabric's shared store root, one key per fact in the lane
 /// of the seat that writes it ([`crate::build_lanes`]; R-BI6, Q28, Q35): `fabric/builds/` the
 /// fabric-primary's, `meshes/<mesh>/builds/` each mesh-primary's. A fact counts once its key stands,
 /// so a successor reads it there; a fact whose key another writer took first is decided again
 /// against what that writer wrote.
-pub struct LaneJournal {
+pub struct FileJournal {
     lanes: crate::build_lanes::Lanes,
-    /// Each attempt's context, local to this admin (the file backend's `<own data dir>/attempt-context/`).
-    contexts: Box<dyn ContextRows>,
+    /// `<own data dir>/attempt-context/`: each attempt's context, local to this admin.
+    contexts: crate::record_store::FileRecords,
+    root_dir: PathBuf,
     own_mesh: String,
     holds_fabric_seat: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
     holds_mesh_seat: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -2137,18 +2101,20 @@ pub struct LaneJournal {
     released: Mutex<Option<String>>,
 }
 
-/// One writer's turn of a [`LaneJournal`], on its own span
+#[cfg(feature = "file-backend")]
+/// One writer's turn of a [`FileJournal`], on its own span
 /// (`rdm.node_admin.build.update.via-journal-turn`): `waited_ms`, how long it waited for the writer,
 /// and `held_by`, the turn holding it when the wait began; then `held_ms`, how long it held the
 /// writer, and `lane_ms`, how much of that was the lane store's own calls. A turn that waited on
 /// another is told apart from one that waited on the store root.
 struct Turn<'a> {
     guard: tokio::sync::MutexGuard<'a, Derived>,
-    journal: &'a LaneJournal,
+    journal: &'a FileJournal,
     span: tracing::Span,
     began: std::time::Instant,
 }
 
+#[cfg(feature = "file-backend")]
 impl std::ops::Deref for Turn<'_> {
     type Target = Derived;
     fn deref(&self) -> &Derived {
@@ -2156,22 +2122,25 @@ impl std::ops::Deref for Turn<'_> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// A reader taking what it read from the lanes, holding the writer, named as its holder until it ends
-/// ([`LaneJournal::sync_for_read`]).
+/// ([`FileJournal::sync_for_read`]).
 struct ReadHolder<'a> {
-    journal: &'a LaneJournal,
+    journal: &'a FileJournal,
     op: &'static str,
     began: std::time::Instant,
 }
 
+#[cfg(feature = "file-backend")]
 impl<'a> ReadHolder<'a> {
-    fn name(journal: &'a LaneJournal, op: &'static str) -> Self {
+    fn name(journal: &'a FileJournal, op: &'static str) -> Self {
         *journal.turn_of.lock().unwrap() = Some((op, std::time::Instant::now()));
         journal.hold_begins();
         Self { journal, op, began: std::time::Instant::now() }
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl Drop for ReadHolder<'_> {
     fn drop(&mut self) {
         self.journal.hold_ends(self.op, self.began.elapsed());
@@ -2179,12 +2148,14 @@ impl Drop for ReadHolder<'_> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl std::ops::DerefMut for Turn<'_> {
     fn deref_mut(&mut self) -> &mut Derived {
         &mut self.guard
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
         let lane_ns = self.journal.turn_lane_ns.swap(0, std::sync::atomic::Ordering::Relaxed);
@@ -2196,25 +2167,33 @@ impl Drop for Turn<'_> {
     }
 }
 
-impl std::fmt::Debug for LaneJournal {
+#[cfg(feature = "file-backend")]
+impl std::fmt::Debug for FileJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LaneJournal").field("lanes", &self.lanes).field("own_mesh", &self.own_mesh).finish()
+        f.debug_struct("FileJournal").field("root_dir", &self.root_dir).field("own_mesh", &self.own_mesh).finish()
     }
 }
 
+#[cfg(feature = "file-backend")]
 fn lane_io(e: crate::storage_error::StorageError) -> BuildStateError {
     BuildStateError::Io(e.to_string())
 }
 
-impl LaneJournal {
-    /// The journal over `lanes` for an admin of `own_mesh`, its attempts' contexts kept in `contexts`:
-    /// `fabric/builds` (the fabric-primary's) and every `meshes/<mesh>/builds` (each mesh-primary's)
-    /// are read when this admin holds the corresponding seat, and each fact is written to its lane
-    /// when it is committed, before the fabric's first state-commit too (Q61).
-    pub(crate) fn over(lanes: crate::build_lanes::Lanes, contexts: Box<dyn ContextRows>, own_mesh: &str) -> Self {
-        Self {
-            lanes,
+#[cfg(feature = "file-backend")]
+impl FileJournal {
+    /// Open the Build lanes on the fabric's shared `root` for an admin of `own_mesh`, written by the
+    /// process born as `writer` (R-BI6): `fabric/builds/` (the fabric-primary's) and every
+    /// `meshes/<mesh>/builds/` (each mesh-primary's) are read when this admin holds the corresponding
+    /// seat, and each fact is written to the root when it is committed, before the fabric's first
+    /// state-commit too (Q61). A root holding the retired journal file is refused by name.
+    pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_data_dir: &Path, own_mesh: &str, writer: &crate::model::IncarnationId) -> Result<Self, BuildStateError> {
+        let dir = root.dir().to_path_buf();
+        crate::blocking::blocking_io(move || refuse_journal_file(&dir)).await?;
+        let contexts = crate::record_store::FileRecords::open(own_data_dir, CONTEXT_DIR, writer).await.map_err(|e| BuildStateError::Io(format!("attempt contexts: {e}")))?;
+        Ok(Self {
+            lanes: crate::build_lanes::Lanes::new(root.clone(), writer.clone()),
             contexts,
+            root_dir: root.dir().to_path_buf(),
             own_mesh: own_mesh.to_string(),
             holds_fabric_seat: std::sync::OnceLock::new(),
             holds_mesh_seat: std::sync::OnceLock::new(),
@@ -2228,24 +2207,7 @@ impl LaneJournal {
             holder_io: Mutex::new(None),
             holder_facts: std::sync::atomic::AtomicU64::new(0),
             released: Mutex::new(None),
-        }
-    }
-
-    /// The journal of an admin of `own_mesh` over one memory store's lanes, `keys`, shared by every
-    /// writer of that store; its attempts' contexts held in this process.
-    pub fn in_memory(keys: std::sync::Arc<crate::build_lanes::MemoryLaneKeys>, own_mesh: &str) -> Self {
-        Self::over(crate::build_lanes::Lanes::over(keys), Box::new(MemoryContextRows::default()), own_mesh)
-    }
-
-    #[cfg(feature = "file-backend")]
-    /// Open the Build lanes on the fabric's shared `root` for an admin of `own_mesh`, written by the
-    /// process born as `writer` (R-BI6), its attempts' contexts in `own_data_dir`. A root holding the
-    /// retired journal file is refused by name.
-    pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_data_dir: &Path, own_mesh: &str, writer: &crate::model::IncarnationId) -> Result<Self, BuildStateError> {
-        let dir = root.dir().to_path_buf();
-        crate::blocking::blocking_io(move || refuse_journal_file(&dir)).await?;
-        let contexts = crate::record_store::FileRecords::open(own_data_dir, CONTEXT_DIR, writer).await.map_err(|e| BuildStateError::Io(format!("attempt contexts: {e}")))?;
-        Ok(Self::over(crate::build_lanes::Lanes::new(root.clone(), writer.clone()), Box::new(FileContextRows(contexts)), own_mesh))
+        })
     }
 
     /// The writer's turn for `op`, spanned ([`Turn`]).
@@ -2368,8 +2330,17 @@ impl LaneJournal {
     /// its own mesh's while it holds that mesh's seat, none otherwise.
     async fn read_lanes(&self) -> Result<Vec<LaneId>, BuildStateError> {
         if self.is_fabric_primary() {
+            let meshes = self.root_dir.join("meshes");
             let mut lanes = vec![LaneId::Fabric];
-            let found = self.lanes.mesh_lanes().await.map_err(lane_io)?;
+            let mut found = crate::blocking::blocking_io(move || -> Result<Vec<String>, BuildStateError> {
+                match std::fs::read_dir(&meshes) {
+                    Ok(entries) => Ok(entries.flatten().filter(|e| e.path().join("builds").is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                    Err(e) => Err(BuildStateError::Io(format!("{}: {e}", meshes.display()))),
+                }
+            })
+            .await?;
+            found.sort();
             lanes.extend(found.into_iter().map(LaneId::Mesh));
             Ok(lanes)
         } else if self.is_mesh_primary() {
@@ -2569,8 +2540,9 @@ fn stale(at: String, revision: Option<u64>, detail: String) -> BuildStateError {
     BuildStateError::StaleSeat { at, revision, detail }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
-impl BuildStateAdapter for LaneJournal {
+impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let w = self.turn("publish_accepted").await;
         loop {
@@ -3079,8 +3051,8 @@ mod tests {
 
     /// A Build log on a store root at `dir` (no scratchpad: written straight to the disk), its seats
     /// governed by no record (every lane written under revision 0).
-    async fn open_at(dir: &Path) -> Result<LaneJournal, BuildStateError> {
-        LaneJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await
+    async fn open_at(dir: &Path) -> Result<FileJournal, BuildStateError> {
+        FileJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await
     }
 
     fn writer() -> crate::model::IncarnationId {
@@ -3646,7 +3618,7 @@ mod tests {
                     }
                 } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rdm-admin/src/storage_backend.rs") && !p.ends_with("rdm-admin/tests/store_root_boot.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
-                    if text.contains("LaneJournal::open_on_root") || text.contains("LaneJournal::in_memory") || text.contains("build-journal.jsonl") {
+                    if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") {
                         offenders.push(p);
                     }
                 }
@@ -3767,7 +3739,7 @@ mod tests {
         {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "the fabric has had no state-commit");
-            let j = LaneJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), "mesh1", &birth).await.unwrap();
+            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), "mesh1", &birth).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
@@ -3778,7 +3750,7 @@ mod tests {
         for (who, mesh, writer) in [("the same fabric-primary restarted", "mesh1", birth.clone()), ("a successor", "mesh2", writer())] {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "{who}: the fabric has still had no state-commit");
-            let j = LaneJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), mesh, &writer).await.unwrap();
+            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), mesh, &writer).await.unwrap();
             let kinds: Vec<&str> = j.facts().await.unwrap().iter().map(|f| match f {
                 BuildFact::Accepted(_) => "accepted",
                 BuildFact::Claim(_) => "claim",
@@ -3795,7 +3767,7 @@ mod tests {
     /// CONTRACT (R-BI6, Luke 2026-10-12: "the Build journal's location is the adapter's and
     /// provider's choice; RDM's file adapter keeps it on the fabric's shared store root
     /// (`fabric/builds/` under the writer ladder, the fabric-primary its writer) so a successor reads
-    /// it there; the per-admin journal and `store_root.rs`'s exclusion of it go"): a `LaneJournal`
+    /// it there; the per-admin journal and `store_root.rs`'s exclusion of it go"): a `FileJournal`
     /// opened on a `StoreRoot` writes fabric-lane facts under `fabric/builds/rev-<R>/<seq>` and
     /// mesh-lane facts under `meshes/<mesh>/builds/rev-<R>/<seq>`, one key per fact (never under a per-admin data
     /// dir), each on the root when it is committed, before the first state-commit too (Q61), and a successor
@@ -3812,7 +3784,7 @@ mod tests {
         // scratchpad; each Build fact stands on the root when it is committed (Q61).
         let root_pre = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
         assert_eq!(root_pre.writes_to(), "scratchpad");
-        let j_mesh1 = LaneJournal::open_on_root(&root_pre, &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
+        let j_mesh1 = FileJournal::open_on_root(&root_pre, &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
         j_mesh1.publish_accepted(&intent("b1")).await.unwrap();
         j_mesh1.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
         j_mesh1.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
@@ -3832,7 +3804,7 @@ mod tests {
         // successor `j_successor` both read the fabric-lane and mesh2-lane facts from the store root.
         let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let root_mesh2 = crate::store_root::StoreRoot::at(root_pre.dir());
-        let j_mesh2 = LaneJournal::open_on_root(&root_mesh2, &crate::test_support::tempdir("attempt-context"), "mesh2", &writer()).await.unwrap();
+        let j_mesh2 = FileJournal::open_on_root(&root_mesh2, &crate::test_support::tempdir("attempt-context"), "mesh2", &writer()).await.unwrap();
         assert_eq!(j_mesh2.read_build(&id).await.unwrap().attempt, 1);
 
         // Fabric-primary finishes fabric lane attempt 1 on `j_mesh1`; `j_mesh2` sees it on its next read/write
@@ -3859,7 +3831,7 @@ mod tests {
         // Both the already-open `j_mesh1` and a newly booted successor read mesh2's converged lane from the shared store root.
         let view_live = serde_json::to_value(j_mesh1.read_build(&id).await.unwrap()).unwrap();
         assert_eq!(view_live["lanes"]["mesh2"]["state"], "complete", "live fabric-primary reads mesh2's lane from the store root: {view_live}");
-        let j_successor = LaneJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
+        let j_successor = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
         let view_succ = serde_json::to_value(j_successor.read_build(&id).await.unwrap()).unwrap();
         assert_eq!(view_succ["state"], "complete");
         assert_eq!(view_succ["lanes"]["mesh2"]["state"], "complete", "fresh successor reads both fabric/builds and meshes/mesh2/builds: {view_succ}");
@@ -3889,7 +3861,7 @@ mod tests {
         records.set_book(book.clone());
         let f_seat = crate::admin::fabric_seat_source(&book, &records, booting_me.clone(), &booting_name);
         let m_seat = crate::admin::mesh_seat_source(&book, &records, booting_me.clone(), &booting_name, "mesh1");
-        let j_unseated = LaneJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
+        let j_unseated = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
         j_unseated.set_fabric_seat(
             std::sync::Arc::new(move || matches!((f_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
             std::sync::Arc::new(move || matches!((m_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
@@ -3997,7 +3969,7 @@ mod tests {
 
     /// A Build log on the store root at `dir` writing every lane under `revision`, owing the seals
     /// `storage`'s seat moves name, written by `by`.
-    async fn seated_at(dir: &Path, revision: u64, storage: &Arc<dyn crate::fabric_storage::FabricStorage>, by: rdm_core::handover::HandoverBirth) -> LaneJournal {
+    async fn seated_at(dir: &Path, revision: u64, storage: &Arc<dyn crate::fabric_storage::FabricStorage>, by: rdm_core::handover::HandoverBirth) -> FileJournal {
         let j = open_at(dir).await.unwrap();
         j.set_lane_seats(Arc::new(move |_| LaneSeat { revision, holds: Ok(()) }), crate::fabric_storage::seals_owed(storage.clone(), by));
         j
@@ -4115,7 +4087,7 @@ mod tests {
         };
         // The cell's runtime runs on this thread: every span of the journal is the capture's.
         tracing::dispatcher::with_default(&capture.dispatch, || {
-            crate::test_support::op_waits_on_the_blocking_pool(setup, |j: Arc<LaneJournal>| {
+            crate::test_support::op_waits_on_the_blocking_pool(setup, |j: Arc<FileJournal>| {
                 Box::pin(async move {
                     // The reader runs first: its sync's first disk call queues behind the held thread.
                     let reader = tokio::spawn({

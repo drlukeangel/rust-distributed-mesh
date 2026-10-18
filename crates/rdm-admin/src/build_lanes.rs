@@ -1,39 +1,29 @@
-//! The Build lanes of a fabric's store (Q28 A, Q35 x; i144 e6.1). A lane is the facts one seat
-//! writes: `fabric/builds` the fabric seat's, `meshes/<mesh>/builds` that mesh's primary seat's
-//! (R-BI6, R14). Each fact is its own key, `rev-<R>/<seq>`: `R` the lane's own seat revision its
+//! The Build lanes on the fabric's store root (Q28 A, Q35 x; i144 e6.1). A lane is the facts one seat
+//! writes: `fabric/builds/` the fabric seat's, `meshes/<mesh>/builds/` that mesh's primary seat's
+//! (R-BI6, R14). Each fact is its own key, `rev-<R>/<seq>.json`: `R` the lane's own seat revision its
 //! writer holds, `seq` its place under that revision, both 20-digit zero-padded so a listing sorts in
-//! order. One Build fact per key (`build-fact/1`), inserted at the revision's next sequence by
-//! insert-and-fail: two writers never both take one key, and nothing is checked and then appended
-//! under a process lock.
+//! order. One Build fact per key (`build-fact/1`), inserted through `insert_claimed` at the
+//! revision's next sequence: two writers never both take one key, and nothing is checked and then
+//! appended under a process lock.
 //!
 //! The move of the lane's seat seals the revision it moved from: `lane-seal/1` at the first sequence
 //! the sealer wins. A writer meeting the seal is refused stale and appends nothing past it, and a
 //! reader reconstructs the lane from its keys in order, each revision up to its seal, never past it.
-//!
-//! The keys live in a store the backend chooses ([`LaneKeys`]): the file backend's on the fabric's
-//! store root (`<lane>/rev-<R>/<seq>.json`), the memory backend's in one process's shared map. The
-//! lane logic above them is one.
 
-use crate::build_state::{BuildFact, LaneId, LaneKey, LaneSeal};
-#[cfg(feature = "file-backend")]
-use crate::build_state::{rev_dir, seq_key, REV_PREFIX};
-#[cfg(feature = "file-backend")]
+use crate::build_state::{rev_dir, seq_key, BuildFact, LaneId, LaneKey, LaneSeal, REV_PREFIX};
 use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
-use async_trait::async_trait;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::path::PathBuf;
 
 /// The format of one Build fact at its lane key.
 pub const FACT_FORMAT: &str = "build-fact/1";
 /// The format of a revision's seal at its lane key.
 pub const SEAL_FORMAT: &str = "lane-seal/1";
-#[cfg(feature = "file-backend")]
 const FORMATS: [&str; 2] = [FACT_FORMAT, SEAL_FORMAT];
 
-#[cfg(feature = "file-backend")]
 /// `lane`'s directory on the fabric's store root.
-pub fn lane_dir(lane: &LaneId, root: &crate::store_root::StoreRoot) -> std::path::PathBuf {
+pub fn lane_dir(lane: &LaneId, root: &crate::store_root::StoreRoot) -> PathBuf {
     match lane {
         LaneId::Fabric => root.fabric_builds(),
         LaneId::Mesh(m) => root.mesh_builds(m),
@@ -47,37 +37,6 @@ pub enum Entry {
     Fact(BuildFact),
     /// The revision's seal.
     Seal(LaneSeal),
-}
-
-/// What an insert at a key decides against the entry standing there, when the store decides it
-/// later (a claim held for a publication); `Ok(true)` takes the key.
-pub type Decide = Box<dyn Fn(Option<&Entry>) -> Result<bool, String> + Send + Sync>;
-
-/// The keys of one revision of one lane, in a store.
-#[async_trait]
-pub trait RevisionKeys: Send + Sync {
-    /// Insert `entry` at `seq` when the key is free, insert-and-fail: `true` it stands there now,
-    /// `false` another entry took the key first and nothing was written. `decide` is the insert's
-    /// decision against the entry it meets when the store holds the insert for later.
-    async fn insert(&self, seq: u64, entry: &Entry, decide: Decide) -> Result<bool, StorageError>;
-    /// The entry at `seq`, `None` when none was written there. An entry this build does not
-    /// recognise is refused by name.
-    async fn read(&self, seq: u64) -> Result<Option<Entry>, StorageError>;
-    /// The entries from `from` on, in order, at most `n`, up to the first unwritten key.
-    async fn read_run(&self, from: u64, n: u64) -> Result<Vec<Entry>, StorageError>;
-}
-
-/// The store a fabric's Build lanes are kept in.
-#[async_trait]
-pub trait LaneKeys: Send + Sync {
-    /// `revision` of `lane`.
-    async fn revision(&self, lane: &LaneId, revision: u64) -> Result<Arc<dyn RevisionKeys>, StorageError>;
-    /// The revisions of `lane` the store holds, in any order.
-    async fn revisions(&self, lane: &LaneId) -> Result<Vec<u64>, StorageError>;
-    /// The meshes whose lanes the store holds, in any order.
-    async fn mesh_lanes(&self) -> Result<Vec<String>, StorageError>;
-    /// Where the keys are, as a refusal names it.
-    fn place(&self) -> String;
 }
 
 /// What an append to a lane came to.
@@ -111,7 +70,7 @@ pub struct Sealed {
 /// One revision of a lane as this process has read it.
 #[derive(Clone)]
 struct Rev {
-    store: Arc<dyn RevisionKeys>,
+    store: FileRecords,
     /// The next sequence not yet read.
     next: u64,
     /// The seal, once read: its sequence and record.
@@ -133,36 +92,23 @@ struct RevRead {
     facts: Vec<(LaneKey, BuildFact)>,
 }
 
-/// The Build lanes of one fabric's store, as one process reads and writes them.
+/// The Build lanes of one fabric's store root, as one process reads and writes them.
 pub struct Lanes {
-    keys: Arc<dyn LaneKeys>,
+    root: crate::store_root::StoreRoot,
+    writer: crate::model::IncarnationId,
     revs: std::sync::Mutex<BTreeMap<(LaneId, u64), Rev>>,
 }
 
 impl std::fmt::Debug for Lanes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Lanes").field("keys", &self.keys.place()).finish()
+        f.debug_struct("Lanes").field("root", &self.root.dir()).finish()
     }
 }
 
 impl Lanes {
-    /// The lanes kept in `keys`.
-    pub fn over(keys: Arc<dyn LaneKeys>) -> Self {
-        Self { keys, revs: std::sync::Mutex::new(BTreeMap::new()) }
-    }
-
-    #[cfg(feature = "file-backend")]
     /// The lanes on `root`, written by the process born as `writer`.
     pub fn new(root: crate::store_root::StoreRoot, writer: crate::model::IncarnationId) -> Self {
-        Self::over(Arc::new(FileLaneKeys { root, writer }))
-    }
-
-    /// The meshes whose lanes the store holds, sorted.
-    pub async fn mesh_lanes(&self) -> Result<Vec<String>, StorageError> {
-        let mut meshes = self.keys.mesh_lanes().await?;
-        meshes.sort();
-        meshes.dedup();
-        Ok(meshes)
+        Self { root, writer, revs: std::sync::Mutex::new(BTreeMap::new()) }
     }
 
     fn held(&self, lane: &LaneId, revision: u64) -> Option<Rev> {
@@ -178,16 +124,34 @@ impl Lanes {
         if let Some(r) = self.held(lane, revision) {
             return Ok(r);
         }
-        let store = self.keys.revision(lane, revision).await?;
+        // A Build fact is durable on the root when it is committed, before the fabric's first
+        // state-commit too (Q61, build.md §5.2): a lane is never held in the scratchpad.
+        let store = FileRecords::open(&lane_dir(lane, &self.root), &rev_dir(revision), &self.writer).await?;
         let opened = Rev { store, next: 1, sealed: None };
         let mut revs = self.revs.lock().unwrap_or_else(|e| e.into_inner());
         Ok(revs.entry((lane.clone(), revision)).or_insert(opened).clone())
     }
 
-    /// The revisions of `lane`, ascending: the store's and those this process opened.
+    /// The revisions of `lane` on the store root, ascending: the names of its revision directories.
     async fn revisions(&self, lane: &LaneId) -> Result<Vec<u64>, StorageError> {
+        let dir = lane_dir(lane, &self.root);
         let opened: Vec<u64> = self.revs.lock().unwrap_or_else(|e| e.into_inner()).keys().filter(|(l, _)| l == lane).map(|(_, r)| *r).collect();
-        let mut found = self.keys.revisions(lane).await?;
+        let mut found = crate::blocking::blocking_io(move || -> Result<Vec<u64>, StorageError> {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(e) => return Err(StorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
+            };
+            let mut revs = Vec::new();
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if let Some(r) = name.strip_prefix(REV_PREFIX).filter(|r| r.len() == 20).and_then(|r| r.parse::<u64>().ok()) {
+                    revs.push(r);
+                }
+            }
+            Ok(revs)
+        })
+        .await?;
         found.extend(opened);
         found.sort_unstable();
         found.dedup();
@@ -197,7 +161,7 @@ impl Lanes {
     /// The entry at `key`, `None` when none was written there.
     pub async fn entry(&self, key: &LaneKey) -> Result<Option<Entry>, StorageError> {
         let rev = self.rev(&key.lane, key.revision).await?;
-        rev.store.read(key.seq).await
+        read_entry(&rev.store, key.seq).await
     }
 
     /// Every fact of `lane` not read before, in order: each revision ascending, from its next unread
@@ -207,8 +171,8 @@ impl Lanes {
         Ok(self.take(read))
     }
 
-    /// What [`Self::read_new`] would answer, read from the store without moving any revision's
-    /// cursor: a read that holds no lock, taken (or not) by [`Self::take`].
+    /// What [`Self::read_new`] would answer, read from the disk without moving any revision's cursor:
+    /// a read that holds no lock, taken (or not) by [`Self::take`].
     pub async fn peek_new(&self, lane: &LaneId) -> Result<LaneRead, StorageError> {
         let mut revs = Vec::new();
         for revision in self.revisions(lane).await? {
@@ -217,12 +181,13 @@ impl Lanes {
                 continue;
             }
             let (from, mut next, mut sealed, mut facts) = (rev.next, rev.next, None, Vec::new());
-            // The revision's keys are read in runs, one store call each, to its first unwritten key.
+            // The revision's keys are read in runs, one blocking call each, to its first unwritten key.
             'run: loop {
-                let run = rev.store.read_run(next, RUN_KEYS).await?;
+                let keys: Vec<String> = (next..next + RUN_KEYS).map(seq_key).collect();
+                let run = rev.store.read_tagged_run(keys, &FORMATS).await?;
                 let whole = run.len() as u64 == RUN_KEYS;
-                for entry in run {
-                    match entry {
+                for (format, record) in run {
+                    match entry_of(&rev.store, next, &format, record)? {
                         Entry::Fact(f) => facts.push((LaneKey { lane: lane.clone(), revision, seq: next }, f)),
                         Entry::Seal(s) => {
                             sealed = Some((next, s));
@@ -279,23 +244,22 @@ impl Lanes {
         }
         let key = LaneKey { lane: lane.clone(), revision, seq: rev.next };
         let at = key.to_string();
-        let decide: Decide = Box::new(move |standing: Option<&Entry>| match standing {
+        if rev.store.insert_claimed(&seq_key(rev.next), FACT_FORMAT, fact, move |standing: Option<&BuildFact>| match standing {
             None => Ok(true),
             Some(_) => Err(format!("{at} holds another writer's fact")),
-        });
-        if rev.store.insert(rev.next, &Entry::Fact(fact.clone()), decide).await? {
+        }).await? {
             rev.next += 1;
             self.keep(lane, revision, rev);
             return Ok(Appended::At(key));
         }
-        match rev.store.read(rev.next).await? {
+        match read_entry(&rev.store, rev.next).await? {
             Some(Entry::Seal(seal)) => {
                 rev.sealed = Some((rev.next, seal.clone()));
                 self.keep(lane, revision, rev);
                 Ok(Appended::Sealed { at: key, seal })
             }
             Some(Entry::Fact(_)) => Ok(Appended::Taken(key)),
-            None => Err(StorageError::Io { file: format!("{}/{key}", self.keys.place()), reason: "the lane key was live at the insert and holds nothing at the read after it: nothing removes a lane key".into() }),
+            None => Err(StorageError::Io { file: format!("{}/{key}.json", self.root.dir().display()), reason: "the lane key was live at the insert and holds nothing at the read after it: nothing removes a lane key".into() }),
         }
     }
 
@@ -313,18 +277,17 @@ impl Lanes {
             }
             let key = LaneKey { lane: lane.clone(), revision, seq: rev.next };
             let at = key.to_string();
-            let decide: Decide = Box::new(move |standing: Option<&Entry>| match standing {
+            if rev.store.insert_claimed(&seq_key(rev.next), SEAL_FORMAT, seal, move |standing: Option<&LaneSeal>| match standing {
                 None => Ok(true),
                 Some(_) => Err(format!("{at} holds another seal")),
-            });
-            if rev.store.insert(rev.next, &Entry::Seal(seal.clone()), decide).await? {
+            }).await? {
                 rev.sealed = Some((rev.next, seal.clone()));
                 self.keep(lane, revision, rev);
                 return Ok(Sealed { at: key, seal: seal.clone(), passed });
             }
             // The key holds an entry the seal did not see: the old writer's last fact (below the
             // seal, so it commits) or another sealer's seal. Read on and seal after it.
-            match rev.store.read(rev.next).await? {
+            match read_entry(&rev.store, rev.next).await? {
                 Some(Entry::Seal(standing)) => {
                     rev.sealed = Some((rev.next, standing.clone()));
                     self.keep(lane, revision, rev);
@@ -335,160 +298,28 @@ impl Lanes {
                     rev.next += 1;
                     self.keep(lane, revision, rev);
                 }
-                None => return Err(StorageError::Io { file: format!("{}/{key}", self.keys.place()), reason: "the lane key was live at the seal's insert and holds nothing at the read after it: nothing removes a lane key".into() }),
+                None => return Err(StorageError::Io { file: format!("{}/{key}.json", self.root.dir().display()), reason: "the lane key was live at the seal's insert and holds nothing at the read after it: nothing removes a lane key".into() }),
             }
         }
     }
 }
 
-/// The keys a lane read asks the store for in one call: a revision's run of facts is read in calls
-/// of this many keys, to its first unwritten one.
+async fn read_entry(store: &FileRecords, seq: u64) -> Result<Option<Entry>, StorageError> {
+    let Some((format, record)) = store.read_tagged(&seq_key(seq), &FORMATS).await? else { return Ok(None) };
+    entry_of(store, seq, &format, record).map(Some)
+}
+
+/// The entry `record`, in `format`, at `seq` of `store`'s revision.
+fn entry_of(store: &FileRecords, seq: u64, format: &str, record: serde_json::Value) -> Result<Entry, StorageError> {
+    let decoded = if format == FACT_FORMAT { serde_json::from_value(record).map(Entry::Fact) } else { serde_json::from_value(record).map(Entry::Seal) };
+    decoded.map_err(|e| StorageError::Unrecognised { file: format!("{}/{}.json", store.store_name(), seq_key(seq)), reason: format!("{format}: {e}") })
+}
+
+/// The keys a lane read asks the store for in one blocking call: a revision's run of facts is read
+/// in calls of this many keys, to its first unwritten one.
 const RUN_KEYS: u64 = 256;
 
-#[cfg(feature = "file-backend")]
-/// The lanes' keys on a fabric's store root, `<lane>/rev-<R>/<seq>.json`, written by the process
-/// born as `writer`.
-struct FileLaneKeys {
-    root: crate::store_root::StoreRoot,
-    writer: crate::model::IncarnationId,
-}
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl LaneKeys for FileLaneKeys {
-    async fn revision(&self, lane: &LaneId, revision: u64) -> Result<Arc<dyn RevisionKeys>, StorageError> {
-        // A Build fact is durable on the root when it is committed, before the fabric's first
-        // state-commit too (Q61, build.md §5.2): a lane is never held in the scratchpad.
-        Ok(Arc::new(FileRevision(FileRecords::open(&lane_dir(lane, &self.root), &rev_dir(revision), &self.writer).await?)))
-    }
-
-    async fn revisions(&self, lane: &LaneId) -> Result<Vec<u64>, StorageError> {
-        let dir = lane_dir(lane, &self.root);
-        crate::blocking::blocking_io(move || -> Result<Vec<u64>, StorageError> {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(e) => e,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-                Err(e) => return Err(StorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
-            };
-            Ok(entries.flatten().filter_map(|e| e.file_name().to_string_lossy().strip_prefix(REV_PREFIX).filter(|r| r.len() == 20).and_then(|r| r.parse::<u64>().ok())).collect())
-        })
-        .await
-    }
-
-    async fn mesh_lanes(&self) -> Result<Vec<String>, StorageError> {
-        let meshes = self.root.dir().join("meshes");
-        crate::blocking::blocking_io(move || match std::fs::read_dir(&meshes) {
-            Ok(entries) => Ok(entries.flatten().filter(|e| e.path().join("builds").is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(StorageError::Io { file: meshes.display().to_string(), reason: e.to_string() }),
-        })
-        .await
-    }
-
-    fn place(&self) -> String {
-        self.root.dir().display().to_string()
-    }
-}
-
-#[cfg(feature = "file-backend")]
-/// One revision's keys: its directory's records.
-struct FileRevision(FileRecords);
-
-#[cfg(feature = "file-backend")]
-impl FileRevision {
-    /// The entry `record`, in `format`, at `seq`.
-    fn entry_of(&self, seq: u64, format: &str, record: serde_json::Value) -> Result<Entry, StorageError> {
-        let decoded = if format == FACT_FORMAT { serde_json::from_value(record).map(Entry::Fact) } else { serde_json::from_value(record).map(Entry::Seal) };
-        decoded.map_err(|e| StorageError::Unrecognised { file: format!("{}/{}.json", self.0.store_name(), seq_key(seq)), reason: format!("{format}: {e}") })
-    }
-}
-
-#[cfg(feature = "file-backend")]
-#[async_trait]
-impl RevisionKeys for FileRevision {
-    async fn insert(&self, seq: u64, entry: &Entry, decide: Decide) -> Result<bool, StorageError> {
-        match entry {
-            Entry::Fact(f) => self.0.insert_claimed(&seq_key(seq), FACT_FORMAT, f, move |standing: Option<&BuildFact>| decide(standing.cloned().map(Entry::Fact).as_ref())).await,
-            Entry::Seal(s) => self.0.insert_claimed(&seq_key(seq), SEAL_FORMAT, s, move |standing: Option<&LaneSeal>| decide(standing.cloned().map(Entry::Seal).as_ref())).await,
-        }
-    }
-
-    async fn read(&self, seq: u64) -> Result<Option<Entry>, StorageError> {
-        let Some((format, record)) = self.0.read_tagged(&seq_key(seq), &FORMATS).await? else { return Ok(None) };
-        self.entry_of(seq, &format, record).map(Some)
-    }
-
-    async fn read_run(&self, from: u64, n: u64) -> Result<Vec<Entry>, StorageError> {
-        let keys: Vec<String> = (from..from + n).map(seq_key).collect();
-        let run = self.0.read_tagged_run(keys, &FORMATS).await?;
-        run.into_iter().enumerate().map(|(i, (format, record))| self.entry_of(from + i as u64, &format, record)).collect()
-    }
-}
-
-/// The lanes' keys of one process's memory store: every writer that opens the store shares them, and
-/// a key is taken by insert-and-fail under the map's lock, as the file store takes it by its link.
-#[derive(Default)]
-pub struct MemoryLaneKeys {
-    keys: Arc<std::sync::Mutex<BTreeMap<(LaneId, u64), BTreeMap<u64, Entry>>>>,
-}
-
-#[async_trait]
-impl LaneKeys for MemoryLaneKeys {
-    async fn revision(&self, lane: &LaneId, revision: u64) -> Result<Arc<dyn RevisionKeys>, StorageError> {
-        Ok(Arc::new(MemoryRevision { keys: self.keys.clone(), at: (lane.clone(), revision) }))
-    }
-
-    async fn revisions(&self, lane: &LaneId) -> Result<Vec<u64>, StorageError> {
-        Ok(self.keys.lock().unwrap_or_else(|e| e.into_inner()).keys().filter(|(l, _)| l == lane).map(|(_, r)| *r).collect())
-    }
-
-    async fn mesh_lanes(&self) -> Result<Vec<String>, StorageError> {
-        Ok(self.keys.lock().unwrap_or_else(|e| e.into_inner()).keys().filter_map(|(l, _)| match l {
-            LaneId::Mesh(m) => Some(m.clone()),
-            LaneId::Fabric => None,
-        }).collect())
-    }
-
-    fn place(&self) -> String {
-        "memory".into()
-    }
-}
-
-/// One revision's keys in a memory store.
-struct MemoryRevision {
-    keys: Arc<std::sync::Mutex<BTreeMap<(LaneId, u64), BTreeMap<u64, Entry>>>>,
-    at: (LaneId, u64),
-}
-
-#[async_trait]
-impl RevisionKeys for MemoryRevision {
-    async fn insert(&self, seq: u64, entry: &Entry, decide: Decide) -> Result<bool, StorageError> {
-        let mut keys = self.keys.lock().unwrap_or_else(|e| e.into_inner());
-        let rev = keys.entry(self.at.clone()).or_default();
-        // A taken key refuses the insert, as the file store's link does; a free one is the insert's
-        // own decision, as a held claim's publication decides it.
-        if rev.contains_key(&seq) {
-            return Ok(false);
-        }
-        let take = decide(None).map_err(|reason| StorageError::Io { file: format!("memory/{}/{seq}", self.at.0.name()), reason })?;
-        if take {
-            rev.insert(seq, entry.clone());
-        }
-        Ok(take)
-    }
-
-    async fn read(&self, seq: u64) -> Result<Option<Entry>, StorageError> {
-        Ok(self.keys.lock().unwrap_or_else(|e| e.into_inner()).get(&self.at).and_then(|r| r.get(&seq).cloned()))
-    }
-
-    async fn read_run(&self, from: u64, n: u64) -> Result<Vec<Entry>, StorageError> {
-        let keys = self.keys.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(rev) = keys.get(&self.at) else { return Ok(Vec::new()) };
-        Ok((from..from + n).map_while(|seq| rev.get(&seq).cloned()).collect())
-    }
-}
-
-#[cfg(all(test, feature = "file-backend"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::build_state::{BuildAttemptReceipt, AttemptOutcome};
