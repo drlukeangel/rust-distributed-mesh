@@ -628,6 +628,80 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
 
     peer_a.shutdown().await;
     peer_b.shutdown().await;
+
+    // Also verify when Dialer::open starts under `Dispatch::none()` (`NoSubscriber`, where
+    // `new_span` mints `Id(0xDEAD) = Id(57005)`) or another `Registry` subscriber and continues on
+    // a task/thread under `dispatch`, opening child spans does not clone a foreign `Id` on
+    // `dispatch`'s `Registry`:
+    let other_dispatch = tracing::Dispatch::new(Registry::default());
+    let foreign_caller_span = tracing::dispatcher::with_default(&other_dispatch, || {
+        let mut s = tracing::Span::none();
+        for _ in 0..32 {
+            s = tracing::info_span!("caller_on_other_registry");
+            std::mem::forget(s.clone());
+        }
+        s
+    });
+
+    let alpns = [gateway_alpn(ALPN_A)];
+    let (src, gw, dst) = async {
+        let s = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+        let g = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+        let d = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+        s.know(&g);
+        g.know(&d);
+        seed_carrier_direct_edge(&[&s.sink, &g.sink], &g.birth, &d.birth, ALPN_A).await;
+        (s, g, d)
+    }
+    .with_subscriber(dispatch.clone())
+    .await;
+
+    let (dialer_s, _) = src.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dst.registry.connections(ALPN_A).unwrap().split();
+
+    // 1. `open_tunnel` starting under `Dispatch::none()` (`NoSubscriber` -> `tunnel_span` `Id(57005)`)
+    // and completing under `dispatch`:
+    let accept_t = tokio::spawn(
+        async move {
+            let c = acceptor_d.accept().await.unwrap();
+            (c, acceptor_d)
+        }
+        .with_subscriber(dispatch.clone()),
+    );
+    let mut open_fut = Box::pin(dialer_s.open(&dst.birth));
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let first_poll = tracing::dispatcher::with_default(&tracing::Dispatch::none(), || {
+        std::future::Future::poll(open_fut.as_mut(), &mut cx)
+    });
+    assert!(first_poll.is_pending(), "first poll of tunnel open must yield pending on connect");
+    let conn_s = open_fut
+        .with_subscriber(dispatch.clone())
+        .await
+        .expect("open across NoSubscriber and Registry must not panic in Registry::clone_span");
+    let (_conn_d, mut acceptor_d) = accept_t.await.unwrap();
+    drop(conn_s);
+
+    // 2. `open` (Direct + Tunnel) capturing `caller_span` on `other_dispatch` and completing under `dispatch`:
+    src.know(&dst);
+    let accept_t2 = tokio::spawn(
+        async move { acceptor_d.accept().await.unwrap() }.with_subscriber(dispatch.clone()),
+    );
+    let mut open_fut2 = Box::pin(dialer_s.open(&dst.birth));
+    let first_poll2 = tracing::dispatcher::with_default(&other_dispatch, || {
+        foreign_caller_span.in_scope(|| std::future::Future::poll(open_fut2.as_mut(), &mut cx))
+    });
+    assert!(first_poll2.is_pending(), "first poll of open must yield pending on connect");
+    let conn_s2 = open_fut2
+        .with_subscriber(dispatch.clone())
+        .await
+        .expect("open across separate Registries must not panic in Registry::clone_span");
+    let _conn_d2 = accept_t2.await.unwrap();
+    drop(conn_s2);
+
+    src.shutdown().await;
+    gw.shutdown().await;
+    dst.shutdown().await;
 }
 
 fn gateway_alpn(name: &[u8]) -> Alpn {
