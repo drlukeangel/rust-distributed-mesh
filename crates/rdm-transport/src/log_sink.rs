@@ -2,7 +2,7 @@
 //! launcher) on a disk the kernel may hold for seconds; a line written by the thread that logged it
 //! stalls that thread, which is a runtime worker. A line is handed to a thread of its own over an
 //! unbounded channel, so a held disk delays the file and nothing else; the lines are written in
-//! the order they were handed over and [`LogSink::flush`] returns once every earlier one is in the sink.
+//! the order they were handed over and [`LogSink::flush_until`] confirms them within the exit's deadline.
 
 use std::io::Write;
 use std::sync::mpsc::{channel, Sender};

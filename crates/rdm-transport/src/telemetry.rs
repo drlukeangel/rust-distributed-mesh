@@ -491,13 +491,15 @@ impl opentelemetry_sdk::export::trace::SpanExporter for JsonlSpanExporter {
             out.push('\n');
         }
         let started = std::time::Instant::now();
-        let r = match self.file() {
+        let file = self.file();
+        let opened = started.elapsed();
+        let r = match file {
             Ok(f) => f.write_all(out.as_bytes()).map_err(|e| format!("evidence write failed: {e}")),
             Err(why) => Err(why),
         };
         let took = started.elapsed();
         if took >= EVIDENCE_WRITE_STALL {
-            eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread", took.as_millis(), out.len());
+            eprintln!("telemetry: evidence write stalled {} ms ({} bytes) on the evidence thread; open={} ms, write={} ms", took.as_millis(), out.len(), opened.as_millis(), took.saturating_sub(opened).as_millis());
         }
         Box::pin(async move { r.map_err(|why| opentelemetry::trace::TraceError::Other(why.into())) })
     }

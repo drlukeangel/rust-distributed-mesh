@@ -49,7 +49,9 @@ fn exit_child() {
     }
     tracing::info_span!("rdm.test.telemetry.update.via-last-span").in_scope(|| tracing::info!("the last span before the exit"));
     eprintln!("EXITING_AT_MS={}", unix_ms());
+    let flush_started = Instant::now();
     rdm_transport::flush_before_exit();
+    eprintln!("EXIT_FLUSH_RETURNED_AFTER_MS={}", flush_started.elapsed().as_millis());
     std::process::exit(0);
 }
 
