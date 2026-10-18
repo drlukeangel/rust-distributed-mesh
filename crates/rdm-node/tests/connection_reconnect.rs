@@ -147,28 +147,20 @@ impl DurableNode {
     }
 }
 
-async fn seed_carrier_edge(
-    writers: &[&ConnectionsWriter],
-    carrier: &Birth,
-    dest: &Birth,
+async fn establish_carrier_direct(
+    carrier: &DurableNode,
+    dest: &DurableNode,
+    acc_dest: &mut rdm_transport::connections::Acceptor,
     alpn: &[u8],
-    at: u64,
 ) {
-    let edge = NodeConnection {
-        id: ConnectionId::mint(),
-        source: carrier.to_end(),
-        destination: dest.to_end(),
-        kind: CoreConnectionKind::Direct,
-        alpn: alpn.to_vec(),
-        state: ConnectionState::Connected,
-        carrier: None,
-        recovery: None,
-        reason: None,
-        logged_at_ms: at,
-    };
-    for w in writers {
-        w.record(edge.clone()).await.unwrap();
-    }
+    let dest_birth = dest.birth.clone();
+    let reg = carrier.registry.clone();
+    let alpn_vec = alpn.to_vec();
+    let dial_task = tokio::spawn(async move { reg.probe_direct(&dest_birth, &alpn_vec).await.unwrap() });
+    let _srv = acc_dest.accept().await.unwrap();
+    let conn = dial_task.await.unwrap();
+    assert_eq!(conn.kind(), ConnectionKind::Direct);
+    carrier.writer.observations_landed().await;
 }
 
 /// §13 A: one discovered Proxy serves every consumer of the same destination without paying the
@@ -177,18 +169,19 @@ async fn seed_carrier_edge(
 async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
     let dir = temp_data_dir("13a");
     let alpns = [forwardable_alpn(ALPN_A)];
-    let gw1 = DurableNode::bind_fresh(&dir.join("gw1"), "mesh1.gateway.1", &alpns).await;
-    let gw2 = DurableNode::bind_fresh(&dir.join("gw2"), "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir.join("brk2"), "mesh1.broker.2", &alpns).await;
-
-    // gw1 can reach gw2, and gw2 has an active Direct edge to brk2; gw1 cannot reach brk2 Direct:
-    gw1.know(&gw2);
-    gw2.know(&brk2);
-    seed_carrier_edge(&[&gw1.writer, &gw2.writer], &gw2.birth, &brk2.birth, ALPN_A, 10).await;
+    let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
 
     let (dialer_consumer_1, _acc_gw1) = gw1.registry.connections(ALPN_A).unwrap().split();
     let dialer_consumer_2 = dialer_consumer_1.clone();
     let (_dialer_brk2, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
+
+    // gw1 can reach gw2, and gw2 opens an active Direct edge to brk2 on the shared store root;
+    // gw1 cannot reach brk2 Direct:
+    gw1.know(&gw2);
+    gw2.know(&brk2);
+    establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
 
     // Consumer 1's first operation discovers and writes Proxy Connected via gw2 after one failed Direct dial:
     let accept_1 = tokio::spawn(async move {
@@ -264,53 +257,40 @@ async fn one_discovered_proxy_serves_every_consumer_of_the_same_destination() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_proxy_survives_source_restart() {
     let dir = temp_data_dir("13b");
-    let gw1_dir = dir.join("gw1");
     let alpns = [forwardable_alpn(ALPN_A)];
     let gw1_first_birth = Birth {
         name: "mesh1.gateway.1".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
-    let gw2 = DurableNode::bind_fresh(&dir.join("gw2"), "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir.join("brk2"), "mesh1.broker.2", &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
     gw2.know(&brk2);
+    establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
 
-    // First birth of gw1 discovers and persists Direct Failed (E1, 2) and Proxy Connected (via=gw2):
-    {
-        let gw1 = DurableNode::boot(&gw1_dir, gw1_first_birth.clone(), &alpns).await;
+    // First birth of gw1 discovers and persists Direct Failed (E1, 1) and Proxy Connected (via=gw2)
+    // from the shared store root without any hand-fed row:
+    let mut acc_brk2 = {
+        let gw1 = DurableNode::boot(&dir, gw1_first_birth.clone(), &alpns).await;
         gw1.know(&gw2);
-        seed_carrier_edge(&[&gw1.writer, &gw2.writer], &gw2.birth, &brk2.birth, ALPN_A, 10).await;
-        let failed = NodeConnection {
-            id: ConnectionId::mint(),
-            source: gw1.birth.to_end(),
-            destination: brk2.birth.to_end(),
-            kind: CoreConnectionKind::Direct,
-            alpn: ALPN_A.to_vec(),
-            state: ConnectionState::Failed,
-            carrier: None,
-            recovery: Some(DirectRecovery {
-                recovery_round: 1,
-                attempt_ordinal: 2,
-            }),
-            reason: Some("connection refused".into()),
-            logged_at_ms: now_ms(),
-        };
-        let proxy = NodeConnection {
-            id: ConnectionId::mint(),
-            source: gw1.birth.to_end(),
-            destination: brk2.birth.to_end(),
-            kind: CoreConnectionKind::Proxy,
-            alpn: ALPN_A.to_vec(),
-            state: ConnectionState::Connected,
-            carrier: Some(gw2.birth.to_end()),
-            recovery: None,
-            reason: None,
-            logged_at_ms: now_ms() + 1,
-        };
-        gw1.writer.record(failed).await.unwrap();
-        gw1.writer.record(proxy).await.unwrap();
+        let (dialer_gw1, _) = gw1.registry.connections(ALPN_A).unwrap().split();
+        let accept_task = tokio::spawn(async move {
+            let c = acc_brk2.accept().await.unwrap();
+            (c, acc_brk2)
+        });
+        let conn = dialer_gw1.open(&brk2.birth).await.unwrap();
+        let (_srv, acc_brk2) = accept_task.await.unwrap();
+        assert_eq!(
+            conn.kind(),
+            ConnectionKind::Proxy {
+                via: gw2.birth.clone()
+            }
+        );
+        gw1.writer.observations_landed().await;
         gw1.shutdown().await;
-    }
+        acc_brk2
+    };
 
     // Restart gw1 at a new incarnation over the same durable store:
     let gw1_restarted_birth = Birth {
@@ -318,12 +298,11 @@ async fn a_proxy_survives_source_restart() {
         node_id: gw1_first_birth.node_id.clone(),
         incarnation: IncarnationId::mint(),
     };
-    let gw1 = DurableNode::boot(&gw1_dir, gw1_restarted_birth, &alpns).await;
+    let gw1 = DurableNode::boot(&dir, gw1_restarted_birth, &alpns).await;
     gw1.know(&gw2);
 
     let history_before_open = gw1.storage.history().await.unwrap().len();
     let (dialer_gw1, _) = gw1.registry.connections(ALPN_A).unwrap().split();
-    let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
 
     let accept_task = tokio::spawn(async move { acc_brk2.accept().await.unwrap() });
     let conn = dialer_gw1.open(&brk2.birth).await.unwrap();
@@ -362,16 +341,17 @@ async fn a_proxy_survives_source_restart() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_reconnect_backoff_survives_restart() {
     let dir = temp_data_dir("13c");
-    let gw1_dir = dir.join("gw1");
     let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
     let gw1_birth_1 = Birth {
         name: "mesh1.gateway.1".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
     };
-    let gw2 = DurableNode::bind_fresh(&dir.join("gw2"), "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir.join("brk2"), "mesh1.broker.2", &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
     gw2.know(&brk2);
+    establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
 
     // Persist Direct Failed(E1, attempt=3, event_time=T) on ALPN_A such that next_due is ~350ms in the future:
     let ordinal = 3;
@@ -394,9 +374,8 @@ async fn a_failed_reconnect_backoff_survives_restart() {
     };
     let due_ms = next_due(&failed_row).unwrap();
     {
-        let gw1 = DurableNode::boot(&gw1_dir, gw1_birth_1.clone(), &alpns).await;
+        let gw1 = DurableNode::boot(&dir, gw1_birth_1.clone(), &alpns).await;
         gw1.know(&gw2);
-        seed_carrier_edge(&[&gw1.writer, &gw2.writer], &gw2.birth, &brk2.birth, ALPN_A, failed_at).await;
         gw1.writer.record(failed_row.clone()).await.unwrap();
         gw1.writer
             .record(NodeConnection {
@@ -422,7 +401,7 @@ async fn a_failed_reconnect_backoff_survives_restart() {
         node_id: gw1_birth_1.node_id.clone(),
         incarnation: IncarnationId::mint(),
     };
-    let gw1 = DurableNode::boot(&gw1_dir, gw1_birth_2.clone(), &alpns).await;
+    let gw1 = DurableNode::boot(&dir, gw1_birth_2.clone(), &alpns).await;
     gw1.know(&gw2);
 
     // 1. Reconstructed schedule has exactly one obligation: on ALPN_A at ordinal 3 with due_ms:
@@ -529,17 +508,17 @@ async fn a_failed_reconnect_backoff_survives_restart() {
 async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
     let dir = temp_data_dir("13d");
     let alpns = [forwardable_alpn(ALPN_A)];
-    let gw1 = DurableNode::bind_fresh(&dir.join("gw1"), "mesh1.gateway.1", &alpns).await;
-    let gw2 = DurableNode::bind_fresh(&dir.join("gw2"), "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir.join("brk2"), "mesh1.broker.2", &alpns).await;
+    let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
 
-    gw1.know(&gw2);
-    gw2.know(&brk2);
-    seed_carrier_edge(&[&gw1.writer, &gw2.writer], &gw2.birth, &brk2.birth, ALPN_A, 10).await;
-
-    // First open establishes Proxy Connected(via=gw2) and writes Direct Failed(round=1, ordinal=1):
     let (dialer_gw1, _) = gw1.registry.connections(ALPN_A).unwrap().split();
     let (_, mut acc_brk2) = brk2.registry.connections(ALPN_A).unwrap().split();
+    gw1.know(&gw2);
+    gw2.know(&brk2);
+    establish_carrier_direct(&gw2, &brk2, &mut acc_brk2, ALPN_A).await;
+
+    // First open establishes Proxy Connected(via=gw2) and writes Direct Failed(round=1, ordinal=1):
     let accept_task = tokio::spawn(async move {
         let c = acc_brk2.accept().await.unwrap();
         (c, acc_brk2)
@@ -635,14 +614,12 @@ async fn the_connections_index_stays_bounded_while_the_raw_log_keeps_history() {
 async fn one_reconnect_attempt_at_a_time_per_node() {
     let dir = temp_data_dir("one-at-a-time");
     let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
-    let gw1 = DurableNode::bind_fresh(&dir.join("gw1"), "mesh1.gateway.1", &alpns).await;
-    let gw2 = DurableNode::bind_fresh(&dir.join("gw2"), "mesh1.gateway.2", &alpns).await;
-    let brk2 = DurableNode::bind_fresh(&dir.join("brk2"), "mesh1.broker.2", &alpns).await;
-    let brk3 = DurableNode::bind_fresh(&dir.join("brk3"), "mesh1.broker.3", &alpns).await;
+    let gw1 = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
+    let gw2 = DurableNode::bind_fresh(&dir, "mesh1.gateway.2", &alpns).await;
+    let brk2 = DurableNode::bind_fresh(&dir, "mesh1.broker.2", &alpns).await;
+    let brk3 = DurableNode::bind_fresh(&dir, "mesh1.broker.3", &alpns).await;
 
     let past = now_ms().saturating_sub(60_000);
-    seed_carrier_edge(&[&gw1.writer], &gw2.birth, &brk2.birth, ALPN_A, past).await;
-    seed_carrier_edge(&[&gw1.writer], &gw2.birth, &brk3.birth, ALPN_A, past).await;
 
     // Seed two due obligations on gw1 (toward brk2 and brk3 on ALPN_A), plus repeated failures and accepts:
     for (dest, ord) in [(&brk2.birth, 1u32), (&brk2.birth, 2u32), (&brk3.birth, 1u32)] {
@@ -772,5 +749,126 @@ async fn one_reconnect_attempt_at_a_time_per_node() {
     gw2.shutdown().await;
     brk2.shutdown().await;
     brk3.shutdown().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Q62 / Demo acceptance row 3 (`connections.md` §4.1, §3.2): register ALPN_A and ALPN_B between
+/// the same births on a shared store root; the carrier's own `ConnectionsWriter` writes its
+/// `Direct Connected` rows to the store root with no hand-fed row on the source; restore ALPN_A
+/// while ALPN_B uses its Proxy: ALPN_B's Proxy route and open streams are unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_store() {
+    let dir = temp_data_dir("row3-shared-store");
+    let alpns = [forwardable_alpn(ALPN_A), forwardable_alpn(ALPN_B)];
+    let src = DurableNode::bind_fresh(&dir, "mesh1.rpc.1", &alpns).await;
+    let carrier = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
+    let dst = DurableNode::bind_fresh(&dir, "mesh1.rpc.2", &alpns).await;
+
+    let (dialer_a, _) = src.registry.connections(ALPN_A).unwrap().split();
+    let (dialer_b, _) = src.registry.connections(ALPN_B).unwrap().split();
+    let (_, mut acc_dst_a) = dst.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acc_dst_b) = dst.registry.connections(ALPN_B).unwrap().split();
+
+    // src can reach carrier; carrier can reach dst and establishes real Direct edges on both ALPNs
+    // (written by carrier's own ConnectionsWriter to the shared store root; no row is fed by hand):
+    src.know(&carrier);
+    carrier.know(&dst);
+    establish_carrier_direct(&carrier, &dst, &mut acc_dst_a, ALPN_A).await;
+    establish_carrier_direct(&carrier, &dst, &mut acc_dst_b, ALPN_B).await;
+
+    // Both ALPN_A and ALPN_B discover Proxy via carrier from the shared connections store:
+    let accept_a1 = tokio::spawn(async move {
+        let c = acc_dst_a.accept().await.unwrap();
+        (c, acc_dst_a)
+    });
+    let conn_a_proxy = dialer_a.open(&dst.birth).await.unwrap();
+    let (_srv_a1, mut acc_dst_a) = accept_a1.await.unwrap();
+    assert_eq!(
+        conn_a_proxy.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        }
+    );
+
+    let accept_b1 = tokio::spawn(async move {
+        let c = acc_dst_b.accept().await.unwrap();
+        (c, acc_dst_b)
+    });
+    let conn_b_proxy = dialer_b.open(&dst.birth).await.unwrap();
+    let (srv_b1, mut acc_dst_b) = accept_b1.await.unwrap();
+    assert_eq!(
+        conn_b_proxy.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        }
+    );
+    src.writer.observations_landed().await;
+
+    // Open a stream on ALPN_B's Proxy before ALPN_A is restored:
+    let (mut b_send, mut b_recv) = conn_b_proxy.open_bi().await.unwrap();
+    let (mut b_srv_send, mut b_srv_recv) = srv_b1.accept_bi().await.unwrap();
+    b_send.write_all(b"b-before-a-restored").await.unwrap();
+    let mut buf = [0u8; 19];
+    b_srv_recv.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"b-before-a-restored");
+
+    // Restore Direct on ALPN_A ONLY (src learns dst's address, probes Direct on ALPN_A, and forgets
+    // dst's address again so ALPN_B stays on its Proxy):
+    src.know(&dst);
+    let accept_a2 = tokio::spawn(async move {
+        let c = acc_dst_a.accept().await.unwrap();
+        (c, acc_dst_a)
+    });
+    assert!(src.registry.probe_direct(&dst.birth, ALPN_A).await.is_ok());
+    let (_srv_a2, mut acc_dst_a) = accept_a2.await.unwrap();
+    src.writer.observations_landed().await;
+
+    // Next open on ALPN_A is Direct, while ALPN_B's Proxy route and in-flight stream are unchanged:
+    let accept_a3 = tokio::spawn(async move { acc_dst_a.accept().await.unwrap() });
+    let conn_a_direct = dialer_a.open(&dst.birth).await.unwrap();
+    let _srv_a3 = accept_a3.await.unwrap();
+    assert_eq!(conn_a_direct.kind(), ConnectionKind::Direct);
+
+    let accept_b2 = tokio::spawn(async move { acc_dst_b.accept().await.unwrap() });
+    let conn_b_still_proxy = dialer_b.open(&dst.birth).await.unwrap();
+    let _srv_b2 = accept_b2.await.unwrap();
+    assert_eq!(
+        conn_b_still_proxy.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        },
+        "restoring ALPN_A must not retire ALPN_B's Proxy"
+    );
+
+    b_send.write_all(b"-and-after").await.unwrap();
+    b_send.finish().unwrap();
+    assert_eq!(b_srv_recv.read_to_end(64).await.unwrap(), b"-and-after");
+    b_srv_send.write_all(b"b-reply-ok").await.unwrap();
+    b_srv_send.finish().unwrap();
+    assert_eq!(b_recv.read_to_end(64).await.unwrap(), b"b-reply-ok");
+
+    let routes = src.writer.held_routes().await;
+    assert!(
+        routes.iter().any(|r| r.alpn == ALPN_A
+            && r.kind == CoreConnectionKind::Direct
+            && r.state == ConnectionState::Connected),
+        "ALPN_A holds Direct Connected: {routes:?}"
+    );
+    assert!(
+        !routes
+            .iter()
+            .any(|r| r.alpn == ALPN_A && r.kind == CoreConnectionKind::Proxy),
+        "ALPN_A retired its Proxy: {routes:?}"
+    );
+    assert!(
+        routes.iter().any(|r| r.alpn == ALPN_B
+            && r.kind == CoreConnectionKind::Proxy
+            && r.state == ConnectionState::Connected),
+        "ALPN_B still holds its active Proxy Connected: {routes:?}"
+    );
+
+    src.shutdown().await;
+    carrier.shutdown().await;
+    dst.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
 }
