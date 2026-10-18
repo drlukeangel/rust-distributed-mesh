@@ -116,3 +116,14 @@ fn test_code_may_define_and_accept_any_alpn() {
     ]);
     assert_eq!(check(t.root()), vec![]);
 }
+
+
+#[test]
+fn app_alpns_consumed_from_wiring_are_allowed_but_a_handler_cannot_invent_one() {
+    let valid="fn serve(mut wiring: Wiring) { for (alpn, handler) in std::mem::take(&mut wiring.alpns) { router = router.accept(alpn, handler); } }";
+    let t=Tree::new(&[("crates/a/src/lib.rs",valid)]);
+    assert!(check(t.root()).is_empty(),"Wiring owns the app's declared ALPNs");
+    for text in ["fn serve(mut wiring: Wiring) { router.accept(alpn, handler); }", "fn serve(mut wiring: Wiring) { for (alpn, handler) in invented() { router.accept(alpn, handler); } }", "fn serve(mut wiring: Wiring) { for (alpn, handler) in std::mem::take(&mut wiring.alpns) { let alpn = other; router.accept(alpn, handler); } }"] {
+        let t=Tree::new(&[("crates/a/src/lib.rs",text)]);assert!(check(t.root()).iter().any(|v|matches!(v,Violation::Alpn{..})),"{text}");
+    }
+}

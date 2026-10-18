@@ -25,6 +25,16 @@ async fn node(
     name: &str,
     seeds: Vec<iroh::EndpointAddr>,
 ) -> Node {
+    node_declaring(fabric, mesh, name, seeds, &[TYPE]).await
+}
+
+async fn node_declaring(
+    fabric: &FabricId,
+    mesh: &MeshId,
+    name: &str,
+    seeds: Vec<iroh::EndpointAddr>,
+    types: &[&str],
+) -> Node {
     let transport = iroh::endpoint::QuicTransportConfig::builder().build();
     let ep = rdm_transport::endpoint::bind_exact(
         iroh::SecretKey::generate(),
@@ -52,7 +62,7 @@ async fn node(
         name,
         rdm_transport::clock::os_clock(),
         seeds,
-        &[TYPE],
+        types,
     )
     .await
     .unwrap();
@@ -518,4 +528,85 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
         matches!(channel.publish(event(1,vec![1])).await,Err(ChannelError::UndeclaredType{r#type})if r#type==kind),
         "holding a member's channel does not let this birth author its events"
     );
+}
+
+fn member_digest(n: &Node) -> rdm_core::MeshDigest {
+    rdm_core::MeshDigest {
+        fabric_id: n.membership.fabric_id().clone(),
+        node: rdm_core::MeshNode {
+            node_id: n.author.node_id.clone(),
+            name: n.author.node.parse().unwrap(),
+            endpoint_id: rdm_core::EndpointId(n.ep.id().to_string()),
+            transport_addr: address(n).ip_addrs().next().copied().unwrap(),
+            incarnation: n.author.incarnation.clone(),
+            supersedes: None,
+            runtime: None,
+        },
+        status: rdm_core::MemberStatus::Pending,
+        node_state: Default::default(),
+        admin_api_base: None,
+        digest_seq: 1,
+        emitted_at_rafka_ms: 1,
+        data_dir: None,
+        mesh_id: None,
+        in_flight: None,
+        config: Default::default(),
+        load: None,
+        gossip: None,
+        held_hash: n.membership.held_hash(),
+    }
+}
+
+/// A holder learned after boot is the physical join peer, including on the seedless first admin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
+    const LATER: &str = "app.later-held";
+    let fabric = FabricId::mint();
+    let mesh = MeshId::mint();
+    let a = node(&fabric, &mesh, "mesh1.admin.1", vec![]).await;
+    let b = node(&fabric, &mesh, "mesh1.admin.2", vec![address(&a)]).await;
+    let c = node_declaring(&fabric, &mesh, "mesh1.rpc.1", vec![address(&b)], &[LATER]).await;
+    b.membership.learn(member_digest(&c), "join-types-probe");
+    b.membership
+        .learn_app_types(
+            c.author.node_id.clone(),
+            c.author.incarnation.clone(),
+            c.membership.app_types(),
+            c.membership.held_types(),
+        )
+        .await
+        .unwrap();
+    // Establish the member-to-own-admin edge without giving A any new bootstrap peer.
+    let mut member = c
+        .gossip
+        .subscribe(channel_id(&fabric, LATER), vec![b.ep.id()])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), member.joined())
+        .await
+        .unwrap()
+        .unwrap();
+    a.membership.learn(member_digest(&b), "peer-types-probe");
+    a.membership
+        .learn_app_types(
+            b.author.node_id.clone(),
+            b.author.incarnation.clone(),
+            b.membership.app_types(),
+            b.membership.held_types(),
+        )
+        .await
+        .unwrap();
+    let mut observed = a
+        .gossip
+        .subscribe(channel_id(&fabric, LATER), vec![])
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), observed.joined())
+        .await
+        .expect("the new type joins through its reporting holder, even with no boot seeds")
+        .unwrap();
+    let mut receiver = a.membership.join_channel(LATER).await.unwrap();
+    let publisher = c.membership.join_channel(LATER).await.unwrap();
+    publisher.publish(event(1, vec![7])).await.unwrap();
+    assert_eq!(receive(&mut receiver).await.data.as_ref(), &[7]);
 }
