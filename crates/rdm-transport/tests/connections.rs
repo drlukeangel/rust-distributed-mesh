@@ -629,3 +629,1098 @@ async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned
     peer_a.shutdown().await;
     peer_b.shutdown().await;
 }
+
+fn gateway_alpn(name: &[u8]) -> Alpn {
+    Alpn {
+        name: name.to_vec(),
+        forwardable: true,
+        carriers: vec![NodeKind::Gateway],
+    }
+}
+
+fn non_forwardable_alpn(name: &[u8]) -> Alpn {
+    Alpn {
+        name: name.to_vec(),
+        forwardable: false,
+        carriers: vec![],
+    }
+}
+
+async fn seed_carrier_direct_edge(
+    observer_sinks: &[&Arc<MemoryConnectionsSink>],
+    carrier: &Birth,
+    destination: &Birth,
+    alpn: &[u8],
+) {
+    let row = NodeConnection {
+        id: ConnectionId::mint(),
+        source: carrier.to_end(),
+        destination: destination.to_end(),
+        kind: CoreConnectionKind::Direct,
+        alpn: alpn.to_vec(),
+        state: ConnectionState::Connected,
+        carrier: None,
+        recovery: None,
+        reason: None,
+        logged_at_ms: 1,
+    };
+    for sink in observer_sinks {
+        let held = sink.held();
+        let _ = held.lock().unwrap().apply(row.clone());
+    }
+}
+
+struct CountingAdmitter {
+    direct_from_source: AtomicUsize,
+    from_carrier: AtomicUsize,
+    source_id: NodeId,
+    carrier_id: NodeId,
+    allow: AtomicBool,
+    reason: String,
+}
+
+impl Admitter for CountingAdmitter {
+    fn verify(
+        &self,
+        caller: &Birth,
+        _alpn: &[u8],
+        _cert: &[u8],
+    ) -> Result<(u64, &'static str), String> {
+        if caller.node_id == self.source_id {
+            self.direct_from_source.fetch_add(1, Ordering::SeqCst);
+        } else if caller.node_id == self.carrier_id {
+            self.from_carrier.fetch_add(1, Ordering::SeqCst);
+        }
+        if self.allow.load(Ordering::SeqCst) {
+            Ok((0, "no-certs"))
+        } else {
+            Err(self.reason.clone())
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_held_proxy_is_taken_without_a_direct_dial() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    // Source knows both carrier and dest, carrier knows dest:
+    source.know(&carrier);
+    source.know(&dest);
+    carrier.know(&dest);
+    carrier.know(&source);
+    dest.know(&carrier);
+    dest.know(&source);
+
+    // Seed carrier -> dest Direct Connected in source and carrier held projections,
+    // and seed a held Proxy Connected row in source's sink:
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    let held_proxy = NodeConnection {
+        id: ConnectionId::mint(),
+        source: source.birth.to_end(),
+        destination: dest.birth.to_end(),
+        kind: CoreConnectionKind::Proxy,
+        alpn: ALPN_A.to_vec(),
+        state: ConnectionState::Connected,
+        carrier: Some(carrier.birth.to_end()),
+        recovery: None,
+        reason: None,
+        logged_at_ms: 5,
+    };
+    source.sink.record_row(held_proxy).await.unwrap();
+
+    let dest_admitter = Arc::new(CountingAdmitter {
+        direct_from_source: AtomicUsize::new(0),
+        from_carrier: AtomicUsize::new(0),
+        source_id: source.birth.node_id.clone(),
+        carrier_id: carrier.birth.node_id.clone(),
+        allow: AtomicBool::new(true),
+        reason: String::new(),
+    });
+    dest.registry.set_admitter(dest_admitter.clone());
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s
+        .open(&dest.birth)
+        .await
+        .expect("held Proxy must open through the carrier without a Direct dial");
+    let conn_d = accept_task.await.unwrap();
+
+    assert_eq!(
+        dest_admitter.direct_from_source.load(Ordering::SeqCst),
+        0,
+        "a held Proxy must be taken without a Direct dial from source to destination"
+    );
+    assert_eq!(
+        dest_admitter.from_carrier.load(Ordering::SeqCst),
+        1,
+        "destination must be dialled by the carrier"
+    );
+    assert_eq!(
+        conn_s.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        }
+    );
+    assert_eq!(
+        conn_d.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        }
+    );
+    assert_eq!(conn_s.peer(), &dest.birth);
+    assert_eq!(conn_d.peer(), &source.birth);
+    assert_eq!(conn_s.id(), conn_d.id());
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_not_sent_direct_on_a_forwardable_alpn_goes_once_through_the_hashed_carrier() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let gw1 = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let gw2 = TestPeer::bind("mesh1.gateway.2", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    // Source knows gw1 and gw2, but NOT dest (so Direct to dest is provably NotSent):
+    source.know(&gw1);
+    source.know(&gw2);
+    gw1.know(&dest);
+    gw2.know(&dest);
+
+    seed_carrier_direct_edge(
+        &[&source.sink, &gw1.sink, &gw2.sink],
+        &gw1.birth,
+        &dest.birth,
+        ALPN_A,
+    )
+    .await;
+    seed_carrier_direct_edge(
+        &[&source.sink, &gw1.sink, &gw2.sink],
+        &gw2.birth,
+        &dest.birth,
+        ALPN_A,
+    )
+    .await;
+
+    let gw1_admitter = Arc::new(PolicyAdmitter {
+        allow: AtomicBool::new(true),
+        calls: AtomicUsize::new(0),
+    });
+    let gw2_admitter = Arc::new(PolicyAdmitter {
+        allow: AtomicBool::new(true),
+        calls: AtomicUsize::new(0),
+    });
+    gw1.registry.set_admitter(gw1_admitter.clone());
+    gw2.registry.set_admitter(gw2_admitter.clone());
+
+    let expected_idx = rdm_core::connections::spread(
+        &source.birth.name.to_string(),
+        &dest.birth.name.to_string(),
+        dest.birth.incarnation.as_str(),
+    ) % 2;
+    let expected_carrier = if expected_idx == 0 {
+        &gw1.birth
+    } else {
+        &gw2.birth
+    };
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s
+        .open(&dest.birth)
+        .await
+        .expect("NotSent Direct on forwardable ALPN must succeed via hashed carrier");
+    let conn_d = accept_task.await.unwrap();
+
+    assert_eq!(
+        conn_s.kind(),
+        ConnectionKind::Proxy {
+            via: expected_carrier.clone()
+        }
+    );
+    assert_eq!(conn_d.id(), conn_s.id());
+    if expected_idx == 0 {
+        assert_eq!(gw1_admitter.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(gw2_admitter.calls.load(Ordering::SeqCst), 0);
+    } else {
+        assert_eq!(gw1_admitter.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(gw2_admitter.calls.load(Ordering::SeqCst), 1);
+    }
+
+    // Verify Direct Failed then Proxy Connected were written to source.sink:
+    let history = source.sink.history();
+    assert!(
+        history
+            .iter()
+            .any(|r| r.kind == CoreConnectionKind::Direct && r.state == ConnectionState::Failed),
+        "Direct Failed must be recorded before carrier fallback: {history:?}"
+    );
+    let proxy_row = history
+        .iter()
+        .find(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected)
+        .expect("Proxy Connected must be recorded");
+    assert_eq!(proxy_row.carrier, Some(expected_carrier.to_end()));
+
+    source.shutdown().await;
+    gw1.shutdown().await;
+    gw2.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[test]
+fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and_only_then_writes_proxy_connected() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rdm_transport::span_capture("rdm-evidence", exporter.clone());
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let d_rt = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d_rt)))
+        .build()
+        .unwrap();
+    let _g = tracing::dispatcher::set_default(&dispatch);
+
+    let (trace_id, proxy_row_id) = rt.block_on(async {
+        let root_span = tracing::info_span!(
+            "rdm.test.connections.create.via-proxy-tunnel",
+            source = "mesh1.rpc.1",
+            carrier = "mesh1.gateway.1",
+            destination = "mesh1.rpc.2",
+        );
+        let trace_id = root_span
+            .in_scope(rdm_transport::current_traceparent)
+            .and_then(|tp| tp.split('-').nth(1).map(str::to_string))
+            .expect("root span has trace_id");
+
+        let proxy_row_id = tracing::Instrument::instrument(
+            async {
+                let alpns = [gateway_alpn(ALPN_A)];
+                let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+                let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+                let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+                source.know(&carrier);
+                carrier.know(&dest);
+
+                let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+                let (dialer_c, _) = carrier.registry.connections(ALPN_A).unwrap().split();
+                let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+                // 1. Carrier opens Direct to destination (Admit #1 + carrier->dest Direct Connected row):
+                let accept_c_task = tokio::spawn(async move {
+                    let c = acceptor_d.accept().await.unwrap();
+                    (c, acceptor_d)
+                });
+                let conn_c_d = dialer_c.open(&dest.birth).await.unwrap();
+                let (conn_d_c, mut acceptor_d) = accept_c_task.await.unwrap();
+                assert_eq!(conn_c_d.kind(), ConnectionKind::Direct);
+                assert_eq!(conn_d_c.kind(), ConnectionKind::Direct);
+
+                // Propagate carrier's Direct Connected row into source's held projection (as gossip does):
+                for row in carrier.sink.history() {
+                    let held = source.sink.held();
+                    let _ = held.lock().unwrap().apply(row);
+                }
+
+                // 2. Source opens to destination (Direct NotSent -> Tunnel through carrier: Admit #2, Admit #3, Proxy row):
+                let accept_s_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+                let conn_s = dialer_s.open(&dest.birth).await.unwrap();
+                let conn_d = accept_s_task.await.unwrap();
+
+                assert_eq!(conn_s.peer(), &dest.birth);
+                assert_eq!(conn_d.peer(), &source.birth);
+                assert_eq!(
+                    conn_s.kind(),
+                    ConnectionKind::Proxy {
+                        via: carrier.birth.clone()
+                    }
+                );
+                assert_eq!(
+                    conn_d.kind(),
+                    ConnectionKind::Proxy {
+                        via: carrier.birth.clone()
+                    }
+                );
+
+                let history = source.sink.history();
+                let proxy_rows: Vec<_> = history
+                    .iter()
+                    .filter(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected)
+                    .collect();
+                assert_eq!(proxy_rows.len(), 1);
+                assert_eq!(&proxy_rows[0].id, conn_s.id());
+                assert_eq!(proxy_rows[0].destination, dest.birth.to_end());
+                assert_eq!(proxy_rows[0].carrier, Some(carrier.birth.to_end()));
+                let row_id = proxy_rows[0].id.to_string();
+
+                source.shutdown().await;
+                carrier.shutdown().await;
+                dest.shutdown().await;
+                row_id
+            },
+            root_span,
+        )
+        .await;
+        (trace_id, proxy_row_id)
+    });
+
+    capture
+        .flush(Duration::from_secs(10))
+        .expect("all spans flushed to exporter");
+    let finished = exporter.get_finished_spans().unwrap();
+    let mut trace_spans = Vec::new();
+    for s in finished {
+        if s.span_context.trace_id().to_string() != trace_id {
+            continue;
+        }
+        let attributes: serde_json::Map<String, serde_json::Value> = s
+            .attributes
+            .iter()
+            .map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string())))
+            .collect();
+        let start_ns = s
+            .start_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let end_ns = s
+            .end_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let row = serde_json::json!({
+            "name": s.name,
+            "trace_id": s.span_context.trace_id().to_string(),
+            "span_id": s.span_context.span_id().to_string(),
+            "parent_span_id": s.parent_span_id.to_string(),
+            "start_ns": start_ns,
+            "end_ns": end_ns,
+            "start_unix_nano": start_ns,
+            "end_unix_nano": end_ns,
+            "attributes": attributes,
+        });
+        println!("I148_E2_SPAN {}", serde_json::to_string(&row).unwrap());
+        trace_spans.push(row);
+    }
+
+    let admits: Vec<_> = trace_spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted")
+        .collect();
+    assert_eq!(
+        admits.len(),
+        3,
+        "three admits (carrier->dest Direct, source->carrier Tunnel leg 1, carrier->dest Tunnel leg 2) must be in the trace: {admits:?}"
+    );
+    let tunnels: Vec<_> = trace_spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connections.create.via-tunnel")
+        .collect();
+    assert_eq!(
+        tunnels.len(),
+        2,
+        "via-tunnel span on both source and carrier must be in the trace: {tunnels:?}"
+    );
+    let proxy_observed: Vec<_> = trace_spans
+        .iter()
+        .filter(|s| {
+            s["name"] == "rdm.node_admin.connection.update.via-observed"
+                && s["attributes"]["kind"] == "proxy"
+                && s["attributes"]["state"] == "connected"
+                && s["attributes"]["entry"] == proxy_row_id
+        })
+        .collect();
+    assert_eq!(
+        proxy_observed.len(),
+        1,
+        "Proxy Connected row must be spanned in the trace: {trace_spans:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tunnel_refused_wrong_incarnation_or_lapsed_writes_nothing_and_ends_by_name() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    // Case 1: Destination refuses at admission -> Refused by name, no Proxy Connected written:
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+    let dest_admitter = Arc::new(PolicyAdmitter {
+        allow: AtomicBool::new(false),
+        calls: AtomicUsize::new(0),
+    });
+    dest.registry.set_admitter(dest_admitter.clone());
+
+    let err1 = dialer_s
+        .open(&dest.birth)
+        .await
+        .expect_err("tunnel refused by destination must fail");
+    assert_eq!(
+        err1,
+        ConnectError::Refused {
+            reason: "expired member cert".to_string()
+        }
+    );
+    assert!(
+        !source
+            .sink
+            .history()
+            .iter()
+            .any(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected),
+        "refused tunnel must write no Proxy Connected row"
+    );
+
+    // Case 2: Wrong incarnation at destination -> WrongIncarnation by name, no Proxy Connected written:
+    dest_admitter.allow.store(true, Ordering::SeqCst);
+    let wrong_inc = IncarnationId::mint();
+    let stale_dest = Birth {
+        name: dest.birth.name.clone(),
+        node_id: dest.birth.node_id.clone(),
+        incarnation: wrong_inc.clone(),
+    };
+    // Reset source's held state so open attempts against stale_dest:
+    let fresh_source = TestPeer::bind("mesh1.rpc.3", &alpns).await;
+    fresh_source.know(&carrier);
+    seed_carrier_direct_edge(
+        &[&fresh_source.sink, &carrier.sink],
+        &carrier.birth,
+        &stale_dest,
+        ALPN_A,
+    )
+    .await;
+    let (dialer_fs, _) = fresh_source.registry.connections(ALPN_A).unwrap().split();
+
+    let err2 = dialer_fs
+        .open(&stale_dest)
+        .await
+        .expect_err("tunnel to wrong destination incarnation must fail");
+    assert_eq!(
+        err2,
+        ConnectError::WrongIncarnation {
+            held: wrong_inc,
+            found: dest.birth.incarnation.clone(),
+        }
+    );
+    assert!(
+        !fresh_source
+            .sink
+            .history()
+            .iter()
+            .any(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected),
+        "wrong-incarnation tunnel must write no Proxy Connected row"
+    );
+    let accept_timeout =
+        tokio::time::timeout(Duration::from_millis(50), acceptor_d.accept()).await;
+    assert!(
+        accept_timeout.is_err(),
+        "destination acceptor must not yield a wrong-incarnation tunnel"
+    );
+
+    // Case 3: Carrier cannot reach destination (lapsed / carrier-edge-lost) -> NotSent, no Proxy Connected:
+    let dead_dest = Birth {
+        name: "mesh1.rpc.4".parse().unwrap(),
+        node_id: NodeId::mint(),
+        incarnation: IncarnationId::mint(),
+    };
+    let fresh_source2 = TestPeer::bind("mesh1.rpc.5", &alpns).await;
+    fresh_source2.know(&carrier);
+    seed_carrier_direct_edge(
+        &[&fresh_source2.sink, &carrier.sink],
+        &carrier.birth,
+        &dead_dest,
+        ALPN_A,
+    )
+    .await;
+    let (dialer_fs2, _) = fresh_source2.registry.connections(ALPN_A).unwrap().split();
+    let err3 = dialer_fs2
+        .open(&dead_dest)
+        .await
+        .expect_err("tunnel whose destination leg cannot be opened by carrier must fail");
+    assert!(
+        matches!(err3, ConnectError::NotSent { .. } | ConnectError::Refused { .. }),
+        "expected NotSent or Refused, got {err3:?}"
+    );
+    assert!(
+        !fresh_source2
+            .sink
+            .history()
+            .iter()
+            .any(|r| r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Connected),
+        "failed tunnel must write no Proxy Connected row"
+    );
+
+    source.shutdown().await;
+    fresh_source.shutdown().await;
+    fresh_source2.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_carrier_pairs_concurrent_streams_one_to_one_in_both_directions_and_reads_no_app_byte() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_c) = carrier.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = Arc::new(dialer_s.open(&dest.birth).await.unwrap());
+    let conn_d = Arc::new(accept_task.await.unwrap());
+
+    // Carrier's acceptor never receives a Connection for a tunnel:
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), acceptor_c.accept())
+            .await
+            .is_err(),
+        "carrier must splice the tunnel internally and never hand it to the carrier's app acceptor"
+    );
+
+    // Spawn 4 concurrent source->dest streams and 4 concurrent dest->source streams:
+    let mut s_to_d_open = Vec::new();
+    for i in 0..4u8 {
+        let cs = conn_s.clone();
+        s_to_d_open.push(tokio::spawn(async move {
+            let (mut send, mut recv) = cs.open_bi().await.unwrap();
+            let msg = vec![b'S', i, 1, 2, 3];
+            send.write_all(&msg).await.unwrap();
+            send.finish().unwrap();
+            let reply = recv.read_to_end(64).await.unwrap();
+            assert_eq!(reply, vec![b'D', i, 9, 8, 7]);
+        }));
+    }
+
+    let cd_for_s = conn_d.clone();
+    let d_accept_s = tokio::spawn(async move {
+        let mut handlers = Vec::new();
+        for _ in 0..4 {
+            let (mut send, mut recv) = cd_for_s.accept_bi().await.unwrap();
+            handlers.push(tokio::spawn(async move {
+                let got = recv.read_to_end(64).await.unwrap();
+                assert_eq!(got[0], b'S');
+                let idx = got[1];
+                assert_eq!(&got[2..], &[1, 2, 3]);
+                send.write_all(&[b'D', idx, 9, 8, 7]).await.unwrap();
+                send.finish().unwrap();
+            }));
+        }
+        for h in handlers {
+            h.await.unwrap();
+        }
+    });
+
+    for t in s_to_d_open {
+        t.await.unwrap();
+    }
+    d_accept_s.await.unwrap();
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_destination_opened_stream_reaches_the_source_through_the_tunnel() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s.open(&dest.birth).await.unwrap();
+    let conn_d = accept_task.await.unwrap();
+
+    // Destination opens a bi-stream toward source through the tunnel:
+    let (mut send_d, mut recv_d) = conn_d.open_bi().await.unwrap();
+    send_d.write_all(b"from-dest-to-source").await.unwrap();
+    send_d.finish().unwrap();
+
+    let (mut send_s, mut recv_s) = conn_s.accept_bi().await.unwrap();
+    let got = recv_s.read_to_end(64).await.unwrap();
+    assert_eq!(got, b"from-dest-to-source");
+    send_s.write_all(b"ack-from-source").await.unwrap();
+    send_s.finish().unwrap();
+
+    let ack = recv_d.read_to_end(64).await.unwrap();
+    assert_eq!(ack, b"ack-from-source");
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reset_code_on_one_leg_is_the_same_code_on_the_other() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s.open(&dest.birth).await.unwrap();
+    let conn_d = accept_task.await.unwrap();
+
+    // 1. Source resets send stream with code 321 -> dest recv stream sees StreamError::Reset { code: 321 }:
+    let (mut send_s1, _recv_s1) = conn_s.open_bi().await.unwrap();
+    send_s1.write_all(b"head").await.unwrap();
+    let (_send_d1, mut recv_d1) = conn_d.accept_bi().await.unwrap();
+    let mut b4 = [0u8; 4];
+    recv_d1.read_exact(&mut b4).await.unwrap();
+    assert_eq!(&b4, b"head");
+
+    send_s1.reset(321).unwrap();
+    let err_d1 = recv_d1
+        .read_to_end(64)
+        .await
+        .expect_err("dest recv must observe source's reset code");
+    assert_eq!(err_d1, StreamError::Reset { code: 321 });
+
+    // 2. Dest stops recv stream with code 654 -> source send stream sees StreamError::Stopped { code: 654 }:
+    let (mut send_s2, _recv_s2) = conn_s.open_bi().await.unwrap();
+    send_s2.write_all(b"ping").await.unwrap();
+    let (_send_d2, mut recv_d2) = conn_d.accept_bi().await.unwrap();
+    recv_d2.read_exact(&mut b4).await.unwrap();
+    recv_d2.stop(654).unwrap();
+    let err_s2 = send_s2
+        .stopped()
+        .await
+        .expect_err("source send must observe dest's stop code");
+    assert_eq!(err_s2, StreamError::Stopped { code: 654 });
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_carrier_leg_closing_closes_every_paired_stream_carrier_gone() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let conn_s = dialer_s.open(&dest.birth).await.unwrap();
+    let conn_d = accept_task.await.unwrap();
+
+    let (mut send_s, mut recv_s) = conn_s.open_bi().await.unwrap();
+    send_s.write_all(b"active").await.unwrap();
+    let (_send_d, mut recv_d) = conn_d.accept_bi().await.unwrap();
+    let mut buf = [0u8; 6];
+    recv_d.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"active");
+
+    // Shut down the carrier so its legs close:
+    carrier.shutdown().await;
+
+    let closed_s = tokio::time::timeout(Duration::from_secs(5), conn_s.closed())
+        .await
+        .expect("conn_s.closed() must resolve when carrier closes");
+    assert_eq!(closed_s, Closed::CarrierGone);
+
+    let closed_d = tokio::time::timeout(Duration::from_secs(5), conn_d.closed())
+        .await
+        .expect("conn_d.closed() must resolve when carrier closes");
+    assert_eq!(closed_d, Closed::CarrierGone);
+
+    assert_eq!(
+        recv_s.read_to_end(64).await.unwrap_err(),
+        StreamError::Closed(Closed::CarrierGone)
+    );
+    assert_eq!(
+        recv_d.read_to_end(64).await.unwrap_err(),
+        StreamError::Closed(Closed::CarrierGone)
+    );
+
+    source.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_open_tunnel_and_its_streams_outlive_direct_restoration_and_the_next_open_goes_direct() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    // Initially source knows only carrier, not dest:
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept_task = tokio::spawn(async move {
+        let c1 = acceptor_d.accept().await.unwrap();
+        (c1, acceptor_d)
+    });
+    let tunnel_s = dialer_s.open(&dest.birth).await.unwrap();
+    let (tunnel_d, mut acceptor_d) = accept_task.await.unwrap();
+    assert_eq!(
+        tunnel_s.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        }
+    );
+
+    // Open a long-lived stream on the tunnel before Direct restoration:
+    let (mut t_send_s, mut t_recv_s) = tunnel_s.open_bi().await.unwrap();
+    t_send_s.write_all(b"before-restore").await.unwrap();
+    let (mut t_send_d, mut t_recv_d) = tunnel_d.accept_bi().await.unwrap();
+    let mut b14 = [0u8; 14];
+    t_recv_d.read_exact(&mut b14).await.unwrap();
+    assert_eq!(&b14, b"before-restore");
+
+    // Restore Direct: source now knows dest and records Direct Connected (which retires the Proxy route):
+    source.know(&dest);
+    dest.know(&source);
+    let direct_row = NodeConnection {
+        id: ConnectionId::mint(),
+        source: source.birth.to_end(),
+        destination: dest.birth.to_end(),
+        kind: CoreConnectionKind::Direct,
+        alpn: ALPN_A.to_vec(),
+        state: ConnectionState::Connected,
+        carrier: None,
+        recovery: None,
+        reason: None,
+        logged_at_ms: 100,
+    };
+    source.sink.record_row(direct_row).await.unwrap();
+
+    // 1. The open tunnel and its open stream outlive Direct restoration:
+    t_send_s.write_all(b"after-restore").await.unwrap();
+    t_send_s.finish().unwrap();
+    let rest = t_recv_d.read_to_end(64).await.unwrap();
+    assert_eq!(rest, b"after-restore");
+    t_send_d.write_all(b"tunnel-reply").await.unwrap();
+    t_send_d.finish().unwrap();
+    let reply = t_recv_s.read_to_end(64).await.unwrap();
+    assert_eq!(reply, b"tunnel-reply");
+
+    // 2. The next open() goes Direct:
+    let accept_task2 = tokio::spawn(async move { acceptor_d.accept().await.unwrap() });
+    let next_s = dialer_s.open(&dest.birth).await.unwrap();
+    let next_d = accept_task2.await.unwrap();
+    assert_eq!(next_s.kind(), ConnectionKind::Direct);
+    assert_eq!(next_d.kind(), ConnectionKind::Direct);
+
+    // 3. Before delete, held_open_tunnels lists the tunnel by its row id with `route: retired`,
+    // and node.connections.delete by that id closes the tunnel without writing a second Disconnected row:
+    let tunnel_id = tunnel_s.id().clone();
+    let tunnel_list = source.registry.held_open_tunnels();
+    assert_eq!(tunnel_list.len(), 1);
+    assert_eq!(tunnel_list[0].id, tunnel_id);
+    assert_eq!(tunnel_list[0].reason.as_deref(), Some("route: retired"));
+
+    let deleted = source
+        .registry
+        .delete_connections(&ConnectionScope::Connections(vec![tunnel_id.clone()]))
+        .await;
+    assert_eq!(deleted, vec![tunnel_id]);
+    let closed = tokio::time::timeout(Duration::from_secs(5), tunnel_s.closed())
+        .await
+        .unwrap();
+    assert_eq!(closed, Closed::ConnectionsDeleted);
+
+    let proxy_disconnects: Vec<_> = source
+        .sink
+        .history()
+        .into_iter()
+        .filter(|r| {
+            r.kind == CoreConnectionKind::Proxy && r.state == ConnectionState::Disconnected
+        })
+        .collect();
+    assert_eq!(
+        proxy_disconnects.len(),
+        1,
+        "ending a retired tunnel must write no second Disconnected row: {proxy_disconnects:?}"
+    );
+    assert_eq!(proxy_disconnects[0].reason.as_deref(), Some("direct-restored"));
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_non_forwardable_alpn_never_takes_a_proxy_even_when_one_is_held() {
+    let alpns = [non_forwardable_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    // Seed both a Failed Direct and a Connected Proxy on ALPN_A in source's sink:
+    let failed_direct = NodeConnection {
+        id: ConnectionId::mint(),
+        source: source.birth.to_end(),
+        destination: dest.birth.to_end(),
+        kind: CoreConnectionKind::Direct,
+        alpn: ALPN_A.to_vec(),
+        state: ConnectionState::Failed,
+        carrier: None,
+        recovery: Some(rdm_core::connections::DirectRecovery {
+            recovery_round: 1,
+            attempt_ordinal: 1,
+        }),
+        reason: Some("unreachable".into()),
+        logged_at_ms: 10,
+    };
+    let held_proxy = NodeConnection {
+        id: ConnectionId::mint(),
+        source: source.birth.to_end(),
+        destination: dest.birth.to_end(),
+        kind: CoreConnectionKind::Proxy,
+        alpn: ALPN_A.to_vec(),
+        state: ConnectionState::Connected,
+        carrier: Some(carrier.birth.to_end()),
+        recovery: None,
+        reason: None,
+        logged_at_ms: 11,
+    };
+    source.sink.record_row(failed_direct).await.unwrap();
+    source.sink.record_row(held_proxy).await.unwrap();
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let err = dialer_s
+        .open(&dest.birth)
+        .await
+        .expect_err("non-forwardable ALPN must refuse with NoActiveRoute when Direct is Failed");
+    assert_eq!(err, ConnectError::NoActiveRoute);
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_carrier_choice_is_sticky_until_a_named_event_and_spread_by_source() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let gw1 = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let gw2 = TestPeer::bind("mesh1.gateway.2", &alpns).await;
+    let gw3 = TestPeer::bind("mesh1.gateway.3", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.99", &alpns).await;
+    gw1.know(&dest);
+    gw2.know(&dest);
+    gw3.know(&dest);
+
+    // 1. Verify spread by source across eligible carriers:
+    let mut chosen_carriers = std::collections::BTreeSet::new();
+    for ord in 1..=12 {
+        let s_name: rdm_core::PathName = format!("mesh1.rpc.{ord}").parse().unwrap();
+        let idx = rdm_core::connections::spread(
+            &s_name.to_string(),
+            &dest.birth.name.to_string(),
+            dest.birth.incarnation.as_str(),
+        ) % 2;
+        chosen_carriers.insert(idx);
+    }
+    assert_eq!(
+        chosen_carriers.len(),
+        2,
+        "spread must distribute sources across eligible carriers"
+    );
+
+    // 2. Establish a Proxy from source to dest when gw1 and gw2 are eligible:
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    source.know(&gw1);
+    source.know(&gw2);
+    source.know(&gw3);
+    seed_carrier_direct_edge(
+        &[&source.sink, &gw1.sink, &gw2.sink, &gw3.sink],
+        &gw1.birth,
+        &dest.birth,
+        ALPN_A,
+    )
+    .await;
+    seed_carrier_direct_edge(
+        &[&source.sink, &gw1.sink, &gw2.sink, &gw3.sink],
+        &gw2.birth,
+        &dest.birth,
+        ALPN_A,
+    )
+    .await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    let accept1 = tokio::spawn(async move {
+        let c = acceptor_d.accept().await.unwrap();
+        (c, acceptor_d)
+    });
+    let conn1 = dialer_s.open(&dest.birth).await.unwrap();
+    let (_conn1_d, mut acceptor_d) = accept1.await.unwrap();
+    let ConnectionKind::Proxy { via: first_carrier } = conn1.kind() else {
+        panic!("expected Proxy connection");
+    };
+
+    // Now gw3 appears with a newer Direct Connected edge to dest:
+    seed_carrier_direct_edge(
+        &[&source.sink, &gw1.sink, &gw2.sink, &gw3.sink],
+        &gw3.birth,
+        &dest.birth,
+        ALPN_A,
+    )
+    .await;
+
+    // Sticky: a second open() still uses `first_carrier` because the held Proxy is valid:
+    let accept2 = tokio::spawn(async move {
+        let c = acceptor_d.accept().await.unwrap();
+        (c, acceptor_d)
+    });
+    let conn2 = dialer_s.open(&dest.birth).await.unwrap();
+    let (_conn2_d, _acceptor_d) = accept2.await.unwrap();
+    assert_eq!(
+        conn2.kind(),
+        ConnectionKind::Proxy {
+            via: first_carrier.clone()
+        },
+        "a newly available carrier must not reshuffle a working held Proxy"
+    );
+
+    source.shutdown().await;
+    gw1.shutdown().await;
+    gw2.shutdown().await;
+    gw3.shutdown().await;
+    dest.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_direct_connected_retires_the_proxy() {
+    let alpns = [gateway_alpn(ALPN_A)];
+    let source = TestPeer::bind("mesh1.rpc.1", &alpns).await;
+    let carrier = TestPeer::bind("mesh1.gateway.1", &alpns).await;
+    let dest = TestPeer::bind("mesh1.rpc.2", &alpns).await;
+
+    source.know(&carrier);
+    carrier.know(&dest);
+    seed_carrier_direct_edge(&[&source.sink, &carrier.sink], &carrier.birth, &dest.birth, ALPN_A).await;
+
+    let (dialer_s, _) = source.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut acceptor_d) = dest.registry.connections(ALPN_A).unwrap().split();
+
+    // 1. First open goes via Proxy because Direct is unreachable:
+    let accept1 = tokio::spawn(async move {
+        let c = acceptor_d.accept().await.unwrap();
+        (c, acceptor_d)
+    });
+    let conn_proxy = dialer_s.open(&dest.birth).await.unwrap();
+    let (_conn_proxy_d, _acceptor_d) = accept1.await.unwrap();
+    assert_eq!(
+        conn_proxy.kind(),
+        ConnectionKind::Proxy {
+            via: carrier.birth.clone()
+        }
+    );
+    assert!(
+        source
+            .sink
+            .held()
+            .lock()
+            .unwrap()
+            .own_proxy_for(&dest.birth.name, ALPN_A)
+            .unwrap()
+            .is_some(),
+        "Proxy Connected is active before Direct Connected"
+    );
+
+    // 2. Direct Connected lands on ALPN_A -> Proxy Disconnected(reason=direct-restored) retires the Proxy:
+    let direct_connected = NodeConnection {
+        id: ConnectionId::mint(),
+        source: source.birth.to_end(),
+        destination: dest.birth.to_end(),
+        kind: CoreConnectionKind::Direct,
+        alpn: ALPN_A.to_vec(),
+        state: ConnectionState::Connected,
+        carrier: None,
+        recovery: None,
+        reason: None,
+        logged_at_ms: 50,
+    };
+    source.sink.record_row(direct_connected).await.unwrap();
+
+    {
+        let held_guard = source.sink.held();
+        let held = held_guard.lock().unwrap();
+        assert!(
+            held.own_proxy_for(&dest.birth.name, ALPN_A)
+                .unwrap()
+                .is_none(),
+            "Direct Connected must retire the Proxy on the same ALPN"
+        );
+        assert!(
+            held.active_direct_for(&source.birth.name, &dest.birth.name, ALPN_A)
+                .unwrap()
+                .is_some(),
+            "Direct Connected is now active"
+        );
+    }
+    let history = source.sink.history();
+    let drop_row = history
+        .iter()
+        .find(|r| {
+            r.kind == CoreConnectionKind::Proxy
+                && r.state == ConnectionState::Disconnected
+                && r.alpn == ALPN_A
+        })
+        .expect("Proxy Disconnected row must be written");
+    assert_eq!(drop_row.reason.as_deref(), Some("direct-restored"));
+
+    source.shutdown().await;
+    carrier.shutdown().await;
+    dest.shutdown().await;
+}
+

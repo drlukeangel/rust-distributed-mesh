@@ -335,12 +335,30 @@ impl ConnectionsWriter {
         }
         row.logged_at_ms = self.stamp();
         let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
-        self.persist(&row).await?;
+        let span = tracing::info_span!(
+            "rdm.node_admin.connection.update.via-observed",
+            entry = %row.id,
+            source = %row.source.name,
+            destination = %row.destination.name,
+            carrier = %row.carrier.as_ref().map(|c| c.name.to_string()).unwrap_or_default(),
+            kind = kind_name(row.kind),
+            state = state_name(row.state),
+            reason = %row.reason.clone().unwrap_or_default(),
+            origin = "dial",
+            outcome = tracing::field::Empty,
+        );
+        if let Err(e) = self.persist(&row).await {
+            span.record("outcome", format!("refused: {e}").as_str());
+            span.in_scope(|| tracing::info!("one connection fact this node observed"));
+            return Err(e);
+        }
         let _ = self.inner.held.lock().unwrap().apply(row.clone());
         self.sync_recovery();
+        span.record("outcome", "landed");
+        span.in_scope(|| tracing::info!("one connection fact this node observed"));
         drop(gate);
         if settles {
-            let _ = self.settle_owed().await;
+            let _ = tracing::Instrument::instrument(self.settle_owed(), span.clone()).await;
         }
         Ok(row)
     }

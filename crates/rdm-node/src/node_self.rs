@@ -366,8 +366,15 @@ impl NodeSelf {
     /// when the process has not handed it one, so nothing is decided on a set it cannot read.
     pub async fn held_routes(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, String> {
         let writer = self.connections.lock().unwrap().clone();
+        let data_connections = self.data_connections.lock().unwrap().clone();
         match writer {
-            Some(w) => Ok(w.held_routes().await),
+            Some(w) => {
+                let mut routes = w.held_routes().await;
+                if let Some(reg) = data_connections {
+                    routes.extend(reg.held_open_tunnels());
+                }
+                Ok(routes)
+            }
             None => Err(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
         }
     }
@@ -377,8 +384,15 @@ impl NodeSelf {
     /// observation handed to its writer has landed; the ids are those `node.connections.delete` names.
     pub async fn connections_get(&self) -> StatusReply {
         let writer = self.connections.lock().unwrap().clone();
+        let data_connections = self.data_connections.lock().unwrap().clone();
         match writer {
-            Some(w) => connections_answer(&w.held_connections().await),
+            Some(w) => {
+                let mut held = w.held_connections().await;
+                if let Some(reg) = data_connections {
+                    held.routes.extend(reg.held_open_tunnels());
+                }
+                connections_answer(&held)
+            }
             None => rdm_core::reply::status::not_ready(format!("{}: this birth holds no connections writer, so the connections it holds cannot be read", self.held_name())),
         }
     }
@@ -438,10 +452,13 @@ impl NodeSelf {
             }
             ConnectionScope::Connections(_) => None,
         };
-        let open = match &writer {
+        let mut open = match &writer {
             Some(w) => w.held_routes().await,
             None => Vec::new(),
         };
+        if let Some(reg) = self.data_connections.lock().unwrap().clone() {
+            open.extend(reg.held_open_tunnels());
+        }
         let (routes, not_open) = match scope {
             ConnectionScope::All => (open, Vec::new()),
             ConnectionScope::Connections(ids) => {

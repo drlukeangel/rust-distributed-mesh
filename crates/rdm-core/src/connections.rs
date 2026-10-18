@@ -514,12 +514,32 @@ pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, p
 
 /// [`resolve`] on `alpn`.
 pub fn resolve_for(held: &ConnectionsHeld, own: &PathName, destination: &PathName, alpn: &[u8], policy: CarrierPolicy) -> RouteResolution {
+    match policy {
+        CarrierPolicy::NotForwardable => resolve_for_carriers(held, own, destination, alpn, false, &[]),
+        CarrierPolicy::Forwardable { carrier_kind } => {
+            resolve_for_carriers(held, own, destination, alpn, true, &[carrier_kind])
+        }
+    }
+}
+
+/// [`resolve_for`] with the protocol's `forwardable` flag and eligible `carriers` kinds.
+pub fn resolve_for_carriers(
+    held: &ConnectionsHeld,
+    own: &PathName,
+    destination: &PathName,
+    alpn: &[u8],
+    forwardable: bool,
+    carriers: &[NodeKind],
+) -> RouteResolution {
     let mut retire = None;
-    if let CarrierPolicy::Forwardable { carrier_kind } = policy {
+    if forwardable && !carriers.is_empty() {
         if let Some(Some(proxy)) = held.own_proxy_for(destination, alpn) {
             // A valid Proxy through a carrier kind this protocol does not allow is skipped, not
             // retired: another protocol may still travel over it.
-            let kind_allowed = proxy.carrier.as_ref().is_some_and(|c| c.name.kind == carrier_kind);
+            let kind_allowed = proxy
+                .carrier
+                .as_ref()
+                .is_some_and(|c| carriers.contains(&c.name.kind));
             match proxy_invalid(held, proxy) {
                 None if kind_allowed => {
                     let carrier = proxy.carrier.as_ref().map(|c| c.name.clone()).expect("a valid Proxy names its carrier");
@@ -578,15 +598,34 @@ pub fn select_carrier_for(
     alpn: &[u8],
     policy: CarrierPolicy,
 ) -> Result<Option<CarrierChoice>, String> {
-    let CarrierPolicy::Forwardable { carrier_kind } = policy else {
+    match policy {
+        CarrierPolicy::NotForwardable => {
+            select_carrier_for_carriers(held, own, destination, alpn, false, &[])
+        }
+        CarrierPolicy::Forwardable { carrier_kind } => {
+            select_carrier_for_carriers(held, own, destination, alpn, true, &[carrier_kind])
+        }
+    }
+}
+
+/// [`select_carrier_for`] with the protocol's `forwardable` flag and eligible `carriers` kinds.
+pub fn select_carrier_for_carriers(
+    held: &ConnectionsHeld,
+    own: &PathName,
+    destination: &PathName,
+    alpn: &[u8],
+    forwardable: bool,
+    carriers: &[NodeKind],
+) -> Result<Option<CarrierChoice>, String> {
+    if !forwardable || carriers.is_empty() {
         return Err(format!("the protocol is not forwardable, so {destination} is never reached through a carrier"));
-    };
+    }
     let Some(edges) = held.active_directs_to_for(destination, alpn) else {
         return Err(format!("the connections projection is not complete, so it does not hold every route to {destination}"));
     };
     let (named, blind): (Vec<&NodeConnection>, Vec<&NodeConnection>) = edges
         .into_iter()
-        .filter(|e| e.source.name.kind == carrier_kind && &e.source.name != own)
+        .filter(|e| carriers.contains(&e.source.name.kind) && &e.source.name != own)
         .partition(|e| e.destination.incarnation.is_some() && e.source.incarnation.is_some());
     let Some(freshest) = named.iter().max_by(|a, b| a.stamp().cmp(&b.stamp()).then(b.source.name.cmp(&a.source.name))) else {
         if blind.is_empty() {
