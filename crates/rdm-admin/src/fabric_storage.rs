@@ -352,33 +352,46 @@ impl FabricStorage for MemoryFabricStorage {
 
 /// The directory inside the fabric's store root.
 pub const FABRIC_DIR: &str = "fabric";
+#[cfg(feature = "file-backend")]
 /// The retired pointer rows (`fabric-pointer/1`, one per move of the pointer an older build kept on
 /// the Fabric row): a store root holding one is refused by name (R-BI3).
 const RETIRED_POINTERS_DIR: &str = "fabric/pointers";
+#[cfg(feature = "file-backend")]
 const RETIRED_POINTER_FORMAT: &str = "fabric-pointer/1";
+#[cfg(feature = "file-backend")]
 /// The retired per-seat rows (`fabric-seat/1`): the leadership view is folded from the transfer rows.
 const RETIRED_SEATS_DIR: &str = "fabric/seats";
+#[cfg(feature = "file-backend")]
 const RETIRED_SEAT_FORMAT: &str = "fabric-seat/1";
+#[cfg(feature = "file-backend")]
 /// The retired stages of fabric.primary.update (`fabric-handover/1`): node.fabric-primary.update
 /// leaves one transfer row.
 const RETIRED_HANDOVERS_DIR: &str = "fabric/handovers";
+#[cfg(feature = "file-backend")]
 const RETIRED_HANDOVER_FORMAT: &str = "fabric-handover/1";
+#[cfg(feature = "file-backend")]
 /// The retired seat-transfer rows under `meshes/<holder mesh>/` (`fabric-seat-transfer/1`): a store
 /// root holding one is refused by name.
 const REFUSED_TRANSFERS_DIR: &str = "seat-transfers";
+#[cfg(feature = "file-backend")]
 const REFUSED_TRANSFER_FORMAT: &str = "fabric-seat-transfer/1";
 /// The fabric's seat moves on its store root, `seat-moves/<T>.json`.
 pub const SEAT_MOVES_DIR: &str = "seat-moves";
 /// The format of one seat move.
 pub const SEAT_MOVE_FORMAT: &str = "seat-move/1";
+#[cfg(feature = "file-backend")]
 const IDENTITY_KEY: &str = "identity";
+#[cfg(feature = "file-backend")]
 /// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and a Build in
 /// one row. A data dir holding it is refused by name.
 const RETIRED_RECORD_KEY: &str = "fabric";
+#[cfg(feature = "file-backend")]
 const IDENTITY_FORMAT: &str = "fabric-identity/1";
+#[cfg(feature = "file-backend")]
 /// A fabric's claim of its name at `<store_dir>/fabrics/<name>` (R-FN1): the claiming Fabric's identity.
 const NAME_FORMAT: &str = "fabric-name/1";
 
+#[cfg(feature = "file-backend")]
 /// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json`
 /// (`crate::record_store`); the fabric's seat moves under `<store root>/seat-moves/`.
 #[derive(Debug)]
@@ -396,10 +409,12 @@ pub struct FileFabricStorage {
     seat: SeatSlot,
 }
 
+#[cfg(feature = "file-backend")]
 /// The fabric seat source a [`FileFabricStorage`] reads when its held `fabric/` rows are published.
 #[derive(Default, Clone)]
 struct SeatSlot(std::sync::Arc<std::sync::OnceLock<crate::fabric_builds::SeatSource>>);
 
+#[cfg(feature = "file-backend")]
 impl SeatSlot {
     /// Whether the writer born as `writer` may write `fabric/`: the committed fabric seat record
     /// names it, names none (Day 0, before any record) or names a birth proven gone. `Err` says why
@@ -413,12 +428,14 @@ impl SeatSlot {
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl std::fmt::Debug for SeatSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(if self.0.get().is_some() { "SeatSlot(set)" } else { "SeatSlot(unset)" })
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl FileFabricStorage {
     /// Open the store under the fabric's store root, written by the process born as `writer`; a
     /// directory holding a retired record is refused by name.
@@ -472,6 +489,7 @@ impl FileFabricStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl FabricStorage for FileFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
@@ -510,6 +528,7 @@ impl FabricStorage for FileFabricStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// The fabric's seat moves on its store root (`seat-moves/<T>`), as one process reads and writes them.
 /// Before the fabric's first state-commit every row a process writes is held in its scratchpad (R14);
 /// the sequence is fabric-wide, so a held move takes its `T` only at the publication, folded against
@@ -523,12 +542,14 @@ struct MoveStore {
     held: Mutex<Option<Vec<SeatMoveRow>>>,
 }
 
+#[cfg(feature = "file-backend")]
 impl std::fmt::Debug for MoveStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MoveStore").field("records", &self.records).finish()
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl MoveStore {
     async fn open(root: &crate::store_root::StoreRoot, writer: &crate::model::IncarnationId) -> Result<std::sync::Arc<Self>, FabricStorageError> {
         let records = crate::record_store::FileRecords::open(root.dir(), SEAT_MOVES_DIR, writer).await?;
@@ -600,6 +621,7 @@ impl MoveStore {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl crate::record_store::HeldStore for MoveStore {
     async fn publish(&self) -> Result<crate::record_store::StorePublished, crate::storage_error::StorageError> {
@@ -646,11 +668,13 @@ pub fn seals_owed(storage: std::sync::Arc<dyn FabricStorage>, by: rdm_core::hand
     })
 }
 
+#[cfg(feature = "file-backend")]
 /// The key of the seat move at `t`: 20-digit zero-padded, so a listing sorts in order.
 fn move_key(t: u64) -> String {
     format!("{t:020}")
 }
 
+#[cfg(feature = "file-backend")]
 /// One claim of `identity` at `key` of `records`: the filesystem's own atomic link of the finished row
 /// to the key, which fails when the key is live, and then the decision against the row standing there
 /// (this Fabric's own: `Held`; another Fabric's: refused, naming it). Held before the fabric's first
@@ -677,6 +701,7 @@ async fn refuse_retired(dir: &std::path::Path, reason: &str) -> Result<(), Fabri
     .await
 }
 
+#[cfg(feature = "file-backend")]
 async fn claimed_insert(records: &crate::record_store::FileRecords, key: &str, format: &str, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
     if key.is_empty() || key.starts_with('.') || key.contains(['/', '\\']) {
         return Err(FabricStorageError::Io { file: format!("{}/{key}", records.store_name()), reason: format!("the fabric name {key:?} is not one path segment, so it keys no claim of the fabric's name") });

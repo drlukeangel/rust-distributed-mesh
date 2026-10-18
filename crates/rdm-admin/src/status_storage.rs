@@ -14,6 +14,7 @@
 //! what it has applied (`status_rpc::SeatFold`).
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeStatus, PathName};
+#[cfg(feature = "file-backend")]
 use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
 use async_trait::async_trait;
@@ -631,16 +632,26 @@ impl StatusStorage for MemoryStatusStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 const MESH_STATUS_FORMAT: &str = "mesh-status/1";
+#[cfg(feature = "file-backend")]
 const FABRIC_EVENT_FORMAT: &str = "fabric-event/1";
+#[cfg(feature = "file-backend")]
 const NODE_DECLARED_FORMAT: &str = "node-declared/3";
+#[cfg(feature = "file-backend")]
 const NODE_SILENCE_FORMAT: &str = "node-silence/1";
+#[cfg(feature = "file-backend")]
 const NODE_EXIT_FORMAT: &str = "node-exit/1";
+#[cfg(feature = "file-backend")]
 const NODE_HELD_RUNNING_FORMAT: &str = "node-held-running/1";
+#[cfg(feature = "file-backend")]
 const NODE_OS_STOPPED_FORMAT: &str = "node-os-stopped/1";
+#[cfg(feature = "file-backend")]
 const NODE_DATA_DIR_LOST_FORMAT: &str = "node-data-dir-lost/1";
+#[cfg(feature = "file-backend")]
 const NODE_DATA_DIR_UNREADABLE_FORMAT: &str = "node-data-dir-unreadable/1";
 
+#[cfg(feature = "file-backend")]
 /// One row per file under `status/<mesh>/` of the fabric's store root (`crate::store_root`):
 /// `meshes/<mesh_id>-<state>.json`, `fabric/<fabric_id>-<hex of the event key>.json`,
 /// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json`,
@@ -677,6 +688,7 @@ pub struct FileStatusStorage {
     others_cut_off: Mutex<Option<String>>,
 }
 
+#[cfg(feature = "file-backend")]
 impl FileStatusStorage {
     /// Open the store under `status/<mesh>/` of the fabric's store root (and another mesh's
     /// `status/<mesh>/`, on first use), written by the process born as `writer`.
@@ -790,6 +802,7 @@ impl FileStatusStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl StatusStorage for FileStatusStorage {
     async fn put_mesh_status(&self, row: &MeshStatusRow) -> Result<(), StorageError> {

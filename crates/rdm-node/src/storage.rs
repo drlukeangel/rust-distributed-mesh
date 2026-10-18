@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
 
 use crate::model::{IncarnationId, PathName};
+#[cfg(feature = "file-backend")]
 use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
 
@@ -66,8 +67,10 @@ impl ConnectionsStorage for MemoryConnectionsStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 const CONNECTION_FORMAT: &str = "node-connection/1";
 
+#[cfg(feature = "file-backend")]
 fn connection_key(i: &ConnectionIndex) -> String {
     let kind = match i.kind {
         rdm_core::connections::ConnectionKind::Direct => "direct",
@@ -76,11 +79,13 @@ fn connection_key(i: &ConnectionIndex) -> String {
     format!("{}--{}--{}--{kind}", i.source, i.destination, hex::encode(&i.alpn))
 }
 
+#[cfg(feature = "file-backend")]
 /// `<store root>/connections/<node>/<source>--<destination>--<kind>.json` and its raw log
 /// `history.jsonl`: the node's own connections rows, written by the node itself.
 #[derive(Debug)]
 pub struct FileConnectionsStorage(FileRecords, std::sync::Arc<HistoryLog>, std::path::PathBuf);
 
+#[cfg(feature = "file-backend")]
 /// A node's raw connection log, `history.jsonl`: appended one line per fact, one appender at a
 /// time; held in the scratchpad, like the node's connections rows, until its publication.
 #[derive(Debug)]
@@ -93,6 +98,7 @@ struct HistoryLog {
     held: Mutex<Option<Vec<Vec<u8>>>>,
 }
 
+#[cfg(feature = "file-backend")]
 impl HistoryLog {
     /// Append `lines` to the file and fsync it, on the blocking pool.
     async fn append_to_file(&self, lines: Vec<Vec<u8>>) -> Result<(), StorageError> {
@@ -110,6 +116,7 @@ impl HistoryLog {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl crate::record_store::HeldStore for HistoryLog {
     async fn publish(&self) -> Result<crate::record_store::StorePublished, StorageError> {
@@ -124,6 +131,7 @@ impl crate::record_store::HeldStore for HistoryLog {
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl FileConnectionsStorage {
     /// Open the store of the node `node` under `connections/<node>/` of the fabric's store root,
     /// written by the process born as `writer`: held in the root's scratchpad until its publication.
@@ -158,6 +166,7 @@ impl FileConnectionsStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl ConnectionsStorage for FileConnectionsStorage {
     async fn put_connection(&self, fact: &NodeConnection) -> Result<(), StorageError> {

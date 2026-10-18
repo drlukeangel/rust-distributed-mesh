@@ -1683,6 +1683,7 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl LocalBuildLog for FileJournal {
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
@@ -1806,6 +1807,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// The retired Build journal file (one JSON line per fact, one file per writer): a store root holding
 /// one is refused by name. The facts are the lanes' keys ([`crate::build_lanes`]).
 const REFUSED_JOURNAL_FILE: &str = "build-journal.jsonl";
@@ -1833,6 +1835,7 @@ pub struct LaneSeat {
 /// move. A revision an election stepped holds no seal: its holder is proven gone.
 pub type SealsOwed = Arc<dyn Fn(crate::build_lanes::LaneId, u64) -> futures_util::future::BoxFuture<'static, Result<Vec<crate::build_lanes::LaneSeal>, String>> + Send + Sync>;
 
+#[cfg(feature = "file-backend")]
 /// `builds.storage`: the Build facts on the fabric's shared store root, one key per fact in the lane
 /// of the seat that writes it ([`crate::build_lanes`]; R-BI6, Q28, Q35): `fabric/builds/` the
 /// fabric-primary's, `meshes/<mesh>/builds/` each mesh-primary's. A fact counts once its key stands,
@@ -1872,6 +1875,7 @@ pub struct FileJournal {
     released: Mutex<Option<String>>,
 }
 
+#[cfg(feature = "file-backend")]
 /// One writer's turn of a [`FileJournal`], on its own span
 /// (`rdm.node_admin.build.update.via-journal-turn`): `waited_ms`, how long it waited for the writer,
 /// and `held_by`, the turn holding it when the wait began; then `held_ms`, how long it held the
@@ -1884,6 +1888,7 @@ struct Turn<'a> {
     began: std::time::Instant,
 }
 
+#[cfg(feature = "file-backend")]
 impl std::ops::Deref for Turn<'_> {
     type Target = Derived;
     fn deref(&self) -> &Derived {
@@ -1891,6 +1896,7 @@ impl std::ops::Deref for Turn<'_> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// A reader taking what it read from the lanes, holding the writer, named as its holder until it ends
 /// ([`FileJournal::sync_for_read`]).
 struct ReadHolder<'a> {
@@ -1899,6 +1905,7 @@ struct ReadHolder<'a> {
     began: std::time::Instant,
 }
 
+#[cfg(feature = "file-backend")]
 impl<'a> ReadHolder<'a> {
     fn name(journal: &'a FileJournal, op: &'static str) -> Self {
         *journal.turn_of.lock().unwrap() = Some((op, std::time::Instant::now()));
@@ -1907,6 +1914,7 @@ impl<'a> ReadHolder<'a> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl Drop for ReadHolder<'_> {
     fn drop(&mut self) {
         self.journal.hold_ends(self.op, self.began.elapsed());
@@ -1914,12 +1922,14 @@ impl Drop for ReadHolder<'_> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl std::ops::DerefMut for Turn<'_> {
     fn deref_mut(&mut self) -> &mut Derived {
         &mut self.guard
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
         let lane_ns = self.journal.turn_lane_ns.swap(0, std::sync::atomic::Ordering::Relaxed);
@@ -1931,16 +1941,19 @@ impl Drop for Turn<'_> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 impl std::fmt::Debug for FileJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileJournal").field("root_dir", &self.root_dir).field("own_mesh", &self.own_mesh).finish()
     }
 }
 
+#[cfg(feature = "file-backend")]
 fn lane_io(e: crate::storage_error::StorageError) -> BuildStateError {
     BuildStateError::Io(e.to_string())
 }
 
+#[cfg(feature = "file-backend")]
 impl FileJournal {
     /// Open the Build lanes on the fabric's shared `root` for an admin of `own_mesh`, written by the
     /// process born as `writer` (R-BI6): `fabric/builds/` (the fabric-primary's) and every
@@ -2270,6 +2283,7 @@ impl FileJournal {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// A store root an older build left a Build journal file on (`fabric/builds/` or any
 /// `meshes/<mesh>/builds/`) is refused by name, the file named.
 fn refuse_journal_file(root: &Path) -> Result<(), BuildStateError> {
@@ -2291,6 +2305,7 @@ fn refuse_journal_file(root: &Path) -> Result<(), BuildStateError> {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// The stale refusal of a lane write (Q28: "`RejectedStaleSeat` from the store, spanned").
 fn stale(at: String, revision: Option<u64>, detail: String) -> BuildStateError {
     tracing::info_span!("rdm.node_admin.build.reject.via-stale-seat", at = %at, revision = revision.map(|r| r.to_string()).unwrap_or_default(), detail = %detail)
@@ -2298,6 +2313,7 @@ fn stale(at: String, revision: Option<u64>, detail: String) -> BuildStateError {
     BuildStateError::StaleSeat { at, revision, detail }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {

@@ -23,10 +23,12 @@ pub mod node_rpc;
 pub mod node_self;
 pub mod rafka_time;
 pub mod blocking;
+#[cfg(feature = "file-backend")]
 pub mod record_store;
 pub mod rounds;
 pub mod storage;
 pub mod storage_error;
+#[cfg(feature = "file-backend")]
 pub mod store_root;
 pub mod taskdump;
 pub mod topology_read;

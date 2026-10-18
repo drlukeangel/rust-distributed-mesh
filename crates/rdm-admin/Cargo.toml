@@ -9,6 +9,12 @@ autotests = false
 [lib]
 doctest = false
 
+[features]
+default = ["file-backend"]
+# RDM standalone's durable-file backend of the six storage boundaries. Off, the build holds the
+# boundaries and their memory backends only (block 1b's proof).
+file-backend = ["rdm-node/file-backend"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -27,7 +33,7 @@ futures-util = "0.3"
 bytes = "1"
 rdm-transport = { path = "../rdm-transport" }
 rdm-core = { path = "../rdm-core" }
-rdm-node = { path = "../rdm-node" }
+rdm-node = { path = "../rdm-node", default-features = false }
 rdm-client = { path = "../rdm-client" }
 
 [[bin]]

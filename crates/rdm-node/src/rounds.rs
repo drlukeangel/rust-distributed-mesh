@@ -169,6 +169,7 @@ impl RoundActions for NoScratchpad {
 }
 
 
+#[cfg(feature = "file-backend")]
 /// RDM standalone's commit-state action (fabric-state-commit.md step 2: "Each node writes what it
 /// holds in its scratchpad into the store the state-sync work established"; node-admin-lifecycle.md
 /// §7): the node publishes its scratchpad to the fabric's store root, then runs the embedding's own
@@ -185,6 +186,7 @@ pub struct StorePublication {
     then: Option<Arc<dyn RoundActions>>,
 }
 
+#[cfg(feature = "file-backend")]
 impl StorePublication {
     /// The action publishing `scratchpad`, then running `then`.
     pub fn new(scratchpad: Option<Arc<crate::record_store::Scratchpad>>, then: Option<Arc<dyn RoundActions>>) -> Self {
@@ -192,6 +194,7 @@ impl StorePublication {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl RoundActions for StorePublication {
     async fn commit_state(&self, node: &PathName) -> Result<(), String> {

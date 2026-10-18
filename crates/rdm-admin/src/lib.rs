@@ -23,6 +23,7 @@ pub mod build_run;
 pub mod build_facts_read;
 pub mod fabric_handover;
 pub mod hydrate;
+#[cfg(feature = "file-backend")]
 pub mod build_lanes;
 pub mod build_state;
 pub mod deployment;
@@ -58,6 +59,7 @@ pub(crate) mod reenter;
 pub mod round;
 pub mod seat_watch;
 pub use rdm_node::blocking;
+#[cfg(feature = "file-backend")]
 pub mod record_store;
 pub mod stopped_gc;
 pub(crate) mod status_declare;
@@ -68,6 +70,7 @@ pub use rdm_node::connection_reconnect;
 pub use rdm_node::connections_writer;
 pub mod storage;
 pub use rdm_node::storage_error;
+#[cfg(feature = "file-backend")]
 pub use rdm_node::store_root;
 pub mod status_storage;
 pub mod topology;

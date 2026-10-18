@@ -20,6 +20,7 @@
 use async_trait::async_trait;
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId};
 pub use rdm_client::NameHeld;
+#[cfg(feature = "file-backend")]
 use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
@@ -154,8 +155,10 @@ impl MeshStorage for MemoryMeshStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 const MESH_FORMAT: &str = "mesh-record/2";
 
+#[cfg(feature = "file-backend")]
 /// `<store root>/meshes/<name>.json`: each mesh's Mesh row, written by that mesh's primary.
 #[derive(Debug)]
 pub struct FileMeshStorage {
@@ -165,6 +168,7 @@ pub struct FileMeshStorage {
     claims: tokio::sync::Mutex<()>,
 }
 
+#[cfg(feature = "file-backend")]
 impl FileMeshStorage {
     /// Open the store under the fabric's store root, written by the process born as `writer`.
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &IncarnationId) -> Result<Self, StorageError> {
@@ -177,6 +181,7 @@ impl FileMeshStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl MeshStorage for FileMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
@@ -554,12 +559,18 @@ impl NodesStorage for MemoryNodesStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 const NODE_FORMAT: &str = "node-record/4";
+#[cfg(feature = "file-backend")]
 const RUNTIME_FORMAT: &str = "node-runtime/1";
+#[cfg(feature = "file-backend")]
 const ROW_FORMAT: &str = "node-row/1";
+#[cfg(feature = "file-backend")]
 const ROW_ID_FORMAT: &str = "node-row-id/1";
+#[cfg(feature = "file-backend")]
 const TAG_FORMAT: &str = "node-tag/1";
 
+#[cfg(feature = "file-backend")]
 /// One row of the node row's tags index: the node carries the label. Its key is the node id, in the
 /// label's own directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,6 +579,7 @@ struct TagRow {
     node_id: NodeId,
 }
 
+#[cfg(feature = "file-backend")]
 /// One entry of the node row's id index: the `path.name` of the row its node holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct RowId {
@@ -575,6 +587,7 @@ struct RowId {
     name: PathName,
 }
 
+#[cfg(feature = "file-backend")]
 /// One mesh's rows on the fabric's store root, `nodes/<mesh>/`: its members' Node rows
 /// (`rows/<path.name>.json`), the rows' id index (`ids/<node id>.json`: the `path.name` of the row
 /// the node holds), the rows' tags index (`tags/<label>/<node id>.json`: one directory per label,
@@ -595,6 +608,7 @@ struct MeshNodes {
     labels_cut_off: Mutex<Option<String>>,
 }
 
+#[cfg(feature = "file-backend")]
 impl MeshNodes {
     async fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         let base = root.nodes(mesh);
@@ -722,6 +736,7 @@ impl MeshNodes {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// The admin's own row and the runtimes it started in its data dir (`nodes/self.json`,
 /// `nodes/runtimes/`), and every mesh's Node rows and contacts under `nodes/<mesh>/` of the
 /// fabric's store root (`crate::store_root`).
@@ -743,6 +758,7 @@ pub struct FileNodesStorage {
     row_writes: tokio::sync::Mutex<()>,
 }
 
+#[cfg(feature = "file-backend")]
 impl FileNodesStorage {
     /// Open the store: the admin's own row and runtimes in `own_data_dir`, the rows of `own_mesh`
     /// (and of every other mesh, on first use) under the fabric's store `root`, written by the
@@ -879,6 +895,7 @@ impl FileNodesStorage {
     }
 }
 
+#[cfg(feature = "file-backend")]
 #[async_trait]
 impl NodesStorage for FileNodesStorage {
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
@@ -981,7 +998,9 @@ impl NodesStorage for FileNodesStorage {
 
 // ---------------------------------------------------------------- connections.storage
 
-pub use rdm_node::storage::{ConnectionsStorage, FileConnectionsStorage, MemoryConnectionsStorage};
+pub use rdm_node::storage::{ConnectionsStorage, MemoryConnectionsStorage};
+#[cfg(feature = "file-backend")]
+pub use rdm_node::storage::FileConnectionsStorage;
 
 #[cfg(test)]
 mod tests {
