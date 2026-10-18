@@ -779,6 +779,8 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 
 - **Q52 = B** (arch, relayed by Luke, 2026-10-17; `docs/plans/rulings/i146-q52-owed-declaration-route.md`): the node's owed declaration is one `Budget::Owed` call; the owner supplies receiver and carrier policy, the route projection picks the carrier per attempt (§45), the Owed call re-resolves its route on every resend instead of once (`client.rs::owe`), direct first then carried; the declaration loop is deleted; the obligation ends on the holder's answer, proven exit or the owner's retarget on a seat move. Transport change authorized for this scope. Dev, lane e4s8.
 
+- **The retired word in code (Luke, 2026-10-17: "draining is not a thing").** The JSON spelling moved to `connections-deleting` at `ba3c7124`, but 211 identifiers still say it: `NodeState::Draining` and `MemberStatus::Draining` (→ `ConnectionsDeleting`, postcard position 2 kept, checked by the existing spelling cell), `Node::drain` (→ the signal stop's connections delete), `drain_deadline_from_env` and the env var `RDM_DRAIN_DEADLINE_MS` (→ `RDM_CONNECTIONS_DELETE_DEADLINE_MS`, the page's one bound for `All` and for a signal stop), and the span and cell names that carry them. The dev lands the rename with Q55, since Q55 is in `drain` and `stop_inner`. CLAUDE.md's banned list now carries the name check's whole set.
+
 ## Verification
 
 - [ ] e1, e2, e3 green in the RDM gate (`rdm-gate-at.sh <lane> fast`, then `release`); each landing's
