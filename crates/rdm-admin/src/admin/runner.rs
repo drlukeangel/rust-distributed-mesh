@@ -488,6 +488,14 @@ impl AdminRunner {
         Ok(())
     }
 
+    /// The state this admin's hand-off gives a mesh's first admin (the hook below): the mesh's current
+    /// held state for an existing mesh, as its MeshStatus is held here, and `Pending` for a mesh it
+    /// holds no state for (a new mesh, e4.s11). A held word that is no Mesh lifecycle state is no
+    /// state held.
+    fn held_mesh_state(&self, mesh: &str) -> rdm_core::status::MeshState {
+        self.book.statuses.mesh(mesh).and_then(|h| super::reconcile::mesh_state_of(&h.status).ok()).unwrap_or(rdm_core::status::MeshState::Pending)
+    }
+
     /// The fabric-primary -> mesh state hand-off at a mesh's first admin, as the create pipeline's
     /// `ApplyMeshPending` step at the exact birth just joined at `admin`: `Pending` for a new mesh's
     /// bootstrap admin (e4.s11), the mesh's current state for the admin created for an existing
@@ -627,7 +635,7 @@ impl AdminRunner {
             let t = self.topology.read().await;
             t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
         };
-        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rdm_core::status::MeshState::Pending)?) } else { None };
+        let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
         // The launch is the kind's template, as every create's: the new node's config is seeded
         // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told
         // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
@@ -1003,7 +1011,7 @@ impl AdminRunner {
                     // birth, before it is asked to be Ready; only with that certainty does the shape
                     // proceed (e4.s11).
                     let first_admin = self.topology.read().await.first_admin_of(node);
-                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, rdm_core::status::MeshState::Pending)?) } else { None };
+                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
                     self.create(build_id, attempt, node, before_ready).await
                 }
                 .instrument(span)

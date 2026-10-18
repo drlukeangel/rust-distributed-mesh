@@ -465,6 +465,13 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
 - **e6 landed (dev, 2026-10-17):** e6.1 `2f10e419`, e6.2 `afff4d44`, e6.3 (R-FM2 fabric lane, Q51) `8b0e58d0`; all on green gates. Tracking issue #3129 stays open for i146's release-suite run.
 
 - **Dev queue after e6 (lead, 2026-10-17):** (1) Q56, the held Mesh state a successor needs after its pre-commit writer ends (Codex's packet `i143-q56-held-mesh-state-acquisition.md`, the class Q54 named): trace the acquisition path, write the packet with its delta, A if the existing contracts carry it, else the page line to Luke. (2) Land e2b (`i144-e2b-connections-deleting-from-the-node`, built, rebased over e6 and the stop/join landings). (3) Read the release run's authority and lifecycle reds (`release-run-8c2e79c6.log`, the s89 split). (4) The rafka-v2 absorption, i141/i142, begins after i147 e5 and i148 land, so Rafka absorbs once; the pin is 2,643 commits behind and names crates that no longer exist, so it is not a landing.
+- **Q56 (dev, 2026-10-17): A, the existing contracts carry it** ([`proposal/i144-q56-held-mesh-state-read.md`](proposal/i144-q56-held-mesh-state-read.md)).
+  - The read: mesh-investigation step 2 gives the joining admin its status context from its maker's JoinNode answer, which carries every held MeshStatus. §7 has it adopt that state exactly.
+  - The defect: the created admin's Ready gate waited instead on a Pending hand-off. The fabric-primary sends that hand-off only when its own view at create time counts no other live admin (a race between two views), and it handed `Pending` even to an existing mesh.
+  - The fix: `take_entry_control` adopts the admin's own mesh's held state from the answer, with no transition and no durable write; a word that is no Mesh lifecycle state is refused by name. The hook hands an existing mesh its current held state, and `Pending` only to a mesh the fabric-primary holds no state for.
+  - Cell: `admin::tests::a_lost_meshs_created_admin_adopts_its_meshs_held_state_from_its_makers_answer`.
+  - Live controls green: `peer_mesh_investigation`, `fabric_primary`, `fabric_takeover`, `mesh_create`, `node_start_sequence`, `issuance`. The adoption is seen in the re-created admins' spans.
+  - s88's container recovery runs again on it in release.
 
 ## Verification
 

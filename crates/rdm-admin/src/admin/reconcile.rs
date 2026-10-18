@@ -743,15 +743,62 @@ pub async fn reconcile_drift(
     }
 }
 
-/// What an entry answer hands this admin of Fabric control: the Fabric identity and the answering
-/// admin's current Build with its attempt, the floor this admin's copy of that Build must reach. The
-/// first entry and every repeat of it take them through here.
-pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepted: &AcceptedStore, entry_floor: &Mutex<Option<(crate::build::BuildId, u32)>>) {
+/// What an entry answer hands this admin of Fabric control: the Fabric identity, the answering
+/// admin's current Build with its attempt (the floor this admin's copy of that Build must reach), and
+/// its own mesh's held lifecycle state ([`adopt_held_mesh_state`]). The first entry and every repeat of
+/// it take them through here.
+pub(crate) async fn take_entry_control(answer: &crate::wire::JoinAnswer, accepted: &AcceptedStore, entry_floor: &Mutex<Option<(crate::build::BuildId, u32)>>, records: &Records, mesh: &str, mesh_id: &MeshId) {
     if let Some(r) = answer.control.fabric.clone() {
         accepted.learn(r, &answer.served_by).await;
     }
     if let Some(floor) = answer.control.build.clone() {
         *entry_floor.lock().unwrap() = Some((floor.build_id, floor.attempt));
+    }
+    adopt_held_mesh_state(answer, records, mesh, mesh_id);
+}
+
+/// This admin's own mesh's held lifecycle state, as its maker's entry answer holds it, adopted exactly
+/// into its applied state (mesh-investigation.md "A node-admin joins the live mesh" step 2: it
+/// "obtains its control/status context"; fabric-authority.md §7: the successor adopts the state that
+/// already exists, with no durable write and no transition). An admin that holds a state for its mesh
+/// keeps it. A new mesh's first admin is answered no state for its mesh: the fabric-primary applies
+/// its Pending (states.md). A status word this build does not read as a Mesh lifecycle state is
+/// refused by name and adopts nothing.
+pub(crate) fn adopt_held_mesh_state(answer: &crate::wire::JoinAnswer, records: &Records, mesh: &str, mesh_id: &MeshId) {
+    let held = answer.statuses.iter().find_map(|f| match f.data() {
+        rdm_transport::membership::Frame::MeshStatus { mesh: m, status, publisher, .. } if m == mesh => Some((status.clone(), publisher.clone())),
+        _ => None,
+    });
+    let Some((status, publisher)) = held else { return };
+    let state = match mesh_state_of(&status) {
+        Ok(state) => state,
+        Err(why) => {
+            tracing::info_span!("rdm.node_admin.mesh.reject.via-held-state-unread", mesh, mesh_id = %mesh_id, status = %status, served_by = %answer.served_by, reason = %why)
+                .in_scope(|| tracing::info!("the entry answer's held state for this admin's mesh is not one it adopts"));
+            return;
+        }
+    };
+    {
+        let mut declared = records.declared.lock().unwrap();
+        if declared.meshes.contains_key(mesh_id) {
+            return;
+        }
+        declared.meshes.insert(mesh_id.clone(), state);
+    }
+    tracing::info_span!("rdm.node_admin.mesh.update.via-held-state-adopted", mesh, mesh_id = %mesh_id, state = ?state, served_by = %answer.served_by, publisher = %publisher)
+        .in_scope(|| tracing::info!("the mesh's held lifecycle state is adopted as it exists: no transition, no durable write"));
+}
+
+/// A held Mesh status word as the Mesh lifecycle state it names (states.md: pending ->
+/// ready-for-traffic -> leaving -> dead); any other word is refused by name.
+pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState, String> {
+    use rdm_core::status::MeshState;
+    match status {
+        "pending" => Ok(MeshState::Pending),
+        "ready-for-traffic" => Ok(MeshState::ReadyForTraffic),
+        "leaving" => Ok(MeshState::Leaving),
+        "dead" => Ok(MeshState::Dead),
+        other => Err(format!("mesh status {other:?} is no Mesh lifecycle state (pending, ready-for-traffic, leaving, dead)")),
     }
 }
 

@@ -489,7 +489,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         let me = s.digest.lock().unwrap().node.name.clone();
         // The Fabric record and the Build floor the join answered, recorded as at a first start.
         if let Some(joined) = joined {
-            take_entry_control(joined, &s.accepted, &s.entry_floor).await;
+            take_entry_control(joined, &s.accepted, &s.entry_floor, &s.wake, &s.membership.mesh_name(), &s.mesh_id).await;
         }
         // node.joined begins this birth's next cycle: the node.started it reports, naming this start,
         // is owed afresh to its mesh's primary, before its declarer runs again.
@@ -514,7 +514,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         let entry = through.map(|t| {
             let mut digest = pending.clone();
             digest.status = MemberStatus::Pending;
-            entry_repeat(s.client.clone(), t.target.clone(), t.anchor.clone(), digest, s.accepted.clone(), s.entry_floor.clone(), s.rafka_time.clone())
+            entry_repeat(s.client.clone(), t.target.clone(), t.anchor.clone(), digest, s.accepted.clone(), s.entry_floor.clone(), s.rafka_time.clone(), s.wake.clone(), s.membership.mesh_name().to_string(), s.mesh_id.clone())
         });
         let after = AdminAfterStopTail {
             name: me.clone(),
@@ -785,13 +785,16 @@ pub(crate) fn entry_repeat(
     accepted: Arc<AcceptedStore>,
     floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
     rafka_time: rdm_transport::clock::RafkaTime,
+    records: Arc<Records>,
+    mesh: String,
+    mesh_id: MeshId,
 ) -> crate::hydrate::EntryRepeat {
     Arc::new(move || {
-        let (client, target, anchor, digest, accepted, floor, rafka_time) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), floor.clone(), rafka_time.clone());
+        let (client, target, anchor, digest, accepted, floor, rafka_time, records, mesh, mesh_id) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), floor.clone(), rafka_time.clone(), records.clone(), mesh.clone(), mesh_id.clone());
         Box::pin(async move {
             let answer = crate::join::call_join(&client, &target, &anchor, &digest, 1).await.map_err(|e| e.to_string())?;
             crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &rafka_time, &digest.node.name.to_string(), &answer);
-            take_entry_control(&answer, &accepted, &floor).await;
+            take_entry_control(&answer, &accepted, &floor, &records, &mesh, &mesh_id).await;
             Ok(())
         }) as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
     })

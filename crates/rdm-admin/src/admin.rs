@@ -3838,4 +3838,49 @@ mod tests {
         .unwrap_err()
         .contains("RDM_FABRIC_PRIMARY is set without RDM_MESH_PRIMARY"));
     }
+
+    /// An entry answer from `served_by` holding `frames`.
+    fn entry_answer(frames: Vec<rdm_transport::membership::Frame>) -> crate::wire::JoinAnswer {
+        crate::wire::JoinAnswer {
+            served_by: "mesh1.admin.1".into(),
+            control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+            statuses: frames,
+        }
+    }
+
+    fn mesh_status(mesh: &str, status: &str) -> rdm_transport::membership::Frame {
+        rdm_transport::membership::Frame::MeshStatus { mesh: mesh.into(), status: status.into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }
+    }
+
+    /// CONTRACT (i144 Q56; mesh-investigation.md "A node-admin joins the live mesh" step 2: the joining
+    /// admin "obtains its control/status context" from its maker; fabric-authority.md §7: the successor
+    /// adopts the mesh's existing state exactly): the admin created into a lost mesh takes its mesh's
+    /// held state from its maker's entry answer into its applied state, so its Ready gate holds its
+    /// mesh's state whatever the fabric-primary's own view decided about a hand-off. Must NOT happen:
+    /// the joining admin applying nothing from the answer and waiting on a hand-off that may never come,
+    /// or a state it holds replaced, or a word it does not read guessed into a state.
+    #[test]
+    fn a_lost_meshs_created_admin_adopts_its_meshs_held_state_from_its_makers_answer() {
+        use rdm_core::status::MeshState;
+        let (id, other) = (mesh_id("mesh2"), mesh_id("mesh3"));
+        let records = Records::default();
+        adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh3", "dead"), mesh_status("mesh2", "ready-for-traffic")]), &records, "mesh2", &id);
+        assert_eq!(records.declared.lock().unwrap().meshes.get(&id), Some(&MeshState::ReadyForTraffic), "its own mesh's held state, exactly");
+        assert_eq!(records.declared.lock().unwrap().meshes.get(&other), None, "another mesh's state is not this admin's to adopt");
+
+        // A state this admin holds is kept: an answer is no transition.
+        adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh2", "pending")]), &records, "mesh2", &id);
+        assert_eq!(records.declared.lock().unwrap().meshes.get(&id), Some(&MeshState::ReadyForTraffic), "an applied state is kept");
+
+        // A new mesh's first admin is answered no state for its mesh: it adopts nothing and waits for its Pending.
+        let fresh = Records::default();
+        adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh1", "ready-for-traffic")]), &fresh, "mesh2", &id);
+        assert!(fresh.declared.lock().unwrap().meshes.is_empty(), "no held state for its mesh: nothing adopted");
+
+        // A word that is no Mesh lifecycle state is refused by name and adopts nothing.
+        let unread = Records::default();
+        adopt_held_mesh_state(&entry_answer(vec![mesh_status("mesh2", "degraded")]), &unread, "mesh2", &id);
+        assert!(unread.declared.lock().unwrap().meshes.is_empty(), "a word it does not read adopts nothing");
+        assert!(mesh_state_of("degraded").unwrap_err().contains("\"degraded\""), "the refusal names the word");
+    }
 }

@@ -888,7 +888,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // answer names; without them this admin is not started. The Build it names arrives on
                                     // the Build topic, or is fetched from a node-admin that holds it (`FetchBuildFacts`,
                                     // node.start's Build-floor step after the hook).
-                                    take_entry_control(&answer, &accepted, &entry_floor).await;
+                                    take_entry_control(&answer, &accepted, &entry_floor, &records, &cfg.mesh, &mesh_id).await;
                                     tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                                         .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
                                     FabricPolicy { provider: answer.control.provider }
@@ -1564,7 +1564,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         node_rpc.client.clone(),
                                         journal.clone(),
                                         responders.clone(),
-                                        entry_retrieval.map(|(target, anchor, digest)| entry_repeat(node_rpc.client.clone(), target, anchor, digest, accepted.clone(), entry_floor.clone(), rafka_time.clone())),
+                                        entry_retrieval.map(|(target, anchor, digest)| entry_repeat(node_rpc.client.clone(), target, anchor, digest, accepted.clone(), entry_floor.clone(), rafka_time.clone(), records.clone(), cfg.mesh.clone(), mesh_id.clone())),
                                     ),
                                     progress: Some(progress.clone()),
                                 },

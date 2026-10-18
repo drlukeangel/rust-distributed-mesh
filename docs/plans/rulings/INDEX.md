@@ -27,7 +27,7 @@ packet takes the next free number here before it is written; a collision is renu
 | Q55 | Dev | i146 e3 | a signal stop is node.stop's own steps; Draining and the linger go | x | landed `0ef6c700`; `Stopped` declared and node.stop one workflow for command and signal `9e977175`; node.mesh.join one primitive `8668cdd8` |
 
 
-| Q56 | Codex → Dev | i143 s88 | acquisition of held Mesh state after the pre-commit writer ends | assigned to i144 by Q54 | read packet on Codex branch |
+| Q56 | Codex → Dev | i143 s88 | acquisition of held Mesh state after the pre-commit writer ends | A: the existing contracts carry it ([read](../proposal/i144-q56-held-mesh-state-read.md)) | built and landed by i144 (PRD row) |
 
 | Q57 | Codex | i147 e5 | node-admin's own channels: `types` through `Wiring` | x | ruled 2026-10-17; §8 corrected `7304c9b2` |
 
