@@ -63,13 +63,6 @@ impl LogSink {
             && done.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_ok()
     }
 
-    /// Returns once every line handed over before the call is in the sink.
-    pub(crate) fn flush(&self) {
-        let (ack, done) = channel();
-        if self.tx.send(Msg::Flush(ack)).is_ok() {
-            let _ = done.recv();
-        }
-    }
 }
 
 /// One event's bytes, handed over when the fmt layer drops it.
@@ -152,7 +145,7 @@ mod tests {
             emitter.await.unwrap();
             ticker.await.unwrap()
         });
-        sink.flush();
+        assert!(sink.flush_until(Instant::now() + crate::export::DRAIN_BOUND), "the log flush completes within the process bound");
         assert_eq!(lines.load(Ordering::SeqCst), 5, "every line handed over reaches the sink");
         assert!(worst < Duration::from_millis(100), "the worker was held {worst:?} by a log write");
     }
