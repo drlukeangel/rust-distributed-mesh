@@ -31,7 +31,7 @@ libc = "0.2"
 rig = []
 default = ["testkit-skew", "testkit-gossip", "rig"]
 testkit-skew = ["rdm-transport/testkit-skew"]
-testkit-gossip = ["rdm-transport/testkit-gossip"]
+testkit-gossip = ["rdm-transport/testkit-gossip", "rdm-node/testkit-gossip"]
 
 [dev-dependencies]
 ctor = "0.2"

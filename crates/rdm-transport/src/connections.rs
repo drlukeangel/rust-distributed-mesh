@@ -464,6 +464,21 @@ pub struct ConnectionsRegistry {
     inner: Arc<RegistryInner>,
 }
 
+/// One-shot fault injected on a destination's registered ALPN handler after admission and
+/// reading `ControlIntent`, before answering `Opened` (`Q62`, `connections.md` §13 E).
+#[cfg(feature = "testkit-gossip")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreOpenedFault {
+    /// Write raw application bytes on the control stream instead of a framed `Opened` answer,
+    /// then finish the control stream.
+    ApplicationBytes(Vec<u8>),
+    /// Close the control stream at EOF without writing `Opened`.
+    Eof,
+    /// Hold the control stream open past `staleness_floor()` without writing `Opened` so the
+    /// handshake lapses.
+    HandshakeLapse,
+}
+
 struct RegistryInner {
     endpoint: iroh::Endpoint,
     resolver: Arc<dyn NodeResolver>,
@@ -475,6 +490,10 @@ struct RegistryInner {
     active: Mutex<HashMap<ConnectionId, ActiveEntry>>,
     carrier_legs: Mutex<Vec<(iroh::endpoint::Connection, iroh::endpoint::Connection)>>,
     deleted: AtomicBool,
+    #[cfg(feature = "testkit-gossip")]
+    blocked_direct_dials: Mutex<std::collections::HashSet<(PathName, Vec<u8>)>>,
+    #[cfg(feature = "testkit-gossip")]
+    pre_opened_faults: Mutex<HashMap<Vec<u8>, PreOpenedFault>>,
 }
 
 impl ConnectionsRegistry {
@@ -513,6 +532,10 @@ impl ConnectionsRegistry {
                 active: Mutex::new(HashMap::new()),
                 carrier_legs: Mutex::new(Vec::new()),
                 deleted: AtomicBool::new(false),
+                #[cfg(feature = "testkit-gossip")]
+                blocked_direct_dials: Mutex::new(std::collections::HashSet::new()),
+                #[cfg(feature = "testkit-gossip")]
+                pre_opened_faults: Mutex::new(HashMap::new()),
             }),
         };
         let handlers = alpns
@@ -528,6 +551,37 @@ impl ConnectionsRegistry {
             })
             .collect();
         Ok((registry, handlers))
+    }
+
+    /// Block Direct dials from this source node toward `(destination, alpn)`, answering
+    /// [`ConnectError::NotSent`] and recording `Direct Failed` as an unreachable direct dial does.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn block_direct_dial(&self, destination: &PathName, alpn: &[u8]) {
+        self.inner
+            .blocked_direct_dials
+            .lock()
+            .unwrap()
+            .insert((destination.clone(), alpn.to_vec()));
+    }
+
+    /// Release a Direct dial block toward `(destination, alpn)`.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn unblock_direct_dial(&self, destination: &PathName, alpn: &[u8]) {
+        self.inner
+            .blocked_direct_dials
+            .lock()
+            .unwrap()
+            .remove(&(destination.clone(), alpn.to_vec()));
+    }
+
+    /// Arm a one-shot pre-`Opened` fault on this destination's registered `alpn` handler.
+    #[cfg(feature = "testkit-gossip")]
+    pub fn fault_pre_opened_once(&self, alpn: &[u8], fault: PreOpenedFault) {
+        self.inner
+            .pre_opened_faults
+            .lock()
+            .unwrap()
+            .insert(alpn.to_vec(), fault);
     }
 
     /// Install a custom [`Admitter`] for inbound connections on registered ALPNs.
@@ -871,6 +925,43 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
             Ok(Ok(Some(i))) => i,
             _ => return Ok(()),
         };
+        #[cfg(feature = "testkit-gossip")]
+        if matches!(
+            intent,
+            ControlIntent::Direct { .. } | ControlIntent::Tunnel { via: Some(_), .. }
+        ) {
+            let fault = {
+                self.registry
+                    .inner
+                    .pre_opened_faults
+                    .lock()
+                    .unwrap()
+                    .remove(&self.alpn.name)
+            };
+            if let Some(fault) = fault {
+                match fault {
+                    PreOpenedFault::ApplicationBytes(bytes) => {
+                        let _ = ctrl_send.write_all(&bytes).await;
+                        let _ = ctrl_send.finish();
+                        let _ = tokio::time::timeout(floor, connection.closed()).await;
+                        return Ok(());
+                    }
+                    PreOpenedFault::Eof => {
+                        let _ = ctrl_send.finish();
+                        connection.close(
+                            iroh::endpoint::VarInt::from_u32(CLOSE_CODE_PEER_LEFT),
+                            b"pre-opened-eof",
+                        );
+                        return Ok(());
+                    }
+                    PreOpenedFault::HandshakeLapse => {
+                        tokio::time::sleep(floor + std::time::Duration::from_millis(250)).await;
+                        let _ = ctrl_send.finish();
+                        return Ok(());
+                    }
+                }
+            }
+        }
         match intent {
             ControlIntent::Direct {
                 id,
@@ -980,6 +1071,18 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                     .await;
                     let _ = ctrl_send.finish();
                     let _ = tokio::time::timeout(floor, connection.closed()).await;
+                    return Ok(());
+                }
+                #[cfg(feature = "testkit-gossip")]
+                if self
+                    .registry
+                    .inner
+                    .blocked_direct_dials
+                    .lock()
+                    .unwrap()
+                    .contains(&(destination.name.clone(), self.alpn.name.clone()))
+                {
+                    let _ = ctrl_send.finish();
                     return Ok(());
                 }
 
@@ -1424,6 +1527,24 @@ impl Dialer {
         caller_span: &tracing::Span,
         traceparent: Option<String>,
     ) -> Result<Connection, ConnectError> {
+        #[cfg(feature = "testkit-gossip")]
+        if self
+            .registry
+            .inner
+            .blocked_direct_dials
+            .lock()
+            .unwrap()
+            .contains(&(destination.name.clone(), self.alpn.name.clone()))
+        {
+            let reason = format!(
+                "direct dial to {} on {:?} blocked by testkit fault",
+                destination.name,
+                String::from_utf8_lossy(&self.alpn.name)
+            );
+            self.record_direct_failure(own, destination, &reason, caller_span)
+                .await;
+            return Err(ConnectError::NotSent { reason });
+        }
         let resolved = match self
             .registry
             .inner

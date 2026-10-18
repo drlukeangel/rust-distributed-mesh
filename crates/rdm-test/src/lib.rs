@@ -320,3 +320,8 @@ pub async fn run_proof_with(
 /// Public qualification cuts for app-channel loss; absent without the testkit feature.
 #[cfg(feature = "testkit-gossip")]
 pub mod gossip_faults;
+
+/// Public qualification cuts for data-plane connection faults (`Q62`); absent without the testkit feature.
+#[cfg(feature = "testkit-gossip")]
+pub mod connection_faults;
+

@@ -9,6 +9,10 @@ publish = false
 [lib]
 doctest = false
 
+[features]
+# Forward testkit fault seams on rdm-transport to rdm-test; absent from production builds.
+testkit-gossip = ["rdm-transport/testkit-gossip"]
+
 [dependencies]
 futures-util = "0.3"
 rdm-core = { path = "../rdm-core" }

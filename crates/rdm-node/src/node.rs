@@ -99,6 +99,12 @@ impl RunningNode {
         self.data_connections.connections(alpn)
     }
 
+    /// The node's data-plane connections registry (testkit fault seam only; absent from production builds).
+    #[cfg(feature = "testkit-gossip")]
+    pub fn data_connections_for_testkit(&self) -> &rdm_transport::connections::ConnectionsRegistry {
+        &self.data_connections
+    }
+
     /// Where this birth's `hydrate_before_ready` stands; `None` when no hook was registered.
     pub fn hydration(&self) -> Option<crate::app_hydration::HydrationHandle> {
         self.hydration.lock().unwrap().clone()
