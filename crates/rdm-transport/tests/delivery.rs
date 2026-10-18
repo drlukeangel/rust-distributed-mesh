@@ -1271,11 +1271,14 @@ async fn an_owed_call_ends_when_its_receivers_exit_is_proven_unavailable() {
 }
 
 /// A dial that completed but has not been pooled makes the supersession race deterministic.
-/// Ending the exact receiving birth ends an Owed call; a stale endpoint slot on a living birth
-/// remains RejectedStale. Neither request is dispatched through the superseded slot.
+/// Ending the exact receiving birth ends an Owed call (receiver-gone); a moved endpoint slot of a
+/// living birth is neither the holder's answer nor its proven exit (i146 Q52: "The obligation ends on
+/// the holder's answer or proven exit"), so the attempt sent nothing and is resent to the slot the view
+/// names then. Neither request is dispatched through the superseded slot.
 async fn owed_dial_superseded(ended_birth: bool) {
     let s = served().await;
     let (client, resolver) = client_of(&[&s.node]).await;
+    let cd = client.delivery().clone();
     let target = s.target();
     let point = Arc::new(rdm_transport::pool::Failpoint::default());
     let opts = CallOptions { budget: Budget::Owed, after_connect: Some(point.clone()), ..Default::default() };
@@ -1286,21 +1289,26 @@ async fn owed_dial_superseded(ended_birth: bool) {
         current.incarnation = IncarnationId::mint();
     } else {
         // The old endpoint is still alive and its exact incarnation has not ended. Only the
-        // resolved slot changed while the old slot's dial was in flight.
+        // resolved slot moved while the old slot's dial was in flight.
         current.endpoint_id = SecretKey::generate().public();
     }
     resolver.insert(current);
     point.release.notify_one();
-    let out = tokio::time::timeout(FLOOR * 2, call).await.expect("the resolver's typed change ends the call").unwrap();
-    assert_eq!(get(&s.stats.dispatched), 0, "no request went through the stale slot");
     if ended_birth {
+        let out = tokio::time::timeout(FLOOR * 2, call).await.expect("the resolver's typed change ends the call").unwrap();
+        assert_eq!(get(&s.stats.dispatched), 0, "no request went through the stale slot");
         assert_eq!(out.code(), rdm_core::outcome::Code::Unavailable, "{out:?}");
         assert_eq!(out.detail_name(), "receiver-gone");
         assert!(matches!(out, RpcOutcome::NotSent(_)), "the superseded dial never crossed the commit cut");
     } else {
-        assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the living birth's stale slot: {out:?}");
-        assert_eq!(out.code(), rdm_core::outcome::Code::Aborted);
-        assert_eq!(out.detail_name(), "stale-target");
+        eventually("the superseded attempt is resent, the call still owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 1).await;
+        assert!(!call.is_finished(), "a moved slot of a living birth ends nothing");
+        assert_eq!(get(&s.stats.dispatched), 0, "no request went through the superseded slot");
+        // The view names the birth's slot again: the next attempt reaches it and is answered.
+        resolver.insert(s.node.clone());
+        let out = tokio::time::timeout(FLOOR * 4, call).await.expect("the resent call is answered").unwrap();
+        assert!(out.reply().is_some(), "the receiver's reply: {out:?}");
+        assert_eq!(get(&s.stats.dispatched), 1, "the receiver dispatched the request once");
     }
 }
 
@@ -1308,7 +1316,7 @@ async fn owed_dial_superseded(ended_birth: bool) {
 async fn an_owed_dial_superseded_by_a_new_incarnation_ends_receiver_gone_unavailable() { owed_dial_superseded(true).await; }
 
 #[tokio::test]
-async fn an_owed_dial_on_a_stale_slot_of_a_living_birth_still_ends_aborted() { owed_dial_superseded(false).await; }
+async fn an_owed_dial_on_a_moved_slot_of_a_living_birth_is_resent_and_answered() { owed_dial_superseded(false).await; }
 
 
 // i146 e2: the existing delivery contract, on the production 0x22 stream.

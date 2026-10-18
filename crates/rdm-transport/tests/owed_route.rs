@@ -84,6 +84,7 @@ async fn an_owed_call_whose_direct_attempt_sends_nothing_is_carried_and_answered
 /// receiver's handler run once. Must NOT happen: the call ending on a carrier's refusal.
 #[tokio::test]
 async fn an_owed_call_whose_carrier_cannot_reach_the_receiver_is_not_ended_by_the_carriers_refusal() {
+    let _capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-owed-route-carrier-refusal").expect("the cell's evidence file can be created");
     let r = rig_with(None, true).await;
     let (origin, view) = misdialing_origin(&r).await;
     let carrier = via_carrier(&r);
