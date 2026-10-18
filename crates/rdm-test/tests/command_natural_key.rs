@@ -620,8 +620,9 @@ fn the_node_answers_a_connections_delete_on_its_command_stream_in_order_for_both
 /// takes admin2's commit-state command, its action held; admin2 goes away (its endpoint closed), the
 /// action is released and the check-in is owed to admin2 and resent; admin2's removal reaches the
 /// birth's resolver and ends the call `UNAVAILABLE`; the seat then moves to admin3, and the check-in is
-/// made there. Must NOT happen: the call ending while admin2 was only unreachable, the check-in sent to
-/// admin3 before the seat names it, the action run twice.
+/// made there. Must NOT happen: the call ending while admin2 was only unreachable, a second completion
+/// call to admin2 (a check-in loop of the birth's own), the check-in sent to admin3 before the seat
+/// names it, the action run twice.
 #[test]
 fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder() {
     let cell = "a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder";
@@ -665,6 +666,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
         .await
         .expect("the removal ended the owed call");
         let ended = completion(gone_id.as_str());
+        assert_eq!(ended.len(), 1, "one completion call to admin2 carried every resend: the birth runs no check-in loop of its own: {ended:?}");
         assert!(ended[0].get("answer").is_some_and(|a| a.ends_with(": UNAVAILABLE")), "ended receiver-gone, UNAVAILABLE: {ended:?}");
         assert!(admin3.observer.check_ins.borrow().is_empty(), "nothing is sent to admin3 before the seat names it");
         // The seat names admin3: the check-in is owed to it and made there.

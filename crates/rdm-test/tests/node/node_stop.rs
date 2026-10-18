@@ -1145,7 +1145,8 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
 /// at its drift seam until the declaration is delivered; released, drift's attempt deletes the surplus
 /// node as a removal does: the provider's exit proof, then NodeDeleted. Must NOT happen: the
 /// node.started applied twice, applied by the old holder, or addressed to an admin that does not hold
-/// the seat; a drift attempt before the release, or a second one.
+/// the seat; a second declaration call to the old holder (a declaration loop of the node's own, which
+/// Q52 deleted); a drift attempt before the release, or a second one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder() {
     let test = "a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_the_new_holder";
@@ -1232,7 +1233,9 @@ async fn a_declaration_owed_across_a_move_of_its_mesh_seat_is_delivered_once_to_
     let early: Vec<&&Value> = ready.iter().filter(|sp| attr(sp, "to") == successor_s && start_ns(sp) < installed).collect();
     assert!(early.is_empty(), "no declaration to {successor_s} before it held the seat: {early:#?}");
     let cancelled: Vec<&Value> = named(&spans, "rdm.node_rpc.status.remove.via-seat-moved").into_iter().filter(|sp| attr(sp, "node") == node_s).collect();
-    assert!(!cancelled.is_empty(), "the call to the old holder was cancelled when the seat moved");
+    // One call carried the declaration across the hold, in flight at the old holder's door until the
+    // seat moved: the node runs no declaration loop of its own (Q52).
+    assert_eq!(cancelled.len(), 1, "one call to the old holder, cancelled once when the seat moved: {cancelled:#?}");
     println!(
         "declaration across a seat move: applied by {} (route {}); flame http://192.168.68.99:16687/trace/{}; drift held {} pass(es), then attempt {attempt} of {build} deleted {node_s}: flame http://192.168.68.99:16687/trace/{}",
         attr(applied[0], "to"),
