@@ -24,7 +24,7 @@
 //! the node, mesh and fabric families have op numbers of their own: a caller asks, the receiver
 //! answers from what it holds, and nothing changes. Their answers are [`crate::views`].
 //!
-//! Legal moves run forward along `Pending -> ReadyForTraffic -> Draining -> Leaving` (and
+//! Legal moves run forward along `Pending -> ReadyForTraffic -> ConnectionsDeleting -> Stopped` (and
 //! `Pending -> ReadyForTraffic -> Leaving -> Dead` for a Mesh), skips included; the same
 //! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
 //! for a birth the receiver holds a newer incarnation of, or holds as departed, is
@@ -945,7 +945,7 @@ pub enum StatusReply {
         /// Why the call is refused.
         reason: String,
     },
-    /// A completion call (`node-drained`) names no open command of the receiver: the first field
+    /// A completion call (`node.connections.deleted`) names no open command of the receiver: the first field
     /// that differs from the command the receiver holds for that birth is named, with the value the
     /// receiver holds and the value the completion reported. A `node-left` is never a call and
     /// completes no command, whatever is open for the birth: it is refused with `command`.

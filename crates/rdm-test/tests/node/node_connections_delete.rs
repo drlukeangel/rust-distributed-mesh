@@ -32,8 +32,8 @@ fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, ste
 /// delete-connections, action delete_connections targeting the live birth, no Build minted). The
 /// operation is exactly `node.connections.delete:<path>`: the one call through the birth's
 /// mesh-primary, then Complete. The Build completes on node.connections.deleted; the node is
-/// connections-deleting (held `Draining` until the status names land) under the SAME NodeId and
-/// incarnation and its process is still running afterwards. No stop, no terminate, no NodeDeleted
+/// connections-deleting under the SAME NodeId and incarnation and its process is still running
+/// afterwards. No stop, no terminate, no NodeDeleted
 /// is run for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running() {

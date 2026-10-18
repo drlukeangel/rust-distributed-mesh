@@ -360,7 +360,7 @@ The typed result of a Status call.
 | 14.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 15 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 15.0 | `reason` | `String` |  |  | Why the call is refused. |
-| 16 | **`RejectedUnmatchedCompletion`** |  |  | `name() = "rejected-unmatched-completion"` | A completion call (`node-drained`) names no open command of the receiver: the first field |
+| 16 | **`RejectedUnmatchedCompletion`** |  |  | `name() = "rejected-unmatched-completion"` | A completion call (`node.connections.deleted`) names no open command of the receiver: the first field |
 | 16.0 | `field` | `String` |  |  | The field that differs: `build_id`, `attempt`, `operation`, or `command` when the |
 | 16.1 | `expected` | `String` |  |  | What the receiver holds for it. |
 | 16.2 | `reported` | `String` |  |  | What the completion reported. |

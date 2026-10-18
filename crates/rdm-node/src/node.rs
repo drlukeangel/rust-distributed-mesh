@@ -64,7 +64,7 @@ pub struct RunningNode {
     /// The state this birth owes the holder of its mesh's primary seat: one owed call per
     /// declaration (i146 Q52), retargeted when the seat moves (`declare_loop`).
     pub owed_state: Arc<Mutex<OwedDeclaration>>,
-    /// Cancelled when this birth is retired (drain-node, stop-node, its process stopping): the
+    /// Cancelled when this birth is retired (stop-node, its process stopping): the
     /// `hydrate_before_ready` hook and any pull it has in flight end.
     pub cancel: rdm_transport::Retirement,
     /// The surface that obeys this birth's lifecycle and round commands
@@ -535,7 +535,7 @@ async fn start_booted(
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
                             membership.spawn_top_up(crate::topology_read::top_up_fetch(client.clone()));
-                            // From here the node is on the mesh, Pending: it answers status, drain-node and stop-node, and
+                            // From here the node is on the mesh, Pending: it answers status and its node commands, and
                             // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
                             // published ReadyForTraffic only once the hook has passed ("born full").
                             let cancel = rdm_transport::Retirement::new();
@@ -1212,7 +1212,7 @@ pub(crate) struct Kicked {
     membership: Membership,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
-    /// This birth obeying `drain-node` / `stop-node` from its mesh-admin.
+    /// This birth obeying its node commands from its mesh-admin.
     own: Arc<crate::node_self::NodeSelf>,
     /// The down ops node-admins sent this birth: what a hook blocked on its authority's word wakes on.
     addressed: Arc<crate::app_hydration::Addressed>,
@@ -1270,8 +1270,8 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
 /// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
-/// the hook's blocker and republishes nothing. `DrainNode`, `StopNode` and `StartNode` are obeyed by
-/// `crate::node_self`. A stale incarnation is refused with the one held. Nothing
+/// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
+/// `crate::node_self`, which refuses them by name: node commands ride op 0x22. A stale incarnation is refused with the one held. Nothing
 /// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
 /// decided on the op and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
 /// projection this node installed, is named in spans and is the authority a blocked hook was addressed by.
@@ -1368,9 +1368,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
                 }
                 StatusRequest::ApplyNodeState { state, .. } => {
-                    // Not a drain command and not a stop: the only drain path is drain-node.
+                    // Not a node command: a node's connections are deleted only by `node.connections.delete` on op 0x22.
                     let current = node_state_of(*me.status.lock().unwrap());
-                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "drain-node is the only drain path and stop-node the only stop; apply-node-state is served for no state")
+                    tracing::info_span!("rdm.node_admin.status.reject.via-apply-node-state", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, requested = ?state, current = ?current, reason = "node.connections.delete is the only path to connections-deleting and stop-node the only stop; apply-node-state is served for no state")
                         .in_scope(|| tracing::info!("apply-node-state refused"));
                     Ok(rdm_core::reply::status::rejected_invalid_node_transition(current))
                 }

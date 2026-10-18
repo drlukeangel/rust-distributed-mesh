@@ -47,7 +47,7 @@ pub struct Running {
     pub(crate) leave_seam: Option<Arc<dyn crate::wiring::LeaveSeam>>,
     /// This admin's Build log: fenced before the first `Leaving` (ruling R-A2).
     pub(crate) builds: Arc<FabricBuildStateAdapter>,
-    /// Cancelled when this admin is retired (drain-node, stop-node, leaving): its hook and any pull
+    /// Cancelled when this admin is retired (stop-node, leaving): its hook and any pull
     /// it has in flight end.
     pub(crate) hydrate_cancel: rdm_transport::Retirement,
     pub(crate) hydration: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>,
@@ -85,7 +85,7 @@ impl Running {
         self.backbone.is_mesh_primary()
     }
 
-    /// This admin as the subject of `drain-node`, `stop-node` and `start-node`: what such a command
+    /// This admin as the subject of `node.connections.delete`, `stop-node` and `start-node`: what such a command
     /// naming it reaches once its Status authority has decided it (`status_rpc`'s `serve_command`).
     pub fn node_self(&self) -> Arc<crate::node_self::NodeSelf> {
         self.node_self.clone()
@@ -1759,7 +1759,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             })
                                         }));
                                     }
-                                    // This admin as the subject of drain-node / stop-node from its own mesh-admin.
+                                    // This admin as the subject of its node commands from its own mesh-admin.
                                     {
                                         let digest_for_status = digest.clone();
                                         let digest_now = digest.clone();
@@ -1820,8 +1820,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                         let _ = own_commands.set(own);
                                     }
-                                    // A node's own `node-drained` / `node-left`, heard on this mesh's channel: this admin carries
-                                    // it onto the backbone when it holds the command (gossip.md, node-drained, node-left).
+                                    // A node's own `node.connections.deleted` / `node-left`, heard on this mesh's channel: this admin carries
+                                    // it onto the backbone when it holds the command (gossip.md, node-connections-deleted, node-left).
                                     {
                                         let (commands, backbone, rounds) = (commands.clone(), backbone.clone(), rounds_slot.get().cloned().expect("the rounds are built before the carrier"));
                                         membership.set_completion_carrier(Arc::new(move |f: &rdm_transport::membership::Frame| {

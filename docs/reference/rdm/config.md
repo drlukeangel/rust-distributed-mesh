@@ -109,7 +109,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 193 | fn `Launch::to_env` | `ENV_INCARNATION`, argument to `.insert` |
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 224 | fn `Launch::from_env` | `ENV_INCARNATION`, argument to `req` |
 | `RDM_INCARNATION_ID` | `crates/rdm-transport/src/transport_diag.rs` | 97 | fn `header` | argument to `env` |
-| `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1642 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | argument to `.insert` |
+| `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1641 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | argument to `.insert` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 326 | fn `node_start` | argument to `std::env::var` |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 30 | const `ENV_LAUNCHER` | literal |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 199 | fn `Launch::to_env` | `ENV_LAUNCHER`, argument to `.insert` |
@@ -124,7 +124,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/runner.rs` | 267 | fn `AdminRunner::template_for` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 29 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, argument to `.push` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 43 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, in `format!` |
-| `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1633 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | `ENV_MESH_ID`, argument to `.get` |
+| `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1632 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | `ENV_MESH_ID`, argument to `.get` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 37 | const `ENV_MESH_ID` | literal |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 206 | fn `Launch::to_env` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 232 | fn `Launch::from_env` | `ENV_MESH_ID`, argument to `get` |

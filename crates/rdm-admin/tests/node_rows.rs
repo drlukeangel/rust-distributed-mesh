@@ -513,14 +513,14 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 /// CONTRACT (R14 item 7 and acceptance "a mesh seat change: the successor rebuilds and holds the
 /// predecessor's rows (Node rows, `.old`, Deleted, config)"): the predecessor P and the successor N
 /// are two admins with their own data dirs and their own store instances over one shared root. P
-/// held the seat and wrote the rows: a live member's row (status Draining, config platinum), a
+/// held the seat and wrote the rows: a live member's row (status ConnectionsDeleting, config platinum), a
 /// renamed predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
 /// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the seat over a view whose live
 /// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
 /// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
 /// node at the Deleted row's name is seeded silver, the successor is seeded bronze from the `.old`
 /// row, and N holds every one of P's rows. A row never overrides a live digest's status: N's view
-/// holds mesh1.rpc.1 ready-for-traffic while its row says Draining.
+/// holds mesh1.rpc.1 ready-for-traffic while its row says ConnectionsDeleting.
 #[test]
 fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
     let cap = crate::mesh_delete_resume::capture();

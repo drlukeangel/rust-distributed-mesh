@@ -1323,7 +1323,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, Some(&stop)).operations, vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }]);
         assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }.key(), "node.connections.delete:mesh1.rpc.2");
         assert_eq!(BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }.key(), "node.stop:mesh1.rpc.2");
-        // A Draining or Leaving birth of the path is still the birth the operation acts on.
+        // A ConnectionsDeleting or Leaving birth of the path is still the birth the operation acts on.
         for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving] {
             o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = status;
             assert_eq!(plan(&cur, &o, Some(&stop)).operations.len(), 1, "{status:?}");

@@ -491,7 +491,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         assert!(matches!(membership.take_read_chunk(held, "peer"), rdm_transport::snapshot::Taken::Installed(_)));
     }
     let topology_slot: rdm_admin::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
-    // The completion calls a commanded node makes back (`node-drained`, `node-left`) resolve the
+    // The completion calls a commanded node makes back (`node.connections.deleted`, `node-left`) resolve the
     // open commands of this admin side.
     let commands = Arc::new(rdm_admin::node_commands::CommandBook::default());
     // The round check-ins a node makes to this admin side as its commander are held in order and
@@ -574,7 +574,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         membership.publish(&admin_digest).await.expect("the admin's digest publishes");
     }
     // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
-    // members' lifecycle, sets each member's status from what it reports (its node.started, its Draining and
+    // members' lifecycle, sets each member's status from what it reports (its node.started, its ConnectionsDeleting and
     // Leaving), and publishes its
     // member projection on its own mesh channel each round and at once on a material change
     // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status

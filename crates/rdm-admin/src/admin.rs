@@ -3236,7 +3236,7 @@ mod tests {
         draining.status = MemberStatus::ConnectionsDeleting;
         draining.digest_seq += 1;
         assert!(book.record(draining));
-        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying Draining makes the rebuild due at once");
+        assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying ConnectionsDeleting makes the rebuild due at once");
 
         facts.seen();
         let stop = rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc.node.node_id.clone(), incarnation: rpc.node.incarnation.clone(), name: rpc.node.name.clone(), event_at_rafka_ms: 1 };

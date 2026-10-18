@@ -49,7 +49,7 @@ impl HydrationGate {
     }
 }
 
-/// A birth's cancellation: cancelled once when the birth is retired (drain-node, stop-node, or its
+/// A birth's cancellation: cancelled once when the birth is retired (stop-node, or its
 /// process stopping), and never reset. Cloned into the hook's context and everything that ends with
 /// the birth.
 #[derive(Clone, Debug)]

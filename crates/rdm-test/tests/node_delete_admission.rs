@@ -1,8 +1,8 @@
 //! Functional: a retire is commanded and proven per exact birth, whatever the fabric last heard.
 //!
-//! The observer hides every `Draining` and `Leaving` the node says, as if each announcement were
+//! The observer hides every `ConnectionsDeleting` and `Leaving` the node says, as if each announcement were
 //! lost on the fabric. The retire's proof is the commands and their completion calls
-//! (`drain-node` / `node-drained`, `stop-node` / `node-left`) and the exact runtime's `Exited`,
+//! (`node.connections.delete` / `node.connections.deleted`, `stop-node` / `node-left`) and the exact runtime's `Exited`,
 //! never a digest. A predecessor's exit at the same path stands for none of a successor's commands.
 
 use crate::common;

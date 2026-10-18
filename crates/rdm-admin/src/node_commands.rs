@@ -2,8 +2,8 @@
 //! completion for (node-stop.md, node-start.md; node-rpc-envelope.md, "Node stop command pair").
 //!
 //! A command is sent to one exact birth. `stop-node` is answered `Stopped` once the birth is
-//! stopped, and that reply is node-left: no upward node-left call exists (R-ON1). `DrainNode` and
-//! `NodeDrained` are reserved positions (R-CR4), refused by name ([`refuse_reserved`]). A completion is matched to
+//! stopped, and that reply is node-left: no upward node-left call exists (R-ON1). `Reserved6` and
+//! `Reserved7` are reserved positions (R-CR4), refused by name ([`refuse_reserved`]). A completion is matched to
 //! the open command by `(build_id, attempt, operation, node_id, incarnation)`. A completion with no open command is
 //! refused by name; a repeat of an accepted completion is `AlreadyApplied`. This is the RPC
 //! completion inbox of the executing admin: it reads no gossip and writes nothing durable (the

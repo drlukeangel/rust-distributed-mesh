@@ -1269,8 +1269,8 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
 /// CONTRACT (proposal §2.1 Precondition: "this mesh-primary holds the birth's
 /// `node.connections.deleted` of an `All` made while the node was not ready-for-traffic and it holds
 /// zero connections"; §2.2 steps 4 and 6; §2.3 "Live connections-deleted node: `node.name.updated`
-/// after `Applied`"): the successor `mesh1.rpc.3.new`, Draining in the mesh-primary's view, is refused
-/// the rename to `3` `RejectedAdmittingConnections { status: Draining, held_connections: [] }`, nothing
+/// after `Applied`"): the successor `mesh1.rpc.3.new`, ConnectionsDeleting in the mesh-primary's view, is refused
+/// the rename to `3` `RejectedAdmittingConnections { status: ConnectionsDeleting, held_connections: [] }`, nothing
 /// claimed and nothing told. A caller's `node.connections.delete { All }` through the mesh-primary is
 /// carried to the exact birth and answered with the birth's `node.connections.deleted`, which the
 /// mesh-primary holds; the same `node.name.update` then claims `mesh1.rpc.3`, puts the row there
@@ -1327,7 +1327,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
 
 /// CONTRACT (proposal §7: "connections-deleted node still holding one connection: refused
 /// `RejectedAdmittingConnections { held_connections: [id] }`, nothing written"): the successor
-/// `mesh1.rpc.3.new`, Draining, whose mesh-primary holds its `node.connections.deleted` of an `All`
+/// `mesh1.rpc.3.new`, ConnectionsDeleting, whose mesh-primary holds its `node.connections.deleted` of an `All`
 /// that left one connection held, is refused the rename to `3` naming that connection by id. No row
 /// at `mesh1.rpc.3`, nothing told. The span says `connections=held`.
 #[test]
@@ -1843,7 +1843,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 
 /// CONTRACT (proposal §2.2 step 6: "A live connections-deleted node is sent `ApplyNodeName`";
 /// node_config.rs: the mesh-primary is a member of its mesh and the writer of its own row, and applies
-/// its own config in-process): a caller's `node.name.update` renaming mesh1's primary itself, Draining
+/// its own config in-process): a caller's `node.name.update` renaming mesh1's primary itself, ConnectionsDeleting
 /// and holding the `node.connections.deleted` of an `All` cut that left nothing held, to the name
 /// `1.old` ends `NameUpdated`: the row moves, and the mesh-primary takes the name through its own name
 /// decision in-process, which is asked exactly that name. What must NOT happen: the mesh-primary

@@ -90,8 +90,8 @@ pub fn authority_blockers(held: &[MeshDigest], provider: &dyn crate::deployment:
 }
 
 /// Readiness, drain and admission seen through each member's own digest:
-/// a node publishes `ReadyForTraffic` once it serves, and `Draining` right
-/// after it starts refusing new work with a typed `Draining` (node-rpc §35).
+/// a node publishes `ReadyForTraffic` once it serves, and `ConnectionsDeleting` right
+/// after it starts refusing new work with the typed `ConnectionsDeleting` refusal (node-rpc §35).
 pub struct MembershipObserver {
     /// The digest book the observer reads.
     pub book: DigestBook,

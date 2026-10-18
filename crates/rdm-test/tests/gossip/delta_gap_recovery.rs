@@ -369,7 +369,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     estate.stop().await;
     let spans = estate.spans();
     // Nothing the injected delta claimed was applied: the member applied no delta that changed a
-    // member to Draining, and the gap was the only one.
+    // member to ConnectionsDeleting, and the gap was the only one.
     let gaps = spans_of(&spans, "rdm.mesh.membership.update.via-gap", MEMBER, t_gap);
     assert_eq!(gaps.len(), 1, "exactly one gap after the injection, the injected one: {gaps:?}");
     // The join was answered by mesh1's primary; the top-up is a topology read (op 0x1E) of the

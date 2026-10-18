@@ -724,8 +724,7 @@ impl rdm_admin::fabric_rounds::RoundActions for FaultedRoundActions {
     }
 }
 
-/// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`); the
-/// drain phases belong to a transition into `Draining`, which no admin path runs.
+/// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`).
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
 
 struct FaultedCommandFrame(Arc<AdminFaults>);

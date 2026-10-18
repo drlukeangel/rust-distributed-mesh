@@ -463,15 +463,15 @@ pub trait NodeObserver: Send + Sync {
     async fn ready_blocker(&self, _node: &Node) -> Option<String> {
         None
     }
-    /// Send `cmd` (`drain-node` or `stop-node`) to the exact birth over Node RPC, opening the
+    /// Send `cmd` (`node.connections.delete` or `stop-node`) to the exact birth over Node RPC, opening the
     /// command before the send so its completion finds it. Answers what the call established,
     /// never a guess: the birth admitted it, or by name why nothing was established. The reply is
     /// admission, not completion.
     async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
         CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name), code: rdm_core::outcome::Code::Unavailable }
     }
-    /// Wait up to `within` for the commanded birth's completion at this admin: its `node-drained`
-    /// call, or node-left, which is the `Stopped` reply of its `stop-node` call.
+    /// Wait up to `within` for the commanded birth's completion at this admin: its
+    /// `node.connections.deleted`, or node-left, which is the `Stopped` reply of its `stop-node` call.
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
     }
@@ -676,9 +676,8 @@ pub fn command_admission(out: &rdm_core::outcome::RpcOutcome<rdm_core::status::S
     }
 }
 
-/// Whether the exact birth's completion (its `node-drained` call, or node-left: the `Stopped` reply
-/// of its `stop-node` call) reached this admin: the
-/// AwaitNodeDrained / AwaitNodeLeft step's receipt. A missing completion is indeterminate, never
+/// Whether the exact birth's completion (its `node.connections.deleted`, or node-left: the `Stopped`
+/// reply of its `stop-node` call) reached this admin: the AwaitNodeLeft step's receipt for a stop. A missing completion is indeterminate, never
 /// success; the provider's terminal proof is what ends a stop.
 ///
 /// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
@@ -2088,7 +2087,7 @@ impl DeploymentPipeline<'_> {
 
     /// Delete a hung birth whose `held-running` hold expired (R-FM1): the first step is
     /// `TerminateRuntime` on the exact runtime (graceful then forced), which produces the `Exited`
-    /// proof and records the durable exit-proof row; no RPC command (`drain-node` / `stop-node`) is
+    /// proof and records the durable exit-proof row; no node command (`node.connections.delete` / `stop-node`) is
     /// sent to the hung process. A `TerminateRuntime` that fails ends the Build Failed at
     /// `TerminateRuntime` by name, its receipt naming where it stopped (node-recovery.md step 4's
     /// end): at its own inspection (the hold is void), at the provider's error, or with exit unproven
@@ -2204,7 +2203,7 @@ impl DeploymentPipeline<'_> {
             self.terminate_step_when(&mut run, &node, handle, Terminate::Always, TerminationMode::Immediate).await?
         } else {
             // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
-            // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
+            // node.connections.delete and its node.connections.deleted, then stop-node, its node-left reply and the provider's
             // terminal proof.
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
