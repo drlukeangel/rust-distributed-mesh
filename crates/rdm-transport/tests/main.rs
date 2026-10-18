@@ -87,3 +87,5 @@ mod span_end_nonblocking;
 #[allow(dead_code)]
 #[path = "../../../tools/test-support/gossip_wire.rs"]
 mod gossip_wire;
+
+mod app_channels;

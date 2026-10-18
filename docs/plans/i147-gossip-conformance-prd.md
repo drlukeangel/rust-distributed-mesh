@@ -392,6 +392,8 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 
 **Q57 ruled x; RED begins, 2026-10-17.** Rebased on main `96b1febb`, including §8's correction `7304c9b2`: node-admin's own app types come through Wiring, join before hydration, and seed held alongside members and peers. The first two executable RED cells exercise the directed/wire seams without changing runtime: JoinNode must retain its appended type declaration, and a digest must preserve only the 32-byte held-set hash through wire receipt and projection. The test request is built independently from the protocol's serializer. No implementation, golden update or bounds change precedes this RED run.
 
+First runtime RED: `9b590d24`, 0/2 GREEN, `/home/admin/rust-distributed-mesh-deploy/i147-e5-first-red.log`: JoinNode's decoder accepts the appended bytes but discards the type declaration (:38, Null); WireDigest loses the supplied 32-byte held hash (:48, Null). These are expected feature gaps, not fixture or outside-cell failures. The next RED adds the public Channel surface and real-endpoint transport cells: undeclared join, lower-sequence handoff, fabric scoping, complete-message chunk sizing, reordered/duplicate chunks and missing-chunk loss. Those cells are expected not to compile until the new public API exists; their runtime properties are not claimed proven by that compile failure.
+
 
 - **Goal → gap.** Rafka links iroh-gossip itself (six crates), builds a raw `GossipSender` per
   entity kind (`crates/rafka-node-base/src/kind_topics.rs`) and broadcasts its own frame bytes
