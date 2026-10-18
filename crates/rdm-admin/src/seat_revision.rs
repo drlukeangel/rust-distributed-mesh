@@ -146,7 +146,7 @@ pub(crate) async fn runtime_record(dir: &std::path::Path) -> Result<Option<rdm_c
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record_store::{op_waits_on_the_blocking_pool, runtime_runs_while_a_fifo_is_read, tempdir};
+    use crate::test_support::{op_waits_on_the_blocking_pool, runtime_runs_while_a_fifo_is_read, tempdir};
 
     /// CONTRACT: the scan of a path's recorded data dirs waits on the blocking pool, never on a
     /// runtime worker.

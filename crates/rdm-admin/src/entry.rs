@@ -19,12 +19,12 @@ pub async fn run(service: &str) {
 /// called once with the configuration the environment produced, inside the runtime, before the
 /// admin starts.
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
-    run_on(service, std::sync::Arc::new(crate::storage_backend::FileBackend), wiring).await
+    run_on(service, |cfg| std::sync::Arc::new(crate::storage_backend::FileBackend::at(cfg.store_dir.clone())), wiring).await
 }
 
-/// [`run_with`] on `storage`: every durable read and write of the node-admin goes through the six
-/// boundaries it opens.
-pub async fn run_on(service: &str, storage: std::sync::Arc<dyn crate::storage_backend::StorageBackend>, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
+/// [`run_with`] on the backend `storage` makes from the configuration: every durable read and write
+/// of the node-admin goes through the six boundaries it opens.
+pub async fn run_on(service: &str, storage: impl FnOnce(&AdminConfig) -> std::sync::Arc<dyn crate::storage_backend::StorageBackend>, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
     let _telemetry = rdm_transport::init_evidence_telemetry(service);
@@ -38,6 +38,7 @@ pub async fn run_on(service: &str, storage: std::sync::Arc<dyn crate::storage_ba
         }
     };
     let wiring = wiring(&cfg);
+    let storage = storage(&cfg);
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
         node = tracing::field::Empty,

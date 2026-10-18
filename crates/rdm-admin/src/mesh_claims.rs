@@ -91,7 +91,7 @@ mod tests {
         use crate::model::IncarnationId;
         use crate::storage::FileMeshStorage;
         use crate::store_root::StoreRoot;
-        let d = crate::record_store::tempdir("mesh-claims");
+        let d = crate::test_support::tempdir("mesh-claims");
         let root = StoreRoot::at(&d);
         let (a, b) = (FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap(), FileMeshStorage::open(&root, &IncarnationId::mint()).await.unwrap());
         one_attempt_in_flight_per_mesh(&a, &b).await;

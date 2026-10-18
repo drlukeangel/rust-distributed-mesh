@@ -11,11 +11,11 @@ doctest = false
 
 [dependencies]
 async-trait = "0.1"
-rdm-admin = { path = "../rdm-admin" }
+rdm-admin = { path = "../rdm-admin", default-features = false }
 rdm-client = { path = "../rdm-client" }
 rdm-transport = { path = "../rdm-transport" }
 rdm-core = { path = "../rdm-core" }
-rdm-node = { path = "../rdm-node" }
+rdm-node = { path = "../rdm-node", default-features = false }
 iroh = { workspace = true }
 iroh-gossip = { workspace = true }
 tokio = { workspace = true }
@@ -29,7 +29,10 @@ libc = "0.2"
 
 [features]
 rig = []
-default = ["testkit-skew", "testkit-gossip", "rig"]
+default = ["testkit-skew", "testkit-gossip", "rig", "file-backend"]
+# RDM standalone's file storage backend, in rdm-admin and rdm-node. Off, this crate builds the memory
+# estate's proof (`tests/memory_estate.rs`) alone: no binary and no other cell.
+file-backend = ["rdm-admin/file-backend", "rdm-node/file-backend"]
 testkit-skew = ["rdm-transport/testkit-skew"]
 testkit-gossip = ["rdm-transport/testkit-gossip", "rdm-node/testkit-gossip"]
 
@@ -46,30 +49,41 @@ bytes = "1"
 [[bin]]
 name = "rafka-node"
 path = "src/bin/rafka_node.rs"
+required-features = ["file-backend"]
 
 [[bin]]
 name = "rafka-rpc-node"
 path = "src/bin/rafka_rpc_node.rs"
+required-features = ["file-backend"]
 
 [[bin]]
 name = "rafka-rpc-probe"
 path = "src/bin/rafka_rpc_probe.rs"
+required-features = ["file-backend"]
 
 [[bin]]
 name = "faulted-node-admin"
 path = "src/bin/faulted_node_admin.rs"
+required-features = ["file-backend"]
 
 [[bin]]
 name = "rafka-scenario"
 path = "src/bin/rafka_scenario.rs"
+required-features = ["file-backend"]
 
 [[bin]]
 name = "rafka-store-root-probe"
 path = "src/bin/store_root_probe.rs"
+required-features = ["file-backend"]
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
+required-features = ["file-backend"]
+
+[[test]]
+name = "memory_estate"
+path = "tests/memory_estate.rs"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(tokio_taskdump)"] }

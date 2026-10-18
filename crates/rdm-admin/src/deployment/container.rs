@@ -832,7 +832,7 @@ mod tests {
     /// looked at is an error naming it, never "no socket".
     #[test]
     fn an_unreadable_docker_socket_is_an_error_naming_it() {
-        let dir = crate::record_store::tempdir("container-socket");
+        let dir = crate::test_support::tempdir("container-socket");
         assert_eq!(socket_group_at(&dir.join("missing.sock")), Ok(None));
         let file = dir.join("file");
         std::fs::write(&file, b"x").unwrap();
@@ -846,7 +846,7 @@ mod tests {
     /// record it cannot remove fails the launch naming the file.
     #[test]
     fn a_stale_runtime_record_that_cannot_be_removed_fails_the_launch_naming_it() {
-        let dir = crate::record_store::tempdir("container-launch-disk");
+        let dir = crate::test_support::tempdir("container-launch-disk");
         let ok = dir.join("clean");
         let disk = launch_disk(&ok, false, &std::collections::BTreeMap::new()).unwrap();
         assert!(ok.is_dir(), "the data dir is made");

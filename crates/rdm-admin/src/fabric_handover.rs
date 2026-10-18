@@ -157,6 +157,78 @@ pub enum WriteCutOff {
 /// Applies a [`WriteCutOff`] to this admin's stores (`crate::admin`'s wiring).
 pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
+/// The write cut-off of one process's memory stores, as each reads it at its writes: the mesh-primary
+/// seat's scope (the Mesh rows, its own mesh's node and status rows) and the fabric-primary seat's
+/// (the Fabric identity and its name, the other meshes' node and status rows), each cut off naming
+/// its transfer while it is. A memory write is one step under its store's lock, so a write issued
+/// before the cut-off has finished when it is set, and one after it is refused by name.
+#[derive(Debug, Default)]
+pub struct SeatCutOff {
+    mesh: std::sync::Mutex<Option<String>>,
+    fabric: std::sync::Mutex<Option<String>>,
+}
+
+impl SeatCutOff {
+    /// Apply `c` as the file stores do ([`WriteCutOff`]): set cuts off the moving seats' scopes;
+    /// lift gives every scope back; restore gives back the named seats' scopes; a committed transfer
+    /// leaves them cut off (a memory store holds no rows for a later publication, so none is dropped).
+    pub fn apply(&self, c: &WriteCutOff) {
+        let (mesh, fabric) = (|| self.mesh.lock().unwrap_or_else(|e| e.into_inner()), || self.fabric.lock().unwrap_or_else(|e| e.into_inner()));
+        match c {
+            WriteCutOff::Set { reason, mesh_seat, fabric_seat } => {
+                if *mesh_seat {
+                    *mesh() = Some(reason.clone());
+                }
+                if *fabric_seat {
+                    *fabric() = Some(reason.clone());
+                }
+            }
+            WriteCutOff::Lift => {
+                *mesh() = None;
+                *fabric() = None;
+            }
+            WriteCutOff::Restore { mesh_seat, fabric_seat, .. } => {
+                if *mesh_seat {
+                    *mesh() = None;
+                }
+                if *fabric_seat {
+                    *fabric() = None;
+                }
+            }
+            WriteCutOff::Committed { .. } => {}
+        }
+    }
+
+    /// A write to `file` in the mesh-primary seat's scope: refused, naming the transfer, while that
+    /// seat's writes are cut off.
+    pub fn mesh_write(&self, file: impl FnOnce() -> String) -> Result<(), crate::storage_error::StorageError> {
+        Self::refused(&self.mesh, file)
+    }
+
+    /// A write to `file` in the fabric-primary seat's scope: refused, naming the transfer, while that
+    /// seat's writes are cut off.
+    pub fn fabric_write(&self, file: impl FnOnce() -> String) -> Result<(), crate::storage_error::StorageError> {
+        Self::refused(&self.fabric, file)
+    }
+
+    /// A write to `file`, a row of `mesh` held by an admin of `own_mesh`: its own mesh's rows are the
+    /// mesh-primary seat's, every other mesh's the fabric-primary seat's.
+    pub fn mesh_row_write(&self, own_mesh: &str, mesh: &str, file: impl FnOnce() -> String) -> Result<(), crate::storage_error::StorageError> {
+        if mesh == own_mesh {
+            self.mesh_write(file)
+        } else {
+            self.fabric_write(file)
+        }
+    }
+
+    fn refused(scope: &std::sync::Mutex<Option<String>>, file: impl FnOnce() -> String) -> Result<(), crate::storage_error::StorageError> {
+        match scope.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            Some(reason) => Err(crate::storage_error::StorageError::CutOff { file: file(), reason }),
+            None => Ok(()),
+        }
+    }
+}
+
 #[cfg(feature = "file-backend")]
 /// The file stores on the fabric's store root a seat transfer cuts off (R14 item 4): the
 /// mesh-primary seat's (the Mesh row, its members' Node rows and contacts, the mesh's status rows) and the fabric-primary

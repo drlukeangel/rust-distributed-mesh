@@ -35,6 +35,7 @@ pub fn adopted_time() -> rdm_transport::clock::RafkaTime {
 
 mod admin_serves_forward;
 mod ids_crockford;
+#[cfg(feature = "file-backend")]
 mod backbone_anti_entropy;
 mod boot_stop;
 mod loopback;
@@ -50,25 +51,32 @@ mod build_run;
 mod build_facts_read;
 mod build_takeover;
 mod command_admission_status;
+#[cfg(feature = "file-backend")]
 mod connections_writer;
+#[cfg(feature = "file-backend")]
 mod container_proof;
 mod container_unsupported;
 mod current_build;
 mod drift_convergence;
+#[cfg(feature = "file-backend")]
 mod fabric_handover;
 mod fabric_not_ready;
 mod status_rpc;
 mod executor_redecide;
+#[cfg(feature = "file-backend")]
 mod connections_reconnect;
 mod gossip_frames_wire;
 mod abandoned_join;
 mod join_admission;
 mod join_wire;
 mod node_objects;
+#[cfg(feature = "file-backend")]
 mod node_rows;
 mod node_get_reads;
 mod node_rpc_objects;
+#[cfg(feature = "file-backend")]
 mod stop_gate_quiesce;
+#[cfg(feature = "file-backend")]
 mod stop_gate_view_lock;
 mod process_launch_environment;
 mod provider_state;
@@ -76,15 +84,18 @@ mod provider_policy;
 mod readiness_gates;
 mod receipt_refusal;
 mod recovery_admission;
+#[cfg(feature = "file-backend")]
 mod restart_hold_from_facts;
 mod restart_one_operation;
 mod pipeline_moves_no_seat;
 mod pipeline_step_io;
 mod status_declarations;
+#[cfg(feature = "file-backend")]
 mod status_seat_fold;
 mod stopped_delete;
 mod stopped_gc;
 mod stopped_view;
+#[cfg(feature = "file-backend")]
 mod store_root_boot;
 mod topology_read;
 mod fabric_delete;

@@ -1,11 +1,13 @@
 //! Fabric round types, gossip hook frames, and [`RoundActions`] (`rdm-node`).
 
+#[cfg(feature = "file-backend")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use rdm_transport::membership::Frame;
 use rdm_core::RoundHook;
 use rdm_core::status::StatusRequest;
+#[cfg(feature = "file-backend")]
 use tracing::Instrument;
 
 use crate::model::{FabricId, IncarnationId, NodeId, PathName};

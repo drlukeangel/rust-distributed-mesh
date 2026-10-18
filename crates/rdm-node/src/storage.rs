@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
 
+#[cfg(feature = "file-backend")]
 use crate::model::{IncarnationId, PathName};
 #[cfg(feature = "file-backend")]
 use crate::record_store::FileRecords;

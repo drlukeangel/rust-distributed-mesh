@@ -338,6 +338,7 @@ mod process {
     }
 }
 
+#[cfg(feature = "file-backend")]
 mod container {
     use super::*;
     use crate::container_proof::{fabric_name, launch, provider, Fabric};

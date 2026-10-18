@@ -22,6 +22,7 @@ use crate::build::BuildId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(feature = "file-backend")]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -1628,12 +1629,73 @@ pub struct MemoryBuildStateAdapter {
     writer: tokio::sync::Mutex<Derived>,
     /// Each attempt's context, at its key.
     contexts: Mutex<BTreeMap<String, rdm_core::context::CallContext>>,
+    /// The mesh of the admin whose log this is: a receipt naming no mesh is its mesh's lane's
+    /// unless it holds the fabric seat. `None`: a log of no admin's mesh.
+    own_mesh: Option<String>,
+    /// The seats this log's birth holds, once set ([`LocalBuildLog::hold_seats`]): unset, every
+    /// fact is written under revision 0 and no seal is owed.
+    seats: std::sync::OnceLock<JournalSeats>,
+    /// Each lane's sealed revisions: nothing of one is written again.
+    sealed: Mutex<BTreeMap<LaneId, std::collections::BTreeSet<u64>>>,
 }
 
 impl MemoryBuildStateAdapter {
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty store of an admin of `own_mesh`.
+    pub fn of_mesh(own_mesh: &str) -> Self {
+        Self { own_mesh: Some(own_mesh.to_string()), ..Self::default() }
+    }
+
+    /// The lane `fact` is written to: a decision to the lane its mesh names (the fabric lane for an
+    /// acceptance or a forget), a receipt to its mesh's, or this admin's own mesh's unless it holds
+    /// the fabric seat.
+    fn lane_of(&self, fact: &BuildFact) -> LaneId {
+        let holds_fabric = self.seats.get().map(|s| (s.holds_fabric)()).unwrap_or(true);
+        let own = || (!holds_fabric).then(|| self.own_mesh.as_deref()).flatten();
+        let mesh = match fact {
+            BuildFact::Accepted(_) | BuildFact::Forget { .. } => None,
+            BuildFact::Opened(o) => o.mesh.as_deref(),
+            BuildFact::Claim(c) => c.mesh.as_deref(),
+            BuildFact::Step(s) => s.mesh.as_deref().or_else(own),
+            BuildFact::Attempt(a) => a.mesh.as_deref().or_else(own),
+        };
+        mesh.map(|m| LaneId::Mesh(m.to_string())).unwrap_or(LaneId::Fabric)
+    }
+
+    /// Whether `fact` is this birth's to write now, as the file journal decides it: a decision of a
+    /// lane whose seat record names another live birth is refused stale, naming the record; the seals
+    /// owed on the lane before its revision are taken; and a fact of a sealed revision is refused
+    /// stale, naming the seal.
+    async fn admit(&self, fact: &BuildFact) -> Result<(), BuildStateError> {
+        let lane = self.lane_of(fact);
+        let (revision, owed) = match self.seats.get() {
+            Some(seats) => {
+                let seat = (seats.revisions)(&lane);
+                if let (false, Err(record)) = (matches!(fact, BuildFact::Step(_) | BuildFact::Attempt(_)), &seat.holds) {
+                    return Err(stale(lane.name(), Some(seat.revision), record.clone()));
+                }
+                (seat.revision, (seats.seals)(lane.clone(), seat.revision).await.map_err(BuildStateError::Io)?)
+            }
+            None => (0, Vec::new()),
+        };
+        let mut sealed = self.sealed.lock().unwrap();
+        let revisions = sealed.entry(lane.clone()).or_default();
+        revisions.extend(owed.iter().map(|s| s.revision));
+        if revisions.contains(&revision) {
+            return Err(stale(lane.name(), Some(revision), format!("revision {revision} of {} is sealed: a seat move moved the lane's seat from it", lane.name())));
+        }
+        Ok(())
+    }
+
+    /// Publish `fact` under the writer's turn `w`, once [`Self::admit`] admits it.
+    async fn put_admitted(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
+        self.admit(&fact).await?;
+        self.put(w, fact);
+        Ok(())
     }
 
     /// Merge facts received from the fabric projection (append the unseen
@@ -1695,6 +1757,12 @@ pub struct JournalSeats {
     pub seals: SealsOwed,
 }
 
+impl std::fmt::Debug for JournalSeats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JournalSeats").finish_non_exhaustive()
+    }
+}
+
 /// The key of attempt `(build_id, lane, attempt)`'s context: `<build_id>-<attempt>` for the fabric
 /// lane, `<build_id>-<mesh>-<attempt>` for a mesh's drift lane, so an attempt number names one
 /// attempt per lane.
@@ -1726,9 +1794,9 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
         Ok(self.contexts.lock().unwrap().get(&attempt_context_key(build_id, lane, attempt)).cloned())
     }
 
-    /// One process's log keys no lane: every fact is written under revision 0, nothing is sealed,
-    /// and its one process reads every fact it holds whatever seat it holds.
-    fn hold_seats(&self, _seats: JournalSeats) {}
+    fn hold_seats(&self, seats: JournalSeats) {
+        let _ = self.seats.set(seats);
+    }
 }
 
 #[cfg(feature = "file-backend")]
@@ -1774,7 +1842,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
         if !accepted_conflict(&snapshot(&self.log), accepted)? {
-            self.put(&w, BuildFact::Accepted(accepted.clone()));
+            self.put_admitted(&w, BuildFact::Accepted(accepted.clone())).await?;
         }
         Ok(())
     }
@@ -1786,7 +1854,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
             return Err(BuildStateError::UnknownBuild(opened.build_id.clone()));
         }
         if admit_open(&held, opened)? {
-            self.put(&w, BuildFact::Opened(opened.clone()));
+            self.put_admitted(&w, BuildFact::Opened(opened.clone())).await?;
         }
         Ok(())
     }
@@ -1820,7 +1888,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
             return Ok(not_open);
         }
         drop(held);
-        self.put(&w, BuildFact::Claim(claim.clone()));
+        self.put_admitted(&w, BuildFact::Claim(claim.clone())).await?;
         Ok(ClaimOutcome::Won)
     }
 
@@ -1831,13 +1899,13 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
-        self.put(&w, BuildFact::Step(receipt.clone()));
+        self.put_admitted(&w, BuildFact::Step(receipt.clone())).await?;
         Ok(())
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
-        self.put(&w, BuildFact::Attempt(receipt.clone()));
+        self.put_admitted(&w, BuildFact::Attempt(receipt.clone())).await?;
         Ok(())
     }
 
@@ -1861,9 +1929,22 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(self.log.lock().unwrap().exits_owed(build_id, mesh))
     }
 
+    async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, _by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
+        let mut sealed = self.sealed.lock().unwrap();
+        for s in &moved.row.seats {
+            let lane = match &s.seat {
+                rdm_core::seat::transfer::Seat::FabricPrimary => LaneId::Fabric,
+                rdm_core::seat::transfer::Seat::MeshPrimary { mesh } => LaneId::Mesh(mesh.clone()),
+                rdm_core::seat::transfer::Seat::Cohort { .. } => continue,
+            };
+            sealed.entry(lane).or_default().insert(s.from_revision);
+        }
+        Ok(())
+    }
+
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
-        self.put(&w, BuildFact::Forget { build_id: build_id.clone() });
+        self.put_admitted(&w, BuildFact::Forget { build_id: build_id.clone() }).await?;
         Ok(())
     }
 }
@@ -2452,7 +2533,6 @@ fn refuse_journal_file(root: &Path) -> Result<(), BuildStateError> {
     }
 }
 
-#[cfg(feature = "file-backend")]
 /// The stale refusal of a lane write (Q28: "`RejectedStaleSeat` from the store, spanned").
 fn stale(at: String, revision: Option<u64>, detail: String) -> BuildStateError {
     tracing::info_span!("rdm.node_admin.build.reject.via-stale-seat", at = %at, revision = revision.map(|r| r.to_string()).unwrap_or_default(), detail = %detail)
@@ -2660,7 +2740,7 @@ impl BuildStateAdapter for FileJournal {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "file-backend"))]
 mod tests {
     #[test]
     fn a_step_line_written_before_receipts_carried_output_still_decodes() {
@@ -2972,7 +3052,7 @@ mod tests {
     /// A Build log on a store root at `dir` (no scratchpad: written straight to the disk), its seats
     /// governed by no record (every lane written under revision 0).
     async fn open_at(dir: &Path) -> Result<FileJournal, BuildStateError> {
-        FileJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::record_store::tempdir("attempt-context"), "mesh1", &writer()).await
+        FileJournal::open_on_root(&crate::store_root::StoreRoot::at(dir), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await
     }
 
     fn writer() -> crate::model::IncarnationId {
@@ -3488,12 +3568,12 @@ mod tests {
     /// read: the runtime's only thread keeps running, and the replay answers the logged Build.
     #[test]
     fn opening_the_journal_waits_on_the_disk_off_the_runtime_thread() {
-        let dir = crate::record_store::tempdir("journal-offload");
+        let dir = crate::test_support::tempdir("journal-offload");
         let line = serde_json::to_vec(&serde_json::json!({"format": crate::build_lanes::FACT_FORMAT, "record": BuildFact::Accepted(intent("b1"))})).unwrap();
         let rev = dir.join("fabric").join("builds").join("rev-00000000000000000000");
         std::fs::create_dir_all(&rev).unwrap();
         let fifo = rev.join("00000000000000000001.json");
-        let (ran, active) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { open_at(&dir).await.unwrap().list_active().await.unwrap().len() }));
+        let (ran, active) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, line, Box::pin(async move { open_at(&dir).await.unwrap().list_active().await.unwrap().len() }));
         assert!(ran, "the runtime thread ran while the journal's replay waited on the disk");
         assert_eq!(active, 1);
     }
@@ -3650,7 +3730,7 @@ mod tests {
     /// only after a state-commit.
     #[tokio::test]
     async fn every_build_fact_committed_before_the_first_state_commit_is_recovered_by_a_restart_and_by_a_successor() {
-        let d = crate::record_store::tempdir("q61-recovery");
+        let d = crate::test_support::tempdir("q61-recovery");
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let fabric_id = crate::model::FabricId::mint();
@@ -3658,7 +3738,7 @@ mod tests {
         {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "the fabric has had no state-commit");
-            let j = FileJournal::open_on_root(&root, &crate::record_store::tempdir("attempt-context"), "mesh1", &birth).await.unwrap();
+            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), "mesh1", &birth).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
@@ -3669,7 +3749,7 @@ mod tests {
         for (who, mesh, writer) in [("the same fabric-primary restarted", "mesh1", birth.clone()), ("a successor", "mesh2", writer())] {
             let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
             assert_eq!(root.writes_to(), "scratchpad", "{who}: the fabric has still had no state-commit");
-            let j = FileJournal::open_on_root(&root, &crate::record_store::tempdir("attempt-context"), mesh, &writer).await.unwrap();
+            let j = FileJournal::open_on_root(&root, &crate::test_support::tempdir("attempt-context"), mesh, &writer).await.unwrap();
             let kinds: Vec<&str> = j.facts().await.unwrap().iter().map(|f| match f {
                 BuildFact::Accepted(_) => "accepted",
                 BuildFact::Claim(_) => "claim",
@@ -3694,7 +3774,7 @@ mod tests {
     /// fabric-lane and mesh-lane facts from the shared store root without gossip.
     #[tokio::test]
     async fn the_build_journal_lives_on_the_shared_store_root_under_the_writer_ladder_and_a_successor_reads_it_there() {
-        let d = crate::record_store::tempdir("rbi6-store-root-journal");
+        let d = crate::test_support::tempdir("rbi6-store-root-journal");
         let store = d.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let fabric_id = crate::model::FabricId::mint();
@@ -3703,7 +3783,7 @@ mod tests {
         // scratchpad; each Build fact stands on the root when it is committed (Q61).
         let root_pre = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
         assert_eq!(root_pre.writes_to(), "scratchpad");
-        let j_mesh1 = FileJournal::open_on_root(&root_pre, &crate::record_store::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
+        let j_mesh1 = FileJournal::open_on_root(&root_pre, &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
         j_mesh1.publish_accepted(&intent("b1")).await.unwrap();
         j_mesh1.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
         j_mesh1.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
@@ -3723,7 +3803,7 @@ mod tests {
         // successor `j_successor` both read the fabric-lane and mesh2-lane facts from the store root.
         let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
         let root_mesh2 = crate::store_root::StoreRoot::at(root_pre.dir());
-        let j_mesh2 = FileJournal::open_on_root(&root_mesh2, &crate::record_store::tempdir("attempt-context"), "mesh2", &writer()).await.unwrap();
+        let j_mesh2 = FileJournal::open_on_root(&root_mesh2, &crate::test_support::tempdir("attempt-context"), "mesh2", &writer()).await.unwrap();
         assert_eq!(j_mesh2.read_build(&id).await.unwrap().attempt, 1);
 
         // Fabric-primary finishes fabric lane attempt 1 on `j_mesh1`; `j_mesh2` sees it on its next read/write
@@ -3750,7 +3830,7 @@ mod tests {
         // Both the already-open `j_mesh1` and a newly booted successor read mesh2's converged lane from the shared store root.
         let view_live = serde_json::to_value(j_mesh1.read_build(&id).await.unwrap()).unwrap();
         assert_eq!(view_live["lanes"]["mesh2"]["state"], "complete", "live fabric-primary reads mesh2's lane from the store root: {view_live}");
-        let j_successor = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::record_store::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
+        let j_successor = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
         let view_succ = serde_json::to_value(j_successor.read_build(&id).await.unwrap()).unwrap();
         assert_eq!(view_succ["state"], "complete");
         assert_eq!(view_succ["lanes"]["mesh2"]["state"], "complete", "fresh successor reads both fabric/builds and meshes/mesh2/builds: {view_succ}");
@@ -3780,7 +3860,7 @@ mod tests {
         records.set_book(book.clone());
         let f_seat = crate::admin::fabric_seat_source(&book, &records, booting_me.clone(), &booting_name);
         let m_seat = crate::admin::mesh_seat_source(&book, &records, booting_me.clone(), &booting_name, "mesh1");
-        let j_unseated = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::record_store::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
+        let j_unseated = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), &crate::test_support::tempdir("attempt-context"), "mesh1", &writer()).await.unwrap();
         j_unseated.set_fabric_seat(
             std::sync::Arc::new(move || matches!((f_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
             std::sync::Arc::new(move || matches!((m_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
@@ -3831,6 +3911,55 @@ mod tests {
             assert!(facts.iter().any(|f| matches!(f, BuildFact::Attempt(a) if a.outcome == AttemptOutcome::Failed { reason: "same explanation".into(), code })));
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// The seats of a birth whose every lane's seat record, at `revision`, names `holds`.
+    fn seats_at(revision: u64, holds: Result<(), String>) -> JournalSeats {
+        JournalSeats {
+            holds_fabric: Arc::new(|| true),
+            holds_mesh: Arc::new(|| true),
+            revisions: Arc::new(move |_| LaneSeat { revision, holds: holds.clone() }),
+            seals: Arc::new(|_, _| Box::pin(async { Ok(Vec::new()) })),
+        }
+    }
+
+    /// The same script against any Build log: a decision of a lane whose seat record names another
+    /// live birth is refused stale, naming the record, and a fact of a revision a seat move sealed
+    /// is refused stale; neither is written.
+    async fn a_stale_seats_facts_are_refused_by_name(stale_log: &dyn LocalBuildLog, sealed_log: &dyn LocalBuildLog) {
+        stale_log.hold_seats(seats_at(3, Err("the fabric seat record names mesh2.admin.1 at revision 4".into())));
+        match stale_log.publish_accepted(&intent("b1")).await {
+            Err(BuildStateError::StaleSeat { at, revision, detail }) => assert_eq!((at.as_str(), revision, detail.contains("mesh2.admin.1")), ("fabric/builds", Some(3), true), "{detail}"),
+            other => panic!("an acceptance by a birth whose seat moved is refused stale by name, not {other:?}"),
+        }
+        assert!(stale_log.facts().await.unwrap().is_empty(), "nothing of the refused acceptance is written");
+        sealed_log.hold_seats(seats_at(0, Ok(())));
+        let by = birth("mesh1", "200000000000", "n");
+        let moved = crate::fabric_storage::SeatMove {
+            t: 1,
+            row: crate::fabric_storage::SeatMoveRow {
+                seats: vec![crate::fabric_storage::MovedSeat { seat: rdm_core::seat::transfer::Seat::FabricPrimary, from_revision: 0, revision: 1, holder: Some(by.clone()), from: Some(birth("mesh1", "100000000000", "p")) }],
+                cause: crate::fabric_storage::MoveCause::Election,
+                by: by.clone(),
+            },
+        };
+        sealed_log.seal_moved(&moved, &by).await.unwrap();
+        match sealed_log.publish_accepted(&intent("b1")).await {
+            Err(BuildStateError::StaleSeat { revision, .. }) => assert_eq!(revision, Some(0)),
+            other => panic!("an acceptance under a revision a seat move sealed is refused stale, not {other:?}"),
+        }
+        assert!(sealed_log.facts().await.unwrap().iter().all(|f| !matches!(f, BuildFact::Accepted(_))), "nothing of the refused acceptance is written");
+    }
+
+    /// CONTRACT (Q28, Q35; 1b, Arch's decision 3): a stale seat's Build facts are refused by the
+    /// journal, whatever backs it: on the memory log, as on the file journal, an acceptance by a birth
+    /// whose fabric seat record names another live birth is refused `StaleSeat` naming that record,
+    /// and one under a revision a seat move sealed is refused `StaleSeat` at that revision; neither
+    /// is written. Must NOT happen: a memory log taking a decision its seat no longer authorizes.
+    #[tokio::test]
+    async fn the_memory_log_refuses_a_stale_seats_facts_as_the_file_journal_does() {
+        a_stale_seats_facts_are_refused_by_name(&MemoryBuildStateAdapter::of_mesh("mesh1"), &MemoryBuildStateAdapter::of_mesh("mesh1")).await;
+        a_stale_seats_facts_are_refused_by_name(&open_at(&tmp()).await.unwrap(), &open_at(&tmp()).await.unwrap()).await;
     }
 
     fn birth(mesh: &str, node: &str, inc: &str) -> rdm_core::handover::HandoverBirth {
@@ -3957,7 +4086,7 @@ mod tests {
         };
         // The cell's runtime runs on this thread: every span of the journal is the capture's.
         tracing::dispatcher::with_default(&capture.dispatch, || {
-            crate::record_store::op_waits_on_the_blocking_pool(setup, |j: Arc<FileJournal>| {
+            crate::test_support::op_waits_on_the_blocking_pool(setup, |j: Arc<FileJournal>| {
                 Box::pin(async move {
                     // The reader runs first: its sync's first disk call queues behind the held thread.
                     let reader = tokio::spawn({

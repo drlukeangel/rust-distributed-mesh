@@ -243,7 +243,7 @@ mod tests {
     /// why, never "no holder": a port must not read as released when its table was never read.
     #[test]
     fn an_unreadable_socket_table_is_an_error_naming_it() {
-        let dir = crate::record_store::tempdir("port-table-unreadable");
+        let dir = crate::test_support::tempdir("port-table-unreadable");
         // A directory where the table is: it exists, and reading it fails (EISDIR).
         let table = dir.join("tcp");
         std::fs::create_dir_all(&table).unwrap();
@@ -256,7 +256,7 @@ mod tests {
     /// is skipped; the tables that exist still answer their sockets.
     #[test]
     fn a_missing_tcp6_table_is_skipped_and_the_tcp_table_answers() {
-        let dir = crate::record_store::tempdir("port-table-missing-tcp6");
+        let dir = crate::test_support::tempdir("port-table-missing-tcp6");
         let tcp = dir.join("tcp");
         let tcp6 = dir.join("tcp6");
         std::fs::write(

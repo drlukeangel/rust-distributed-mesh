@@ -343,7 +343,7 @@ mod tests {
     /// key (`mesh-in-flight/2`). A layout that moves moves this cell with it (`durable format moved`).
     #[tokio::test]
     async fn the_store_layout_is_frozen_byte_for_byte() {
-        let d = crate::record_store::tempdir("store-layout");
+        let d = crate::test_support::tempdir("store-layout");
         let root = crate::store_root::StoreRoot::at(&d);
         let l = lanes(&d);
         assert_eq!(l.append(&LaneId::Fabric, 7, &fact(1)).await.unwrap(), Appended::At(LaneKey { lane: LaneId::Fabric, revision: 7, seq: 1 }));
@@ -389,7 +389,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_writers_racing_on_one_lane_key_commit_exactly_one() {
         for round in 0..16 {
-            let d = crate::record_store::tempdir("lane-race");
+            let d = crate::test_support::tempdir("lane-race");
             let (a, b) = (std::sync::Arc::new(lanes(&d)), std::sync::Arc::new(lanes(&d)));
             let (ra, rb) = tokio::join!(
                 tokio::spawn({ let a = a.clone(); async move { a.append(&LaneId::Fabric, 3, &fact(1)).await.unwrap() } }),
@@ -416,7 +416,7 @@ mod tests {
     /// and a read after both begins past them. Must NOT happen: a fact answered twice, or one skipped.
     #[tokio::test]
     async fn a_lane_read_moves_no_cursor_until_taken_and_is_taken_once_from_where_it_began() {
-        let d = crate::record_store::tempdir("lane-read-take");
+        let d = crate::test_support::tempdir("lane-read-take");
         let (writer, reader) = (lanes(&d), lanes(&d));
         let lane = LaneId::Fabric;
         assert!(matches!(writer.append(&lane, 3, &fact(1)).await.unwrap(), Appended::At(_)));
@@ -439,7 +439,7 @@ mod tests {
     /// store already open, it lists and reads the run. Must NOT happen: a blocking call per fact read.
     #[tokio::test]
     async fn a_lane_read_catching_up_on_forty_facts_makes_one_blocking_call_for_their_revision() {
-        let d = crate::record_store::tempdir("lane-read-run");
+        let d = crate::test_support::tempdir("lane-read-run");
         let (writer, reader) = (lanes(&d), lanes(&d));
         let lane = LaneId::Fabric;
         let mut appended = 0;
@@ -466,7 +466,7 @@ mod tests {
     /// read out of order.
     #[tokio::test]
     async fn an_old_writer_meeting_the_seal_is_refused_stale_and_the_lane_is_read_in_order_to_each_seal() {
-        let d = crate::record_store::tempdir("lane-seal");
+        let d = crate::test_support::tempdir("lane-seal");
         let (old, sealer, successor) = (lanes(&d), lanes(&d), lanes(&d));
         let lane = LaneId::Mesh("mesh1".into());
         assert!(matches!(old.append(&lane, 3, &fact(1)).await.unwrap(), Appended::At(_)));
@@ -513,7 +513,7 @@ mod tests {
     /// process wrote.
     #[tokio::test]
     async fn before_the_first_state_commit_a_lane_fact_and_a_claim_stand_on_the_root_and_a_seal_refuses_the_old_writer() {
-        let d = crate::record_store::tempdir("lane-before-commit");
+        let d = crate::test_support::tempdir("lane-before-commit");
         let (pad_old, pad_new) = (crate::record_store::Scratchpad::new(), crate::record_store::Scratchpad::new());
         let held = |pad: &std::sync::Arc<crate::record_store::Scratchpad>| crate::store_root::StoreRoot::held_at(&d, pad.clone());
         let (old, successor) = (Lanes::new(held(&pad_old), crate::model::IncarnationId::mint()), Lanes::new(held(&pad_new), crate::model::IncarnationId::mint()));

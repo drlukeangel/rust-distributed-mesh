@@ -1600,12 +1600,7 @@ impl DeploymentPipeline<'_> {
             };
             if !req.held_runtimes.is_empty() {
                 step_span.record("awaiting", "held-runtimes");
-                let Some(rows) = &rows else {
-                    return Err(format!("{}: this pipeline publishes to no node rows, so the {} runtime rows this admin holds have no nodes storage to go to; nothing is launched", req.node, req.held_runtimes.len()));
-                };
-                for row in &req.held_runtimes {
-                    rows.put_admin_runtime(&id.node_id, &data_dir, row).await.map_err(|e| e.to_string())?;
-                }
+                crate::deployment::provider::write_held_runtimes(&data_dir, &req.held_runtimes).await?;
                 done_awaits.push("held-runtimes");
                 step_span.record("awaited", done_awaits.join(",").as_str());
             }
@@ -2542,7 +2537,7 @@ impl DeploymentPipeline<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::record_store::{op_waits_on_the_blocking_pool, runtime_runs_while_a_fifo_is_read, tempdir};
+    use crate::test_support::{op_waits_on_the_blocking_pool, runtime_runs_while_a_fifo_is_read, tempdir};
 
     /// CONTRACT: the Day-0 adoption writes its receipts on the blocking pool, never on a runtime
     /// worker.

@@ -233,7 +233,8 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
 /// from, on RDM standalone's storage backend ([`crate::storage_backend::FileBackend`]).
 #[cfg(feature = "file-backend")]
 pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Result<Running, String> {
-    start_on(cfg, wiring, Arc::new(crate::storage_backend::FileBackend)).await
+    let storage = Arc::new(crate::storage_backend::FileBackend::at(cfg.store_dir.clone()));
+    start_on(cfg, wiring, storage).await
 }
 
 /// [`start_with`] on `storage`: every durable read and write of the admin goes through the six
@@ -316,7 +317,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         (None, Some(own)) => own.name.mesh.clone(),
         _ => cfg.mesh.clone(),
     };
-    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), store_dir: cfg.store_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
     let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, status: status_storage, connections: open_connections, builds: journal, round_actions, cut_off_writes, writes_to } = storage.open(&scope, embedding_round_actions).await?;
     storage_step.record("writes_to", writes_to.as_str());
     let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
@@ -324,6 +325,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // Each mesh's in-flight row (R-BI7 caveat 3): the one set of rows the claim door, the drive's
     // release and the recovery door all take and release.
     let mesh_claims = mesh_storage.clone();
+    // A launched node-admin starts holding the runtime rows its launcher held (`CreateRequest::
+    // held_runtimes`): handed in its data dir beside the launch record, put in its own nodes storage
+    // before anything reads it.
+    if cfg.launch.is_some() {
+        for row in crate::deployment::provider::held_runtimes_in(&cfg.data_dir).await.map_err(|e| format!("refusing to start: {e}"))? {
+            nodes_storage.put_runtime(&row).await.map_err(storage_err)?;
+        }
+    }
     let inherited = match (&cfg.launch, own_row) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {

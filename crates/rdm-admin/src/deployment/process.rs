@@ -652,7 +652,7 @@ mod tests {
     /// answers `Unknown`, never exit proof; a pid listed without its task directory cannot be told.
     #[test]
     fn a_partial_or_unreadable_task_read_is_unreadable_and_a_gone_or_recycled_pid_is_gone() {
-        let root = crate::record_store::tempdir("proc-fixture");
+        let root = crate::test_support::tempdir("proc-fixture");
         let proc = root.to_str().unwrap();
         fixture_proc(&root, 100, 555, &[Some('S'), Some('T')]);
         assert_eq!(exact_group(proc, 100, Some(555)), Group::Running);
@@ -721,10 +721,10 @@ mod tests {
     /// CONTRACT: find reads the launch's deployment record on the blocking pool.
     #[test]
     fn find_reads_the_deployment_record_on_the_blocking_pool() {
-        let dir = crate::record_store::tempdir("process-find-fifo");
+        let dir = crate::test_support::tempdir("process-find-fifo");
         let spec = launch(&dir);
         let fifo = dir.join(DEPLOYMENT_FILE);
-        let (heard, found) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, br#"{"deployment_id":"another","pid":1}"#.to_vec(), Box::pin(async move { ProcessDeploymentProvider::new().find(&spec).await }));
+        let (heard, found) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, br#"{"deployment_id":"another","pid":1}"#.to_vec(), Box::pin(async move { ProcessDeploymentProvider::new().find(&spec).await }));
         assert!(heard, "the runtime stopped while the deployment record was read");
         assert_eq!(found.unwrap(), Found::NeverLaunched, "another launch's record");
     }
@@ -737,7 +737,7 @@ mod tests {
     /// read as never launched, so a re-run relaunches it under the same incarnation.
     #[tokio::test]
     async fn find_tells_a_running_launch_an_exited_one_and_one_never_launched_apart() {
-        let dir = crate::record_store::tempdir("process-find-three");
+        let dir = crate::test_support::tempdir("process-find-three");
         let p = ProcessDeploymentProvider::new();
         let never = launch(&dir);
         assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "no record in the data dir");
@@ -759,7 +759,7 @@ mod tests {
     /// it never recorded.
     #[tokio::test]
     async fn a_process_whose_launching_executor_is_lost_the_instant_it_exists_is_found_running() {
-        let dir = crate::record_store::tempdir("process-lost-after-spawn");
+        let dir = crate::test_support::tempdir("process-lost-after-spawn");
         let spec = launch(&dir);
         let slot = std::sync::Arc::new(Mutex::new(None));
         ProcessDeploymentProvider::lost_after_spawn(slot.clone()).spawn(&spec).await.expect_err("the executor is lost inside the spawn");
@@ -783,7 +783,7 @@ mod tests {
     /// was never launched. Must NOT happen: an executable that ran with no record of it.
     #[tokio::test]
     async fn a_process_whose_launching_executor_is_lost_before_its_record_never_runs_its_executable() {
-        let dir = crate::record_store::tempdir("process-lost-before-record");
+        let dir = crate::test_support::tempdir("process-lost-before-record");
         let marker = dir.join("ran");
         let spec = ResolvedNodeLaunch { executable: "/bin/sh".into(), args: vec!["-c".into(), "touch \"$0\"; sleep 30".into(), marker.display().to_string()], ..launch(&dir) };
         let slot = std::sync::Arc::new(Mutex::new(None));
@@ -800,7 +800,7 @@ mod tests {
     /// executable runs; the child waiting at the gate is cancelled, never released.
     #[tokio::test]
     async fn a_launch_record_that_cannot_be_written_stops_the_launch_before_its_executable_runs() {
-        let dir = crate::record_store::tempdir("process-record-unwritable");
+        let dir = crate::test_support::tempdir("process-record-unwritable");
         let marker = dir.join("ran");
         let spec = ResolvedNodeLaunch { executable: "/bin/sh".into(), args: vec!["-c".into(), "touch \"$0\"; sleep 30".into(), marker.display().to_string()], ..launch(&dir) };
         // The record's temporary file is a directory: it cannot be created.
@@ -817,7 +817,7 @@ mod tests {
     /// answers `Exited`, never `Running` and never `NeverLaunched`.
     #[tokio::test]
     async fn a_launch_whose_executable_cannot_run_leaves_a_record_that_reads_exited() {
-        let dir = crate::record_store::tempdir("process-exec-fails");
+        let dir = crate::test_support::tempdir("process-exec-fails");
         let spec = ResolvedNodeLaunch { executable: dir.join("no-such-executable"), ..launch(&dir) };
         let refused = ProcessDeploymentProvider::new().spawn(&spec).await.expect_err("the executable does not exist");
         assert!(refused.to_string().contains("no-such-executable"), "{refused}");
@@ -829,7 +829,7 @@ mod tests {
     /// "this launch started nothing" (which would start a second runtime).
     #[tokio::test]
     async fn an_unreadable_deployment_record_is_an_error_naming_it() {
-        let dir = crate::record_store::tempdir("process-find-unreadable");
+        let dir = crate::test_support::tempdir("process-find-unreadable");
         std::fs::create_dir_all(dir.join(DEPLOYMENT_FILE)).unwrap();
         let err = ProcessDeploymentProvider::new().find(&launch(&dir)).await.expect_err("an unreadable record is not an absent one");
         assert!(err.to_string().contains(DEPLOYMENT_FILE), "{err}");
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn inspecting_an_adopted_process_waits_on_the_blocking_pool() {
         let me = std::process::id();
-        let (waited, status) = crate::record_store::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| {
+        let (waited, status) = crate::test_support::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| {
             Box::pin(async move {
                 let p = ProcessDeploymentProvider::new();
                 let h = p.handle(DeploymentId::mint(), me, process_start_token(me));
@@ -857,11 +857,11 @@ mod tests {
     /// CONTRACT: a spawn (its data dir, logs, records and the fork) runs on the blocking pool.
     #[test]
     fn a_spawn_waits_on_the_blocking_pool() {
-        let dir = crate::record_store::tempdir("process-spawn-pool");
+        let dir = crate::test_support::tempdir("process-spawn-pool");
         let spec = launch(&dir);
         let p = std::sync::Arc::new(ProcessDeploymentProvider::new());
         let spawner = p.clone();
-        let (waited, h) = crate::record_store::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { spawner.spawn(&spec).await }));
+        let (waited, h) = crate::test_support::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { spawner.spawn(&spec).await }));
         let h = h.unwrap();
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(p.terminate(&h, TerminationMode::Immediate)).unwrap();
         assert!(waited, "the spawn finished on the runtime's thread while the blocking pool was held");

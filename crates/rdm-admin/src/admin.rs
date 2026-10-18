@@ -124,11 +124,11 @@ mod tests {
     /// holds the read: the runtime's only thread keeps running, and the load answers that key.
     #[test]
     fn loading_the_node_key_waits_on_the_disk_off_the_runtime_thread() {
-        let d = crate::record_store::tempdir("node-key-offload");
+        let d = crate::test_support::tempdir("node-key-offload");
         let key = SecretKey::generate();
         let fifo = d.join("node-key");
         let dir = d.clone();
-        let (ran, loaded) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, hex::encode(key.to_bytes()).into_bytes(), Box::pin(async move { load_or_mint_key(&dir).await.map(|k| k.to_bytes()) }));
+        let (ran, loaded) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, hex::encode(key.to_bytes()).into_bytes(), Box::pin(async move { load_or_mint_key(&dir).await.map(|k| k.to_bytes()) }));
         assert!(ran, "the runtime thread ran while the key's read waited on the disk");
         assert_eq!(loaded, Ok(key.to_bytes()));
     }
@@ -243,15 +243,14 @@ mod tests {
     }
 
     /// A nodes store that counts the contact writes made through it.
+    #[cfg(feature = "file-backend")]
     struct CountingNodes(Arc<dyn crate::storage::NodesStorage>, std::sync::atomic::AtomicUsize);
 
+    #[cfg(feature = "file-backend")]
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for CountingNodes {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_runtime(row).await
-        }
-        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_admin_runtime(admin, admin_data_dir, row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.0.runtimes().await
@@ -296,6 +295,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "file-backend")]
     fn contact_names(dir: &std::path::Path) -> usize {
         std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count()).unwrap_or(0)
     }
@@ -307,9 +307,10 @@ mod tests {
     /// seated one writes mesh1's members (itself included) and mesh1's Mesh row, never mesh2's. The
     /// seat moves: the new holder writes the replaced member's new contact and drops the old one,
     /// and the old holder writes nothing more. A launched birth's publication writes no contact.
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_meshs_contacts_and_mesh_row_are_written_by_its_primary_alone_on_the_shared_root() {
-        let d = crate::record_store::tempdir("contacts-ladder");
+        let d = crate::test_support::tempdir("contacts-ladder");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
@@ -361,9 +362,10 @@ mod tests {
     /// rounds run. Must NOT happen: the second mesh's put overwriting A's row, its contacts written
     /// beside a refused claim, or a refused claim tried again on every birth change.
     // @feature: mesh-lifecycle
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_second_mesh_of_a_live_name_is_refused_by_name_and_writes_nothing() {
-        let d = crate::record_store::tempdir("mesh-claim-live");
+        let d = crate::test_support::tempdir("mesh-claim-live");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
@@ -789,9 +791,10 @@ mod tests {
     /// later tenure claims nothing live again (`mesh-dead`). Must NOT happen: the recreated mesh
     /// refused by the removed mesh's row, or the removed mesh's id written live again.
     // @feature: mesh-lifecycle
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_mesh_removed_and_created_again_claims_its_name_over_the_dead_row() {
-        let d = crate::record_store::tempdir("mesh-claim-dead");
+        let d = crate::test_support::tempdir("mesh-claim-dead");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let store = |data: &str| {
             let (data, root) = (d.join(data), root.clone());
@@ -890,9 +893,6 @@ mod tests {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_runtime(row).await
         }
-        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.0.put_admin_runtime(admin, admin_data_dir, row).await
-        }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: "runtimes".into(), reason: "Input/output error (os error 5)".into() })
         }
@@ -947,9 +947,6 @@ mod tests {
     impl crate::storage::NodesStorage for CountsRuntimeLists {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_runtime(row).await
-        }
-        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_admin_runtime(admin, admin_data_dir, row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3089,9 +3086,10 @@ mod tests {
     /// at the row's name: its view reads the name through the row's `path.name` key. What must NOT
     /// happen: that admin listing the birth at `mesh1.rpc.1`, the name its digest last published, so a
     /// start or a `node.get` there names a row that no longer holds it.
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_parked_birth_whose_row_another_admin_moved_is_listed_at_the_rows_name() {
-        let d = crate::record_store::tempdir("row-name-view");
+        let d = crate::test_support::tempdir("row-name-view");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
         let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap());
@@ -3143,9 +3141,10 @@ mod tests {
     /// span naming the reading admin, the birth, the index and the store's own cause. What must NOT
     /// happen: the birth listed at the name its digest last published as if no row had moved it, or
     /// the refusal silent.
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_parked_birth_whose_row_cannot_be_read_is_not_listed_and_the_refusal_is_spanned() {
-        let d = crate::record_store::tempdir("row-name-unreadable");
+        let d = crate::test_support::tempdir("row-name-unreadable");
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let mine: Arc<dyn crate::storage::NodesStorage> = Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap());
         let book = DigestBook::default();
@@ -3333,6 +3332,7 @@ mod tests {
 
     /// A nodes store over `inner` that counts the node-row reads made through it, by `path.name` key
     /// and by node id, and how many of them ran while `view`'s write lock was held.
+    #[cfg(feature = "file-backend")]
     struct ProbedRows {
         inner: Arc<dyn crate::storage::NodesStorage>,
         view: Arc<RwLock<Topology>>,
@@ -3341,6 +3341,7 @@ mod tests {
         under_write_lock: std::sync::atomic::AtomicUsize,
     }
 
+    #[cfg(feature = "file-backend")]
     impl ProbedRows {
         fn read(&self, by: &std::sync::atomic::AtomicUsize) {
             by.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3353,13 +3354,11 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "file-backend")]
     #[async_trait::async_trait]
     impl crate::storage::NodesStorage for ProbedRows {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_runtime(row).await
-        }
-        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
-            self.inner.put_admin_runtime(admin, admin_data_dir, row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtimes().await
@@ -3408,8 +3407,9 @@ mod tests {
     /// on the fabric's shared store root (to `mesh1.rpc.1`, then to `mesh1.rpc.1.old`: each move one
     /// suffix toggled, the stopped node told nothing), and another admin's view over the same root,
     /// whose row reads are probed.
+    #[cfg(feature = "file-backend")]
     async fn renamed_twice(cell: &str) -> (std::path::PathBuf, MeshDigest, Arc<ProbedRows>, Arc<RwLock<Topology>>, Arc<Records>, DigestBook) {
-        let d = crate::record_store::tempdir(cell);
+        let d = crate::test_support::tempdir(cell);
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
         let book = DigestBook::default();
@@ -3452,6 +3452,7 @@ mod tests {
     /// view at the row's current name, `mesh1.rpc.1.old`, read by the birth's node id through the
     /// node row's id index: one read, no `path.name` key guessed. What must NOT happen: the birth
     /// listed at a name it no longer holds, or its name found by trying the keys a move could reach.
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn a_parked_birth_renamed_twice_by_its_row_is_listed_at_the_rows_current_name_read_by_its_node_id() {
         let (d, held, probed, view, records, book) = renamed_twice("row-name-twice").await;
@@ -3470,6 +3471,7 @@ mod tests {
     /// read finds the view's lock free. What must NOT happen: a row read made while the view's write
     /// lock is held, which holds every reader of the view (a parked admin's handlers, the router)
     /// behind a disk read.
+    #[cfg(feature = "file-backend")]
     #[tokio::test]
     async fn the_projection_reads_its_rows_before_it_takes_the_views_write_lock() {
         let (d, _held, probed, view, records, book) = renamed_twice("row-name-lock").await;

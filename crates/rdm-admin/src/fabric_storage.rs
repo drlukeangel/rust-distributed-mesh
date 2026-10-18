@@ -303,16 +303,46 @@ pub trait FabricStorage: Send + Sync {
 }
 
 /// A fabric store held in memory.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
     moves: Mutex<MoveLog>,
+    /// The fabric-primary seat's cut-off the identity writes read.
+    cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
+    /// The committed fabric seat record the identity writes read, once set.
+    seat: std::sync::OnceLock<crate::fabric_builds::SeatSource>,
+}
+
+impl std::fmt::Debug for MemoryFabricStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryFabricStorage").field("identity", &self.identity).field("moves", &self.moves).field("cut_off", &self.cut_off).field("seat", &self.seat.get().map(|_| "set")).finish()
+    }
 }
 
 impl MemoryFabricStorage {
     /// An empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty store whose identity writes are cut off by `cut_off` (the fabric-primary seat's scope).
+    pub fn cut_off_by(cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
+        Self { cut_off, ..Self::default() }
+    }
+
+    /// A write of the Fabric identity or its name (`fabric/<what>`): refused while the fabric-primary
+    /// seat's writes are cut off, and, once the seat record is read, while it names another live
+    /// birth (`NotSeatHolder`, naming it). Before the record is set (Day 0's claim, ahead of
+    /// membership) no record governs the write.
+    fn identity_write(&self, what: &str) -> Result<(), FabricStorageError> {
+        self.cut_off.fabric_write(|| format!("{FABRIC_DIR}/{what}"))?;
+        match self.seat.get().map(|s| (s.read)()) {
+            Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => Err(FabricStorageError::NotSeatHolder {
+                file: format!("{FABRIC_DIR}/{what}"),
+                reason: format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here")),
+            }),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -321,13 +351,15 @@ impl FabricStorage for MemoryFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         Ok(self.identity.lock().unwrap().clone())
     }
-    /// One process's rows: nothing is held for a later state-commit, so no seat gates their write.
-    fn set_seat_source(&self, _seat: crate::fabric_builds::SeatSource) {}
+    fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
+        let _ = self.seat.set(seat);
+    }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // The look and the insert are one step under the identity's lock.
         let mut held = self.identity.lock().unwrap();
         let claimed = claim_fabric_against(held.as_ref(), identity);
         if claimed == Ok(FabricClaim::Written) {
+            self.identity_write("identity")?;
             *held = Some(identity.clone());
         }
         Ok(claimed)
@@ -337,6 +369,7 @@ impl FabricStorage for MemoryFabricStorage {
         let mut held = self.identity.lock().unwrap();
         let ours = held.as_ref().is_some_and(|h| h.fabric_id == identity.fabric_id);
         if ours {
+            self.identity_write("name")?;
             *held = None;
         }
         Ok(ours)
@@ -717,7 +750,7 @@ async fn claimed_insert(records: &crate::record_store::FileRecords, key: &str, f
     Ok(claim_fabric_against(Some(&held), identity))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "file-backend"))]
 mod tests {
     use super::*;
 
@@ -1014,6 +1047,6 @@ mod tests {
     }
 
     fn tempdir() -> std::path::PathBuf {
-        crate::record_store::tempdir("fabric-storage")
+        crate::test_support::tempdir("fabric-storage")
     }
 }

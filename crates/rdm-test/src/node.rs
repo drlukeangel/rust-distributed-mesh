@@ -66,6 +66,15 @@ pub async fn start_with_seams(
     .await
 }
 
+/// The storage backend a testkit node runs on: RDM standalone's file backend, or, in a build without
+/// it (the memory estate's), one process's memory.
+fn node_backend() -> Arc<dyn rdm_node::storage_backend::NodeStorageBackend> {
+    #[cfg(feature = "file-backend")]
+    return Arc::new(rdm_node::storage_backend::FileNodeBackend);
+    #[cfg(not(feature = "file-backend"))]
+    return Arc::new(rdm_node::storage_backend::MemoryNodeBackend);
+}
+
 async fn start_with_rafka_time_hydrating(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
@@ -75,8 +84,9 @@ async fn start_with_rafka_time_hydrating(
     let fault = Arc::new(crate::faults::StorageFault::default());
     let fault_for_storage = fault.clone();
     let knob_fn: RafkaTimeKnobFn = Box::new(|launch, rt, boot| rafka_time_knob(launch, rt, boot));
-    rdm_node::node::start_with_rafka_time_hydrating_and(
+    rdm_node::node::start_on(
         launch,
+        node_backend(),
         rafka_time,
         hydration,
         move |base| Arc::new(crate::faults::FaultedConnectionsStorage::new(base, fault_for_storage)),
@@ -91,6 +101,7 @@ async fn start_with_rafka_time_hydrating(
             };
             register(b, seams).carry::<crate::proof_store::ProofStore>()
         },
+        &[],
         &[],
     )
     .await

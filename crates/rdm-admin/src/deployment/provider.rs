@@ -417,6 +417,41 @@ pub(crate) fn write_launch_record(data_dir: &std::path::Path, file: &str, record
     crate::durable_file::write_file(data_dir, &tmp, &data_dir.join(file), record.to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
+/// The launch hand-off a launched node-admin starts holding its launcher's runtime rows from
+/// (`CreateRequest::held_runtimes`): written in its data dir beside the launch record, before it runs.
+pub const HELD_RUNTIMES_FILE: &str = "held-runtimes.json";
+/// The format of the held-runtimes hand-off. Another format is refused by name.
+const HELD_RUNTIMES_FORMAT: &str = "held-runtimes/1";
+
+/// Hand the node-admin launched in `data_dir` the runtime rows `rows` its launcher holds: written
+/// whole and durable ([`HELD_RUNTIMES_FILE`]) before its executable runs, as the launch record is.
+pub(crate) async fn write_held_runtimes(data_dir: &std::path::Path, rows: &[crate::storage::RuntimeRow]) -> Result<(), String> {
+    let (dir, record) = (data_dir.to_path_buf(), serde_json::json!({ "format": HELD_RUNTIMES_FORMAT, "rows": rows }));
+    crate::blocking::blocking_io(move || write_launch_record(&dir, HELD_RUNTIMES_FILE, &record)).await
+}
+
+/// The runtime rows the launcher of the node-admin in `data_dir` handed it ([`write_held_runtimes`]):
+/// none when it handed none. A hand-off this build cannot read is refused by name.
+pub async fn held_runtimes_in(data_dir: &std::path::Path) -> Result<Vec<crate::storage::RuntimeRow>, String> {
+    let path = data_dir.join(HELD_RUNTIMES_FILE);
+    let read = path.clone();
+    let bytes = match crate::blocking::blocking_io(move || std::fs::read(&read)).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{}: the runtime rows this node-admin's launcher handed it cannot be read: {e}", path.display())),
+    };
+    #[derive(serde::Deserialize)]
+    struct HeldRuntimes {
+        format: String,
+        rows: serde_json::Value,
+    }
+    let held: HeldRuntimes = serde_json::from_slice(&bytes).map_err(|e| format!("{}: not a held-runtimes hand-off this build reads: {e}", path.display()))?;
+    if held.format != HELD_RUNTIMES_FORMAT {
+        return Err(format!("{}: the held-runtimes hand-off is {:?}, and this build reads {HELD_RUNTIMES_FORMAT:?} only", path.display(), held.format));
+    }
+    serde_json::from_value(held.rows).map_err(|e| format!("{}: the {HELD_RUNTIMES_FORMAT} rows are not runtime rows this build reads: {e}", path.display()))
+}
+
 /// The last `n` lines of `text`, joined with ` | `.
 pub fn tail(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -528,10 +563,10 @@ mod tests {
     /// CONTRACT: the default failure detail reads `stderr.log` on the blocking pool.
     #[test]
     fn the_failure_detail_is_read_on_the_blocking_pool() {
-        let dir = crate::record_store::tempdir("failure-detail-fifo");
+        let dir = crate::test_support::tempdir("failure-detail-fifo");
         let fifo = dir.join("stderr.log");
         let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
-        let (heard, detail) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, b"boom\n".to_vec(), Box::pin(async move { RemotePool("d").failure_detail(&h, &dir).await }));
+        let (heard, detail) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, b"boom\n".to_vec(), Box::pin(async move { RemotePool("d").failure_detail(&h, &dir).await }));
         assert!(heard, "the runtime stopped while stderr.log was read");
         assert_eq!(detail, "boom");
     }
@@ -539,7 +574,7 @@ mod tests {
     /// CONTRACT: a `stderr.log` that cannot be read is named in the detail, never an empty one.
     #[tokio::test]
     async fn an_unreadable_stderr_log_is_named_in_the_failure_detail() {
-        let dir = crate::record_store::tempdir("failure-detail-unreadable");
+        let dir = crate::test_support::tempdir("failure-detail-unreadable");
         std::fs::create_dir_all(dir.join("stderr.log")).unwrap();
         let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rdm_core::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
         let detail = RemotePool("d").failure_detail(&h, &dir).await;
@@ -578,10 +613,10 @@ mod exit_proof_tests {
     /// CONTRACT: the exit record is read on the blocking pool, never on a runtime worker.
     #[test]
     fn the_exit_record_is_read_on_the_blocking_pool() {
-        let dir = crate::record_store::tempdir("exit-proof-fifo");
+        let dir = crate::test_support::tempdir("exit-proof-fifo");
         let bytes = serde_json::to_vec(&ExitRecord { deployment_id: "dep-a".into(), incarnation: "inc-a".into(), code: TRANSPORT_STOPPED_EXIT_CODE, reason: "r".into() }).unwrap();
         let fifo = dir.join("exit.json");
-        let (heard, proof) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { exit_proof(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await }));
+        let (heard, proof) = crate::test_support::runtime_runs_while_a_fifo_is_read(fifo, bytes, Box::pin(async move { exit_proof(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await }));
         assert!(heard, "the runtime stopped while the exit record was read");
         assert_eq!(proof.unwrap(), DeploymentStatus::Exited { code: Some(4) });
     }
@@ -590,7 +625,7 @@ mod exit_proof_tests {
     /// unknown exit code (which would turn a proven transport stop into a replacement).
     #[tokio::test]
     async fn an_unreadable_exit_record_is_an_error_naming_the_file() {
-        let dir = crate::record_store::tempdir("exit-proof-unreadable");
+        let dir = crate::test_support::tempdir("exit-proof-unreadable");
         std::fs::create_dir_all(dir.join("exit.json")).unwrap();
         let err = exit_proof(DeploymentStatus::Exited { code: None }, &process_fact("dep-a"), Some(&dir), "inc-a").await.expect_err("an unreadable record is not an absent one");
         assert!(err.contains("exit.json"), "{err}");
