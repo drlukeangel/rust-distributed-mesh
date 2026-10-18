@@ -8241,5 +8241,63 @@ mod tests {
         assert_eq!(m.view.forwarder.lock().unwrap().published_version("mesh1"), Some((p, 2)), "forwarder advanced to v2 under the version lock");
         assert!(spans.named("rdm.mesh.membership.reject.via-stale").is_empty(), "no frame was ignored as earlier");
     }
+
+    /// CONTRACT (gate 7965f026, `admin_top_up`: `mesh1.admin.2` called `GetTopology` on `mesh1.admin.1`
+    /// while `mesh1.admin.1` served `topology_version = 0` before its first `anti_entropy` publication;
+    /// `Frame::Members(mesh1, topology_version = 1)` arrived on `mesh-channel` and `backbone` 600 µs
+    /// before the `Side::Read` `topology_version = 0` chunk, advancing `ReceiveOrder` to `v1` while
+    /// `View::apply_full` recorded only `take_projected_status` for own-mesh members; `View::take_read_chunk`
+    /// refused `v0` as `OlderThanHeld { held_version: 1, offered_version: 0 }` without recording the
+    /// own-mesh member digests into `DigestBook`, leaving `mesh1.admin.2` with the seat record
+    /// `mesh1:m1w2kypnr9xf@nejxnr0r5rwd (revision 1)` and `book.get(primary) == None`, so top-up
+    /// refused `seat-holder-not-held`): when a `Side::Read` chunk of the node's own mesh arrives below
+    /// the version already installed on `mesh-channel` / `backbone`, the projection in `mesh_rx` and
+    /// `order` stays at `held_version` (`OlderThanHeld`), and the own-mesh member digests the read
+    /// carries are still held in `DigestBook` (preserving the projected status from `held_version`), so
+    /// the seat holder named by the read's `Seats` frame is held and `mesh_primary()` resolves it.
+    #[test]
+    fn an_own_mesh_topology_read_overtaken_by_gossip_keeps_the_newer_projection_and_holds_the_seat_holder_digest() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let (mut primary, mut admin2) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.2", 1));
+        primary.status = MemberStatus::ReadyForTraffic;
+        admin2.status = MemberStatus::Pending;
+        let p = publisher_of(&primary);
+
+        let view = test_view("mesh1", "mesh1.admin.2");
+        assert!(view.book.record(admin2.clone()));
+
+        // Gossip v1 arrives on mesh-channel and backbone while the v0 topology-read stream is in flight.
+        let gossip_v1 = stamped(
+            snapshot_of("mesh1", &p, Some("mesh1.admin.1"), 1, 1, vec![primary.clone(), admin2.clone()], vec![], vec![]),
+            100,
+        );
+        assert!(hear(&mut view.order.lock().unwrap(), &view, &gossip_v1, &fabric, Side::MeshChannel));
+        assert_eq!(view.mesh_rx.lock().unwrap().held_version("mesh1"), Some((p.clone(), 1)));
+
+        // The in-flight topology read served at v0 arrives on Side::Read, followed by the seat record.
+        let read_v0 = crate::snapshot::Chunk {
+            mesh: "mesh1".into(),
+            publisher: p.clone(),
+            forwarded_by: Some("topology-read".into()),
+            topology_version: 0,
+            snapshot_id: 1,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests: vec![primary.clone(), admin2.clone()],
+            in_flight: vec![],
+            departed: vec![],
+        };
+        let taken = view.take_read_chunk(read_v0, Side::Read, &fabric);
+        assert!(
+            matches!(taken, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version: 1, offered_version: 0 })),
+            "the source projection stays at v1: {taken:?}"
+        );
+        assert_eq!(view.mesh_rx.lock().unwrap().held_version("mesh1"), Some((p, 1)));
+
+        assert!(matches!(view.book.seats.take(Seat::MeshPrimary, &seat_of(&primary, 1)), SeatTaken::Held { .. }));
+        let resolved = view.book.mesh_primary("mesh1").expect("the seat holder's digest from the own-mesh topology read is held in the book");
+        assert_eq!(resolved.node.node_id, primary.node.node_id);
+        assert_eq!(resolved.status, MemberStatus::ReadyForTraffic, "the projected status from v1 is preserved");
+    }
 }
 
