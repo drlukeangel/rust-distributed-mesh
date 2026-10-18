@@ -522,7 +522,10 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
      (applied 2026-10-17, Luke: yes) and gossip.md §8's third and "Entry ends with a pull" paragraphs (applied
      2026-10-17, Luke: yes).
   5. **node-admin takes its declared types and ALPNs through `Wiring`**, beside `hydration` and
-     `serve_app`; no second registration surface.
+     `serve_app`; no second registration surface. Q57 = x (Luke, 2026-10-17): a node-admin's `types`
+     is its embedded app's own kinds, declared through `Wiring` and joined before its hydration hook,
+     exactly as an rpc node's are through `run`; `held` is its `types` plus its members' plus what it
+     learned from other node-admins. The earlier "empty for a node-admin" is withdrawn (§8 corrected).
   6. **`dataschema`** rides `Event` and `Received` as an opaque `Option<String>`, carried both
      ways; application compatibility is the app's. `datacontenttype` stays `application/octet-stream`
      (the code refuses any other), since `data` is postcard bytes. The §3.4 table gains both rows.
@@ -563,7 +566,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
   entity and iroh's `TopicId` type name, nothing else; e5 renames what the code still calls a topic in the
   gossip sense (`mesh_topic`, `kind_topic`, the membership `Channel` internals keep their name).
 - **Owner.** Codex, lane e7s3, after i143 e12.s88 (the rafka lead stays on i144). Sibling: `i148-data-plane-connections-prd.md`, the connections half, after this.
-- **State.** Recorded 2026-10-17; gossip.md and node-rpc-envelope.md text on main; packet sent to Codex; not started.
+- **State.** Recorded 2026-10-17; gossip.md and node-rpc-envelope.md text on main; Q57 = x ruled; Codex on RED.
 
 ## Verification
 

@@ -49,3 +49,7 @@ Every arm assumes the settled status-authoring and takeover rules stand; no hear
 No page replacement is proposed. The full gate RED and Q50 RED logs stay kept. i147 e5 follows s88’s successful landing.
 
 Approval boundary: Q50 explicitly says “No runtime change.” The canon in `/home/admin/rafka-v2/CLAUDE.md` says “No agent (lead or seat) changes gossip or the mesh without Luke’s explicit permission.” A fixes the existing product path; it needs that additional authorization. The [ruling-packet skill](/home/admin/rafka-v2/.claude/skills/ruling-packet/SKILL.md) supplies the packet format, not a separate approval requirement.
+
+---
+
+**Q54: A — ratified by Luke, 2026-10-17, after it landed in `8bd6681d` on the lead's recommendation.** `status/<mesh>/declared` opens on the shared root and its write completes before Applied, including before state-commit; same row, key and format; the fold ignores a row for a birth it does not hold; the states.md Rounds line landed with the code. The scratchpad-inheritance question for other held rows is the i144 owner's, under a new number.

@@ -852,10 +852,11 @@ hydration hook, and its birth carries them in its [JoinNode](node-rpc-envelope.m
 (`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
 declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
 than a gossip message. Two sets, both answered by `node.get`: `types`, what the birth declared, immutable
-for its life (empty for a node-admin, which declares nothing of its own); and `held`, the types
-the node has joined, equal to `types` for an ordinary node and, for a node-admin, the union of
+for its life (a node-admin's through `Wiring`: its embedded app's own kinds); and `held`, the types
+the node has joined, equal to `types` for an ordinary node and, for a node-admin, its own `types`,
 its members' declarations and what it learned from other node-admins, growing as members join and
-never shrinking within a birth. Its mesh's node-admin records the declaration beside the row,
+never shrinking within a birth. A node-admin joins its own `types` before its hydration hook, as
+every node does. Its mesh's node-admin records the declaration beside the row,
 joins every type it does not already hold before it answers the join, and writes its own row's
 `held_hash` (blake3 of the sorted `held`), the one hash that rides a digest. Another node-admin
 that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it
@@ -882,8 +883,8 @@ empty org by name (`crates/rafka-entity-framework/src/gossip.rs::entity_projecti
 `rafka.entity_store.projection.reject.via-org-unstamped`). An undeclared type is refused by name
 on publish and dropped by name on receive.
 
-**node-admin holds every channel, as the app.** node-admin holds the union of its members' declared
-types (`held`), so every projected kind reaches it; it is a Rafka binary embedding RDM, and the rows
+**node-admin holds every channel, as the app.** node-admin holds its own declared types and the union
+of its members' (`held`), so every projected kind reaches it; it is a Rafka binary embedding RDM, and the rows
 it keeps are the app's: the entity framework runs in node-admin as a `Channel` subscriber and applies
 the kind's one comparator, the same one its typed stores apply, read from the event's header
 `(offset, order_key, version, tombstone)` without decoding the value. RDM holds none of them and
