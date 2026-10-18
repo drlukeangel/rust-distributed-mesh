@@ -247,7 +247,6 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     //    rafka-time, cert and name taken before the node says anything, then the mesh channel holding
     //    that name and the status frames the join answered: node.joined. With no authority, the
     //    channel alone.
-    let channel = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-membership-joined", node = tracing::field::Empty, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
     let (through, joined, membership) = match node.joining() {
         Joining::Authority { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
@@ -258,13 +257,13 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
                 StartKind::AfterStop => format!("node.start:{name}"),
             };
             let report_parent = matches!(kind, StartKind::FirstStart).then(|| step.clone());
-            let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &path.mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, authority: &label, operation: &operation, report_parent, reported: step, channel };
+            let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &path.mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, authority: &label, operation: &operation, report_parent, reported: step, channel_parent: Some(root.clone()) };
             let joined = super::node_mesh_join::node_mesh_join(node, call).await?;
             name = joined.name;
             (Ok((joined.through, label)), Some(joined.answer), joined.membership)
         }
         Joining::None(why) => {
-            channel.record("node", name.as_str());
+            let channel = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
             (Err(why), None, node.enter_channel(channel, None).await?)
         }
     };

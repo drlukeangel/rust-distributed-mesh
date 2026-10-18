@@ -54,8 +54,9 @@ pub struct JoinCall<'a> {
     /// The caller's span for the report (a start's join step): who answered and the name installed are
     /// recorded on it, and it ends before the channel is entered. `Span::none()` for none.
     pub reported: tracing::Span,
-    /// The caller's span for the channel entry (a start's channel step), handed to the kind.
-    pub channel: tracing::Span,
+    /// The span the channel step (`rdm.mesh.node.update.via-membership-joined`) is a child of: a
+    /// start's root (`None`: the current one). The step opens once the report has ended.
+    pub channel_parent: Option<tracing::Span>,
 }
 
 /// A completed join: the answer, who gave it, the name the birth holds from it, and its membership.
@@ -72,7 +73,7 @@ pub struct MeshJoined {
 
 /// `node.mesh.join` (node-mesh-join.md): `joining` from the report until the channels hold.
 pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'_>) -> Result<MeshJoined, J::Error> {
-    let JoinCall { mut name, node_id, mesh, mesh_id, client, rafka_time, to, authority, operation, report_parent, reported, channel } = call;
+    let JoinCall { mut name, node_id, mesh, mesh_id, client, rafka_time, to, authority, operation, report_parent, reported, channel_parent } = call;
     let mut digest = node.join_digest();
     digest.status = MemberStatus::Pending;
     let joining = match &report_parent {
@@ -80,6 +81,7 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
         None => tracing::info_span!("rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, authority = %authority, operation = %operation),
     };
     let (answer, through) = join(&name, client, to, &digest).instrument(joining).await?;
+    drop(report_parent);
     reported.record("served_by", through.name.to_string().as_str());
     reported.record("endpoint", through.anchor.as_str());
     // The name the answer hands (a join that hands none is refused, `crate::join::call_join`): the
@@ -87,11 +89,18 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
     if let Some(handed) = &answer.control.name {
         name = handed.to_string();
     }
-    let adopted_in = if reported.is_none() { tracing::Span::current() } else { reported.clone() };
-    crate::rafka_time::adopt_join_answer(&adopted_in, rafka_time, &name, &answer);
+    if reported.is_none() {
+        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), rafka_time, &name, &answer);
+    } else {
+        crate::rafka_time::adopt_join_answer(&reported, rafka_time, &name, &answer);
+    }
     reported.record("installed", name.as_str());
     drop(reported);
-    channel.record("node", name.as_str());
+    // The channel step opens only once the report's step has ended (node.start's steps never overlap).
+    let channel = match &channel_parent {
+        Some(parent) => tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+        None => tracing::info_span!("rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty),
+    };
     let membership = node.enter_channel(channel, Some(&answer)).await?;
     membership.learn_statuses(&answer.statuses);
     Ok(MeshJoined { answer, through, name, membership })
