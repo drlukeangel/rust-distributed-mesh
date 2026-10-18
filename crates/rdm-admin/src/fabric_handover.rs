@@ -126,11 +126,14 @@ pub enum WriteCutOff {
     /// unchanged epoch; the rows its stores held through the cut-off are still its own (proposal Part
     /// C1 failure contract: "NA1 lifts its cut-off under the unchanged epoch").
     Lift,
-    /// After the row, the successor proven exited, the ordinary rule seated this admin again in the
-    /// named seats under the leadership revision installed from that proof (ruling R-PU2 recovery
-    /// order 3): only those seats' write scope is restored, the mesh seat's the mesh rows, the fabric
-    /// seat's `fabric/` and the other meshes' rows, never one for the other. Every row held under the
-    /// old revision stays cut: it is dropped, never written.
+    /// The named seats are this admin's again under a new revision, and only those seats' write scope
+    /// is restored, the mesh seat's the mesh rows, the fabric seat's `fabric/` and the other meshes'
+    /// rows, never one for the other: after the row, the successor proven exited, the ordinary rule
+    /// seated it again under the leadership revision installed from that proof (ruling R-PU2 recovery
+    /// order 3); or a later seat row names it the successor of seats its own earlier transfer moved,
+    /// and from that row's revision it is their row writer (node-primary-update.md step 6). Only a
+    /// store that earlier transfer cut off is restored: every row it held under the old revision
+    /// stays cut, dropped and never written. A store standing open is left as it is.
     Restore {
         /// The proof and the revision, naming the transfer.
         reason: String,
@@ -213,8 +216,9 @@ impl SeatStores {
                 }
             }
             WriteCutOff::Restore { reason, mesh_seat, fabric_seat } => {
-                // Every row held under the old revision stays cut: dropped, never written. Then the
-                // seat's stores are this admin's again, owing nothing.
+                // Only a store an earlier transfer of these seats cut off is restored: every row it held
+                // under the old revision stays cut (dropped, never written), then its writes are this
+                // admin's again, owing nothing. A store standing open is left as it is.
                 if mesh_seat {
                     self.nodes.cut_off_own_labels(None);
                 }
@@ -222,8 +226,12 @@ impl SeatStores {
                 if fabric_seat {
                     seat.extend(self.fabric.fabric_primary_records());
                 }
+                // The stores each lifted cut-off held, by that cut-off's reason.
+                let mut lifted: std::collections::BTreeMap<String, Vec<String>> = Default::default();
                 let mut dropped: Vec<String> = Vec::new();
                 for s in seat {
+                    let Some(was) = s.cut_off_reason() else { continue };
+                    lifted.entry(was).or_default().push(s.store_name());
                     let n = s.drop_held().await;
                     if n > 0 {
                         dropped.push(format!("{} {n}", s.store_name()));
@@ -233,17 +241,26 @@ impl SeatStores {
                     }
                 }
                 if fabric_seat {
-                    dropped.extend(self.nodes.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
-                    dropped.extend(self.status.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
-                    if let Err(e) = self.nodes.lift_other_meshes().await {
-                        tracing::info!(error = %e, "another mesh's restored node rows could not be lifted");
+                    if let Some(was) = self.nodes.other_meshes_cut_off() {
+                        lifted.entry(was).or_default().push("other meshes' node rows".to_string());
+                        dropped.extend(self.nodes.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
+                        if let Err(e) = self.nodes.lift_other_meshes().await {
+                            tracing::info!(error = %e, "another mesh's restored node rows could not be lifted");
+                        }
                     }
-                    if let Err(e) = self.status.lift_other_meshes().await {
-                        tracing::info!(error = %e, "another mesh's restored status rows could not be lifted");
+                    if let Some(was) = self.status.other_meshes_cut_off() {
+                        lifted.entry(was).or_default().push("other meshes' status rows".to_string());
+                        dropped.extend(self.status.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
+                        if let Err(e) = self.status.lift_other_meshes().await {
+                            tracing::info!(error = %e, "another mesh's restored status rows could not be lifted");
+                        }
                     }
                 }
-                tracing::info_span!("rdm.node_admin.seat.update.via-writes-restored", reason = %reason, mesh_seat, fabric_seat, dropped = %dropped.join(","))
-                    .in_scope(|| tracing::info!("the ordinary rule seated this admin again: the seat's writes are its own under the new revision, and the rows held under the old one stay dropped"));
+                if !lifted.is_empty() {
+                    let lifted = lifted.iter().map(|(was, stores)| format!("{} store(s) cut off by {was}: {}", stores.len(), stores.join(", "))).collect::<Vec<_>>().join("; ");
+                    tracing::info_span!("rdm.node_admin.seat.update.via-writes-restored", reason = %format!("{reason}; lifted {lifted}"), mesh_seat, fabric_seat, dropped = %dropped.join(","))
+                        .in_scope(|| tracing::info!("the seats are this admin's again: their writes are its own under the new revision, and the rows held under the old one stay dropped"));
+                }
             }
             WriteCutOff::Committed { reason, mesh_seat, fabric_seat } => {
                 let mut seat = if mesh_seat { mesh_stores() } else { Vec::new() };
@@ -606,7 +623,6 @@ impl HandoverDoor {
             };
             (self.membership.seats().take_together(&op, &row.seats), claim)
         };
-        (self.project_view)().await;
         let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. } | SeatTaken::RefusedVacant { .. })) {
             "refused-not-newer"
         } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
@@ -614,6 +630,15 @@ impl HandoverDoor {
         } else {
             "held"
         };
+        // C1 step 6: from the row's revision the successor is the seats' row writer. A seat its own
+        // earlier transfer moved away left that seat's stores cut off; the row naming it the successor
+        // restores them before it answers, so the commander's next command finds its rows writable.
+        if row.successor == self.me_birth() && outcome != "refused-not-newer" {
+            let moved = |seat: Seat| row.seats.iter().any(|c| c.seat.kind() == seat);
+            let reason = format!("{me}: the seat row of {} names it the successor", row.operation);
+            (self.cut_off_writes)(WriteCutOff::Restore { reason, mesh_seat: moved(Seat::MeshPrimary), fabric_seat: moved(Seat::FabricPrimary) }).await;
+        }
+        (self.project_view)().await;
         // The holder lost after the row, before "updated" (proposal Part C1 failure contract: "the next
         // writer to read the row publishes 'updated'"): from the row's revision this receiver is the
         // cohort's row writer, and the holder the row names is proven gone only by the provider's exit

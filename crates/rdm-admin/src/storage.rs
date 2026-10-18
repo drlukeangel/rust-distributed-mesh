@@ -808,6 +808,11 @@ impl FileNodesStorage {
         crate::record_store::cut_off_and_drain(&stores.iter().collect::<Vec<_>>(), reason).await;
     }
 
+    /// Why the other meshes' rows are cut off ([`Self::cut_off_other_meshes`]), while they are.
+    pub fn other_meshes_cut_off(&self) -> Option<String> {
+        self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing. The
     /// first store whose kept rows could not be written is named; every store is lifted.
     pub async fn lift_other_meshes(&self) -> Result<(), StorageError> {
