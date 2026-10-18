@@ -489,6 +489,11 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
     - `rdm-transport` `collector_outage::an_unroutable_collector_changes_nothing` and `a_collector_that_accepts_and_never_answers_changes_nothing`: the child took 8.45 s and 8.51 s to end, with its exit flush at `DRAINED_MS=3628` and `3787`. I/O pressure (`some avg10`) was 45.19 at start and 62.80 at exit.
     - Gate 3's detail shows the kernel side: a tokio worker in `D` on `__jbd2_log_wait_for_space`.
     - Not a red, recorded: `node_delete` and `node_connections_delete` (both green) each logged `blocking_io` panicking with "a blocking disk call was cancelled". At `crates/rdm-node/src/record_store.rs:896` a blocking disk call cancelled by runtime shutdown at an admin's stop is a `panic!`, not a named refusal. Making it a named refusal changes `blocking_io`'s return type at its 44 call sites in 15 files (rdm-node `storage.rs`, `record_store.rs`; rdm-admin `build_lanes.rs`, `build_state.rs`, `fabric_storage.rs`, `storage.rs`, `entry.rs`, `seat_revision.rs`, `admin/boot.rs`, `admin/runner.rs`, `admin/records.rs`, `deployment/{process,pipeline,provider,container}.rs`).
+  - Its fifth gate (`2cde29e9`) ran with no other job of this dev on the box. It was red on `probe_root_span::forty_probe_runs_direct_and_carried_each_export_their_root_span`.
+    - One run exited 0 with a 0-byte span file and named its loss on stderr: "the evidence flush ended at its bound (2000 ms): 20 of 20 spans not confirmed written to the evidence file".
+    - That is the exit contract Luke ruled on 2026-10-17 (i146 Q42, recorded in `i146-owed-messages-prd.md`): "the bound is the contract; a named, bounded loss is right". The cell asserted the root's presence with no named-loss arm.
+    - Gate 2's `telemetry_exit::a_process_that_emits_one_span_and_exits_immediately_leaves_its_span_file` red (9 of 9 spans unconfirmed at the 2 s bound) was the same assertion.
+    - Both cells now hold a run to the contract, as the collector-down cell already does: the span in the file, or the loss named whole (unwritten > 0, written + unwritten ≥ handed). A missing root with no loss named stays the defect. Green: `probe_root_span::` 2/2, `telemetry_exit::` 4/4.
 
 ## Verification
 
