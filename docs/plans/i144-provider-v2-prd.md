@@ -472,6 +472,9 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
   - Cell: `admin::tests::a_lost_meshs_created_admin_adopts_its_meshs_held_state_from_its_makers_answer`.
   - Live controls green: `peer_mesh_investigation`, `fabric_primary`, `fabric_takeover`, `mesh_create`, `node_start_sequence`, `issuance`. The adoption is seen in the re-created admins' spans.
   - s88's container recovery runs again on it in release.
+  - Its first gate (`602b1863`) was red on two cells this change does not exercise, both green on main `e278636c` and on `602b1863` in one run each, side by side (logs: scratchpad `q56red/`):
+    - `provider_state::an_os_stopped_member_is_recorded_on_node_get_and_cleared_when_it_runs_again`: `node.get` showed the record cleared, but no `via-os-stopped cleared` span was emitted, and the admin left cleanly (kept `gate-gates-e1s8-602b1863-provider_state`). That span is emitted only when the removal reports a row removed. i144 e2's defect, read with the release's lifecycle reds.
+    - `fabric_primary::losing_the_fabric_primary_mesh_moves_control`: `mesh2.admin.1`'s `node.get` did not answer at the cell's `enter` after mesh1's loss (kept `gate-gates-e1s8-602b1863-fabric_primary`).
 
 ## Verification
 
