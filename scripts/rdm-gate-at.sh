@@ -429,6 +429,6 @@ if [ -n "$leaked" ]; then echo "FAIL leaked-processes $(echo $leaked | wc -w)" |
 # concurrent batch multiply every artifact by every red and perform disk work inside other
 # cells' bounds. Each refused job instead points at this gate's one immutable snapshot.
 if grep -q '^FAIL' "$O"; then
-    step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept"'
+    step evidence-keep 'python3 scripts/keep-gate-evidence.py "$O" "crates/$SCENARIO_PKG/tests/artifacts" "$DEPLOY/kept" "target/i143-testkit"'
 fi
 echo "DONE $(( $(date +%s)-t0 ))s" | tee -a $O

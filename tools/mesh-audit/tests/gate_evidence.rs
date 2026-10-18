@@ -28,8 +28,17 @@ fn refused_jobs_share_one_snapshot_that_later_source_writes_cannot_change() {
     std::fs::write(artifacts.join("evidence.jsonl"), "original\n").unwrap();
     let log = dir.join("gates-fixture.log");
     std::fs::write(&log, "ok green 1s\nFAIL first 2s\nFAIL(timed-out) second 3s\n").unwrap();
+    let testkit = dir.join("testkit");
+    for cell in ["a_red_cell", "another_red_cell", "a_green_cell"] {
+        std::fs::create_dir_all(testkit.join(cell)).unwrap();
+        std::fs::write(testkit.join(cell).join("testkit.1-1.spans.jsonl"), format!("{cell}\n")).unwrap();
+    }
+    let jobs = dir.join("gates-fixture.log.d");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(jobs.join("first.log"), "test m::a_green_cell ... ok\ntest m::a_red_cell ... FAILED\n").unwrap();
+    std::fs::write(jobs.join("second.log"), "m::another_red_cell --- FAILED\n").unwrap();
     let out = Command::new("python3").arg(root().join("scripts/keep-gate-evidence.py"))
-        .args([&log, &artifacts, &kept]).output().unwrap();
+        .args([&log, &artifacts, &kept, &testkit]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let first = kept.join("gate-gates-fixture-first/artifacts");
     let second = kept.join("gate-gates-fixture-second/artifacts");
@@ -39,5 +48,9 @@ fn refused_jobs_share_one_snapshot_that_later_source_writes_cannot_change() {
     assert_eq!(std::fs::read_to_string(first.join("evidence.jsonl")).unwrap(), "original\n");
     let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(kept.join("gate-gates-fixture/manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["jobs"], serde_json::json!(["first", "second"]));
+    // A failed testkit cell's span directory is kept beside the artifacts; a passing one is not.
+    assert_eq!(manifest["testkit_cells"], serde_json::json!(["a_red_cell", "another_red_cell"]));
+    assert_eq!(std::fs::read_to_string(kept.join("gate-gates-fixture/testkit/a_red_cell/testkit.1-1.spans.jsonl")).unwrap(), "a_red_cell\n");
+    assert!(!kept.join("gate-gates-fixture/testkit/a_green_cell").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
