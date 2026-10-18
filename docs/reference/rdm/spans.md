@@ -282,7 +282,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.reject.via-recipe-unplannable` | `crates/rdm-admin/src/admin/reconcile.rs` | 631 |
 | `rdm.node_admin.build.reject.via-recovery-already-applied` | `crates/rdm-admin/src/control_plane.rs` | 720 |
 | `rdm.node_admin.build.reject.via-stale-claim` | `crates/rdm-admin/src/build_run.rs` | 635 |
-| `rdm.node_admin.build.reject.via-stale-seat` | `crates/rdm-admin/src/build_state.rs` | 2206 |
+| `rdm.node_admin.build.reject.via-stale-seat` | `crates/rdm-admin/src/build_state.rs` | 2303 |
 | `rdm.node_admin.build.reject.via-stopped-on-request` | `crates/rdm-admin/src/admin/reconcile.rs` | 471 |
 | `rdm.node_admin.build.reject.via-terminate-receipts-unreadable` | `crates/rdm-admin/src/admin/recovery.rs` | 397 |
 | `rdm.node_admin.build.reject.via-terminate-refused` | `crates/rdm-admin/src/admin/recovery.rs` | 382 |
@@ -309,10 +309,10 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.update.via-drive` | `crates/rdm-admin/src/build_drive.rs` | 805 |
 | `rdm.node_admin.build.update.via-executor-exit-proof` | `crates/rdm-admin/src/admin/reconcile.rs` | 142 |
 | `rdm.node_admin.build.update.via-fetch-facts` | `crates/rdm-admin/src/hydrate.rs` | 280 |
-| `rdm.node_admin.build.update.via-in-flight-void` | `crates/rdm-admin/src/build_state.rs` | 2168 |
+| `rdm.node_admin.build.update.via-in-flight-void` | `crates/rdm-admin/src/build_state.rs` | 2265 |
 | `rdm.node_admin.build.update.via-incumbent-facts` | `crates/rdm-admin/src/build_op.rs` | 340 |
-| `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 1932 |
-| `rdm.node_admin.build.update.via-lane-sealed` | `crates/rdm-admin/src/build_state.rs` | 2094 |
+| `rdm.node_admin.build.update.via-journal-turn` | `crates/rdm-admin/src/build_state.rs` | 1977 |
+| `rdm.node_admin.build.update.via-lane-sealed` | `crates/rdm-admin/src/build_state.rs` | 2191 |
 | `rdm.node_admin.build.update.via-neighbor-up` | `crates/rdm-admin/src/fabric_builds.rs` | 392 |
 | `rdm.node_admin.build.update.via-node-recovery` | `crates/rdm-admin/src/admin/recovery.rs` | 722 |
 | `rdm.node_admin.build.update.via-node-rpc` | `crates/rdm-admin/src/build_op.rs` | 134 |
