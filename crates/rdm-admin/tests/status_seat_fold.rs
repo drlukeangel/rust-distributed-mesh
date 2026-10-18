@@ -312,3 +312,88 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     assert!(successor.node_operations().await.unwrap().is_empty(), "the operation rows are forgotten with the birth");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Q53: an acknowledged Ready for an exact birth survives acquisition by a new
+/// mesh-primary and is in its first complete member projection. Exercise the
+/// real pre-state-commit store as well as the already-published control.
+#[test]
+fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() {
+    use rdm_core::status::{StatusReply, StatusRequest};
+    use rdm_core::MemberStatus;
+    use rdm_transport::membership::{Backbone, Membership};
+    let cap = crate::mesh_delete_resume::capture();
+    let observed = cap.run(async {
+        let mut observed = Vec::new();
+        for published in [true, false] {
+            let parent = tracing::info_span!("rdm.test.status.update.via-acknowledged-successor", published);
+            let trace = crate::mesh_delete_resume::trace_id(&parent);
+            let result = tracing::Instrument::instrument(async {
+                let dir = std::env::temp_dir().join(format!("status-ack-successor-{}", NodeId::mint()));
+                let (mesh_id, fabric_id) = (MeshId::mint(), FabricId::mint());
+                let mut before = view(&mesh_id, &fabric_id);
+                let a = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").unwrap().clone();
+                let b = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().clone();
+                let rpc = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap().clone();
+                let pad = rdm_admin::record_store::Scratchpad::new();
+                let held_root = rdm_admin::store_root::StoreRoot::held_at(&dir, pad.clone());
+                let storage = Arc::new(FileStatusStorage::open(&held_root, "mesh1", a.incarnation_id.as_ref().unwrap()).await.unwrap());
+                let authority = rdm_admin::status_rpc::StatusAuthority {
+                    held_takeover: Default::default(), declaration_seam: None, command_frame_seam: None,
+                    operation_effects: Default::default(), stopped: Default::default(),
+                    me: a.name.clone(), node_id: a.node_id.clone(), fabric_id: fabric_id.clone(),
+                    topology: Arc::new(RwLock::new(before.clone())), declared: Default::default(),
+                    status_storage: storage.clone(), nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
+                    mesh_ids: Arc::new(std::collections::BTreeMap::new), republish: Default::default(),
+                    commands: Arc::new(rdm_admin::node_commands::CommandBook::default()), own: Default::default(),
+                    mesh_deleter: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
+                    rounds: Default::default(), configs: Default::default(), configure: Default::default(),
+                    hydration: Default::default(), rename: Default::default(), row_moved: Default::default(),
+                    loads: None, book: None, builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
+                    first_ready: Default::default(),
+                };
+                let reply = authority.apply(Some(rpc.clone()), &StatusRequest::DeclareNodeState {
+                    node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(),
+                    state: NodeState::ReadyForTraffic, operation: None,
+                }).await;
+                assert_eq!(reply, StatusReply::Applied, "the predecessor acknowledged this exact birth's Ready");
+                assert_eq!(storage.node_declared().await.unwrap().len(), 1, "the predecessor reads the acknowledged row");
+                if published { assert_eq!(pad.publish().await.unwrap().written(), 1); }
+                drop(authority);
+                drop(storage);
+                drop(held_root);
+                drop(pad);
+                // A successor is an independent process: it cannot read the lost
+                // predecessor's scratchpad. Its root has already been established.
+                let root = rdm_admin::store_root::StoreRoot::at(&dir);
+                let successor = Arc::new(FileStatusStorage::open(&root, "mesh1", b.incarnation_id.as_ref().unwrap()).await.unwrap());
+                let rows = successor.node_declared().await.unwrap().len();
+                let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
+                let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+                let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![]).await.unwrap();
+                let records = Records::default();
+                records.set_book(membership.book.clone());
+                records.set_status(successor, "mesh1".into(), b.name.clone(), b.node_id.clone());
+                assert!(membership.book.record(heartbeat(&fabric_id, &rpc)));
+                before.nodes.retain(|n| n.node_id != a.node_id);
+                for n in &mut before.nodes { if n.node_id == b.node_id { n.is_primary = true; n.is_fabric_primary = true; } }
+                let topology = RwLock::new(Topology { nodes: Vec::new(), ..before.clone() });
+                records.install_projected(&topology, || before.clone()).await;
+                membership.set_mesh_primary(true);
+                let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId {
+                    node: b.name.to_string(), incarnation: b.incarnation_id.clone().unwrap(), node_id: b.node_id.clone(),
+                }, vec![]).await.unwrap();
+                let first = backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == rpc.node_id && Some(&d.node.incarnation) == rpc.incarnation_id.as_ref()).unwrap();
+                let _ = std::fs::remove_dir_all(&dir);
+                (rows, first.status)
+            }, parent).await;
+            observed.push((published, trace, result));
+        }
+        observed
+    });
+    for row in cap.spans() { println!("Q53_SPAN {}", serde_json::to_string(&row).unwrap()); }
+    for (published, trace, (rows, status)) in observed {
+        println!("Q53 published={published} trace={trace} rows={rows} first={status:?}");
+        assert_eq!((rows, status), (1, MemberStatus::ReadyForTraffic), "Q53: acknowledged exact-birth Ready is in the successor's first full; published={published}, trace={trace}");
+    }
+}

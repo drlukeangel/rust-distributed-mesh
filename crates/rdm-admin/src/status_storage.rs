@@ -803,7 +803,13 @@ impl StatusStorage for FileStatusStorage {
         self.other(mesh, "fabric").await?.list(FABRIC_EVENT_FORMAT).await
     }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
-        self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row).await
+        let span = tracing::info_span!("rdm.node_admin.status.update.via-declared-put",
+            node_id = %row.node_id, incarnation_id = %row.incarnation_id.as_str(), state = ?row.state,
+            writer = %self.writer.as_str(), directory = %self.root.status(&self.mesh).join("declared").display(),
+            holding = self.declared.holding(), outcome = tracing::field::Empty);
+        let result = tracing::Instrument::instrument(self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row), span.clone()).await;
+        span.record("outcome", if result.is_ok() { "acknowledged" } else { "refused" });
+        result
     }
     async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
