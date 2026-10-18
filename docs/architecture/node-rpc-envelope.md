@@ -43,7 +43,9 @@ per-receiver sequence the sending birth never reuses. Every frame carries the se
 never to resend anything below it; the receiver forgets duplicate state only below that watermark or
 on the sender birth's proven exit or accepted removal, never by time elapsed. Until then a resend keeps
 its identity and cannot dispatch again. A carried call keeps its origin's identity: the duplicate
-window is per origin birth, never per carrier. A request's
+window is per origin birth, never per carrier. An Owed request's carried attempt is a Forward of its own
+toward the carrier, with a new identity each attempt, and names the request's identity in `owed`, which
+the inner call keeps; a carrier that answered one attempt carries the next. A request's
 `invocation_id` is its own delivery identity, derived and never stored a second time; every response
 frame carries that `invocation_id` as its correlation and its `seq` as its position in the
 invocation's response (`0` for a unary reply; `Started` is `0`, each `Data` the next, `Terminal`
@@ -610,7 +612,13 @@ pub enum ForwardRequest {
         inner_op: u8,
         inner: Vec<u8>,
         remaining_ms: u64,
+        owed: Option<OwedDelivery>,
     },
+}
+
+pub struct OwedDelivery {
+    delivery_seq: u64,
+    forget_below: u64,
 }
 
 pub enum ForwardReply {

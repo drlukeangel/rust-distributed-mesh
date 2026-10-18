@@ -74,6 +74,8 @@ pub struct RunningNode {
     hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_rpc_feed: tokio::task::JoinHandle<()>,
+    /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
+    held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     declare_loop: tokio::task::JoinHandle<()>,
 }
 
@@ -137,7 +139,7 @@ impl RunningNode {
     /// site. Nothing here gates gossip: the digest already says the state.
     pub(crate) async fn declare_own(&self, state: rdm_core::status::NodeState) -> Option<String> {
         self.owed_state.lock().unwrap().owe((state, None));
-        declare_once(&self.digest.node, &self.membership, &self.node_rpc.client, &self.owed_state).await
+        declare_once(&self.digest.node, &self.membership, &self.node_rpc.client, &self.owed_state, &self.held).await
     }
 
     /// Two-phase shutdown, phase one (node-rpc §35): new calls get a typed
@@ -732,7 +734,7 @@ async fn start_booted(
                                     knob: knob_fn.and_then(|f| f(&launch, &rafka_time, &boot)),
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell, hydrating: hydrating_cell, publisher, node_rpc_feed, declare_loop });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell, hydrating: hydrating_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
@@ -1190,17 +1192,19 @@ async fn declare_until_seat_moves(me: &MeshNode, membership: &Membership, client
     }
 }
 
-/// Q39's carrier rule as the route policy of one owed declaration (i146 Q52): the live peers of the
-/// holder's mesh, never the holder and never this birth: the members this node holds a connected Direct
-/// edge to first (its connections table), else the members it hears; each attempt takes the next in
-/// turn. With no such peer the attempt goes direct.
+/// Q39's carrier rule as the route policy of one owed declaration (i146 Q52): direct while this node
+/// holds a connected Direct edge to the holder (its connections table, as the route projection answers),
+/// else the live peers of the holder's mesh, never the holder and never this birth: the members this
+/// node holds a connected Direct edge to first, else the members it hears; each attempt takes the next
+/// in turn. With no such peer the attempt goes direct.
 fn declaration_route(held: &Mutex<rdm_core::connections::ConnectionsHeld>, membership: &Membership, me: &NodeId, holder: &NodeId, mesh: &str, attempt: u32) -> rdm_transport::route::RouteChoice {
-    let mut peers: Vec<(rdm_core::PathName, NodeId)> = held
-        .lock()
-        .unwrap()
-        .own_latest_directs()
+    let connected: Vec<rdm_core::connections::NodeConnection> = held.lock().unwrap().own_latest_directs().into_iter().filter(|c| c.state == rdm_core::connections::ConnectionState::Connected).cloned().collect();
+    if connected.iter().any(|c| c.destination.node_id == *holder) {
+        return rdm_transport::route::RouteChoice::Direct;
+    }
+    let mut peers: Vec<(rdm_core::PathName, NodeId)> = connected
         .into_iter()
-        .filter(|c| c.state == rdm_core::connections::ConnectionState::Connected && c.destination.name.mesh == mesh && c.destination.node_id != *holder && c.destination.node_id != *me)
+        .filter(|c| c.destination.name.mesh == mesh && c.destination.node_id != *holder && c.destination.node_id != *me)
         .map(|c| (c.destination.name.clone(), c.destination.node_id.clone()))
         .collect();
     if peers.is_empty() {

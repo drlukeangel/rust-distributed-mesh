@@ -1022,6 +1022,10 @@ original invocation is executing. Before recoverable acceptance, duplicates rema
 ack. After that boundary, duplicates are acked again without invoking the handler again. Retry stops on the ack, on the receiver's proven exit or accepted removal, or on
 explicit cancellation or retargeting by the owning workflow; never on a timer, never on absence from a
 view, never on a newer message of its kind.
+The owner of an Owed request chooses its route policy: the one receiver it is owed to and the carriers it
+may travel through (§45). The request's first attempt goes direct; once an attempt sends nothing, each
+resend takes the route the policy answers then, a carried resend keeping the request's delivery id toward
+the same receiver. A carrier's failure ends that attempt, never the request.
 
 An ack proves receipt, never execution. The receiver acks only once the operation owner has made the
 accepted work recoverable (a durable acceptance record, or the result already recorded); a read-only
@@ -1081,7 +1085,7 @@ sequenceDiagram
 
 `B` authenticates `P`. It never treats an origin id copied into the request as authenticated identity.
 
-The carrier never chooses another carrier and never forwards twice. The route projection, not Node RPC, owns the durable Proxy that selected P.
+The carrier never chooses another carrier and never forwards twice. The route projection, not Node RPC, owns the durable Proxy that selected P. For an Owed request the owner chooses the route policy and Node RPC executes it on every resend (§43).
 
 ---
 

@@ -8,7 +8,7 @@
 //! The origin side: [`NodeRpcClient::call_via`] executes a route's `ViaPeer` choice. It never
 //! selects a carrier; the connections route projection does.
 
-use crate::client::{Budget, CallEvidence, CallOptions, Decode, NodeRpcClient, Payload};
+use crate::client::{Budget, CallEvidence, CallOptions, CarriedIdentity, Decode, NodeRpcClient, Payload};
 use crate::resolve::NodeTarget;
 use crate::server::{PeerContext, ServerBuilder};
 use rdm_core::NodeId;
@@ -90,7 +90,7 @@ async fn carry_once(
     peer: &PeerContext,
     req: ForwardRequest,
 ) -> ForwardReply {
-    let ForwardRequest::Forward { target, inner_op, inner, remaining_ms } = req;
+    let ForwardRequest::Forward { target, inner_op, inner, remaining_ms, owed } = req;
     let Some(&max_reply) = table.get().and_then(|t| t.get(&inner_op)) else {
         tracing::info_span!(
             "rdm.node_rpc.request.reject.via-not-forwardable",
@@ -137,11 +137,16 @@ async fn carry_once(
         crate::set_remote_parent(&span, tp, peer.context.tracestate.as_deref());
     }
     // The inner call keeps the origin's delivery identity: the final target's duplicate window is
-    // the origin's, so a resend of the same request through another carrier is suppressed there.
+    // the origin's, so a resend of the same request through another carrier is suppressed there. An
+    // Owed request's carried attempt names its own identity under this frame's sender (i146 Q52).
+    let carried = match (owed, peer.delivery.clone()) {
+        (Some(o), Some(outer)) => Some(CarriedIdentity { id: rdm_core::framing::DeliveryId { sender: outer.id.sender, delivery_seq: o.delivery_seq }, forget_below: o.forget_below }),
+        (_, outer) => outer,
+    };
     let opts = CallOptions {
         budget: Budget::Overall(std::time::Duration::from_millis(inner_ms)),
         context: Some(peer.context.clone()),
-        carried: peer.delivery.clone(),
+        carried,
         unsent_is_final: true,
         ..CallOptions::default()
     };
@@ -217,7 +222,7 @@ impl NodeRpcClient {
         let target_id = target.clone();
         let target = target.clone();
         let build = move |remaining: std::time::Duration| {
-            let forward = ForwardRequest::Forward { target, inner_op: P::OP, inner, remaining_ms: remaining.as_millis() as u64 };
+            let forward = ForwardRequest::Forward { target, inner_op: P::OP, inner, remaining_ms: remaining.as_millis() as u64, owed: None };
             Forward::encode_request(&forward).map_err(|e| e.0)
         };
         let final_target = target_id.clone();

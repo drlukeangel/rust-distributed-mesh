@@ -45,7 +45,22 @@ pub enum ForwardRequest {
         /// budget it is the reply budget, which starts at the commit that follows the write. The
         /// carrier bounds its one inner call by this minus [`FORWARD_REPLY_RESERVE`].
         remaining_ms: u64,
+        /// An Owed request's own delivery identity, which its carried attempt keeps toward the
+        /// target under this frame's sender (node-rpc.md §43; i146 Q52). `None`: the inner call
+        /// keeps this frame's identity.
+        owed: Option<OwedDelivery>,
     },
+}
+
+/// The delivery identity an Owed request keeps on every leg: each carried attempt is a Forward
+/// invocation of its own toward the carrier, and the inner call is the request's, so a carrier that
+/// answered one attempt carries the next and the target's duplicate window suppresses any repeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwedDelivery {
+    /// The request's `delivery_seq` in its origin birth's window.
+    pub delivery_seq: u64,
+    /// The origin's `forget_below` toward the target.
+    pub forget_below: u64,
 }
 
 /// The typed reason an inner invocation has no reply; the explanation is a separate field.

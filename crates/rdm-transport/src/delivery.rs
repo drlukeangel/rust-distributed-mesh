@@ -429,6 +429,12 @@ impl Delivery {
         DeliveryId { sender: self.inner.me.clone(), delivery_seq: seq }
     }
 
+    /// The identity of a frame toward `receivers` that is written once and never resent: an Owed
+    /// request's carried attempt to its carrier (i146 Q52). Settled when the guard drops.
+    pub(crate) fn mint_once(&self, receivers: &[iroh::PublicKey]) -> CallGuard {
+        CallGuard { d: self.clone(), id: self.mint(receivers) }
+    }
+
     /// The `forget_below` a frame toward `receivers` carries: the lowest over them.
     pub(crate) fn lowest_unacked(&self, receivers: &[iroh::PublicKey]) -> u64 {
         let st = self.inner.st.lock().unwrap();
@@ -1067,6 +1073,10 @@ impl CallGuard {
     /// The owner has the invocation's terminal: it is complete.
     pub(crate) fn complete(&self) {
         self.d.complete_call(&self.id);
+    }
+
+    pub(crate) fn id(&self) -> &DeliveryId {
+        &self.id
     }
 }
 

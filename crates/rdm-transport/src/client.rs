@@ -1152,18 +1152,28 @@ struct Attempts {
     committed_on: Option<iroh::endpoint::Connection>,
 }
 
+/// A carrier's response frame `h` as the answer to `invocation`, the request it carried (i146 Q52):
+/// the frame keeps its own identity, so its ack is the carrier's.
+fn answering(h: TransportHeader, invocation: DeliveryId) -> TransportHeader {
+    match h {
+        TransportHeader::Response { sender, delivery_seq, forget_below, seq, .. } => TransportHeader::Response { sender, delivery_seq, forget_below, invocation_id: invocation, seq },
+        other => other,
+    }
+}
+
 impl Attempts {
     fn receiver_gone(&self) -> Option<String> {
         self.client.receiver_gone(&self.target, self.birth.as_ref()?)
     }
 
     /// The request as one carrier's Forward to the call's receiver, `remaining` the bound its inner
-    /// call is told (i146 Q52). A request built at its write, or a target that names no exact receiver,
-    /// is not carried.
+    /// call is told, the inner call keeping the request's own identity (i146 Q52). A request built at
+    /// its write, or a target that names no exact receiver, is not carried.
     fn forward_payload(&self, remaining: Duration) -> Result<Payload, String> {
         let NodeTarget::ExactNode(receiver) = &self.target else { return Err("a carried attempt needs an exact receiver".into()) };
         let Payload::Ready(inner) = &self.payload else { return Err("the request is built at its write".into()) };
-        let forward = rdm_core::forward::ForwardRequest::Forward { target: receiver.clone(), inner_op: self.op, inner: inner.clone(), remaining_ms: remaining.as_millis() as u64 };
+        let owed = rdm_core::forward::OwedDelivery { delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
+        let forward = rdm_core::forward::ForwardRequest::Forward { target: receiver.clone(), inner_op: self.op, inner: inner.clone(), remaining_ms: remaining.as_millis() as u64, owed: Some(owed) };
         <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::encode_request(&forward).map(Payload::Ready).map_err(|e| e.0)
     }
 
@@ -1307,10 +1317,16 @@ impl Attempts {
                     continue;
                 }
             };
-            let header = TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() };
+            // A carried attempt is a Forward invocation of its own toward the carrier, written once: a
+            // carrier that answered one attempt carries the next (i146 Q52).
+            let outer = carried.as_ref().map(|_| self.client.delivery.mint_once(&[node.peer]));
+            let header = match &outer {
+                Some(o) => TransportHeader::Request { sender: o.id().sender.clone(), delivery_seq: o.id().delivery_seq, forget_below: self.client.delivery.lowest_unacked(&[node.peer]) },
+                None => TransportHeader::Request { sender: self.id.sender.clone(), delivery_seq: self.id.delivery_seq, forget_below: self.lowest_unacked() },
+            };
             let phase = match carried.as_mut() {
                 Some((carrier_target, carrier, payload)) => {
-                    tracing::info_span!("rdm.node_rpc.delivery.update.via-carried-attempt", delivery_id = %self.id, attempt, carrier = %carrier)
+                    tracing::info_span!("rdm.node_rpc.delivery.update.via-carried-attempt", delivery_id = %self.id, attempt, carrier = %carrier, forward_id = %header.delivery_id())
                         .in_scope(|| tracing::info!("the owed request is carried to its receiver through a live peer"));
                     self.client.attempt(carrier_target, &node, <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::OP, &header, payload, &self.opts, deadline, &self.evidence).await
                 }
@@ -1353,10 +1369,15 @@ impl Attempts {
                     }
                     // The wait for the ack runs from the write: a slow dial spends none of it. A
                     // request asked once is never resent: it waits on its stream for its answer.
-                    let ack_by = (!self.state.borrow().acked && !self.opts.once).then(|| Instant::now() + pacing.after(attempt));
+                    // A carried attempt waits for its carrier's answer, which the carrier gives inside
+                    // the `remaining_ms` it was told.
+                    let ack_by = match &outer {
+                        Some(_) => Some(Instant::now() + pacing.floor),
+                        None => (!self.state.borrow().acked && !self.opts.once).then(|| Instant::now() + pacing.after(attempt)),
+                    };
                     let resend_at = ack_by.unwrap_or(next_at);
                     sent_nothing = false;
-                    match self.read(opened, ack_by, carried.is_some()).await {
+                    match self.read(opened, ack_by, outer.as_ref().map(|o| o.id())).await {
                         StreamEnd::Complete => return AttemptEnd::StreamComplete,
                         StreamEnd::Violation => return AttemptEnd::StreamViolation,
                         StreamEnd::Definitive(code) => {
@@ -1447,7 +1468,9 @@ impl Attempts {
 
     /// Read one attempt's stream: acks of the request and response frames, delivered to the
     /// invocation and acked on the request direction. `ack_by`: when an unacked request is resent.
-    async fn read(&mut self, opened: Opened, ack_by: Option<Instant>, carried: bool) -> StreamEnd {
+    /// `carried`: the attempt's own Forward invocation toward its carrier, whose answer wraps the
+    /// receiver's.
+    async fn read(&mut self, opened: Opened, ack_by: Option<Instant>, carried: Option<&DeliveryId>) -> StreamEnd {
         let d = self.client.delivery.clone();
         let Opened { send, recv, key, conn } = opened;
         let out = FrameOut::new(send);
@@ -1481,7 +1504,8 @@ impl Attempts {
                     Ok(Some(h @ TransportHeader::Response { .. })) => {
                         let TransportHeader::Response { invocation_id, .. } = &h else { unreachable!() };
                         // A carried attempt's answer is its carrier's Forward reply around the receiver's.
-                        let bound = if carried { d.reply_bound(invocation_id).max(<rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::MAX_REPLY_FRAME_BYTES) } else { d.reply_bound(invocation_id) };
+                        let forward = carried.filter(|o| *o == invocation_id);
+                        let bound = if forward.is_some() { d.reply_bound(&self.id).max(<rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::MAX_REPLY_FRAME_BYTES) } else { d.reply_bound(invocation_id) };
                         let body = match reader.body(bound).await {
                             Ok(b) => b,
                             Err(ReadEnd::Violation(why)) => {
@@ -1492,22 +1516,23 @@ impl Attempts {
                             }
                             Err(_) => return self.lost(&key, &conn),
                         };
-                        // The receiver's answer is handed on as the call's; anything else is the carrier's
-                        // failure to reach it: acked to the carrier, the call's request left unacked (i146 Q52).
-                        let body = if carried {
+                        // The receiver's answer is handed on as the call's response, its frame acked to the
+                        // carrier; anything else is the carrier's failure to reach it: acked to the carrier,
+                        // the call's request left unacked (i146 Q52).
+                        let (h, body) = if forward.is_some() {
                             match <rdm_core::forward::Forward as rdm_core::protocol::NodeProtocol>::decode_reply(&body) {
-                                Ok(rdm_core::forward::ForwardReply::Forwarded { inner }) => inner,
+                                Ok(rdm_core::forward::ForwardReply::Forwarded { inner }) => (answering(h, self.id.clone()), inner),
                                 Ok(other) => {
                                     d.write_ack_header(&out, &h.ack()).await;
                                     return StreamEnd::CarrierFailed(format!("{other:?}"));
                                 }
                                 Err(e) => {
                                     d.write_ack_header(&out, &h.ack()).await;
-                                    return StreamEnd::CarrierFailed(format!("the carrier's reply does not decode: {}", e.0));
+                                    return StreamEnd::CarrierFailed(format!("the carrier's reply does not decode: {e:?}"));
                                 }
                             }
                         } else {
-                            body
+                            (h, body)
                         };
                         match d.on_response(&h, body, AckTo::Stream(out.clone())) {
                             ResponseVerdict::Ack(acks) => {
