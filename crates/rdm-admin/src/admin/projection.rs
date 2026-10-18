@@ -341,9 +341,9 @@ pub(crate) fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: P
         };
         // Application routing (states.md "Routing"): the birth listed ready-for-traffic, and the book
         // holds it and its mesh ready-for-traffic. Anything else is a routing stop.
-        // A silent birth its mesh-primary recorded os-stopped carries the fact (deployment-provider.md
-        // §2.5); a heard one never does.
-        if silent && !restarting {
+        // A birth its mesh-primary recorded os-stopped carries the fact until the mesh-primary removes
+        // it (deployment-provider.md §2.5).
+        if !restarting {
             n.os_stopped = records.os_stopped_of(&d.node.node_id, &d.node.incarnation);
         }
         n.routable = n.status == NodeStatus::ReadyForTraffic && book.routable(d.node.node_id.as_str());

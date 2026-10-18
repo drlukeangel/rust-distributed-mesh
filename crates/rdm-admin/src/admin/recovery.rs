@@ -71,17 +71,21 @@ pub type ExitVerdicts = Mutex<HashMap<(NodeId, IncarnationId), Inspected>>;
 /// Remove the `os-stopped` row of `n`'s exact birth from `storage` (deployment-provider.md §2.5: the
 /// mesh-primary removes it on `Running` or `Exited`), `verdict` naming what ended it (`running`,
 /// `exited`, `returned`, `reached`, `deleted`). Spanned `cleared` when this call's removal took the row
-/// (the removal decides it, so a row two removers race for is cleared once), `refused` when its
-/// removal was refused; nothing when no row stood or another remover took it first.
+/// (the removal decides it, so a row two removers race for is cleared once), `refused` when the row
+/// could not be read or its removal was refused; nothing when no row stood or another remover took it
+/// first.
 pub(crate) async fn remove_os_stopped(storage: &dyn crate::status_storage::StatusStorage, n: &Node, verdict: &str) -> bool {
     let Some(inc) = n.incarnation_id.as_ref() else { return false };
-    let Ok(Some(row)) = storage.node_os_stopped_of(&n.mesh, &n.node_id, inc).await else { return false };
-    let (outcome, detail) = match storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, inc).await {
-        Ok(true) => ("cleared", verdict.to_string()),
-        Ok(false) => return false,
-        Err(e) => ("refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
+    let (since, outcome, detail) = match storage.node_os_stopped_of(&n.mesh, &n.node_id, inc).await {
+        Ok(None) => return false,
+        Err(e) => (0, "refused", format!("{verdict}: the os-stopped row could not be read: {e}")),
+        Ok(Some(row)) => match storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, inc).await {
+            Ok(true) => (row.since, "cleared", verdict.to_string()),
+            Ok(false) => return false,
+            Err(e) => (row.since, "refused", format!("{verdict}: the os-stopped row could not be removed: {e}")),
+        },
     };
-    tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = row.since as i64, outcome, detail = %detail, "otel.kind" = "internal")
+    tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = since as i64, outcome, detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the os-stopped fact is cleared"));
     outcome == "cleared"
 }

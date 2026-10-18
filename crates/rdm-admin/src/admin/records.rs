@@ -297,9 +297,9 @@ pub struct Records {
     /// fed by a prover. Shown `Dead` whatever their last digest said, and the proof an election takes
     /// that a seat's holder is gone (fabric-node-lifecycle-elections.md §4.1).
     pub(crate) exited: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
-    /// The `os-stopped` facts (deployment-provider.md §2.5) of the silent births the installing
-    /// projection read ([`Self::read_os_stopped`]): a point read of each silent birth's own row at
-    /// every install, never fed by the recorder. Folded into the view as `Node::os_stopped`.
+    /// The `os-stopped` facts (deployment-provider.md §2.5) of the births the installing projection
+    /// read ([`Self::read_os_stopped`]): a point read of each birth's own row at every install, never
+    /// fed by the recorder. Folded into the view as `Node::os_stopped`.
     pub(crate) os_stopped: Mutex<HashMap<(NodeId, IncarnationId), rdm_core::views::OsStopped>>,
     /// The membership book whose seat records name holders the exit read covers beside the view's
     /// births (a holder the view no longer lists). Set once at start.
@@ -813,23 +813,21 @@ impl Records {
     }
 
     /// The view's read of the `os-stopped` rows (deployment-provider.md §2.5, R20): the row of every
-    /// birth the book holds silent past the staleness floor, a point read among its own mesh's status
-    /// rows. An os-stopped runtime answers nothing, so a birth that is heard has no fact to read and
-    /// none is held for it. What this pass read replaces what was held; a row that cannot be read
-    /// holds nothing for that birth and is named on one
+    /// birth the book holds, a point read among its own mesh's status rows. `node.get` surfaces the
+    /// durable fact as it stands: the mesh-primary's removal on `Running`, `Exited` or the birth's
+    /// return is what clears it, never the birth being heard. What this pass read replaces what was
+    /// held; a row that cannot be read holds nothing for that birth and is named on one
     /// `rdm.node_admin.node.reject.via-os-stopped-row-unreadable` span.
     pub async fn read_os_stopped(&self, book: &DigestBook) {
         let Some(storage) = self.status.get().map(|f| f.storage().clone()) else { return };
-        let now = std::time::Instant::now();
-        let silent: Vec<(NodeId, IncarnationId, String, String)> = book
+        let births: Vec<(NodeId, IncarnationId, String, String)> = book
             .all()
             .into_iter()
-            .filter(|d| book.get_at(d.node.node_id.as_str(), now).is_some_and(|(_, age)| age > book.staleness_floor()))
             .map(|d| (d.node.node_id.clone(), d.node.incarnation.clone(), d.node.name.mesh.clone(), d.node.name.to_string()))
             .collect();
         let mut read = HashMap::new();
         let mut unreadable = Vec::new();
-        for (node_id, inc, mesh, named) in silent {
+        for (node_id, inc, mesh, named) in births {
             match storage.node_os_stopped_of(&mesh, &node_id, &inc).await {
                 Ok(Some(row)) => {
                     read.insert((node_id, inc), rdm_core::views::OsStopped { since: row.since, inspections: row.inspections });
