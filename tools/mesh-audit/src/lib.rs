@@ -10,7 +10,6 @@ pub mod deps;
 pub mod legacy;
 pub mod lock;
 pub mod parity;
-pub mod storage_seam;
 pub mod telemetry;
 
 use std::path::{Path, PathBuf};

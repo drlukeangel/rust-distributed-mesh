@@ -30,9 +30,6 @@ path = "src/bin/dep_rules.rs"
 name = "address-lookup"
 path = "src/bin/address_lookup.rs"
 
-[[bin]]
-name = "storage-seam"
-path = "src/bin/storage_seam.rs"
 
 [[test]]
 name = "main"
