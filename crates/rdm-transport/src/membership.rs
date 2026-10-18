@@ -2478,6 +2478,19 @@ impl View {
     /// reads it; a snapshot that completes installs through the Mesh channel's receiver and moves the
     /// held source version (gossip.md §3.1).
     fn take_read_chunk(&self, chunk: Chunk, side: Side, fabric: &FabricId) -> Taken {
+        let own_digests = (side == Side::Read && chunk.mesh == self.mesh).then(|| chunk.digests.clone());
+        let record_own = |digests: Option<Vec<MeshDigest>>| {
+            if let Some(digests) = digests {
+                let me_name = self.current_name();
+                for d in digests.into_iter().filter(|d| &d.fabric_id == fabric && d.node.name.mesh == self.mesh && d.node.name.to_string() != me_name) {
+                    if self.book.get(d.node.node_id.as_str()).is_none_or(|(held, _)| held.node.incarnation != d.node.incarnation || held.digest_seq < d.digest_seq || held.held_hash != d.held_hash)
+                        && self.book.record_joined(d.clone())
+                    {
+                        self.note(&d, side.via());
+                    }
+                }
+            }
+        };
         let mut order = self.order.lock().unwrap();
         if let Err(e) = order.admit_read(&chunk.mesh, &chunk.publisher, chunk.topology_version) {
             tracing::info_span!(
@@ -2492,6 +2505,8 @@ impl View {
             )
             .in_scope(|| tracing::info!("a topology read of a version below the one this node installed of its source: ignored"));
             let held_version = order.installed_version(&chunk.mesh).unwrap_or_default();
+            drop(order);
+            record_own(own_digests);
             return Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version, offered_version: chunk.topology_version });
         }
         let mut rx = self.mesh_rx.lock().unwrap();
@@ -2502,6 +2517,12 @@ impl View {
             self.installed(i, fabric, side, 0, prior);
             drop(rx);
             order.installed_projection(&i.mesh, &i.publisher, i.topology_version, None, &i.full, None);
+        } else {
+            drop(rx);
+            drop(order);
+            if matches!(&taken, Taken::Refused(_)) {
+                record_own(own_digests);
+            }
         }
         taken
     }
@@ -3196,16 +3217,13 @@ impl Membership {
             });
         }
         if let Some(at) = held.iter_mut().find(|s| &s.mesh == mesh) {
-            let mut members: Vec<MeshDigest> = current
+            at.digests = current
                 .into_iter()
                 .filter(|d| &d.node.name.mesh == mesh && d.fabric_id == self.fabric && d.node.node_id != own.node.node_id)
                 .collect();
-            members.push(own.clone());
-            members.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
-            let (in_flight, departed) = self.book.overlays_of(mesh);
-            at.digests = members;
-            at.in_flight = in_flight;
-            at.departed = departed;
+            at.digests.push(own.clone());
+            at.digests.sort_by(|a, b| a.node.node_id.cmp(&b.node.node_id));
+            (at.in_flight, at.departed) = self.book.overlays_of(mesh);
         }
         held
     }
@@ -3216,9 +3234,14 @@ impl Membership {
     /// snapshot carries is held as heard and its location registered.
     pub fn take_read_chunk(&self, chunk: Chunk, answerer_mesh: &str) -> Taken {
         let side = if answerer_mesh == self.view.mesh { Side::Read } else { Side::ReadPeer };
+        let own_digests = (side == Side::Read && chunk.mesh == self.view.mesh).then(|| chunk.digests.clone());
         let taken = self.view.take_read_chunk(chunk, side, &self.fabric);
         if let Taken::Installed(i) = &taken {
             for d in i.full.digests().into_iter().filter(|d| d.fabric_id == self.fabric) {
+                self.mesh.register(&d);
+            }
+        } else if let Some(digests) = own_digests {
+            for d in digests.into_iter().filter(|d| d.fabric_id == self.fabric && d.node.name.mesh == self.view.mesh && self.book.get(d.node.node_id.as_str()).is_some()) {
                 self.mesh.register(&d);
             }
         }
@@ -5555,7 +5578,7 @@ impl DigestBook {
             held_entry = Some((*at, *heard));
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || (!own_mesh && held.status != d.status));
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
         drop(inner);
@@ -5608,7 +5631,7 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || (!own_mesh && held.status != d.status));
+        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status));
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
