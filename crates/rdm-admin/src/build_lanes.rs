@@ -504,6 +504,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// CONTRACT (the Build journal's read path; i144 e6, `fabric_primary.rs:204`): a read of a lane
+    /// costs the blocking pool a call per revision, never a call per fact: a reader catching up on 40
+    /// facts another writer appended to one revision lists the revisions, opens the revision's store on
+    /// its first read and reads the revision's run of facts in one call; catching up on 40 more, the
+    /// store already open, it lists and reads the run. Must NOT happen: a blocking call per fact read.
+    #[tokio::test]
+    async fn a_lane_read_catching_up_on_forty_facts_makes_one_blocking_call_for_their_revision() {
+        let d = crate::record_store::tempdir("lane-read-run");
+        let (writer, reader) = (lanes(&d), lanes(&d));
+        let lane = LaneId::Fabric;
+        let mut appended = 0;
+        for round in [3u64, 2] {
+            for _ in 0..40 {
+                appended += 1;
+                assert!(matches!(writer.append(&lane, 3, &fact(appended)).await.unwrap(), Appended::At(_)));
+            }
+            let io = crate::record_store::IoTime::default();
+            let read = crate::record_store::io_time_with(io.clone(), reader.read_new(&lane)).await.unwrap();
+            assert_eq!(read.len(), 40, "every fact appended since the last read is read");
+            assert_eq!(io.calls(), round, "a read of one revision's run of 40 facts: {} blocking calls", io.calls());
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// CONTRACT (Q28 A, Q35 x cells: "an old-authority writer meeting the seal is refused stale and
     /// nothing past it is readable"; "the lane reconstructed in order from its keys"): an old writer
     /// appends under revision 3; the move seals 3 at the first sequence it wins, after the old writer's
