@@ -147,7 +147,7 @@ macro_rules! create_rows {
 
 /// The start leg of a parked process under the operation prefix `op`: `start-node` answered
 /// `Started` means the same process rejoined (`node.joined`), then the wait for it
-/// to report hydrated (`node.started`); `last` is what the operation's `Complete` announces.
+/// to report its hook passed (`node.started`); `last` is what the operation's `Complete` announces.
 macro_rules! start_rows {
     ($op:literal, $last:expr, $terminal_step:expr) => {
         [

@@ -861,14 +861,14 @@ Message ordering/version rules remain owned by the entity/projection framework, 
 
 **Only projected kinds gossip, and each goes only to the nodes that project it.** A kind is a
 declared type, `rafka.entity.<kind>`: the role declares its types once at boot, beside its
-hydration hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
+`before_ready` hook, and its birth carries them in its [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm)
 (`types`: at most 256 types and 8 KiB encoded, refused by name as `TypesOverCap`; a different
 declaration is a restart). No type list rides a digest: 158 kinds today are 4.4 KB of names, more
 than a gossip message. Two sets, both answered by `node.get`: `types`, what the birth declared, immutable
 for its life (a node-admin's through `Wiring`: its embedded app's own kinds); and `held`, the types
 the node has joined, equal to `types` for an ordinary node and, for a node-admin, its own `types`,
 its members' declarations and what it learned from other node-admins, growing as members join and
-never shrinking within a birth. A node-admin joins its own `types` before its hydration hook, as
+never shrinking within a birth. A node-admin joins its own `types` before its `before_ready` hook, as
 every node does. Its mesh's node-admin records the declaration beside the row (a node-admin that
 writes no rows yet, the Day-0 admin before it is Ready, holds the declaration and writes it with its
 first write after it takes the seat; the join is answered on the held declaration),

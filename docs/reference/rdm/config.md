@@ -21,7 +21,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-core/src/cadence.rs` | 37 | fn `Cadences::from_env` | argument to `ms` |
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rdm-test/src/estate.rs` | 231 | fn `spawn_admin_in_container_within` | literal |
 | `RDM_BACKBONE_INTERVAL_MS` | `tools/test-runner/src/lib.rs` | 41 | const `CADENCE` | literal |
-| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1118 | fn `start_booted` | argument to `.insert` |
+| `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/boot.rs` | 1116 | fn `start_booted` | argument to `.insert` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/admin/records.rs` | 132 | fn `AdminConfig::from_env` | argument to `get` |
 | `RDM_BIN_DIR` | `crates/rdm-admin/src/deployment/container.rs` | 242 | fn `launch_disk` | argument to `.get` |
 | `RDM_BIN_DIR` | `crates/rdm-test/src/estate.rs` | 48 | fn `bin_dir` | argument to `std::env::var` |
@@ -83,7 +83,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_FABRIC` | `crates/rdm-core/src/launch.rs` | 220 | fn `Launch::from_env` | `ENV_FABRIC`, argument to `req` |
 | `RDM_FABRIC` | `crates/rdm-test/src/estate.rs` | 659 | fn `Estate::born` | in `vec!` |
 | `RDM_FABRIC` | `crates/rdm-transport/src/transport_diag.rs` | 94 | fn `header` | argument to `env` |
-| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 298 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
+| `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/boot.rs` | 308 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 111 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 112 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rdm-admin/src/admin/records.rs` | 192 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
@@ -109,7 +109,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 193 | fn `Launch::to_env` | `ENV_INCARNATION`, argument to `.insert` |
 | `RDM_INCARNATION_ID` | `crates/rdm-core/src/launch.rs` | 224 | fn `Launch::from_env` | `ENV_INCARNATION`, argument to `req` |
 | `RDM_INCARNATION_ID` | `crates/rdm-transport/src/transport_diag.rs` | 97 | fn `header` | argument to `env` |
-| `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1641 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | argument to `.insert` |
+| `RDM_INHERITED_DATA_DIR` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1639 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | argument to `.insert` |
 | `RDM_INHERITED_DATA_DIR` | `crates/rdm-node/src/workflows/node_start.rs` | 326 | fn `node_start` | argument to `std::env::var` |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 30 | const `ENV_LAUNCHER` | literal |
 | `RDM_LAUNCHER` | `crates/rdm-core/src/launch.rs` | 199 | fn `Launch::to_env` | `ENV_LAUNCHER`, argument to `.insert` |
@@ -124,7 +124,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/runner.rs` | 267 | fn `AdminRunner::template_for` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 29 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, argument to `.push` |
 | `RDM_MESH_ID` | `crates/rdm-admin/src/admin/session.rs` | 43 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, in `format!` |
-| `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1632 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | `ENV_MESH_ID`, argument to `.get` |
+| `RDM_MESH_ID` | `crates/rdm-admin/src/deployment/pipeline.rs` | 1630 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | `ENV_MESH_ID`, argument to `.get` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 37 | const `ENV_MESH_ID` | literal |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 206 | fn `Launch::to_env` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rdm-core/src/launch.rs` | 232 | fn `Launch::from_env` | `ENV_MESH_ID`, argument to `get` |

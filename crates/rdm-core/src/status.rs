@@ -970,7 +970,7 @@ pub enum StatusReply {
     Started,
     /// The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran.
     StartFailed {
-        /// The step that failed: `node.join`, `node.topology` or `node.hydrate`.
+        /// The step that failed: `node.join`, `node.topology` or `node.before-ready`.
         step: String,
         /// Why it failed.
         reason: String,
@@ -1014,7 +1014,7 @@ pub enum StatusReply {
         /// Its detail.
         reason: String,
     },
-    /// The exact birth's own answer to a probe while its `hydrate_before_ready` hook is Blocked: the
+    /// The exact birth's own answer to a probe while its `before_ready` hook is Blocked: the
     /// probe served that birth and found an active readiness blocker. `reason` is the hook's own
     /// text and `retry_on` the event it runs again on. It is never a `NotReady`: a `NotReady` is the
     /// door or the handler not serving yet, and says nothing of the hook.
@@ -1266,7 +1266,7 @@ pub enum StatusReply {
     },
 }
 
-/// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
+/// The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
 /// and the gate"). Positional order is part of the wire schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RetryOn {

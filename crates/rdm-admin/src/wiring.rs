@@ -90,7 +90,7 @@ pub struct DriftHold {
 }
 
 /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
-/// the gate of its [`Hydration`](crate::app_hydration::Hydration) into each
+/// the gate of its [`BeforeReadyHook`](crate::before_ready::BeforeReadyHook) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
 pub type ServeApp = Box<dyn FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder + Send>;
 
@@ -198,10 +198,10 @@ pub struct Wiring {
     pub provider: Option<Wrap<dyn DeploymentProvider>>,
     /// Wraps the lifecycle events a retirement publishes.
     pub lifecycle_events: Option<Wrap<dyn LifecycleEvents>>,
-    /// The app's `hydrate_before_ready` hook, run after the join is accepted, the topology installed
-    /// and the mesh channel joined. The product passes none: nothing is hydrated and the admin's
+    /// The app's `before_ready` hook, run after the join is accepted, the topology installed
+    /// and the mesh channel joined. The product passes none: the hook passes at once and the admin's
     /// Ready waits on nothing of the app's.
-    pub hydration: crate::app_hydration::Hydration,
+    pub before_ready: crate::before_ready::BeforeReadyHook,
     /// The app's own ops, added to the server before it seals.
     pub serve_app: Option<ServeApp>,
     /// Hooks registered, in order, before the lifecycle registry seals.

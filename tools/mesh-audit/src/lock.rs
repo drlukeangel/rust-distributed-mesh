@@ -261,7 +261,7 @@ pub const SEAT_FRAME_CELLS: &str = "crates/rdm-transport/tests/seat_frames_wire.
 pub const TOPOLOGY_CELLS: &str = "crates/rdm-core/tests/topology_wire.rs";
 /// The Build-facts read (`FetchBuildFacts`, 0x1F): its serve and absorb sites, and the cell that proves its postcard shape.
 pub const BUILD_FACTS_SOURCE: &str = "crates/rdm-admin/src/build_facts_read.rs";
-pub const BUILD_FACTS_HYDRATE: &str = "crates/rdm-admin/src/hydrate.rs";
+pub const FETCH_BUILD: &str = "crates/rdm-admin/src/fetch_build.rs";
 pub const BUILD_FACTS_CELLS: &str = "crates/rdm-core/tests/build_facts_wire.rs";
 /// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the holder writes the one committed seat-transfer row, the successor installs from it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape and the seat frames.
 pub const HANDOVER_SOURCE: &str = "crates/rdm-admin/src/fabric_handover.rs";
@@ -771,7 +771,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, TOPOLOGY_SOURCE, &["chunks_measured", "take_read_chunk", "ProjectionEntry::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
-            require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
+            require(root, FETCH_BUILD, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
             require(root, HANDOVER_SOURCE, &["rdm.node_admin.seat.update.via-seat-row-written", "rdm.node_admin.seat.update.via-primary-updated", "rdm.node_admin.seat.reject.via-primary-update", "commit_seat_move"], ratchet, &mut out);
             require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_four_variant_wire_schema", "fn replies_match_the_frozen_eighteen_variant_wire_schema"], ratchet, &mut out);

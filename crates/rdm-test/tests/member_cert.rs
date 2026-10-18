@@ -1,14 +1,14 @@
 //! Fabric certs (i143.e12.s22): the accepting authority's signer issues a member cert for exactly
 //! the birth whose `JoinNode` it accepts, on its own rafka-time, and the cert reaches the birth in
-//! the join answer, its `hydrate_before_ready` context and its running handle. RDM never parses
+//! the join answer, its `before_ready` context and its running handle. RDM never parses
 //! the bytes: the cells decode them with the test signer's own reader.
 
 use crate::common::{admin_side_issuing, AdminSide};
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
-use rdm_admin::app_hydration::Hydration;
-use rdm_test::hydrate_probe::{Mode, TestHydrator};
+use rdm_admin::before_ready::BeforeReadyHook;
+use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use rdm_test::node;
 use rdm_test::test_certs::{RefusingCertSigner, TestCertSigner, TestMemberCert};
 use std::sync::Arc;
@@ -157,11 +157,11 @@ fn a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted() 
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: the member cert is in the `hydrate_before_ready` context the first attempt runs with,
+/// CONTRACT: the member cert is in the `before_ready` context the first attempt runs with,
 /// the same bytes the running handle returns.
 #[test]
-fn the_member_cert_is_in_the_hydrate_context_and_equals_the_handles() {
-    let cap = crate::common::capture("the_member_cert_is_in_the_hydrate_context_and_equals_the_handles");
+fn the_member_cert_is_in_the_before_ready_context_and_equals_the_handles() {
+    let cap = crate::common::capture("the_member_cert_is_in_the_before_ready_context_and_equals_the_handles");
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = birth_dir("member-cert-ctx");
         let fabric = FabricId::mint();
@@ -169,10 +169,10 @@ fn the_member_cert_is_in_the_hydrate_context_and_equals_the_handles() {
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
         admin.deployed(&launch, &key);
-        let hydrator = TestHydrator::new(Mode::Local);
-        let running = node::start_hydrating(&launch, Hydration::new(hydrator.clone()), |b, _| b).await.expect("the node starts");
+        let before_ready = TestBeforeReady::new(Mode::Local);
+        let running = node::start_before_ready(&launch, BeforeReadyHook::new(before_ready.clone()), |b, _| b).await.expect("the node starts");
 
-        let seen = hydrator.member_certs.lock().unwrap().clone();
+        let seen = before_ready.member_certs.lock().unwrap().clone();
         assert_eq!(seen.len(), 1, "the hook ran once");
         assert_eq!(seen[0].as_deref(), Some(running.member_cert.as_slice()), "the hook's context carries the handle's bytes");
         assert_eq!(TestMemberCert::decode(&running.member_cert).unwrap().name, "mesh1.rpc.1");

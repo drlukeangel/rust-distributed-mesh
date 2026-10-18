@@ -61,11 +61,11 @@ async fn rig(tag: &str) -> Rig {
 /// [`rig`], with the commander carried in the primary's member projection only when `carry` holds:
 /// otherwise no record the node holds names the commander, as for an admin born after its stop.
 async fn rig_carried(tag: &str, carry: bool) -> Rig {
-    rig_hydrating(tag, carry, None).await
+    rig_before_ready(tag, carry, None).await
 }
 
-/// [`rig_carried`], the node running `hydrator` as its `hydrate_before_ready` hook when one is given.
-async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<rdm_test::hydrate_probe::TestHydrator>>) -> Rig {
+/// [`rig_carried`], the node running `before_ready` as its `before_ready` hook when one is given.
+async fn rig_before_ready(tag: &str, carry: bool, before_ready: Option<std::sync::Arc<rdm_test::before_ready_probe::TestBeforeReady>>) -> Rig {
     let fabric = rdm_core::FabricId::mint();
     let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
@@ -91,8 +91,8 @@ async fn rig_hydrating(tag: &str, carry: bool, hydrator: Option<std::sync::Arc<r
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     primary.deployed(&launch, &key);
-    let running = match hydrator {
-        Some(h) => node::start_hydrating(&launch, rdm_admin::app_hydration::Hydration::new(h), |b, _| b).await,
+    let running = match before_ready {
+        Some(h) => node::start_before_ready(&launch, rdm_admin::before_ready::BeforeReadyHook::new(h), |b, _| b).await,
         None => node::start(&launch, |b, _| b).await,
     }
     .expect("the node comes up");
@@ -369,31 +369,31 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        use rdm_admin::app_hydration::{HookOutcome, HydrationState, RetryOn};
-        use rdm_test::hydrate_probe::{Mode, TestHydrator};
-        let hydrator = TestHydrator::new(Mode::Local);
-        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_hydrating("addressed-unrecorded", false, Some(hydrator.clone())).await;
+        use rdm_admin::before_ready::{HookOutcome, BeforeReadyState, RetryOn};
+        use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+        let before_ready = TestBeforeReady::new(Mode::Local);
+        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_before_ready("addressed-unrecorded", false, Some(before_ready.clone())).await;
         let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };
         let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 2, operation: "node.start:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         // After this start the hook waits on its authority's word.
-        hydrator.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::AuthorityAddressed }));
+        before_ready.set_mode(Mode::Fixed(HookOutcome::Blocked { reason: "waits for its authority to address it".into(), retry_on: RetryOn::AuthorityAddressed }));
         assert_eq!(call(&commander, &target, &start).await, StatusReply::Started, "the start joins the commander over its call; its hook runs on, blocked");
-        let handle = running.hydration().expect("a registered hook has a handle");
+        let handle = running.before_ready().expect("a registered hook has a handle");
         tokio::time::timeout(NEVER, async {
-            while !matches!(handle.state(), HydrationState::Blocked { retry_on: RetryOn::AuthorityAddressed, .. }) {
+            while !matches!(handle.state(), BeforeReadyState::Blocked { retry_on: RetryOn::AuthorityAddressed, .. }) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .unwrap_or_else(|_| panic!("the hook never blocked on its authority's word: {:?}", handle.state()));
         // The commander's down op: the hook runs again, and this time passes.
-        hydrator.set_mode(Mode::Local);
+        before_ready.set_mode(Mode::Local);
         let _ = call(&commander, &target, &probe).await;
         let settled = tokio::time::timeout(NEVER, handle.settled()).await.unwrap_or_else(|_| panic!("the hook never ran again on the commander's down op: {:?}", handle.state()));
-        assert_eq!(settled, HydrationState::Passed);
+        assert_eq!(settled, BeforeReadyState::Passed);
         tokio::time::timeout(NEVER, async {
             while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -401,7 +401,7 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         })
         .await
         .expect("the started node never answered ReadyForTraffic");
-        let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-hydration-blocked" && f.get("cleared_by").map(String::as_str) == Some("authority-addressed")).count();
+        let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-before-ready-blocked" && f.get("cleared_by").map(String::as_str) == Some("authority-addressed")).count();
         assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, authority-addressed");
         let _ = std::fs::remove_dir_all(&dir);
     })
@@ -424,10 +424,10 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        use rdm_admin::app_hydration::HookOutcome;
-        use rdm_test::hydrate_probe::{Mode, TestHydrator};
-        let hydrator = TestHydrator::new(Mode::Local);
-        let Rig { primary, commander: successor, _carried, running: _running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig_hydrating("topology-successor", true, Some(hydrator.clone())).await;
+        use rdm_admin::before_ready::HookOutcome;
+        use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
+        let before_ready = TestBeforeReady::new(Mode::Local);
+        let Rig { primary, commander: successor, _carried, running: _running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig_before_ready("topology-successor", true, Some(before_ready.clone())).await;
         // The lost commander: an admin of the mesh that answers the start's join, carried in the
         // primary's projection.
         let lost = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.3").await;
@@ -447,7 +447,7 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
 
         // The lost commander's start joins it, then holds in its hook until the commander is gone.
         let (hook_started, hook_resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
-        hydrator.set_mode(Mode::Pause { started: hook_started.clone(), resume: hook_resume.clone(), outcome: HookOutcome::Ok });
+        before_ready.set_mode(Mode::Pause { started: hook_started.clone(), resume: hook_resume.clone(), outcome: HookOutcome::Ok });
         lost.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
         // The lost commander's own call breaks with its endpoint: what it ends in is not this cell's.
         let first_req = match start(2) {

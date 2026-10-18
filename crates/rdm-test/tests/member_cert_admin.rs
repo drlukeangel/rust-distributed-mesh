@@ -1,16 +1,16 @@
 //! Fabric certs on node-admins (i143.e12.s22): a node-admin is started with an explicit cert
 //! choice, the Day-0 root makes no JoinNode and holds no member cert, and an admin launched by
 //! another admin holds the member cert that admin's signer issued for exactly its birth, in its
-//! hydrate context and on its running handle.
+//! before_ready context and on its running handle.
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_admin::admin::{start_with, AdminConfig};
-use rdm_admin::app_hydration::{Hydration, HydrationState};
+use rdm_admin::before_ready::{BeforeReadyHook, BeforeReadyState};
 use rdm_admin::certs::CertChoice;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_test::hydrate_probe::{Mode, TestHydrator};
+use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use rdm_test::test_certs::{TestCertSigner, TestMemberCert};
 use std::sync::Arc;
 use std::time::Duration;
@@ -56,14 +56,14 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
     cap.run(crate::common::Threads::Current, async move {
         let root_dir = std::env::temp_dir().join(format!("member-cert-root-{}", NodeId::mint()));
         let joiner_dir = std::env::temp_dir().join(format!("member-cert-joiner-{}", NodeId::mint()));
-        let root_hydrator = TestHydrator::new(Mode::Local);
+        let root_before_ready = TestBeforeReady::new(Mode::Local);
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
-        let root = start_with(root_cfg, Wiring { hydration: Hydration::new(root_hydrator.clone()), certs: CertChoice::Signer(Arc::new(TestCertSigner)), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(root_cfg, Wiring { before_ready: BeforeReadyHook::new(root_before_ready.clone()), certs: CertChoice::Signer(Arc::new(TestCertSigner)), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
-        tokio::time::timeout(WRONG, root.hydration().unwrap().settled()).await.expect("the root's hook returns");
+        tokio::time::timeout(WRONG, root.before_ready().unwrap().settled()).await.expect("the root's hook returns");
         assert_eq!(root.member_cert, None, "the Day-0 root made no JoinNode");
-        assert_eq!(root_hydrator.member_certs.lock().unwrap().clone(), vec![None], "its context says so");
+        assert_eq!(root_before_ready.member_certs.lock().unwrap().clone(), vec![None], "its context says so");
 
         let (root_digest, root_mesh_id) = {
             let d = root.digest.lock().unwrap().clone();
@@ -103,11 +103,11 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         });
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let joiner_hydrator = TestHydrator::new(Mode::Local);
+        let joiner_before_ready = TestBeforeReady::new(Mode::Local);
         let before = root.rafka_time.now_ms();
-        let joiner = start_with(joiner_cfg, Wiring { hydration: Hydration::new(joiner_hydrator.clone()), certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the launched admin comes up");
+        let joiner = start_with(joiner_cfg, Wiring { before_ready: BeforeReadyHook::new(joiner_before_ready.clone()), certs: CertChoice::NoCerts, fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the launched admin comes up");
         let after = root.rafka_time.now_ms();
-        assert_eq!(tokio::time::timeout(WRONG, joiner.hydration().unwrap().settled()).await.expect("the hook returns"), HydrationState::Passed);
+        assert_eq!(tokio::time::timeout(WRONG, joiner.before_ready().unwrap().settled()).await.expect("the hook returns"), BeforeReadyState::Passed);
 
         let bytes = joiner.member_cert.clone().expect("a launched admin joined, so it holds the cert its launcher issued");
         let cert = TestMemberCert::decode(&bytes).expect("the root's signer wrote it");
@@ -117,7 +117,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             "issued for exactly this birth"
         );
         assert!((before..=after).contains(&cert.issued_at_ms), "issued on the root's rafka-time: {before} <= {} <= {after}", cert.issued_at_ms);
-        assert_eq!(joiner_hydrator.member_certs.lock().unwrap().clone(), vec![Some(bytes)], "the hook's context carries the handle's bytes");
+        assert_eq!(joiner_before_ready.member_certs.lock().unwrap().clone(), vec![Some(bytes)], "the hook's context carries the handle's bytes");
 
         joiner.leave().await;
         root.leave().await;

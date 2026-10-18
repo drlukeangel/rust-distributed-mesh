@@ -19,7 +19,7 @@
 //! 2. `rdm.mesh.node.update.via-membership-joined` (step 2, node.joined): the node enters its mesh
 //!    channel holding the name the join handed, before it publishes anything (R-JN1), and takes the
 //!    status frames the join answered. The kind then brings up what it serves while its hook runs.
-//! 3. `rdm.mesh.node.update.via-hydrate-attempt` (step 3): the `hydrate_before_ready` hook, with the
+//! 3. `rdm.mesh.node.update.via-before-ready-attempt` (step 3): the `before_ready` hook, with the
 //!    start kind, the accepting authority (or why there is none), the joined channel, the member cert
 //!    and rafka-time. No topology has been read: the hook reads none as a prerequisite.
 //! 4. Once the hook passed (step 4), in the start itself, or in the task a blocked or spawned hook runs
@@ -37,7 +37,7 @@
 //! no snapshot is read whole again), and installs nothing: op `0x1E` is the read that carries
 //! rafka-time to a started node (`rafka_time.rs`, the seat-move pull reads it the same way).
 
-use crate::app_hydration::{AcceptingAuthority, Authority, Birth, End, Events, HookDriver, HydrateCtx, Hydration, HydrationHandle, NoAuthority, StartKind, Step};
+use crate::before_ready::{AcceptingAuthority, Authority, Birth, End, Events, HookDriver, BeforeReadyCtx, BeforeReadyHook, BeforeReadyHandle, NoAuthority, StartKind, Step};
 use crate::model::{NodeId, PathName};
 use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
@@ -207,13 +207,13 @@ pub struct HookParts {
     /// The exact birth.
     pub birth: Birth,
     /// The hook the embedding app registered.
-    pub hydration: Hydration,
+    pub before_ready: BeforeReadyHook,
     /// The retry events of this birth.
     pub events: Events,
     /// Cancelled when the birth is retired: the hook and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Where the node's Ready check and its probe read the hook's state.
-    pub state: Arc<Mutex<Option<HydrationHandle>>>,
+    pub state: Arc<Mutex<Option<BeforeReadyHandle>>>,
     /// How the hook runs.
     pub runs: HookRuns,
     /// The kind's part of the steps after the hook.
@@ -320,12 +320,12 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
         Ok((t, _)) => Authority::Accepted(AcceptingAuthority { name: t.name.clone(), endpoint: t.endpoint, target: t.target.clone() }),
         Err(why) => Authority::None(*why),
     };
-    let HookParts { birth, hydration, events, cancel, state, runs, after } = parts;
+    let HookParts { birth, before_ready, events, cancel, state, runs, after } = parts;
     let inherited = matches!(kind, StartKind::AfterStop)
         || matches!(authority, Authority::None(NoAuthority::InheritedRoot | NoAuthority::Recovery))
         || std::env::var("RDM_INHERITED_DATA_DIR").ok().as_deref() == Some("1");
-    let ctx = HydrateCtx { start_kind: kind, birth, authority, client: client.clone(), membership: membership.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
-    let driver = hydration.driver(ctx, events, root.clone());
+    let ctx = BeforeReadyCtx { start_kind: kind, birth, authority, client: client.clone(), membership: membership.clone(), cancel, rafka_time: rafka_time.clone(), member_cert, attempt: 0, inherited };
+    let driver = before_ready.driver(ctx, events, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.
     let rest = AfterTheHook { root, name: name.clone(), path, node_id, client, rafka_time, membership, through: through.ok(), commander, after };
@@ -352,14 +352,14 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             match driver.attempt().await {
                 Step::Passed => rest.run_inline(Some(driver)).await.map_err(Into::into),
                 Step::Failed(why) => {
-                    let failed = StartFailed { step: "node.hydrate", reason: format!("{name} failed hydrate_before_ready: {why}") };
+                    let failed = StartFailed { step: "node.before-ready", reason: format!("{name} failed before_ready: {why}") };
                     rest.after.start_failed(&failed, true).await;
                     Err(failed.into())
                 }
-                Step::Retired => match kind {
-                    // A first start retired while its hook ran ends without a report and without a refusal.
+                Step::Cancelled => match kind {
+                    // A first start cancelled while its hook ran ends without a report and without a refusal.
                     StartKind::FirstStart => Ok(()),
-                    StartKind::AfterStop => Err(StartFailed { step: "node.hydrate", reason: format!("{name} was retired while hydrate_before_ready ran") }.into()),
+                    StartKind::AfterStop => Err(StartFailed { step: "node.before-ready", reason: format!("{name} was cancelled while before_ready ran") }.into()),
                 },
                 blocked_step @ Step::Blocked(_) => {
                     *blocked.lock().unwrap() = Some(tokio::spawn(async move {
@@ -411,7 +411,7 @@ impl AfterTheHook {
         let (root, name) = (self.root.clone(), self.name.clone());
         if let Err((failed, after)) = self.steps(driver).await {
             tracing::info_span!(parent: &root, "rdm.mesh.node.reject.via-start-step-failed", node = %name, step = failed.step, reason = %failed.reason)
-                .in_scope(|| tracing::warn!("a start step after hydrate_before_ready failed: the node is not started and stays Pending"));
+                .in_scope(|| tracing::warn!("a start step after before_ready failed: the node is not started and stays Pending"));
             after.start_failed(&failed, false).await;
         }
     }

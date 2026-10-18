@@ -1,18 +1,18 @@
-//! Hydration of the control facts a node-admin owes before it is Ready (i143 R-G6).
+//! A node-admin not ready: the Build facts it owes before it is Ready, and the fetch of them (i143 R-G6).
 //!
 //! The invariant: every Ready blocker caused by missing control facts is recoverable through a
-//! request the blocked node can repeat. The blocker is a TYPED reason ([`HydrationBlocker`]); the
+//! request the blocked node can repeat. The blocker is a TYPED reason ([`NodeAdminNotReady`]); the
 //! Build-floor step of a node-admin's start (`admin.rs` `AdminFloor`, node-start.md step 4, every
-//! 100 ms while below the floor) hands it to a [`Hydrator`], which issues the request the reason
+//! 100 ms while below the floor) hands it to a [`FetchBuild`], which issues the request the reason
 //! names:
 //!
-//! - [`HydrationBlocker::NoCurrentBuild`] with a `wanted` BuildId (the entry reply named the
+//! - [`NodeAdminNotReady::NoCurrentBuild`] with a `wanted` BuildId (the entry reply named the
 //!   answering admin's current Build and it is not held): `FetchBuildFacts` (op `0x1F`) for that
 //!   Build.
-//! - [`HydrationBlocker::UnreadableBuild`] (the entry's Build cannot be read locally) and
-//!   [`HydrationBlocker::BehindFloor`] (the local Build is behind the entry's attempt floor):
+//! - [`NodeAdminNotReady::UnreadableBuild`] (the entry's Build cannot be read locally) and
+//!   [`NodeAdminNotReady::BehindFloor`] (the local Build is behind the entry's attempt floor):
 //!   `FetchBuildFacts` for the entry's Build.
-//! - [`HydrationBlocker::NoCurrentBuild`] with nothing wanted: the control entry is retrieved again.
+//! - [`NodeAdminNotReady::NoCurrentBuild`] with nothing wanted: the control entry is retrieved again.
 //!   A Build that no entry reply identified is never fetched.
 //!
 //! One request is outstanding at a time. Responders are asked in order: the current fabric-primary
@@ -35,7 +35,7 @@ use tracing::Instrument as _;
 
 /// Why this admin holds back its Ready for want of control facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HydrationBlocker {
+pub enum NodeAdminNotReady {
     /// No current Build: no Build in this admin's builds store is in progress or completed, or the
     /// Build the entry reply named is not held. `wanted` is that Build, until its facts arrive.
     NoCurrentBuild {
@@ -74,10 +74,10 @@ pub enum HydrationBlocker {
     },
 }
 
-impl std::fmt::Display for HydrationBlocker {
+impl std::fmt::Display for NodeAdminNotReady {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoCurrentBuild { me, wanted: None } => write!(f, "{me}: holds no current Build (no Build in its builds store is in progress or completed; not hydrated from an existing authority)"),
+            Self::NoCurrentBuild { me, wanted: None } => write!(f, "{me}: holds no current Build (no Build in its builds store is in progress or completed; not fetched from an existing authority)"),
             Self::NoCurrentBuild { me, wanted: Some(id) } => write!(f, "{me}: holds no facts of Build {id}, the current Build of the admin that served its entry"),
             Self::UnreadableBuild { me, build_id, error } => write!(f, "{me}: its entry named Build {build_id} and this admin's Build log cannot read it: {error}"),
             Self::BuildStoreUnreadable { me, error } => write!(f, "{me}: its builds store cannot be read for the current Build: {error}"),
@@ -100,7 +100,7 @@ pub enum Need {
     Nothing,
 }
 
-impl HydrationBlocker {
+impl NodeAdminNotReady {
     /// What would clear the blocker.
     pub fn need(&self) -> Need {
         match self {
@@ -176,7 +176,7 @@ enum End {
 }
 
 /// What the Build-floor check drives: at most one outstanding request, per-target backoff.
-pub struct Hydrator {
+pub struct FetchBuild {
     me: PathName,
     client: Arc<NodeRpcClient>,
     local: Arc<dyn LocalBuildLog>,
@@ -189,8 +189,8 @@ pub struct Hydrator {
     judging: Option<NodeId>,
 }
 
-impl Hydrator {
-    /// A hydrator for the admin `me` over its client, its local Build log, the `responders` it asks
+impl FetchBuild {
+    /// A fetch_build for the admin `me` over its client, its local Build log, the `responders` it asks
     /// and the entry repeat.
     pub fn new(me: PathName, client: Arc<NodeRpcClient>, local: Arc<dyn LocalBuildLog>, responders: Responders, entry: Option<EntryRepeat>) -> Self {
         Self { me, client, local, responders, entry, in_flight: None, backoff: BTreeMap::new(), entry_backoff: Backoff::default(), judging: None }
@@ -198,7 +198,7 @@ impl Hydrator {
 
     /// One floor check's turn. `blocker` is what the check just found, `None` when no control fact
     /// is missing. Never waits for the request it starts.
-    pub async fn tick(&mut self, blocker: Option<&HydrationBlocker>) {
+    pub async fn tick(&mut self, blocker: Option<&NodeAdminNotReady>) {
         let now = Instant::now();
         if self.in_flight.as_ref().is_some_and(|h| h.is_finished()) {
             let ended = self.in_flight.take().expect("checked above").await;
@@ -245,7 +245,7 @@ impl Hydrator {
         }
     }
 
-    fn repeat_entry(&mut self, blocker: &HydrationBlocker, now: Instant) {
+    fn repeat_entry(&mut self, blocker: &NodeAdminNotReady, now: Instant) {
         let Some(entry) = self.entry.clone() else { return };
         if !self.entry_backoff.open(now) {
             return;
@@ -266,7 +266,7 @@ impl Hydrator {
         ));
     }
 
-    async fn fetch(&mut self, blocker: &HydrationBlocker, id: BuildId, now: Instant) {
+    async fn fetch(&mut self, blocker: &NodeAdminNotReady, id: BuildId, now: Instant) {
         let candidates = (self.responders)().await;
         let Some(target) = candidates.into_iter().filter(|r| r.name != self.me).find(|r| self.backoff.get(&r.node_id).is_none_or(|b| b.open(now))) else {
             return;

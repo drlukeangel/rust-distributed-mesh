@@ -14,7 +14,7 @@
 //! packed by the one method the topic's catch-up uses. The facts are types of a crate this contract
 //! does not depend on, so they travel as that frame, never as JSON.
 //!
-//! A caller counts the read as hydration only when `End.complete` is true, every chunk
+//! A caller counts the read as the fetched Build only when `End.complete` is true, every chunk
 //! `0..chunk_count` arrived, and the facts decoded equal `End.facts`. A stream that ends without
 //! its `End`, an `End` with `complete = false` and a chunk count that disagrees are none of them
 //! hydration: the same request may be made again from the beginning, and facts absorbed twice are

@@ -88,11 +88,11 @@ pub async fn run_on(service: &str, storage: impl FnOnce(&AdminConfig) -> std::sy
     tokio::select! {
         () = stop_requested() => {}
         // A hook that failed ends the node by name, as an unaccepted join does.
-        why = running.hydration_failed() => {
+        why = running.before_ready_failed() => {
             let node = running.digest.lock().unwrap().node.name.to_string();
-            tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %node, reason = %why)
-                .in_scope(|| tracing::error!("hydrate_before_ready failed; this node-admin ends"));
-            eprintln!("{service}: {node} failed hydrate_before_ready: {why}");
+            tracing::info_span!("rdm.mesh.node.delete.via-before-ready-failed", node = %node, reason = %why)
+                .in_scope(|| tracing::error!("before_ready failed; this node-admin ends"));
+            eprintln!("{service}: {node} failed before_ready: {why}");
             rdm_transport::flush_before_exit();
             std::process::exit(3);
         }

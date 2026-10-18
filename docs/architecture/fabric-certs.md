@@ -83,8 +83,8 @@ is not admitted.
 
 ## Where the app reads it
 
-The member cert is in [`HydrateContext`](fabric-node-hooks.md#hydrate_before_ready) before
-`hydrate_before_ready` runs, and on the running node handle RDM's start returns.
+The member cert is in [`BeforeReadyCtx`](fabric-node-hooks.md#before_ready) before
+`before_ready` runs, and on the running node handle RDM's start returns.
 
 ## Time
 

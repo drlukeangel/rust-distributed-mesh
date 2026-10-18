@@ -24,7 +24,7 @@ crashed mesh, on exact provider exit proof.)
 | Steps | node.delete of the exited instance, node.create at the same path.name over the inherited data dir; the Build's steps are keyed `node.delete:<path.name>` and `node.create:<path.name>` |
 | Retained | path.name, placement, inherited data dir and endpoint key (unless the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), config (seeded from the deleted row) |
 | New | node.id, incarnation, OS-assigned port, exact runtime, and (when the inherited data dir is absent past `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`) a newly allocated data dir and endpoint key |
-| App part | The new node's start runs `hydrate_before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated data dir after `RDM_DATA_DIR_GONE_FLOORS` (`R-FM2`); Rafka runs broker resync there |
+| App part | The new node's start runs `before_ready` with start_kind FirstStart and `inherited = true` over a kept data dir, or `inherited = false` over a newly allocated data dir after `RDM_DATA_DIR_GONE_FLOORS` (`R-FM2`) |
 | Lineage | No supersedes: recovery creates a new node.id ([node identity](../node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids)) |
 
 ## Detection and proof
@@ -113,8 +113,7 @@ timer of its own:
    incarnation and port. Its config is seeded from the deleted row at that path.name.
 5. Create runs the whole [start](node-start.md#end-to-end-sequence) with FirstStart and
    `inherited = true` over the kept data dir (or `inherited = false` over a newly allocated
-   data dir after `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), Rafka's broker resync inside its
-   hook, and ends node.created.
+   data dir after `RDM_DATA_DIR_GONE_FLOORS`, `R-FM2`), and ends node.created.
 
 ## Command, completion and gossip messages
 
@@ -170,7 +169,7 @@ on `node-key` inside an existing directory, `EIO`, `EACCES`, or decode failure) 
   exited birth (`rdm.node_admin.node.update.via-data-dir-lost`, surfaced on `node.get` and
   never as a gossip `MemberStatus`), and the recovery Build creates the node at the same
   `path.name` over a newly allocated `data_dir` beside the old path with a newly minted
-  endpoint key (the old key is never re-minted) and `hydrate_before_ready` with
+  endpoint key (the old key is never re-minted) and `before_ready` with
   `inherited = false`. For a lost mesh's node-admin, the fabric-primary runs this arm from the
   fabric lane ([elections §4.3](../fabric-node-lifecycle-elections.md#43-fabric-primary)): with no
   inspection possible there is no exit proof and no gone-floors wait; the node-admin is created at

@@ -114,7 +114,7 @@ pub const CONNECTIONS_DELETE: &str = "node.connections.delete";
 /// Why a start stopped, and at which step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartFailed {
-    /// `node.join`, `node.hydrate`, `node.topology` or `node.rafka-time`.
+    /// `node.join`, `node.before-ready`, `node.topology` or `node.rafka-time`.
     pub step: &'static str,
     /// Why.
     pub reason: String,
@@ -152,7 +152,7 @@ pub trait Session: Send + Sync {
     /// are in flight and answered on their connections). The endpoint stays bound.
     async fn cut(&self, spare: &[iroh::PublicKey]) -> CutReport;
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
-    /// run the hydrate hook with `AfterStop` in its context under `retire`, the new cycle's token.
+    /// run the `before_ready` hook with `AfterStop` in its context under `retire`, the new cycle's token.
     /// `commander` holds the endpoint key of the call that commanded the start last: each join
     /// attempt goes back over that call ([`crate::workflows::node_start::JoinTo::Commander`]), and
     /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
@@ -269,7 +269,7 @@ pub struct NodeSelf {
     /// a surface whose declarations are made elsewhere (a node-admin).
     pub declare: Option<Declare>,
     /// Cancelled when `node.connections.delete { All }` or `stop-node` is admitted: the birth is
-    /// retired, so its `hydrate_before_ready` hook and any pull it has in flight end.
+    /// retired, so its `before_ready` hook and any pull it has in flight end.
     pub retire: Option<rdm_transport::Retirement>,
     /// The backbone, for a node-admin: its round hooks go out on its mesh channel and the backbone.
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
@@ -430,7 +430,7 @@ impl NodeSelf {
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
         // this call's own) is let finish, bounded by the birth's `connections_delete_deadline`.
-        // The birth is retired at the admission of `All`: its `hydrate_before_ready` hook and any pull
+        // The birth is retired at the admission of `All`: its `before_ready` hook and any pull
         // it has in flight end; it returns to service only through a stop and a start.
         let in_flight = match scope {
             ConnectionScope::All => {

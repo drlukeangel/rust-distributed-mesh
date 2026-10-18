@@ -12,7 +12,7 @@
 pub mod entry;
 pub mod join;
 pub mod admin;
-pub use rdm_node::app_hydration;
+pub use rdm_node::before_ready;
 pub mod accepted;
 pub mod build;
 pub mod certs;
@@ -22,7 +22,7 @@ pub mod build_op;
 pub mod build_run;
 pub mod build_facts_read;
 pub mod fabric_handover;
-pub mod hydrate;
+pub mod fetch_build;
 #[cfg(feature = "file-backend")]
 pub mod build_lanes;
 pub mod build_state;

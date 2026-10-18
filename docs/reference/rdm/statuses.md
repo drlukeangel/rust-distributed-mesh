@@ -5,12 +5,12 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 
 | enum | crate | file |
 |---|---|---|
+| [`BeforeReadyState`](#t-rdm_node-before_ready-BeforeReadyState) | rdm-node | `crates/rdm-node/src/before_ready.rs` |
 | [`BuildState`](#t-rdm_admin-build_state-BuildState) | rdm-admin | `crates/rdm-admin/src/build_state.rs` |
 | [`BuildState`](#t-rdm_core-dto-BuildState) | rdm-core | `crates/rdm-core/src/dto.rs` |
 | [`ConnectionState`](#t-rdm_core-connections-ConnectionState) | rdm-core | `crates/rdm-core/src/connections.rs` |
 | [`DeploymentStatus`](#t-rdm_admin-deployment-provider-DeploymentStatus) | rdm-admin | `crates/rdm-admin/src/deployment/provider.rs` |
 | [`FabricState`](#t-rdm_admin-fabric_state-FabricState) | rdm-admin | `crates/rdm-admin/src/fabric_state.rs` |
-| [`HydrationState`](#t-rdm_node-app_hydration-HydrationState) | rdm-node | `crates/rdm-node/src/app_hydration.rs` |
 | [`LifecycleState`](#t-rdm_admin-lifecycle-LifecycleState) | rdm-admin | `crates/rdm-admin/src/lifecycle.rs` |
 | [`MemberStatus`](#t-rdm_core-digest-MemberStatus) | rdm-core | `crates/rdm-core/src/digest.rs` |
 | [`MeshState`](#t-rdm_core-status-MeshState) | rdm-core | `crates/rdm-core/src/status.rs` |
@@ -23,6 +23,27 @@ Every `pub enum` whose name ends in `Status` or `State` in RDM's non-test source
 | [`ScopeStatus`](#t-rdm_core-model-ScopeStatus) | rdm-core | `crates/rdm-core/src/model.rs` |
 | [`ScopeStatus`](#t-rdm_core-views-ScopeStatus) | rdm-core | `crates/rdm-core/src/views.rs` |
 | [`SyncState`](#t-rdm_admin-wiring-SyncState) | rdm-admin | `crates/rdm-admin/src/wiring.rs` |
+
+<a id="t-rdm_node-before_ready-BeforeReadyState"></a>
+
+### `BeforeReadyState`
+
+`crates/rdm-node/src/before_ready.rs` · enum · 5 variants · rdm-node
+
+Where one birth's hook stands.
+
+| # | variant · field | serde name | type | serde | doc |
+|---|---|---|---|---|---|
+| 0 | **`Running`** | (not serialized) |  |  | An attempt is running. |
+| 0.0 | `attempt` |  | `u32` |  | Which attempt. |
+| 1 | **`Blocked`** | (not serialized) |  |  | The last attempt was blocked and the hook waits on its event. |
+| 1.0 | `attempt` |  | `u32` |  | Which attempt. |
+| 1.1 | `reason` |  | `String` |  | What it waits for, in words. |
+| 1.2 | `retry_on` |  | `RetryOn` |  | The event that runs the hook again. |
+| 2 | **`Passed`** | (not serialized) |  |  | The hook returned `Ok`. |
+| 3 | **`Failed`** | (not serialized) |  |  | The hook failed: the node ends by name. |
+| 3.0 | `0` |  | `String` |  |  |
+| 4 | **`Cancelled`** | (not serialized) |  |  | The hook was cancelled before it passed. |
 
 <a id="t-rdm_admin-build_state-BuildState"></a>
 
@@ -103,27 +124,6 @@ The state of the fabric: the value of a FabricStatus frame.
 | 1 | **`StateSync`** | (not serialized) |  |  | `as_str() = "state-sync"` | Every mesh is ready-for-traffic; the application does its work. |
 | 2 | **`StateCommit`** | (not serialized) |  |  | `as_str() = "state-commit"` | The application answered state-synced; the scratchpads are published and traffic is opened. |
 | 3 | **`ReadyForTraffic`** | (not serialized) |  |  | `as_str() = "ready-for-traffic"` | Both rounds completed. |
-
-<a id="t-rdm_node-app_hydration-HydrationState"></a>
-
-### `HydrationState`
-
-`crates/rdm-node/src/app_hydration.rs` · enum · 5 variants · rdm-node
-
-Where one birth's hook stands.
-
-| # | variant · field | serde name | type | serde | doc |
-|---|---|---|---|---|---|
-| 0 | **`Running`** | (not serialized) |  |  | An attempt is running. |
-| 0.0 | `attempt` |  | `u32` |  | Which attempt. |
-| 1 | **`Blocked`** | (not serialized) |  |  | The last attempt was blocked and the hook waits on its event. |
-| 1.0 | `attempt` |  | `u32` |  | Which attempt. |
-| 1.1 | `reason` |  | `String` |  | What it waits for, in words. |
-| 1.2 | `retry_on` |  | `RetryOn` |  | The event that runs the hook again. |
-| 2 | **`Passed`** | (not serialized) |  |  | The hook returned `Ok`. |
-| 3 | **`Failed`** | (not serialized) |  |  | The hook failed: the node ends by name. |
-| 3.0 | `0` |  | `String` |  |  |
-| 4 | **`Retired`** | (not serialized) |  |  | The birth was retired before the hook passed. |
 
 <a id="t-rdm_admin-lifecycle-LifecycleState"></a>
 

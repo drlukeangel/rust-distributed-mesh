@@ -10,7 +10,7 @@ pub use crate::node::{
     stop_requested, wait_for_signal, Node, NodeSeams, RunningNode,
 };
 
-pub mod app_hydration;
+pub mod before_ready;
 pub mod connection_reconnect;
 pub mod connections_writer;
 pub mod held_name;
@@ -100,20 +100,20 @@ pub async fn run_launched() -> Result<()> {
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
 /// the mesh transport stopping for good), then `node.connections.delete` and leave.
 pub async fn run(role: Role, types: &[&str]) -> Result<()> {
-    run_with(role, types, crate::app_hydration::Hydration::none(), |b| b).await
+    run_with(role, types, crate::before_ready::BeforeReadyHook::none(), |b| b).await
 }
 
 #[cfg(feature = "file-backend")]
-/// [`run`] for a product that hydrates before Ready: `hydration` carries its
-/// `hydrate_before_ready` hook, and `serve_app` adds the product's own ops to the catalog before
+/// [`run`] for a product with a hook before Ready: `before_ready` carries its
+/// `before_ready` hook, and `serve_app` adds the product's own ops to the catalog before
 /// it seals. A hook that fails after the node came up Pending ends the process by name.
 pub async fn run_with(
     role: Role,
     types: &[&str],
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
-    run_with_alpns(role, types, &[], hydration, serve_app).await
+    run_with_alpns(role, types, &[], before_ready, serve_app).await
 }
 
 #[cfg(feature = "file-backend")]
@@ -122,10 +122,10 @@ pub async fn run_with_alpns(
     role: Role,
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
-    run_on(role, crate::storage_backend::file_node_backend(), types, alpns, hydration, serve_app).await
+    run_on(role, crate::storage_backend::file_node_backend(), types, alpns, before_ready, serve_app).await
 }
 
 /// [`run_with_alpns`] on `storage`: the node's connections rows and its commit-state action are the
@@ -135,7 +135,7 @@ pub async fn run_on(
     storage: std::sync::Arc<dyn crate::storage_backend::NodeStorageBackend>,
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
     crate::node::listen_for_stop();
@@ -155,7 +155,7 @@ pub async fn run_on(
     }
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_on(&launch, storage, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, |b, _seams| serve_app(b), types, alpns)
+        let started = crate::node::start_on(&launch, storage, rdm_transport::clock::RafkaTime::unadopted(), before_ready, |s| s, None, |b, _seams| serve_app(b), types, alpns)
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,
@@ -177,12 +177,12 @@ pub async fn run_on(
     println!("RDM_NODE_READY {}", launch.node_id);
     let ended = tokio::select! {
         () = crate::node::wait_for_signal(&executable) => None,
-        why = running.hydration_failed() => Some(why),
+        why = running.before_ready_failed() => Some(why),
     };
     if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("hydrate_before_ready failed; this node ends"));
+        tracing::info_span!("rdm.mesh.node.delete.via-before-ready-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("before_ready failed; this node ends"));
         running.stop().await;
-        return Err(anyhow!("{} failed hydrate_before_ready: {why}", launch.name));
+        return Err(anyhow!("{} failed before_ready: {why}", launch.name));
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     if crate::node::stop_commanded() {

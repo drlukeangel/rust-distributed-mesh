@@ -1,13 +1,13 @@
-//! `hydrate_before_ready` on node-admins (i143.e12.s20): a node-admin runs the same hook as every
+//! `before_ready` on node-admins (i143.e12.s20): a node-admin runs the same hook as every
 //! node. The Day-0 root has no authority to pull from, so its context says why and its hook
 //! completes from local state; an admin launched by another admin pulls from it, and is refused
 //! typed `NotReady` until that admin's own hook has passed.
 
 use rdm_core::MemberStatus;
 use rdm_admin::admin::{start_with, AdminConfig};
-use rdm_admin::app_hydration::{HookOutcome, Hydration, HydrationState};
+use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook, BeforeReadyState};
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_test::hydrate_probe::{Mode, TestHydrator};
+use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +39,7 @@ async fn until_ready(running: &rdm_admin::admin::Running) {
     tokio::time::timeout(WRONG, waited).await.expect("the admin never published ReadyForTraffic");
 }
 
-/// CONTRACT: the Day-0 root's `hydrate_before_ready` runs once, is handed `authority: None` with the
+/// CONTRACT: the Day-0 root's `before_ready` runs once, is handed `authority: None` with the
 /// reason (no authority exists before this admin), completes from local state, and only then does
 /// the admin publish ReadyForTraffic: the attempt span records `ok` and the Ready check named the
 /// running hook as a blocker until then. What must NOT happen: the root's hook pulling from an
@@ -54,24 +54,24 @@ fn the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_st
     let cap = crate::common::capture("the_day_zero_root_runs_the_hook_with_no_authority_and_completes_from_local_state");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
-        let dir = std::env::temp_dir().join(format!("hydrate-day0-{}", rdm_core::NodeId::mint()));
-        let hydrator = TestHydrator::new(Mode::Local);
-        let wiring = Wiring { hydration: Hydration::new(hydrator.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
+        let dir = std::env::temp_dir().join(format!("before-ready-day0-{}", rdm_core::NodeId::mint()));
+        let before_ready = TestBeforeReady::new(Mode::Local);
+        let wiring = Wiring { before_ready: BeforeReadyHook::new(before_ready.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let handle = running.hydration().expect("a registered hook has a handle");
-        assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook returns"), HydrationState::Passed);
+        let handle = running.before_ready().expect("a registered hook has a handle");
+        assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook returns"), BeforeReadyState::Passed);
         until_ready(&running).await;
 
-        let contexts = hydrator.contexts.lock().unwrap().clone();
+        let contexts = before_ready.contexts.lock().unwrap().clone();
         assert_eq!(contexts.len(), 1, "the hook ran once: {contexts:?}");
         assert_eq!((contexts[0].0, contexts[0].1.clone()), (1, None), "the Day-0 root has no accepting authority");
         assert!(contexts[0].2.as_deref().is_some_and(|why| why.contains("Day-0")), "the context says why: {contexts:?}");
-        let attempts: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.mesh.node.update.via-hydrate-attempt").map(|(_, _, f)| f.clone()).collect();
+        let attempts: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.mesh.node.update.via-before-ready-attempt").map(|(_, _, f)| f.clone()).collect();
         assert_eq!(attempts.len(), 1);
         assert_eq!(attempts[0]["outcome"], "ok");
         assert!(attempts[0]["authority"].contains("none"), "{:?}", attempts[0]);
         let _ = HookOutcome::Ok;
-        let _ = Arc::strong_count(&hydrator);
+        let _ = Arc::strong_count(&before_ready);
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
     })
@@ -98,25 +98,25 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         use rdm_core::launch::{Launch, Launcher};
         use rdm_core::runtime::RuntimeFact;
         use rdm_core::{IncarnationId, NodeId};
-        use rdm_admin::app_hydration::RetryOn;
-        use rdm_test::hydrate_probe::{PullServer, Row};
+        use rdm_admin::before_ready::RetryOn;
+        use rdm_test::before_ready_probe::{PullServer, Row};
 
-        let root_dir = std::env::temp_dir().join(format!("hydrate-pair-a-{}", NodeId::mint()));
-        let joiner_dir = std::env::temp_dir().join(format!("hydrate-pair-b-{}", NodeId::mint()));
+        let root_dir = std::env::temp_dir().join(format!("before-ready-pair-a-{}", NodeId::mint()));
+        let joiner_dir = std::env::temp_dir().join(format!("before-ready-pair-b-{}", NodeId::mint()));
 
         // The Day-0 admin: its hook is held; its pull is served behind the gate of that hook.
         let (started, resume) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
-        let root_hydrator = TestHydrator::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
-        let root_hydration = Hydration::new(root_hydrator.clone());
+        let root_before_ready = TestBeforeReady::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        let root_hook = BeforeReadyHook::new(root_before_ready.clone());
         let rows = vec![Row { version: 1, value: "a".into() }, Row { version: 2, value: "b".into() }];
-        let pull = PullServer::behind(rows, root_hydration.gate());
+        let pull = PullServer::behind(rows, root_hook.gate());
         let serve = {
             let pull = pull.clone();
             Box::new(move |b: rdm_transport::ServerBuilder| pull.serve(b)) as rdm_admin::wiring::ServeApp
         };
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
-        let root = start_with(root_cfg, Wiring { hydration: root_hydration, serve_app: Some(serve), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(root_cfg, Wiring { before_ready: root_hook, serve_app: Some(serve), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         // The accepted Build names only the root: the launched admin is surplus to it, and a reconciling
         // root would retire it, which for an in-process admin is signalling this test process. The cell
         // is about the hook, so the root does not reconcile.
@@ -163,13 +163,13 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         });
         let env = launch.to_env();
         let joiner_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let joiner_hydrator = TestHydrator::new(Mode::Pull);
-        let joiner = start_with(joiner_cfg, Wiring { hydration: Hydration::new(joiner_hydrator.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let joiner_before_ready = TestBeforeReady::new(Mode::Pull);
+        let joiner = start_with(joiner_cfg, Wiring { before_ready: BeforeReadyHook::new(joiner_before_ready.clone()), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
 
-        let handle = joiner.hydration().expect("a registered hook has a handle");
+        let handle = joiner.before_ready().expect("a registered hook has a handle");
         let blocked = tokio::time::timeout(WRONG, async {
             loop {
-                if matches!(handle.state(), HydrationState::Blocked { .. }) {
+                if matches!(handle.state(), BeforeReadyState::Blocked { .. }) {
                     return handle.state();
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -177,12 +177,12 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
         })
         .await
         .expect("the pull was answered NotReady and the hook blocked");
-        assert!(matches!(blocked, HydrationState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{blocked:?}");
+        assert!(matches!(blocked, BeforeReadyState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{blocked:?}");
         assert_eq!(joiner.digest.lock().unwrap().status, MemberStatus::Pending, "a blocked admin is Pending");
         assert_eq!(pull.answered(), 0, "the Day-0 admin answered no rows before its own hook passed");
         // node-start.md step 3: while Blocked, the node answers its executor's ProbeNodeState with
         // Blocked { node_id, incarnation, reason, retry_on }, and the executor's `ready_blocker` names it.
-        let HydrationState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
+        let BeforeReadyState::Blocked { reason: hook_reason, .. } = blocked.clone() else { unreachable!() };
         let joiner_digest = joiner.digest.lock().unwrap().clone();
         let mut subject = rdm_admin::model::Node::allocated(joiner_digest.node.name.clone());
         subject.node_id = joiner_digest.node.node_id.clone();
@@ -218,7 +218,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
                     .filter(|(n, _, f)| n == "rdm.node_admin.runtime.reject.via-not-authority-capable" && f.get("node").is_some_and(|n| n.contains("mesh1.admin.2")))
                     .filter_map(|(_, _, f)| f.get("detail").cloned())
                     .collect();
-                if found.iter().any(|d| d.contains("hydrate_before_ready is blocked")) {
+                if found.iter().any(|d| d.contains("before_ready is blocked")) {
                     return found;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -230,13 +230,13 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
 
         // The Day-0 admin's hook returns: its gate opens, it is Ready, and the joiner's retry follows.
         resume.notify_one();
-        assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again"), HydrationState::Passed);
+        assert_eq!(tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again"), BeforeReadyState::Passed);
         until_ready(&joiner).await;
         assert_eq!(root.digest.lock().unwrap().status, MemberStatus::ReadyForTraffic, "the authority was Ready before the joiner");
-        assert_eq!(joiner_hydrator.held().0.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
-        assert_eq!(root_hydrator.contexts.lock().unwrap().len(), 1);
-        assert!(root_hydrator.contexts.lock().unwrap()[0].2.is_some(), "the Day-0 root's hook was handed authority None");
-        let joiner_ctx = joiner_hydrator.contexts.lock().unwrap().clone();
+        assert_eq!(joiner_before_ready.held().0.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(root_before_ready.contexts.lock().unwrap().len(), 1);
+        assert!(root_before_ready.contexts.lock().unwrap()[0].2.is_some(), "the Day-0 root's hook was handed authority None");
+        let joiner_ctx = joiner_before_ready.contexts.lock().unwrap().clone();
         assert_eq!(joiner_ctx.iter().map(|c| c.1.clone()).collect::<Vec<_>>(), vec![Some(root_digest.node.name.to_string()); 2], "both attempts pulled from the accepting admin");
 
         joiner.leave().await;

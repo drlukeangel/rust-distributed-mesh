@@ -22,8 +22,8 @@ use rdm_admin::node_commands::CommandKey;
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
-use rdm_admin::app_hydration::{HookOutcome, Hydration};
-use rdm_test::hydrate_probe::{HydratePull, Mode, PullRequest, PullServer, TestHydrator};
+use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
+use rdm_test::before_ready_probe::{BeforeReadyPull, Mode, PullRequest, PullServer, TestBeforeReady};
 use rdm_test::node;
 use std::time::Duration;
 
@@ -47,9 +47,9 @@ impl Birth {
         Self::launched(cell, None, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
-    /// [`Self::up`], its `hydrate_before_ready` hook `hydrator` when one is given.
-    async fn up_hydrating(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>) -> Self {
-        Self::launched(cell, hydrator, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
+    /// [`Self::up`], its `before_ready` hook when one is given.
+    async fn up_before_ready(cell: &str, before_ready: Option<std::sync::Arc<TestBeforeReady>>) -> Self {
+        Self::launched(cell, before_ready, rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
     /// [`Self::up`], launched with `deadline` as its `node.connections.delete { All }` bound.
@@ -57,7 +57,7 @@ impl Birth {
         Self::launched(cell, None, deadline).await
     }
 
-    async fn launched(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>, deadline: Duration) -> Self {
+    async fn launched(cell: &str, before_ready: Option<std::sync::Arc<TestBeforeReady>>, deadline: Duration) -> Self {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
@@ -84,13 +84,13 @@ impl Birth {
         admin.deployed(&launch, &key);
         let pull = PullServer::new(vec![]);
         pull.gate.open();
-        let running = match hydrator {
+        let running = match before_ready {
             None => node::start(&launch, {
                 let pull = pull.clone();
                 move |b, _| pull.serve(b)
             })
             .await,
-            Some(h) => node::start_hydrating(&launch, Hydration::new(h), {
+            Some(h) => node::start_before_ready(&launch, BeforeReadyHook::new(h), {
                 let pull = pull.clone();
                 move |b, _| pull.serve(b)
             })
@@ -157,7 +157,7 @@ impl Birth {
         self.pull.hold();
         let me = self.clone();
         let held = tokio::spawn(async move {
-            let out = me.admin.observer.client.call::<HydratePull>(&me.target, &PullRequest::Pull, &Self::opts()).await.0;
+            let out = me.admin.observer.client.call::<BeforeReadyPull>(&me.target, &PullRequest::Pull, &Self::opts()).await.0;
             assert!(matches!(out, RpcOutcome::Reply(_)), "the held call answers once released: {out:?}");
         });
         self.pull.entered(1).await;
@@ -195,14 +195,14 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
-        let birth = std::sync::Arc::new(Birth::up_hydrating("start-natural-key", Some(hydrator.clone())).await);
+        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_before_ready("start-natural-key", Some(before_ready.clone())).await);
         let stopped = birth.call(&birth.stop(1)).await;
         assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
 
         // Attempt 2's start runs until its hook, which holds until the cell lets it go.
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
-        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        before_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
         birth.admin.deployed(&birth.launch, &birth.key);
         let first = {
             let birth = birth.clone();
@@ -218,7 +218,7 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-start-node", |f| f.get("joined").map(String::as_str) == Some("true")))
             .await
             .expect("attempt 3's StartNode joins the start under way instead of running one of its own");
-        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        before_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
 
         assert_eq!(first.await.unwrap(), StatusReply::Started, "attempt 2's start completes");
@@ -537,14 +537,14 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parke
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
-        let birth = std::sync::Arc::new(Birth::up_hydrating("stop-during-start", Some(hydrator.clone())).await);
+        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok));
+        let birth = std::sync::Arc::new(Birth::up_before_ready("stop-during-start", Some(before_ready.clone())).await);
         let stopped = birth.call(&birth.stop(1)).await;
         assert!(matches!(stopped, StatusReply::Stopped { .. }), "{stopped:?}");
 
         // The start runs until its hook, which holds until the cell lets it go.
         let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
-        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
+        before_ready.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
         birth.admin.deployed(&birth.launch, &birth.key);
         let start = {
             let birth = birth.clone();
@@ -559,7 +559,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parke
             "a StopNode while the start is under way is refused naming the start, never answered with the parked cycle's receipt: {during:?}"
         );
 
-        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
+        before_ready.set_mode(Mode::Fixed(HookOutcome::Ok));
         resume.notify_one();
         assert_eq!(start.await.unwrap(), StatusReply::Started);
         birth.status_heard(MemberStatus::ReadyForTraffic).await;

@@ -245,7 +245,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     rounds: Default::default(),
                     configs: Default::default(),
                     configure: Default::default(),
-                    hydration: Default::default(),
+                    before_ready: Default::default(),
                     rename: Default::default(),
                     row_moved: Default::default(),
                     loads: None,
@@ -351,7 +351,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                     commands: Arc::new(rdm_admin::node_commands::CommandBook::default()), own: Default::default(),
                     mesh_deleter: Default::default(), hold_next_reply: Default::default(), wake: Default::default(),
                     rounds: Default::default(), configs: Default::default(), configure: Default::default(),
-                    hydration: Default::default(), rename: Default::default(), row_moved: Default::default(),
+                    before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(),
                     loads: None, book: None, builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
                     first_ready: Default::default(),
                 };

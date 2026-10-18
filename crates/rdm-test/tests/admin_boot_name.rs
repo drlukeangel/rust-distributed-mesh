@@ -16,7 +16,7 @@ use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId, PathName};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::app_hydration::Hydration;
+use rdm_admin::before_ready::BeforeReadyHook;
 use rdm_admin::join::Deployed;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::outcome::RpcOutcome;
@@ -87,7 +87,7 @@ fn a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_it
         std::fs::create_dir_all(&root_dir).unwrap();
         // The mesh's primary: a Day-0 node-admin that does not reconcile (it would retire the admin this
         // cell launches in its own process).
-        let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(day0_config(&root_dir), Wiring { before_ready: BeforeReadyHook::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
@@ -111,7 +111,7 @@ fn a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_it
         let mut digests = book.digest_changes();
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let admin = start_with(admin_cfg, Wiring { before_ready: BeforeReadyHook::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         // The authority admitted the birth under the row's name: the admin publishes it.
         tokio::time::timeout(WRONG, async {
             while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.node.name != row) {

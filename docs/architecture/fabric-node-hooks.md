@@ -2,7 +2,7 @@
 
 [Lifecycle index](fabric-mesh-node-lifecycles.md) · [States](lifecycles/states.md) · [Op contracts](node-rpc-envelope.md#the-op-ledger)
 
-This page owns where application work enters an RDM lifecycle: the hooks, `HydrateContext`, each
+This page owns where application work enters an RDM lifecycle: the hooks, `BeforeReadyCtx`, each
 hook's outcomes and the rafka-time handle.
 
 RDM owns the lifecycle and its gates. The embedding application (Rafka) supplies the work
@@ -12,7 +12,7 @@ never decides an RDM transition.
 
 | Hook | Called by | When | Gates |
 |---|---|---|---|
-| [`hydrate_before_ready`](#hydrate_before_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's ReadyForTraffic |
+| [`before_ready`](#before_ready) | every node start | after accepted join and mesh-channel join; before topology installation | the node's ReadyForTraffic |
 | [`after_ready`](#after_ready) | every node | after ReadyForTraffic | nothing |
 | [`sync_state`](#sync_state) | fabric-primary | when the fabric enters state-sync | the fabric's state-commit |
 | [`traffic_opened`](#traffic_opened) | fabric-primary | after the ready-for-traffic round completes | nothing; it is a notice |
@@ -20,12 +20,12 @@ never decides an RDM transition.
 RDM also exposes [rafka-time](#rafka-time) to the application as a read handle. That is not
 a hook.
 
-## hydrate_before_ready
+## before_ready
 
 The app registers one async function before RDM starts:
 
 ```rust
-async fn hydrate_before_ready(ctx: HydrateContext) -> HookOutcome;
+async fn before_ready(ctx: BeforeReadyCtx) -> HookOutcome;
 
 enum HookOutcome {
     Ok,
@@ -51,7 +51,7 @@ data-dir inheritance is an independent fact supplied by its spec.
 - whether the spec supplies an inherited data dir; start_kind alone does not decide it;
 - the accepting authority, i.e. the admin that accepted the JoinNode. It is `None`, with the
   reason, for the Day-0 root and for a fabric-primary recovered from its durable map. Those
-  births have no authority to pull from and hydrate from local state
+  births have no authority to pull from and complete the hook from local state
   ([gossip.md §9](gossip.md#9-joinnode-op-0x1d--bootstrap-hydration)).
 - the Node RPC client the app uses for its own calls;
 - the membership handle, so the app subscribes its gossip kind topics before it takes a
@@ -69,10 +69,6 @@ data-dir inheritance is an independent fact supplied by its spec.
 4. Apply the answer through the same receive path as live gossip, with each kind's snapshot
    completeness boundary as the floor. A row that arrives both by gossip and in the
    snapshot causes no duplicate state change or side effect.
-
-When the data dir was inherited, Rafka runs [broker re-sync](/home/admin/rafka-v2/docs/architecture/broker-re-sync.md) inside this
-hook, stamped with the join's rafka-time. RDM knows only the hook context and outcome, not
-brokers or replicas.
 
 ### Outcomes and the gate
 
@@ -95,7 +91,7 @@ defines.
 
 ### The server side gates too
 
-An admin answers that node.topology.get only once its own `hydrate_before_ready` has returned
+An admin answers that node.topology.get only once its own `before_ready` has returned
 `Ok`. Until then it answers a typed `NotReady`, which the caller maps to
 `Blocked { retry_on: AuthorityReady }`. A mesh's first node therefore never pulls from an
 admin that holds nothing yet.
@@ -138,11 +134,11 @@ is [origin-ordering.md §rafka-time](/home/admin/rafka-v2/docs/architecture/orig
 
 RDM exposes it to the application through one public, cloneable `RafkaTime` handle with
 `now_ms()`. The app gets the handle from the running node returned by RDM's start, and from
-`HydrateContext`. It is the same instance every RDM stamp reads; there is no second clock.
+`BeforeReadyCtx`. It is the same instance every RDM stamp reads; there is no second clock.
 Rafka stamps its OrderKey `writer_timestamp_ms` from it.
 
 ## Observability
 
 Each hook call is one span under the node's boot span, or under the fabric round's span for
 `sync_state`. The span carries the outcome and the blocker or reason. `via-ready` follows the
-successful `hydrate_before_ready`. A cancelled hook names the cancellation.
+successful `before_ready`. A cancelled hook names the cancellation.

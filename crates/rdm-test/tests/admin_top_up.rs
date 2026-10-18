@@ -20,10 +20,10 @@ use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId};
 use rdm_transport::membership::{gossip_addr, learn_addresses, Frame, Membership};
 use rdm_transport::snapshot::PublisherId;
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::app_hydration::{HookOutcome, Hydration};
+use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
 use rdm_admin::join::Deployed;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_test::hydrate_probe::{Mode, TestHydrator};
+use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -151,7 +151,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
 
         // The primary: a Day-0 node-admin. Its accepted Build names only itself, and a reconciling root
         // would retire the admin this cell launches in its own process: it does not reconcile.
-        let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(day0_config(&root_dir), Wiring { before_ready: BeforeReadyHook::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
         let root_digest = root.digest.lock().unwrap().clone();
@@ -163,7 +163,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let _ = root.runner.joins.expect(deployed(&launch));
         let env = launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { hydration: Hydration::new(TestHydrator::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let admin = start_with(admin_cfg, Wiring { before_ready: BeforeReadyHook::new(TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok))), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
         until("mesh1.admin.2 to hold mesh1's projection under the primary's epoch", WRONG, || admin.membership.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.admin.2 is not its mesh's primary");

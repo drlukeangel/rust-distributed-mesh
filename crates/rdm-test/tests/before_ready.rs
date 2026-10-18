@@ -1,4 +1,4 @@
-//! `hydrate_before_ready` (i143.e12.s20): the one hook an app supplies to be born full. RDM runs
+//! `before_ready` (i143.e12.s20): the one hook an app supplies to be born full. RDM runs
 //! it after the join is accepted, the topology installed and the mesh channel joined, and gates
 //! Ready on it. The authority here is the rig's admin side, serving a test app's pull behind the
 //! gate of its own hook; the node is a real in-process rpc node.
@@ -8,11 +8,11 @@ use rdm_core::digest::MeshDigest;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
-use rdm_admin::app_hydration::{HookOutcome, Hydration, HydrationState, RetryOn};
+use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook, BeforeReadyState, RetryOn};
 use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{Status, StatusReply, StatusRequest};
-use rdm_test::hydrate_probe::{Mode, PullServer, Row, TestHydrator};
+use rdm_test::before_ready_probe::{Mode, PullServer, Row, TestBeforeReady};
 use rdm_test::node::{self, RunningNode};
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,7 +41,7 @@ async fn birth(status: MemberStatus) -> Birth {
         move |b| authority.serve(b)
     })
     .await;
-    let dir = std::env::temp_dir().join(format!("hydrate-before-ready-{}", NodeId::mint()));
+    let dir = std::env::temp_dir().join(format!("before-ready-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
     RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let key = node::load_or_mint_key(&dir).unwrap();
@@ -66,9 +66,9 @@ async fn birth(status: MemberStatus) -> Birth {
     Birth { admin, authority, launch, dir }
 }
 
-fn start(b: &Birth, hydrator: &Arc<TestHydrator>) -> tokio::task::JoinHandle<anyhow::Result<RunningNode>> {
-    let (launch, hydration) = (b.launch.clone(), Hydration::new(hydrator.clone()));
-    tokio::spawn(async move { node::start_hydrating(&launch, hydration, |b, _| b).await })
+fn start(b: &Birth, before_ready: &Arc<TestBeforeReady>) -> tokio::task::JoinHandle<anyhow::Result<RunningNode>> {
+    let (launch, before_ready) = (b.launch.clone(), BeforeReadyHook::new(before_ready.clone()));
+    tokio::spawn(async move { node::start_before_ready(&launch, before_ready, |b, _| b).await })
 }
 
 /// The statuses the authority heard of the node, in order, from the moment it is called.
@@ -114,7 +114,7 @@ fn attempts(spans: &Spans) -> Vec<(String, String)> {
         .lock()
         .unwrap()
         .values()
-        .filter(|(name, _, _)| name == "rdm.mesh.node.update.via-hydrate-attempt")
+        .filter(|(name, _, _)| name == "rdm.mesh.node.update.via-before-ready-attempt")
         .map(|(_, _, f)| (f.get("attempt").cloned().unwrap_or_default(), f.get("outcome").cloned().unwrap_or_default(), f.get("retry_on").cloned().unwrap_or_default()))
         .collect();
     found.sort();
@@ -164,7 +164,7 @@ fn probe(d: &MeshDigest) -> StatusRequest {
 }
 
 /// CONTRACT: a node whose hook is `Blocked` on its authority stays Pending: it publishes Pending
-/// and never ReadyForTraffic, its blocker is named on `rdm.mesh.node.reject.via-hydration-blocked`,
+/// and never ReadyForTraffic, its blocker is named on `rdm.mesh.node.reject.via-before-ready-blocked`,
 /// and the authority's own pull gate answered the pull typed `NotReady`. When the authority's hook
 /// has passed and it publishes ReadyForTraffic, the hook runs again, returns `Ok`, the blocker span
 /// closes naming the event that cleared it (`authority-ready`) and only then does the node publish
@@ -181,33 +181,33 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
         let seen = observe(&b);
-        let hydrator = TestHydrator::new(Mode::Pull);
-        let running = start(&b, &hydrator).await.unwrap().expect("a node whose hook is blocked still comes up, Pending");
+        let before_ready = TestBeforeReady::new(Mode::Pull);
+        let running = start(&b, &before_ready).await.unwrap().expect("a node whose hook is blocked still comes up, Pending");
 
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::Pending, "a blocked node is Pending");
         until(&b.admin.observer.membership.book, "the authority heard the node Pending", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "ReadyForTraffic was published while the hook was blocked: {:?}", seen.lock().unwrap());
         assert_eq!(b.authority.answered(), 0, "the authority answered no rows before its own hook passed");
-        assert_eq!(spans_named(&spans, "rdm.node_rpc.request.reject.via-hydration-not-passed").len(), 1, "the authority's gate refused the pull typed NotReady once");
+        assert_eq!(spans_named(&spans, "rdm.node_rpc.request.reject.via-before-ready-not-passed").len(), 1, "the authority's gate refused the pull typed NotReady once");
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string())]);
-        let blocker = spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked");
+        let blocker = spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked");
         assert_eq!(blocker.len(), 1, "the blocker is named once");
         assert!(blocker[0]["blocker"].contains("NotReady"), "the blocker names the authority's answer: {:?}", blocker[0]);
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty(), "no via-ready before the hook passed");
-        let handle = running.hydration().expect("a registered hook has a handle");
-        assert!(matches!(handle.state(), HydrationState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{:?}", handle.state());
+        let handle = running.before_ready().expect("a registered hook has a handle");
+        assert!(matches!(handle.state(), BeforeReadyState::Blocked { retry_on: RetryOn::AuthorityReady, .. }), "{:?}", handle.state());
 
         b.authority.gate.open();
         b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the hook runs again when the authority is Ready");
-        assert_eq!(settled, HydrationState::Passed);
+        assert_eq!(settled, BeforeReadyState::Passed);
         until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
 
         assert_eq!(*seen.lock().unwrap(), vec![MemberStatus::Pending, MemberStatus::ReadyForTraffic]);
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string()), ("ok".to_string(), String::new())]);
-        assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked")[0]["cleared_by"], "authority-ready");
+        assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked")[0]["cleared_by"], "authority-ready");
         assert_eq!(spans_named(&spans, "rdm.mesh.node.update.via-ready").len(), 1, "via-ready follows the successful attempt");
-        assert_eq!(hydrator.held().0.len(), 3, "the pull's rows are held");
+        assert_eq!(before_ready.held().0.len(), 3, "the pull's rows are held");
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -230,21 +230,21 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
         let (started, resume) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
-        let hydrator = TestHydrator::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Blocked { reason: "the authority was not Ready when this attempt asked".into(), retry_on: RetryOn::AuthorityReady } });
-        let starting = start(&b, &hydrator);
+        let before_ready = TestBeforeReady::new(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Blocked { reason: "the authority was not Ready when this attempt asked".into(), retry_on: RetryOn::AuthorityReady } });
+        let starting = start(&b, &before_ready);
         tokio::time::timeout(WRONG, started.notified()).await.expect("the first attempt began");
-        let node_book = hydrator.book().expect("the attempt was handed the node's membership");
+        let node_book = before_ready.book().expect("the attempt was handed the node's membership");
 
         // The event: the authority publishes Ready, and the node hears it, while the attempt runs.
         b.authority.gate.open();
         b.admin.publish_status(MemberStatus::ReadyForTraffic).await;
         until(&node_book, "the node heard its authority Ready", |book| book.get(b.admin.launcher.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
-        hydrator.set_mode(Mode::Local);
+        before_ready.set_mode(Mode::Local);
         resume.notify_one();
 
         let running = starting.await.unwrap().expect("the node comes up");
-        let settled = tokio::time::timeout(WRONG, running.hydration().expect("handle").settled()).await.expect("the retry completes");
-        assert_eq!(settled, HydrationState::Passed);
+        let settled = tokio::time::timeout(WRONG, running.before_ready().expect("handle").settled()).await.expect("the retry completes");
+        assert_eq!(settled, BeforeReadyState::Passed);
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string()), ("ok".to_string(), String::new())]);
         // node.started follows the hook's pass by the start's topology, Build-floor and rafka-time steps
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
@@ -274,19 +274,19 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
         let seen = observe(&b);
-        let hydrator = TestHydrator::new(Mode::Pull);
-        let running = start(&b, &hydrator).await.unwrap().expect("a blocked node still comes up, Pending");
+        let before_ready = TestBeforeReady::new(Mode::Pull);
+        let running = start(&b, &before_ready).await.unwrap().expect("a blocked node still comes up, Pending");
 
-        let handle = running.hydration().expect("handle");
-        let HydrationState::Blocked { reason: hook_reason, .. } = handle.state() else { panic!("the hook is blocked: {:?}", handle.state()) };
+        let handle = running.before_ready().expect("handle");
+        let BeforeReadyState::Blocked { reason: hook_reason, .. } = handle.state() else { panic!("the hook is blocked: {:?}", handle.state()) };
         let probed = command(&b, probe).await;
         let d = running.digest.clone();
         assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::AuthorityReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
         assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the retirement ends the hook");
-        assert_eq!(settled, HydrationState::Retired);
-        assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked")[0]["cleared_by"], "retired");
-        assert_eq!(hydrator.attempts.load(std::sync::atomic::Ordering::SeqCst), 1, "the hook did not run again");
+        assert_eq!(settled, BeforeReadyState::Cancelled);
+        assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked")[0]["cleared_by"], "cancelled");
+        assert_eq!(before_ready.attempts.load(std::sync::atomic::Ordering::SeqCst), 1, "the hook did not run again");
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;
@@ -294,7 +294,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
     })
 }
 
-/// CONTRACT: a retire during hydration cancels the pull. The authority's gate is open and the pull
+/// CONTRACT: a retire during the hook cancels the pull. The authority's gate is open and the pull
 /// is held in flight; `node.connections.delete { All }` reaches the node; the attempt span closes `cancelled`, the pull
 /// is dropped in flight (started = answered + dropped, nothing left running), its call span never
 /// records an outcome, and the node never publishes ReadyForTraffic. What must NOT happen: the
@@ -313,21 +313,21 @@ fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
         b.authority.gate.open();
         b.authority.hold();
         let seen = observe(&b);
-        let hydrator = TestHydrator::new(Mode::Pull);
-        let starting = start(&b, &hydrator);
+        let before_ready = TestBeforeReady::new(Mode::Pull);
+        let starting = start(&b, &before_ready);
         tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
 
         assert!(matches!(delete_all(&b).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the pull is in flight");
         let running = tokio::time::timeout(WRONG, starting).await.expect("the retirement ends the first attempt").unwrap().expect("the retired node's start returns");
-        assert_eq!(running.hydration().expect("handle").state(), HydrationState::Retired);
+        assert_eq!(running.before_ready().expect("handle").state(), BeforeReadyState::Cancelled);
         use std::sync::atomic::Ordering::SeqCst;
-        assert_eq!((hydrator.pulls_started.load(SeqCst), hydrator.pulls_answered.load(SeqCst), hydrator.pulls_dropped.load(SeqCst)), (1, 0, 1), "the pull was dropped in flight");
+        assert_eq!((before_ready.pulls_started.load(SeqCst), before_ready.pulls_answered.load(SeqCst), before_ready.pulls_dropped.load(SeqCst)), (1, 0, 1), "the pull was dropped in flight");
         assert_eq!(attempts(&spans), vec![("cancelled".to_string(), String::new())]);
         let calls: Vec<_> = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|f| f.get("op").is_some_and(|o| o == "116")).collect();
         assert_eq!(calls.len(), 1, "one pull call was made");
         assert!(!calls[0].contains_key("outcome"), "the dropped call recorded no outcome: it ended with the hook, not with a reply: {:?}", calls[0]);
         b.authority.release();
-        assert!(hydrator.held().0.is_empty(), "no row was applied after the retirement");
+        assert!(before_ready.held().0.is_empty(), "no row was applied after the retirement");
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         running.stop().await;
@@ -351,18 +351,18 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
         let b = birth(MemberStatus::ReadyForTraffic).await;
         b.authority.gate.open();
         b.authority.hold();
-        let hydrator = TestHydrator::new(Mode::Pull);
-        let starting = start(&b, &hydrator);
+        let before_ready = TestBeforeReady::new(Mode::Pull);
+        let starting = start(&b, &before_ready);
         tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
 
-        hydrator.gossiped(Row { version: 2, value: "b".into() });
+        before_ready.gossiped(Row { version: 2, value: "b".into() });
         b.authority.release();
         let running = starting.await.unwrap().expect("the node comes up");
-        let (rows, changes, ignored) = hydrator.held();
+        let (rows, changes, ignored) = before_ready.held();
         assert_eq!(rows.keys().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
         assert_eq!(changes.into_iter().collect::<Vec<_>>(), vec![(1, 1), (2, 1), (3, 1)], "each version changed the state once");
         assert_eq!(ignored, 1, "row 2 arrived twice and the second was ignored");
-        assert_eq!(hydrator.effects.load(std::sync::atomic::Ordering::SeqCst), 3, "one side effect per version");
+        assert_eq!(before_ready.effects.load(std::sync::atomic::Ordering::SeqCst), 3, "one side effect per version");
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -385,16 +385,16 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
         let seen = observe(&b);
-        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Failed { reason: "the snapshot of kind `config` is not complete at its boundary".into() }));
-        let why = match start(&b, &hydrator).await.unwrap() {
+        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Failed { reason: "the snapshot of kind `config` is not complete at its boundary".into() }));
+        let why = match start(&b, &before_ready).await.unwrap() {
             Ok(running) => {
                 running.stop().await;
                 panic!("a node whose hook failed must end, not come up");
             }
             Err(e) => e.to_string(),
         };
-        assert!(why.contains("mesh1.rpc.1") && why.contains("hydrate_before_ready") && why.contains("is not complete at its boundary"), "the end names the node and the reason: {why}");
-        let failed = spans_named(&spans, "rdm.mesh.node.update.via-hydrate-attempt");
+        assert!(why.contains("mesh1.rpc.1") && why.contains("before_ready") && why.contains("is not complete at its boundary"), "the end names the node and the reason: {why}");
+        let failed = spans_named(&spans, "rdm.mesh.node.update.via-before-ready-attempt");
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0]["outcome"], "failed");
         assert!(failed[0]["reason"].contains("is not complete at its boundary"));
@@ -408,7 +408,7 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
 /// is named in the blocker evidence and answered to the executor's ProbeNodeState"): a hook that
 /// returns `Blocked` with no reason names no blocker, so it is no Blocked outcome: the node ends by
 /// name, saying its hook was blocked with no reason, the attempt span records `failed` with that
-/// reason, no `via-hydration-blocked` span is opened, no `via-ready` is emitted and the authority
+/// reason, no `via-before-ready-blocked` span is opened, no `via-ready` is emitted and the authority
 /// never hears the node Ready. What must NOT happen: the node staying up Pending and answering its
 /// executor's probe `Blocked` with an empty reason, which the executor frames as a Build stream's
 /// `Blocked { WaitForNodeReady, reason }` that names nothing.
@@ -424,21 +424,21 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
         let seen = observe(&b);
-        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Blocked { reason: String::new(), retry_on: RetryOn::AuthorityAddressed }));
-        let why = match start(&b, &hydrator).await.unwrap() {
+        let before_ready = TestBeforeReady::new(Mode::Fixed(HookOutcome::Blocked { reason: String::new(), retry_on: RetryOn::AuthorityAddressed }));
+        let why = match start(&b, &before_ready).await.unwrap() {
             Ok(running) => {
-                let state = running.hydration().map(|h| h.state());
+                let state = running.before_ready().map(|h| h.state());
                 running.stop().await;
                 panic!("a node whose hook was blocked with no reason must end by name, not come up: its hook state {state:?}");
             }
             Err(e) => e.to_string(),
         };
-        assert!(why.contains("mesh1.rpc.1") && why.contains("hydrate_before_ready") && why.contains("no reason"), "the end names the node, the hook and that it gave no reason: {why}");
-        let attempts = spans_named(&spans, "rdm.mesh.node.update.via-hydrate-attempt");
+        assert!(why.contains("mesh1.rpc.1") && why.contains("before_ready") && why.contains("no reason"), "the end names the node, the hook and that it gave no reason: {why}");
+        let attempts = spans_named(&spans, "rdm.mesh.node.update.via-before-ready-attempt");
         assert_eq!(attempts.len(), 1, "the hook ran once: {attempts:?}");
         assert_eq!(attempts[0]["outcome"], "failed");
         assert!(attempts[0]["reason"].contains("no reason") && attempts[0]["reason"].contains("authority-addressed"), "the attempt names the refusal and the event the hook asked for: {attempts:?}");
-        assert!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked").is_empty(), "no blocker was opened for a reason that names nothing");
+        assert!(spans_named(&spans, "rdm.mesh.node.reject.via-before-ready-blocked").is_empty(), "no blocker was opened for a reason that names nothing");
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
         let _ = std::fs::remove_dir_all(&b.dir);
@@ -453,10 +453,10 @@ fn the_hook_is_handed_the_accepting_authority_of_its_exact_birth() {
     let cap = crate::common::capture("the_hook_is_handed_the_accepting_authority_of_its_exact_birth");
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::ReadyForTraffic).await;
-        let hydrator = TestHydrator::new(Mode::Local);
-        let running = start(&b, &hydrator).await.unwrap().expect("the node comes up");
-        assert_eq!(*hydrator.contexts.lock().unwrap(), vec![(1, Some("mesh1.admin.1".to_string()), None)]);
-        assert_eq!(running.hydration().expect("handle").state(), HydrationState::Passed);
+        let before_ready = TestBeforeReady::new(Mode::Local);
+        let running = start(&b, &before_ready).await.unwrap().expect("the node comes up");
+        assert_eq!(*before_ready.contexts.lock().unwrap(), vec![(1, Some("mesh1.admin.1".to_string()), None)]);
+        assert_eq!(running.before_ready().expect("handle").state(), BeforeReadyState::Passed);
         running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
@@ -474,8 +474,8 @@ fn the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping() {
     cap.run(crate::common::Threads::Current, async move {
         use rdm_admin::deployment::pipeline::NodeObserver;
         let b = birth(MemberStatus::Pending).await;
-        let hydrator = TestHydrator::new(Mode::Pull);
-        let running = start(&b, &hydrator).await.unwrap().expect("a blocked node still comes up, Pending");
+        let before_ready = TestBeforeReady::new(Mode::Pull);
+        let running = start(&b, &before_ready).await.unwrap().expect("a blocked node still comes up, Pending");
         let book = &b.admin.observer.membership.book;
         until(book, "the authority heard the node's Pending digest", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::Pending)).await;
         let (d, _) = book.get(b.launch.node_id.as_str()).unwrap();

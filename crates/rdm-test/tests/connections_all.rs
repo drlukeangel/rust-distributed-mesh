@@ -15,7 +15,7 @@ use rdm_core::outcome::{NotSentReason, RpcOutcome};
 use rdm_core::ping::{Ping, PingReply, PingRequest};
 use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest, WhichMesh};
-use rdm_test::hydrate_probe::{HydratePull, PullRequest, PullServer};
+use rdm_test::before_ready_probe::{BeforeReadyPull, PullRequest, PullServer};
 use rdm_test::node;
 use rdm_test::originate::Seams;
 use std::time::Duration;
@@ -435,7 +435,7 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
         let all = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
         pull.hold();
-        let held_call = async { admin.observer.client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
+        let held_call = async { admin.observer.client.call::<BeforeReadyPull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {
             pull.entered(1).await;
             let deleting = crate::common::node_command_completion(&admin.observer.client, &target, &all);

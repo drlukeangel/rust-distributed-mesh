@@ -149,7 +149,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         rounds: Default::default(),
         configs: Default::default(),
         configure: Default::default(),
-        hydration: Default::default(),
+        before_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,

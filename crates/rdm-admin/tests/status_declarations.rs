@@ -177,7 +177,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
         rounds: Default::default(),
         configs: Default::default(),
         configure: Default::default(),
-        hydration: Default::default(),
+        before_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
@@ -710,7 +710,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
     let cut = cap.run(async {
         let (rig, b) = rig().await;
         let (admin2, rpc1) = (&b["admin2"], &b["rpc1"]);
-        let refusal = format!("hydration has not passed: {}", "the store of mesh1.rpc.1 is still behind; ".repeat(20));
+        let refusal = format!("before_ready has not passed: {}", "the store of mesh1.rpc.1 is still behind; ".repeat(20));
         let node = serve_node_answering(rpc1, StatusReply::NotReady { reason: refusal.clone() }).await;
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
@@ -2027,7 +2027,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
                 rounds: Default::default(),
                 configs: Default::default(),
                 configure: Default::default(),
-                hydration: Default::default(),
+                before_ready: Default::default(),
                 rename: Default::default(),
                 row_moved: Default::default(),
                 loads: Some(Arc::new(BTreeMap::new)),
@@ -2375,7 +2375,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
                 b.notified().await;
                 let (node_id, incarnation) = req.subject();
                 let mut sink = sink.started(N::CommandAccepted { node_id: node_id.clone(), incarnation: incarnation.clone() }).await.unwrap();
-                if fail { return Ok(N::Failed { step: "hydrate_before_ready".into(), reason: "app refused".into(), code: rdm_core::outcome::Code::FailedPrecondition }); }
+                if fail { return Ok(N::Failed { step: "before_ready".into(), reason: "app refused".into(), code: rdm_core::outcome::Code::FailedPrecondition }); }
                 sink.data(if start { N::NodeJoined } else { N::StopConnectionsDeleted { receipt: rdm_core::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } } }).await.unwrap();
                 c.notify_one();
                 d.notified().await;
@@ -2407,7 +2407,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
         }
         let result = tokio::time::timeout(Duration::from_secs(5), call).await.unwrap().unwrap();
         if fail {
-            assert!(matches!(result, A::StartFailed { step, reason, code: rdm_core::outcome::Code::FailedPrecondition } if step == "hydrate_before_ready" && reason == "app refused"));
+            assert!(matches!(result, A::StartFailed { step, reason, code: rdm_core::outcome::Code::FailedPrecondition } if step == "before_ready" && reason == "app refused"));
             assert!(rig.storage.node_operations().await.unwrap().is_empty());
         } else {
             assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");

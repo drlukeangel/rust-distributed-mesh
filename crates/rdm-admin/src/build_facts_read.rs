@@ -76,7 +76,7 @@ impl BuildFactsDoor {
             let facts = held.len() as u32;
             let (messages, refused) = encode_chunks(held);
             let floor = self.floor.lock().unwrap().clone();
-            let whole = refused.is_empty() && crate::admin::hydration_blocker(&me, &*self.builds, floor).await.is_none();
+            let whole = refused.is_empty() && crate::admin::node_admin_not_ready(&me, &*self.builds, floor).await.is_none();
             for e in &refused {
                 tracing::info_span!("rdm.node_admin.build.reject.via-unservable-fact", node = %me, build_id = %build_id, detail = %e)
                     .in_scope(|| tracing::info!("a held Build fact fits no chunk: this answer is not complete"));

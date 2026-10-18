@@ -48,12 +48,12 @@ async fn main() {
     // span open: it closes, and is exported, once booted.
     let running = {
         use tracing::Instrument;
-        // A scenario's `hydrate_before_ready` knob for this node (passing immediately when no knob file exists).
-        let hydration = match launch.data_dir.parent().map(|root| rdm_test::hydrate_probe::KnobHydrator::always(root, &launch.name.to_string())) {
-            Some(hook) => rdm_test::app_hydration::Hydration::new(hook),
-            None => rdm_test::app_hydration::Hydration::none(),
+        // A scenario's `before_ready` knob for this node (passing immediately when no knob file exists).
+        let before_ready = match launch.data_dir.parent().map(|root| rdm_test::before_ready_probe::KnobBeforeReady::always(root, &launch.name.to_string())) {
+            Some(hook) => rdm_test::before_ready::BeforeReadyHook::new(hook),
+            None => rdm_test::before_ready::BeforeReadyHook::none(),
         };
-        let started = node::start_hydrating(&launch, hydration, |b, seams| {
+        let started = node::start_before_ready(&launch, before_ready, |b, seams| {
             let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
             rdm_test::originate::serve(b, seams, &launch)
         })

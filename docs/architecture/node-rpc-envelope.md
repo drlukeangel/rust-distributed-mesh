@@ -228,7 +228,7 @@ sees only the catalog.
 | `0x71` | resolve-probe | testkit | live | canonical | `Resolve` |
 | `0x72` | declare-probe | testkit | live | canonical | `Declare` |
 | `0x73` | originate | testkit | live | canonical | `Call`, `ArmFault`, `ReleaseFault`, `Snapshot`, `RecordProxy`, `Dial`, `StopTransport` |
-| `0x74` | hydrate-pull | testkit | live | canonical | `Pull` |
+| `0x74` | before-ready-pull | testkit | live | canonical | `Pull` |
 | `0x75` | fault-door | testkit | live | canonical | `Arm`, `Release`, `State` |
 
 The ledger state says whether an op may be served at all: `live` or `retired`. The serving
@@ -401,7 +401,7 @@ serve this call yet, and the reason says which. It is never a lifecycle fact abo
 A caller that receives NotReady learns nothing about the subject's hook, frames no Build
 `Blocked`, and waits or retries. The subject's readiness blocker is a served answer, Status
 [`Blocked`](#status-op-0x1b-rdm): a probe that reached the exact birth and found its
-`hydrate_before_ready` hook Blocked. The two must never share a variant.
+`before_ready` hook Blocked. The two must never share a variant.
 
 # Schemas
 
@@ -704,7 +704,7 @@ The [node stop pair](#node-stop-command-pair), the
 [mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls.
 The lifecycle op pairs in States are carried by 0x1B as separate down (command) and up (completion) variants; enum definitions live only here. Dead is never sent.
 
-Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [hydrate_before_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
+Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [before_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
 
 Nothing inside the mesh checks who sent a frame or call. `RejectedNotAuthority` says the receiver is not the authority for the call: `ReceiverNotPrimary { needed }` when the receiver does not hold the seat the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all. `RequestNotHandled { request }` means the receiver's Status door has no handler for the named request. It is decided by dispatch alone, without checking node kind, seat or sender, and performs no operation. The receiver emits `rdm.node.status.reject.via-request-not-handled` with `request` and `node`. A handler that exists may still return its defined result, including a genuine writer redirect. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
 
@@ -870,7 +870,7 @@ pub enum StatusReply {
     RequestNotHandled { request: String },
 }
 
-// The event a Blocked hydrate_before_ready hook runs again on (fabric-node-hooks.md,
+// The event a Blocked before_ready hook runs again on (fabric-node-hooks.md,
 // "Outcomes and the gate"). Positional order is part of the wire schema.
 pub enum RetryOn {
     AuthorityChanged,
@@ -1055,7 +1055,7 @@ birth whose deployment ended before its join arrived; this is not NotAuthority.
 JoinMismatch names the differing field and its deployed and reported values;
 NotAuthority names the required authority. These are typed replies, not transport faults.
 JoinNode is only a join. It does not re-read topology for an already-held member.
-After acceptance and its `hydrate_before_ready` hook, the caller reads topology with [GetTopology](#topology-op-0x1e-rdm), in the order [node.start](lifecycles/node-start.md) sets.
+After acceptance and its `before_ready` hook, the caller reads topology with [GetTopology](#topology-op-0x1e-rdm), in the order [node.start](lifecycles/node-start.md) sets.
 A fabric-primary recovered with durable topology follows [fabric recovery](lifecycles/fabric-recovery.md#fabric-recovery) without maker calls; its first topology read targets a node from that map.
 
 MeshDigest is the full gossip Digest, not an address-only report. Its MeshNode carries the
@@ -1260,16 +1260,16 @@ pub enum BuildFactsReply {
 The stream is Started, Facts*, End. Each Facts chunk is one Build-channel frame, at most
 4032 bytes. The caller accepts it only when End arrives, every chunk index in 0..chunks
 is present exactly once, and the fact count equals End.facts. complete=true only when
-the responder holds the Build fully. End.complete must be true for hydration. Missing, duplicated or incomplete evidence is never
-hydration. Facts are absorbed through the existing Build log.
+the responder holds the Build fully. End.complete must be true for the Build to count as fetched. Missing, duplicated or incomplete evidence never
+counts. Facts are absorbed through the existing Build log.
 
 The [node start workflow](lifecycles/node-start.md) drives the read.
 The Ready check drives reads through typed blockers: no-pointer-wanted, no-pointer,
 unreadable-build, behind-floor. It asks the fabric-primary first, then other node-admins,
 then the launcher. Read-only recovery is authorized and uses bounded backoff, 250 ms
-doubling to 4 s. Source: `planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/hydrate.rs::HydrationBlocker`,
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/hydrate.rs::BACKOFF_BASE` and
-`planned:rust-distributed-mesh/crates/rafka-node-admin-core/src/hydrate.rs::BACKOFF_CAP`.
+doubling to 4 s. Source: `planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::NodeAdminNotReady`,
+`planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::BACKOFF_BASE` and
+`planned:rust-distributed-mesh/crates/rdm-admin/src/fetch_build.rs::BACKOFF_CAP`.
 Responder spans: `rdm.node_admin.build.serve.via-fetch-facts`,
 `rdm.node_admin.build.reject.via-unservable-fact`. Requester spans:
 `rdm.node_admin.build.update.via-fetch-facts`, `rdm.node_admin.build.reject.via-fetch-incomplete`,

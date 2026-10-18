@@ -179,7 +179,7 @@ pub enum NodeEvent {
     Created,
     /// `node.joined`: the node's own membership digest reached its authority.
     Joined,
-    /// `node.started`: the node reports hydrated, nothing pending.
+    /// `node.started`: the node reports its hook passed, nothing pending.
     Started,
     /// `node.connections.deleted`: the hard cut.
     ConnectionsDeleted,
@@ -233,7 +233,7 @@ impl NodeEvent {
 pub enum NodeStep {
     /// `node.create`: identity, storage, network, launch and bind.
     Create,
-    /// `node.start`: the published process, before it joins, and its report that it is hydrated.
+    /// `node.start`: the published process, before it joins, and its report that its hook passed.
     Start,
     /// `node.join`: the node's digest reaching its authority.
     Join,

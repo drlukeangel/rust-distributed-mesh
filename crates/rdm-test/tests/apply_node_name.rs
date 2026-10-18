@@ -28,7 +28,7 @@ use rdm_core::outcome::RpcOutcome;
 use rdm_core::ping::{Ping, PingRequest};
 use rdm_core::node_command::{NodeCommandReply, NodeCommandRequest};
 use rdm_core::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
-use rdm_test::hydrate_probe::{HydratePull, PullRequest, PullServer};
+use rdm_test::before_ready_probe::{BeforeReadyPull, PullRequest, PullServer};
 use rdm_test::node;
 use std::time::Duration;
 
@@ -125,7 +125,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         // node.connections.delete { All }, held open by one call in flight at the node: it answers
         // only once that call has its reply, its receipt counting it, and the route is closed.
         pull.hold();
-        let held_call = async { client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
+        let held_call = async { client.call::<BeforeReadyPull>(&target, &PullRequest::Pull, &opts).await.0 };
         let steps = async {
             pull.entered(1).await;
             let delete = NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };

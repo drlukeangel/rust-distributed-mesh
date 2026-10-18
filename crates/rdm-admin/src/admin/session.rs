@@ -164,7 +164,7 @@ pub async fn probed_ready_blocker(client: &rdm_transport::NodeRpcClient, book: &
     let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
     match rdm_client::NodeRpc::new(client).get(&birth, &rdm_transport::CallOptions::default()).await {
         Ok(rdm_core::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
-            Some(format!("{}: hydrate_before_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
+            Some(format!("{}: before_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
         }
         _ => None,
     }
@@ -285,15 +285,15 @@ pub(crate) struct AdminSession {
     pub(crate) accepted: Arc<AcceptedStore>,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
     pub(crate) entry_floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
-    pub(crate) hydration: crate::app_hydration::Hydration,
-    pub(crate) addressed: Arc<crate::app_hydration::Addressed>,
-    pub(crate) hydration_cell: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>,
-    pub(crate) hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    pub(crate) before_ready: crate::before_ready::BeforeReadyHook,
+    pub(crate) addressed: Arc<crate::before_ready::Addressed>,
+    pub(crate) before_ready_cell: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
+    pub(crate) before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     pub(crate) wake: Arc<Records>,
     /// This admin's own Build log: a start's Build-floor step absorbs the facts it reads into it.
     pub(crate) local: Arc<dyn crate::build_state::LocalBuildLog>,
     /// The node-admins a start's Build-facts read asks, in order.
-    pub(crate) responders: crate::hydrate::Responders,
+    pub(crate) responders: crate::fetch_build::Responders,
     /// What this admin owes its authorities: a start begins its next own-state cycle there.
     pub(crate) declarer: Arc<crate::status_declare::Declarer>,
 }
@@ -311,10 +311,10 @@ impl crate::node_self::Session for AdminSession {
         // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
         // the connections cut below.
         let turns_in_progress = self.gate.state().borrow().in_progress();
-        if let Some(h) = self.hydrating.lock().unwrap().take() {
+        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
             h.abort();
         }
-        self.hydration.gate().close();
+        self.before_ready.gate().close();
         let neighbours = self.membership.neighbours();
         self.membership.park().await;
         tracing::info_span!(
@@ -347,7 +347,7 @@ impl crate::node_self::Session for AdminSession {
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation, progress };
-        crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
+        crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
     }
 
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
@@ -531,17 +531,17 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 me: me.clone(),
                 builds: s.builds.clone(),
                 floor: s.entry_floor.clone(),
-                hydrator: crate::hydrate::Hydrator::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone(), entry),
+                fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone(), entry),
                 progress: None,
             },
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::app_hydration::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
-            hydration: s.hydration.clone(),
-            events: crate::app_hydration::Events::new(membership.book.clone(), s.addressed.clone()),
+            birth: crate::before_ready::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
+            before_ready: s.before_ready.clone(),
+            events: crate::before_ready::Events::new(membership.book.clone(), s.addressed.clone()),
             cancel: self.retire.take().expect("the hook's token is handed once"),
-            state: s.hydration_cell.clone(),
-            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.hydrating.clone() },
+            state: s.before_ready_cell.clone(),
+            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.before_ready_task.clone() },
             after: Box::new(after),
         })
     }
@@ -591,8 +591,8 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
 }
 
 /// How often a start below its Build floor checks the floor again and hands its blocker to the
-/// hydrator: the cadence the hydrator's one-request-at-a-time rule and backoff are set against
-/// (`crate::hydrate`).
+/// fetch_build: the cadence the fetch_build's one-request-at-a-time rule and backoff are set against
+/// (`crate::fetch_build`).
 pub(crate) const FLOOR_CHECK: Duration = Duration::from_millis(100);
 
 /// A node-admin's Build floor at a start (node-start.md step 4): "Fetch Build facts only when the node
@@ -605,7 +605,7 @@ pub(crate) struct AdminFloor {
     pub(crate) me: PathName,
     pub(crate) builds: Arc<dyn BuildStateAdapter>,
     pub(crate) floor: Arc<Mutex<Option<(crate::build::BuildId, u32)>>>,
-    pub(crate) hydrator: crate::hydrate::Hydrator,
+    pub(crate) fetch_build: crate::fetch_build::FetchBuild,
     /// Where the Ready check of a first start reads what the start waits on.
     pub(crate) progress: Option<StartProgress>,
 }
@@ -619,8 +619,8 @@ impl AdminFloor {
         let mut seen: Vec<&'static str> = Vec::new();
         loop {
             let floor = self.floor.lock().unwrap().clone();
-            let blocker = hydration_blocker(&self.me, &*self.builds, floor).await;
-            self.hydrator.tick(blocker.as_ref()).await;
+            let blocker = node_admin_not_ready(&self.me, &*self.builds, floor).await;
+            self.fetch_build.tick(blocker.as_ref()).await;
             let Some(blocker) = blocker else { break };
             if !seen.contains(&blocker.kind()) {
                 seen.push(blocker.kind());
@@ -631,7 +631,7 @@ impl AdminFloor {
             tokio::time::sleep(FLOOR_CHECK).await;
         }
         // Nothing is left outstanding at node.started: a read still in flight is let end.
-        self.hydrator.settle().await;
+        self.fetch_build.settle().await;
         step.record("blockers", seen.join(",").as_str());
         step.record("outcome", if seen.is_empty() { "held" } else { "fetched" });
     }
@@ -778,7 +778,7 @@ pub(crate) fn spawn_entry_sweep(
     })
 }
 
-/// The control entry retrieved again ([`crate::hydrate::EntryRepeat`]): the join a start made, to the
+/// The control entry retrieved again ([`crate::fetch_build::EntryRepeat`]): the join a start made, to the
 /// same authority with the same digest, its answer taken as the start took the first one.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn entry_repeat(
@@ -792,7 +792,7 @@ pub(crate) fn entry_repeat(
     records: Arc<Records>,
     mesh: String,
     mesh_id: MeshId,
-) -> crate::hydrate::EntryRepeat {
+) -> crate::fetch_build::EntryRepeat {
     Arc::new(move || {
         let (client, target, anchor, digest, accepted, floor, rafka_time, records, mesh, mesh_id) = (client.clone(), target.clone(), anchor.clone(), digest.clone(), accepted.clone(), floor.clone(), rafka_time.clone(), records.clone(), mesh.clone(), mesh_id.clone());
         Box::pin(async move {
@@ -824,7 +824,7 @@ impl EntryState {
         // An admin that holds no rafka-time has none to hand a joiner: the join is not completed,
         // and the refusal says why.
         let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{me}: this admin holds no rafka-time to answer a join with"))?;
-        // The fabric control state a new admin hydrates before it may be Ready: the answering admin's
+        // The fabric control state a new admin fetches before it may be Ready: the answering admin's
         // current Build (R-BI3) and the attempt it holds of it, the floor a joiner's own copy of that
         // Build's attempt facts must reach before it is Ready.
         // A store that cannot be read is no answer: the join is refused naming it, never answered as

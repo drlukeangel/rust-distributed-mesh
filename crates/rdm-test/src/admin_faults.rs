@@ -789,7 +789,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),
         lifecycle_events: Some(Box::new(move |inner| Arc::new(FaultedEvents { inner, faults: f_events }))),
-        hydration: Default::default(),
+        before_ready: Default::default(),
         certs: CertChoice::NoCerts,
         serve_app: None,
         fabric_hooks: FabricHooks::no_app_work(),

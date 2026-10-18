@@ -1,11 +1,11 @@
-//! `hydrate_before_ready`: the one hook an embedding app supplies to be born full.
+//! `before_ready`: the one hook an embedding app supplies to be born full.
 //!
 //! A node reaches the hook after its `JoinNode` was accepted, its `GetTopology` read installed
-//! and its mesh channel joined (`node-birth.md` step 6, "then hydrate"). The hook returns
+//! and its mesh channel joined (node-start.md step 3). The hook returns
 //! [`HookOutcome`]:
 //!
 //! - `Ok`: RDM's own checks go on to ReadyForTraffic, and the app's own ops are served
-//!   ([`HydrationGate`] opens).
+//!   ([`BeforeReadyGate`] opens).
 //! - `Blocked { reason, retry_on }`: the node stays Pending, the blocker is named where Ready
 //!   blockers are named, and the hook runs again only when the named [`RetryOn`] event happens.
 //!   The wait arms, then re-checks the condition against a count taken before the attempt began, so
@@ -16,7 +16,7 @@
 //! their context says so ([`Authority::None`]) and the hook completes from local state
 //! (`gossip.md` section 9's fenced exception).
 //!
-//! One span per attempt (`rdm.mesh.node.update.via-hydrate-attempt`) under the boot span carries
+//! One span per attempt (`rdm.mesh.node.update.via-before-ready-attempt`) under the boot span carries
 //! the outcome and the blocker or reason; `via-ready` follows the successful attempt.
 //! [`AfterReady`] is for optional work only: nothing required may live there.
 
@@ -24,7 +24,7 @@ use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rdm_core::{MemberStatus, MeshDigest};
 use std::time::Duration;
 use rdm_transport::membership::{DigestBook, Membership};
-use rdm_transport::{CancelToken, HydrationGate, NodeRpcClient};
+use rdm_transport::{CancelToken, BeforeReadyGate, NodeRpcClient};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -67,10 +67,10 @@ pub struct AcceptingAuthority {
 pub enum NoAuthority {
     /// The Day-0 root: no fabric authority exists before it.
     Day0Root,
-    /// An admin started on an inherited root (fabric recovery): it has no maker, and hydrates from the
+    /// An admin started on an inherited root (fabric recovery): it has no maker, and its hook reads the
     /// inherited storage.
     InheritedRoot,
-    /// A recovery start (mesh-primary or fabric-primary flags): it hydrates from the nodes it reaches.
+    /// A recovery start (mesh-primary or fabric-primary flags): its hook reads from the nodes it reaches.
     Recovery,
 }
 
@@ -79,7 +79,7 @@ impl NoAuthority {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Day0Root => "the Day-0 root: no authority exists before this node",
-            Self::InheritedRoot => "an admin started on an inherited root: it hydrates from the inherited storage",
+            Self::InheritedRoot => "an admin started on an inherited root: its hook reads the inherited storage",
             Self::Recovery => "a recovery start: no admin accepted this birth",
         }
     }
@@ -116,7 +116,7 @@ pub enum StartKind {
 
 /// What the hook is handed.
 #[derive(Clone)]
-pub struct HydrateCtx {
+pub struct BeforeReadyCtx {
     /// Whether this is the birth's first start or a start after a stop.
     pub start_kind: StartKind,
     /// The exact birth.
@@ -143,7 +143,7 @@ pub struct HydrateCtx {
     pub inherited: bool,
 }
 
-impl HydrateCtx {
+impl BeforeReadyCtx {
     /// The outcome for a pull the authority answered with its typed `NotReady`: wait for that
     /// authority to be Ready.
     pub fn authority_not_ready(&self, reason: impl Into<String>) -> HookOutcome {
@@ -176,9 +176,9 @@ pub enum HookOutcome {
 
 /// The one hook: run before Ready, for every birth.
 #[async_trait::async_trait]
-pub trait HydrateBeforeReady: Send + Sync {
-    /// Hydrate the state this node's role needs, from `ctx.authority`.
-    async fn hydrate_before_ready(&self, ctx: &HydrateCtx) -> HookOutcome;
+pub trait BeforeReady: Send + Sync {
+    /// The step this node's role takes before it reports Ready, with `ctx.authority`.
+    async fn before_ready(&self, ctx: &BeforeReadyCtx) -> HookOutcome;
 }
 
 /// Optional work after Ready. Nothing required may live here, and it is not a second projection
@@ -186,25 +186,25 @@ pub trait HydrateBeforeReady: Send + Sync {
 #[async_trait::async_trait]
 pub trait AfterReady: Send + Sync {
     /// Run once, after the node published ReadyForTraffic.
-    async fn after_ready(&self, ctx: &HydrateCtx);
+    async fn after_ready(&self, ctx: &BeforeReadyCtx);
 }
 
 /// What an embedding app registers, before RDM starts.
 #[derive(Clone, Default)]
-pub struct Hydration {
-    before: Option<Arc<dyn HydrateBeforeReady>>,
+pub struct BeforeReadyHook {
+    before: Option<Arc<dyn BeforeReady>>,
     after: Option<Arc<dyn AfterReady>>,
-    gate: HydrationGate,
+    gate: BeforeReadyGate,
 }
 
-impl Hydration {
-    /// No hook: a node with nothing to hydrate passes at once and runs no attempt.
+impl BeforeReadyHook {
+    /// No hook: the node passes at once and runs no attempt.
     pub fn none() -> Self {
         Self::default()
     }
 
     /// This hook before Ready.
-    pub fn new(hook: Arc<dyn HydrateBeforeReady>) -> Self {
+    pub fn new(hook: Arc<dyn BeforeReady>) -> Self {
         Self { before: Some(hook), ..Self::default() }
     }
 
@@ -216,7 +216,7 @@ impl Hydration {
 
     /// The gate RDM opens when the hook passes. The app clones it into its own server-side ops
     /// (`ServerBuilder::serve_gated`) before RDM starts.
-    pub fn gate(&self) -> HydrationGate {
+    pub fn gate(&self) -> BeforeReadyGate {
         self.gate.clone()
     }
 
@@ -342,7 +342,7 @@ impl Events {
 
 /// Where one birth's hook stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HydrationState {
+pub enum BeforeReadyState {
     /// An attempt is running.
     Running {
         /// Which attempt.
@@ -361,19 +361,19 @@ pub enum HydrationState {
     Passed,
     /// The hook failed: the node ends by name.
     Failed(String),
-    /// The birth was retired before the hook passed.
-    Retired,
+    /// The hook was cancelled before it passed.
+    Cancelled,
 }
 
-impl HydrationState {
+impl BeforeReadyState {
     /// The blocker in words, `None` once passed. This is what the Ready check names.
     pub fn blocker(&self, me: &PathName) -> Option<String> {
         match self {
             Self::Passed => None,
-            Self::Running { attempt } => Some(format!("{me}: hydrate_before_ready is running (attempt {attempt})")),
-            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me}: hydrate_before_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
-            Self::Failed(why) => Some(format!("{me}: hydrate_before_ready failed: {why}")),
-            Self::Retired => Some(format!("{me}: retired before hydrate_before_ready passed")),
+            Self::Running { attempt } => Some(format!("{me}: before_ready is running (attempt {attempt})")),
+            Self::Blocked { attempt, reason, retry_on } => Some(format!("{me}: before_ready is blocked (attempt {attempt}): {reason}; it runs again on {}", retry_on.name())),
+            Self::Failed(why) => Some(format!("{me}: before_ready failed: {why}")),
+            Self::Cancelled => Some(format!("{me}: cancelled before before_ready passed")),
         }
     }
 
@@ -384,29 +384,29 @@ impl HydrationState {
     pub fn probe_blocker(&self) -> Option<(String, RetryOn)> {
         match self {
             Self::Blocked { reason, retry_on, .. } => Some((reason.clone(), retry_on.clone())),
-            Self::Running { .. } | Self::Passed | Self::Failed(_) | Self::Retired => None,
+            Self::Running { .. } | Self::Passed | Self::Failed(_) | Self::Cancelled => None,
         }
     }
 }
 
 /// A read-only view of a birth's hook state.
 #[derive(Clone)]
-pub struct HydrationHandle {
-    rx: tokio::sync::watch::Receiver<HydrationState>,
+pub struct BeforeReadyHandle {
+    rx: tokio::sync::watch::Receiver<BeforeReadyState>,
 }
 
-impl HydrationHandle {
+impl BeforeReadyHandle {
     /// The state now.
-    pub fn state(&self) -> HydrationState {
+    pub fn state(&self) -> BeforeReadyState {
         self.rx.borrow().clone()
     }
 
     /// Resolves with the reason once the hook failed; never resolves otherwise. A process selects
     /// on it beside its stop signal and ends by name.
     pub async fn failed(&self) -> String {
-        match self.rx.clone().wait_for(|s| matches!(s, HydrationState::Failed(_))).await {
+        match self.rx.clone().wait_for(|s| matches!(s, BeforeReadyState::Failed(_))).await {
             Ok(s) => match &*s {
-                HydrationState::Failed(why) => why.clone(),
+                BeforeReadyState::Failed(why) => why.clone(),
                 _ => unreachable!("waited for Failed"),
             },
             Err(_) => std::future::pending().await,
@@ -414,8 +414,8 @@ impl HydrationHandle {
     }
 
     /// Resolves once the hook passed or the birth ended without passing.
-    pub async fn settled(&self) -> HydrationState {
-        match self.rx.clone().wait_for(|s| !matches!(s, HydrationState::Running { .. } | HydrationState::Blocked { .. })).await {
+    pub async fn settled(&self) -> BeforeReadyState {
+        match self.rx.clone().wait_for(|s| !matches!(s, BeforeReadyState::Running { .. } | BeforeReadyState::Blocked { .. })).await {
             Ok(s) => s.clone(),
             Err(_) => self.state(),
         }
@@ -435,8 +435,8 @@ pub enum Step {
     Passed,
     /// The hook failed.
     Failed(String),
-    /// The birth was retired during the attempt; the hook future was dropped.
-    Retired,
+    /// The hook was cancelled during the attempt; its future was dropped.
+    Cancelled,
     /// The hook is blocked.
     Blocked(Pending),
 }
@@ -448,39 +448,39 @@ pub enum End {
     Passed,
     /// Failed, and why.
     Failed(String),
-    /// Retired first.
-    Retired,
+    /// Cancelled first.
+    Cancelled,
 }
 
 /// Runs one birth's hook: the attempts, the waits between them, and the state the Ready check reads.
 pub struct HookDriver {
-    hook: Arc<dyn HydrateBeforeReady>,
+    hook: Arc<dyn BeforeReady>,
     after: Option<Arc<dyn AfterReady>>,
-    ctx: HydrateCtx,
+    ctx: BeforeReadyCtx,
     events: Events,
-    gate: HydrationGate,
-    state: tokio::sync::watch::Sender<HydrationState>,
+    gate: BeforeReadyGate,
+    state: tokio::sync::watch::Sender<BeforeReadyState>,
     boot: tracing::Span,
     attempts: AtomicU32,
 }
 
-impl Hydration {
+impl BeforeReadyHook {
     /// The driver for this birth, `None` when no hook is registered. The gate is opened for a node
     /// with no hook, so an app op registered without a hook is never refused.
-    pub fn driver(&self, ctx: HydrateCtx, events: Events, boot: tracing::Span) -> Option<Arc<HookDriver>> {
+    pub fn driver(&self, ctx: BeforeReadyCtx, events: Events, boot: tracing::Span) -> Option<Arc<HookDriver>> {
         let Some(hook) = self.before.clone() else {
             self.gate.open();
             return None;
         };
-        let (state, _) = tokio::sync::watch::channel(HydrationState::Running { attempt: 0 });
+        let (state, _) = tokio::sync::watch::channel(BeforeReadyState::Running { attempt: 0 });
         Some(Arc::new(HookDriver { hook, after: self.after.clone(), ctx, events, gate: self.gate.clone(), state, boot, attempts: AtomicU32::new(0) }))
     }
 }
 
 impl HookDriver {
     /// A view of this hook's state.
-    pub fn handle(&self) -> HydrationHandle {
-        HydrationHandle { rx: self.state.subscribe() }
+    pub fn handle(&self) -> BeforeReadyHandle {
+        BeforeReadyHandle { rx: self.state.subscribe() }
     }
 
     /// One attempt: one span under the boot span carrying the outcome and the blocker or reason.
@@ -489,10 +489,10 @@ impl HookDriver {
     pub async fn attempt(&self) -> Step {
         let n = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
         let mark = self.events.mark(&self.ctx.authority);
-        self.state.send_replace(HydrationState::Running { attempt: n });
+        self.state.send_replace(BeforeReadyState::Running { attempt: n });
         let span = tracing::info_span!(
             parent: &self.boot,
-            "rdm.mesh.node.update.via-hydrate-attempt",
+            "rdm.mesh.node.update.via-before-ready-attempt",
             node = %self.ctx.birth.name,
             node_id = %self.ctx.birth.node_id,
             incarnation_id = %self.ctx.birth.incarnation.as_str(),
@@ -503,13 +503,13 @@ impl HookDriver {
             retry_on = tracing::field::Empty,
             reason = tracing::field::Empty,
         );
-        let ctx = HydrateCtx { attempt: n, ..self.ctx.clone() };
+        let ctx = BeforeReadyCtx { attempt: n, ..self.ctx.clone() };
         let cancel = self.ctx.cancel.clone();
         let out = async {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => None,
-                o = self.hook.hydrate_before_ready(&ctx) => Some(o),
+                o = self.hook.before_ready(&ctx) => Some(o),
             }
         }
         .instrument(span.clone())
@@ -518,8 +518,8 @@ impl HookDriver {
             Some(HookOutcome::Ok) => {
                 self.gate.open();
                 span.record("outcome", "ok");
-                span.in_scope(|| tracing::info!("hydrate_before_ready returned Ok"));
-                self.state.send_replace(HydrationState::Passed);
+                span.in_scope(|| tracing::info!("before_ready returned Ok"));
+                self.state.send_replace(BeforeReadyState::Passed);
                 Step::Passed
             }
             Some(HookOutcome::Blocked { reason, retry_on }) => {
@@ -530,47 +530,47 @@ impl HookDriver {
                     let why = format!("the hook returned Blocked with no reason, asking to run again on {}: a blocker it does not name cannot be answered to the executor", retry_on.name());
                     span.record("outcome", "failed");
                     span.record("reason", why.as_str());
-                    span.in_scope(|| tracing::info!("hydrate_before_ready returned Blocked with no reason"));
-                    self.state.send_replace(HydrationState::Failed(why.clone()));
+                    span.in_scope(|| tracing::info!("before_ready returned Blocked with no reason"));
+                    self.state.send_replace(BeforeReadyState::Failed(why.clone()));
                     return Step::Failed(why);
                 }
                 if self.ctx.authority.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
                     let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.authority { Authority::None(w) => w.reason(), Authority::Accepted(_) => "" });
                     span.record("outcome", "failed");
                     span.record("reason", why.as_str());
-                    span.in_scope(|| tracing::info!("hydrate_before_ready asked to wait on an authority this birth does not have"));
-                    self.state.send_replace(HydrationState::Failed(why.clone()));
+                    span.in_scope(|| tracing::info!("before_ready asked to wait on an authority this birth does not have"));
+                    self.state.send_replace(BeforeReadyState::Failed(why.clone()));
                     return Step::Failed(why);
                 }
                 span.record("outcome", "blocked");
                 span.record("retry_on", retry_on.name());
                 span.record("reason", reason.as_str());
-                span.in_scope(|| tracing::info!("hydrate_before_ready is blocked"));
+                span.in_scope(|| tracing::info!("before_ready is blocked"));
                 let blocked = tracing::info_span!(
                     parent: &self.boot,
-                    "rdm.mesh.node.reject.via-hydration-blocked",
+                    "rdm.mesh.node.reject.via-before-ready-blocked",
                     node = %self.ctx.birth.name,
                     attempt = n,
                     blocker = %reason,
                     retry_on = retry_on.name(),
                     cleared_by = tracing::field::Empty,
                 );
-                blocked.in_scope(|| tracing::info!("not ready: hydrate_before_ready is blocked"));
-                self.state.send_replace(HydrationState::Blocked { attempt: n, reason, retry_on: retry_on.clone() });
+                blocked.in_scope(|| tracing::info!("not ready: before_ready is blocked"));
+                self.state.send_replace(BeforeReadyState::Blocked { attempt: n, reason, retry_on: retry_on.clone() });
                 Step::Blocked(Pending { retry_on, mark, span: blocked })
             }
             Some(HookOutcome::Failed { reason }) => {
                 span.record("outcome", "failed");
                 span.record("reason", reason.as_str());
-                span.in_scope(|| tracing::info!("hydrate_before_ready failed"));
-                self.state.send_replace(HydrationState::Failed(reason.clone()));
+                span.in_scope(|| tracing::info!("before_ready failed"));
+                self.state.send_replace(BeforeReadyState::Failed(reason.clone()));
                 Step::Failed(reason)
             }
             None => {
                 span.record("outcome", "cancelled");
-                span.in_scope(|| tracing::info!("the birth was retired during hydrate_before_ready: the hook and its pull ended"));
-                self.state.send_replace(HydrationState::Retired);
-                Step::Retired
+                span.in_scope(|| tracing::info!("before_ready was cancelled: the hook and its pull ended"));
+                self.state.send_replace(BeforeReadyState::Cancelled);
+                Step::Cancelled
             }
         }
     }
@@ -582,19 +582,19 @@ impl HookDriver {
             match step {
                 Step::Passed => return End::Passed,
                 Step::Failed(why) => return End::Failed(why),
-                Step::Retired => return End::Retired,
+                Step::Cancelled => return End::Cancelled,
                 Step::Blocked(pending) => {
                     match self.events.wait(&pending.retry_on, self.ctx.authority.accepted(), &pending.mark, &self.ctx.cancel).await {
                         Waited::Fired(event) => {
                             pending.span.record("cleared_by", event);
-                            pending.span.in_scope(|| tracing::info!(event, "the blocker's event happened: hydrate_before_ready runs again"));
+                            pending.span.in_scope(|| tracing::info!(event, "the blocker's event happened: before_ready runs again"));
                             drop(pending);
                             step = self.attempt().await;
                         }
                         Waited::Cancelled => {
-                            pending.span.record("cleared_by", "retired");
-                            self.state.send_replace(HydrationState::Retired);
-                            return End::Retired;
+                            pending.span.record("cleared_by", "cancelled");
+                            self.state.send_replace(BeforeReadyState::Cancelled);
+                            return End::Cancelled;
                         }
                     }
                 }
@@ -628,12 +628,12 @@ mod tests {
     /// attempt counter in the blocker, which would frame a new `Blocked` on every rerun.
     #[test]
     fn a_rerun_blocked_for_the_same_reason_answers_the_same_probe_blocker() {
-        let blocked = |attempt, reason: &str| HydrationState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::AuthorityAddressed };
+        let blocked = |attempt, reason: &str| BeforeReadyState::Blocked { attempt, reason: reason.into(), retry_on: RetryOn::AuthorityAddressed };
         let first = blocked(1, "rows not yet published").probe_blocker().expect("blocked answers its blocker");
         assert_eq!(first, ("rows not yet published".to_string(), RetryOn::AuthorityAddressed), "the hook's own reason and event");
         assert_eq!(Some(first.clone()), blocked(7, "rows not yet published").probe_blocker(), "the attempt is not part of the blocker");
         assert_ne!(Some(first), blocked(8, "the authority is draining").probe_blocker(), "a changed reason is a new blocker");
-        for other in [HydrationState::Running { attempt: 2 }, HydrationState::Passed, HydrationState::Failed("x".into()), HydrationState::Retired] {
+        for other in [BeforeReadyState::Running { attempt: 2 }, BeforeReadyState::Passed, BeforeReadyState::Failed("x".into()), BeforeReadyState::Cancelled] {
             assert_eq!(other.probe_blocker(), None, "only Blocked answers Blocked: {other:?}");
         }
     }

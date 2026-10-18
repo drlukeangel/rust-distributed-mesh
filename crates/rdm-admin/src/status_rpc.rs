@@ -355,9 +355,9 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
     pub configure: Configure,
-    /// Where this admin's own `hydrate_before_ready` stands (the cell its start writes): while it is
+    /// Where this admin's own `before_ready` stands (the cell its start writes): while it is
     /// Blocked, a probe naming this admin is answered `Blocked` carrying its blocker.
-    pub hydration: Hydrating,
+    pub before_ready: BeforeReadyCell,
     /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
@@ -700,7 +700,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.hydration, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.before_ready, &self.wake).await {
                 return reply;
             }
         }
@@ -1259,8 +1259,8 @@ impl StatusAuthority {
 /// A node's re-publish of its presence, filled once it has joined its mesh.
 pub(crate) type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
-/// Where a node's own `hydrate_before_ready` stands: `None` until its start registered a hook.
-pub type Hydrating = Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>;
+/// Where a node's own `before_ready` stands: `None` until its start registered a hook.
+pub type BeforeReadyCell = Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>;
 
 /// This node holding the config it is told and publishing its digest carrying it (`ApplyNodeConfig`).
 pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
@@ -1291,10 +1291,10 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence and answers its current state; no transition. While its
-/// `hydrate_before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
+/// `before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connections.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, before_ready: &BeforeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
         StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
@@ -1312,7 +1312,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
         StatusRequest::ProbeNodeState { .. } => {
             // The hook's blocker as it stood when the probe arrived, before the probe addresses
             // this admin (a hook blocked on its authority's word runs again on it).
-            let blocker = hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
+            let blocker = before_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             // The authority addressed this admin (R-S3's down op): its endpoint is counted for a hook
             // blocked on its word, whether or not a record names it, and every declaration owed to it
             // is sent again, whatever its last outcome.
@@ -1656,7 +1656,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
@@ -1721,7 +1721,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
@@ -1924,7 +1924,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
@@ -1957,11 +1957,11 @@ mod tests {
         let republish = Republish::default();
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
-        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 
@@ -1991,7 +1991,7 @@ mod tests {
             rounds: Default::default(),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
@@ -2317,7 +2317,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
@@ -2415,7 +2415,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,

@@ -65,13 +65,13 @@ pub struct RunningNode {
     /// declaration (i146 Q52), retargeted when the seat moves (`declare_loop`).
     pub owed_state: Arc<Mutex<OwedDeclaration>>,
     /// Cancelled when this birth is retired (stop-node, its process stopping): the
-    /// `hydrate_before_ready` hook and any pull it has in flight end.
+    /// `before_ready` hook and any pull it has in flight end.
     pub cancel: rdm_transport::Retirement,
     /// The surface that obeys this birth's lifecycle and round commands
     /// (`crate::node_self`).
     pub own: Arc<crate::node_self::NodeSelf>,
-    hydration: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>,
-    hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    before_ready: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
+    before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     node_rpc_feed: tokio::task::JoinHandle<()>,
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
@@ -105,15 +105,15 @@ impl RunningNode {
         &self.data_connections
     }
 
-    /// Where this birth's `hydrate_before_ready` stands; `None` when no hook was registered.
-    pub fn hydration(&self) -> Option<crate::app_hydration::HydrationHandle> {
-        self.hydration.lock().unwrap().clone()
+    /// Where this birth's `before_ready` stands; `None` when no hook was registered.
+    pub fn before_ready(&self) -> Option<crate::before_ready::BeforeReadyHandle> {
+        self.before_ready.lock().unwrap().clone()
     }
 
     /// Resolves with the reason once this node's hook failed after the node came up Pending; never
     /// resolves otherwise. A process selects on it beside its stop signal and ends by name.
-    pub async fn hydration_failed(&self) -> String {
-        let handle = self.hydration.lock().unwrap().clone();
+    pub async fn before_ready_failed(&self) -> String {
+        let handle = self.before_ready.lock().unwrap().clone();
         match handle {
             Some(h) => h.failed().await,
             None => std::future::pending().await,
@@ -148,7 +148,7 @@ impl RunningNode {
         self.server.settled().await;
         self.cancel.cancel();
         self.abort_publisher();
-        if let Some(h) = self.hydrating.lock().unwrap().take() {
+        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
             h.abort();
         }
         self.node_rpc_feed.abort();
@@ -197,10 +197,10 @@ fn install_handed(membership: &Membership, control: &crate::wire::JoinControl) {
 }
 
 #[cfg(feature = "file-backend")]
-/// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
-/// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
-pub async fn start_hydrating(launch: &Launch, hydration: crate::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
-    start_with_rafka_time_hydrating_and(launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, register, &[]).await
+/// [`start_with_seams`] for an app with a hook before Ready: `before_ready` carries its
+/// `before_ready` hook (and the gate its own server-side ops sit behind).
+pub async fn start_before_ready(launch: &Launch, before_ready: crate::before_ready::BeforeReadyHook, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
+    start_with_rafka_time_before_ready_and(launch, rdm_transport::clock::RafkaTime::unadopted(), before_ready, |s| s, None, register, &[]).await
 }
 
 #[cfg(feature = "file-backend")]
@@ -216,10 +216,10 @@ pub async fn start_with_alpns(
     alpns: &[rdm_transport::connections::Alpn],
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    start_with_rafka_time_hydrating_alpns_and(
+    start_with_rafka_time_before_ready_alpns_and(
         launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        crate::app_hydration::Hydration::none(),
+        crate::before_ready::BeforeReadyHook::none(),
         |s| s,
         None,
         register,
@@ -312,47 +312,47 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
 /// the resolver, the client, the connections writer and the held name.
 pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
     let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
-    start_with_rafka_time_hydrating_and(launch, rafka_time, crate::app_hydration::Hydration::none(), |s| s, None, register, &[]).await
+    start_with_rafka_time_before_ready_and(launch, rafka_time, crate::before_ready::BeforeReadyHook::none(), |s| s, None, register, &[]).await
 }
 
 #[cfg(feature = "file-backend")]
-/// Start a node with explicit `rafka_time`, `hydration`, storage decorator, optional rafka-time knob, and `register` callback.
-pub async fn start_with_rafka_time_hydrating_and(
+/// Start a node with explicit `rafka_time`, `before_ready`, storage decorator, optional rafka-time knob, and `register` callback.
+pub async fn start_with_rafka_time_before_ready_and(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
     types: &[&str],
 ) -> Result<RunningNode> {
-    start_with_rafka_time_hydrating_alpns_and(launch, rafka_time, hydration, decorate_storage, knob_fn, register, types, &[]).await
+    start_with_rafka_time_before_ready_alpns_and(launch, rafka_time, before_ready, decorate_storage, knob_fn, register, types, &[]).await
 }
 
 #[cfg(feature = "file-backend")]
-/// [`start_with_rafka_time_hydrating_and`], also registering the application's data-plane `alpns`.
+/// [`start_with_rafka_time_before_ready_and`], also registering the application's data-plane `alpns`.
 #[allow(clippy::too_many_arguments)]
-pub async fn start_with_rafka_time_hydrating_alpns_and(
+pub async fn start_with_rafka_time_before_ready_alpns_and(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
 ) -> Result<RunningNode> {
-    start_on(launch, crate::storage_backend::file_node_backend(), rafka_time, hydration, decorate_storage, knob_fn, register, types, alpns).await
+    start_on(launch, crate::storage_backend::file_node_backend(), rafka_time, before_ready, decorate_storage, knob_fn, register, types, alpns).await
 }
 
-/// [`start_with_rafka_time_hydrating_alpns_and`] on `storage`: the node's connections rows and its
+/// [`start_with_rafka_time_before_ready_alpns_and`] on `storage`: the node's connections rows and its
 /// commit-state action are the ones it opens.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_on(
     launch: &Launch,
     storage: Arc<dyn crate::storage_backend::NodeStorageBackend>,
     rafka_time: rdm_transport::clock::RafkaTime,
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
@@ -363,7 +363,7 @@ pub async fn start_on(
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
-    let started = crate::taskdump::watched("start", start_booted(launch, storage, rafka_time, hydration, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, storage, rafka_time, before_ready, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
@@ -375,7 +375,7 @@ async fn start_booted(
     launch: &Launch,
     storage: Arc<dyn crate::storage_backend::NodeStorageBackend>,
     rafka_time: rdm_transport::clock::RafkaTime,
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
@@ -631,10 +631,10 @@ async fn start_booted(
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
                             membership.spawn_top_up(crate::topology_read::top_up_fetch(client.clone()));
                             // From here the node is on the mesh, Pending: it answers status and its node commands, and
-                            // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
+                            // says Pending on the membership cadence while its `before_ready` hook runs. It is
                             // published ReadyForTraffic only once the hook has passed ("born full").
                             let cancel = rdm_transport::Retirement::new();
-                            let addressed = crate::app_hydration::Addressed::new();
+                            let addressed = crate::before_ready::Addressed::new();
                             let owed_state: Arc<Mutex<OwedDeclaration>> = Arc::default();
                             let own = {
                                 let (set_digest, set_status_cell, now_status) = (digest.clone(), status.clone(), status.clone());
@@ -665,8 +665,8 @@ async fn start_booted(
                             own.set_data_plane(data_plane.clone());
                             own.set_data_connections(data_connections.clone());
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
-                            let hydration_cell: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>> = Arc::default();
-                            let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
+                            let before_ready_cell: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>> = Arc::default();
+                            let before_ready_task_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             own.set_session(Arc::new(NodeSession {
                                 name: launch.name.clone(),
                                 node_id: launch.node_id.clone(),
@@ -682,14 +682,14 @@ async fn start_booted(
                                 owed: owed_state.clone(),
                                 held: connections.held(),
                                 rafka_time: rafka_time.clone(),
-                                hydration: hydration.clone(),
+                                before_ready: before_ready.clone(),
                                 addressed: addressed.clone(),
                                 publisher: publisher.clone(),
-                                hydration_cell: hydration_cell.clone(),
-                                hydrating: hydrating_cell.clone(),
+                                before_ready_cell: before_ready_cell.clone(),
+                                before_ready_task: before_ready_task_cell.clone(),
                             }));
                             let _ = primary_update_slot.set(Arc::new(crate::member_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), membership.clone(), client.clone())));
-                            let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), hydration: hydration_cell.clone(), stats: server.stats() }));
+                            let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), before_ready: before_ready_cell.clone(), stats: server.stats() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
                             // The owed declaration's owner: whatever state this birth owes is one Owed call to the
@@ -749,7 +749,7 @@ async fn start_booted(
                                 progress: None,
                             };
                             let parts = crate::workflows::node_start::HookParts {
-                                birth: crate::app_hydration::Birth {
+                                birth: crate::before_ready::Birth {
                                     name: launch.name.clone(),
                                     node_id: launch.node_id.clone(),
                                     incarnation: launch.incarnation.clone(),
@@ -757,11 +757,11 @@ async fn start_booted(
                                     mesh_id: mesh_id.clone(),
                                     kind: launch.name.kind,
                                 },
-                                hydration: hydration.clone(),
-                                events: crate::app_hydration::Events::new(membership.book.clone(), addressed),
+                                before_ready: before_ready.clone(),
+                                events: crate::before_ready::Events::new(membership.book.clone(), addressed),
                                 cancel: cancel.token(),
-                                state: hydration_cell.clone(),
-                                runs: crate::workflows::node_start::HookRuns::Inline { blocked: hydrating_cell.clone() },
+                                state: before_ready_cell.clone(),
+                                runs: crate::workflows::node_start::HookRuns::Inline { blocked: before_ready_task_cell.clone() },
                                 after: Box::new(RpcAfterHook {
                                     fabric_id: launch.fabric_id.clone(),
                                     node_id: launch.node_id.clone(),
@@ -772,7 +772,7 @@ async fn start_booted(
                                     knob: knob_fn.and_then(|f| f(&launch, &rafka_time, &boot)),
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell, hydrating: hydrating_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, before_ready: before_ready_cell, before_ready_task: before_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
@@ -790,7 +790,7 @@ async fn start_booted(
         joined: None,
         hook_started: None,
     };
-    crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::FirstStart).await?;
+    crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::FirstStart).await?;
     let running = out.lock().unwrap().take();
     running.ok_or_else(|| anyhow!("{name}: the start ended without the node it brought up"))
 }
@@ -824,11 +824,11 @@ struct NodeSession {
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     owed: Arc<Mutex<OwedDeclaration>>,
     rafka_time: rdm_transport::clock::RafkaTime,
-    hydration: crate::app_hydration::Hydration,
-    addressed: Arc<crate::app_hydration::Addressed>,
+    before_ready: crate::before_ready::BeforeReadyHook,
+    addressed: Arc<crate::before_ready::Addressed>,
     publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    hydration_cell: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>,
-    hydrating: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    before_ready_cell: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
+    before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 #[async_trait::async_trait]
@@ -837,11 +837,11 @@ impl crate::node_self::Session for NodeSession {
         if let Some(p) = self.publisher.lock().unwrap().take() {
             p.abort();
         }
-        if let Some(h) = self.hydrating.lock().unwrap().take() {
+        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
             h.abort();
         }
-        // A parked node serves no app op until a start has hydrated it again.
-        self.hydration.gate().close();
+        // A parked node serves no app op until a start's hook has passed again.
+        self.before_ready.gate().close();
         let neighbours = self.membership.neighbours();
         self.membership.park().await;
         tracing::info_span!(
@@ -868,7 +868,7 @@ impl crate::node_self::Session for NodeSession {
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation, progress };
-        crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
+        crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
     }
 
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
@@ -1031,12 +1031,12 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             progress: self.progress.clone(),
         };
         Ok(crate::workflows::node_start::HookParts {
-            birth: crate::app_hydration::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
-            hydration: s.hydration.clone(),
-            events: crate::app_hydration::Events::new(membership.book.clone(), s.addressed.clone()),
+            birth: crate::before_ready::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
+            before_ready: s.before_ready.clone(),
+            events: crate::before_ready::Events::new(membership.book.clone(), s.addressed.clone()),
             cancel: self.retire.take().expect("the hook's token is handed once"),
-            state: s.hydration_cell.clone(),
-            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.hydrating.clone() },
+            state: s.before_ready_cell.clone(),
+            runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.before_ready_task.clone() },
             after: Box::new(RpcAfterHook { fabric_id: s.fabric_id.clone(), node_id: s.node_id.clone(), name: me, becoming, ends: None, knob: None }),
         })
     }
@@ -1315,10 +1315,10 @@ pub(crate) struct Kicked {
     /// This birth obeying its node commands from its mesh-admin.
     own: Arc<crate::node_self::NodeSelf>,
     /// The down ops node-admins sent this birth: what a hook blocked on its authority's word wakes on.
-    addressed: Arc<crate::app_hydration::Addressed>,
-    /// Where this birth's `hydrate_before_ready` stands (the cell a start's hook writes): while it is
+    addressed: Arc<crate::before_ready::Addressed>,
+    /// Where this birth's `before_ready` stands (the cell a start's hook writes): while it is
     /// Blocked, a probe is answered `Blocked` carrying its blocker.
-    hydration: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>>,
+    before_ready: Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>,
     /// This node's server counters: its in-flight calls decide whether it may take a new name.
     stats: Arc<rdm_transport::ServerStats>,
 }
@@ -1369,7 +1369,7 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
-/// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
+/// state; no transition. While its `before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
 /// `crate::node_self`, which refuses them by name: node commands ride op 0x22. A stale incarnation is refused with the one held. Nothing
 /// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
@@ -1385,7 +1385,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             };
             // The hook's blocker as it stood when the call arrived, before this call addresses the
             // birth (a hook blocked on its authority's word runs again on it).
-            let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
+            let blocker = me.before_ready.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             // The sender is the birth that holds the call's endpoint key in the member projection this
             // node installed (gossip.md §3.1, the authoritative member record), never the heartbeat
             // book, which holds a member only once its own digest reached this node.

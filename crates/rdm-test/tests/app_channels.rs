@@ -1,6 +1,6 @@
-//! Public app declarations, pre-hydration joins, and held-set discovery on real admins.
+//! Public app declarations, joins before the before_ready hook, and held-set discovery on real admins.
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, Hydration};
+use rdm_admin::before_ready::{HookOutcome, BeforeReady, BeforeReadyCtx, BeforeReadyHook};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{NodeSelect, StatusReply, StatusRequest};
 use rdm_core::{IncarnationId, NodeId};
@@ -18,13 +18,13 @@ struct Hook {
     observed: Mutex<Option<BTreeSet<String>>>,
 }
 #[async_trait::async_trait]
-impl HydrateBeforeReady for Hook {
-    async fn hydrate_before_ready(&self, ctx: &HydrateCtx) -> HookOutcome {
+impl BeforeReady for Hook {
+    async fn before_ready(&self, ctx: &BeforeReadyCtx) -> HookOutcome {
         let types = ctx.membership.app_types();
         assert_eq!(types.len(), 1);
         assert!(
             types.is_subset(&ctx.membership.held_types()),
-            "the role joined its declaration before hydration"
+            "the role joined its declaration before its before_ready hook"
         );
         let channel = ctx
             .membership
@@ -86,8 +86,8 @@ async fn own_view(r: &Running) -> rdm_core::views::NodeView {
     .expect("the admin's own projection is installed within the read bound")
 }
 #[test]
-fn a_node_admin_joins_its_wiring_types_before_hydration_and_node_get_answers_its_own_declaration() {
-    let cell="a_node_admin_joins_its_wiring_types_before_hydration_and_node_get_answers_its_own_declaration";
+fn a_node_admin_joins_its_wiring_types_before_its_before_ready_hook_and_node_get_answers_its_own_declaration() {
+    let cell="a_node_admin_joins_its_wiring_types_before_its_before_ready_hook_and_node_get_answers_its_own_declaration";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
@@ -99,7 +99,7 @@ fn a_node_admin_joins_its_wiring_types_before_hydration_and_node_get_answers_its
             config(&dir),
             Wiring {
                 types: vec![BASE.into()],
-                hydration: Hydration::new(hook.clone()),
+                before_ready: BeforeReadyHook::new(hook.clone()),
                 fabric_hooks: FabricHooks::no_app_work(),
                 ..Wiring::no_certs()
             },
@@ -107,7 +107,7 @@ fn a_node_admin_joins_its_wiring_types_before_hydration_and_node_get_answers_its
         .await
         .unwrap();
         root.stop_reconciling();
-        tokio::time::timeout(BOUND, root.hydration().unwrap().settled())
+        tokio::time::timeout(BOUND, root.before_ready().unwrap().settled())
             .await
             .unwrap();
         assert_eq!(
@@ -192,7 +192,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             AdminConfig::from_env(|k| env.get(k).cloned()).unwrap(),
             Wiring {
                 types: vec![LATE.into()],
-                hydration: Hydration::new(hook.clone()),
+                before_ready: BeforeReadyHook::new(hook.clone()),
                 fabric_hooks: FabricHooks::no_app_work(),
                 ..Wiring::no_certs()
             },
@@ -213,7 +213,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
         assert_eq!(first.held, expected);
         assert_eq!(second.held, expected);
         assert_eq!(second.held_hash, rdm_core::app_types::hash(&expected));
-        tokio::time::timeout(BOUND, joiner.hydration().unwrap().settled())
+        tokio::time::timeout(BOUND, joiner.before_ready().unwrap().settled())
             .await
             .unwrap();
         hook.channel.lock().unwrap().take();

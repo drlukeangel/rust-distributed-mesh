@@ -802,18 +802,18 @@ pub(crate) fn mesh_state_of(status: &str) -> Result<rdm_core::status::MeshState,
     }
 }
 
-/// Never Ready around missing control hydration: an admin that holds no current Build (R-BI3: no
+/// Never Ready while a Build's facts are missing: an admin that holds no current Build (R-BI3: no
 /// Build in its builds store is in progress or completed) names itself blocked. Only Day 0 accepts
-/// the first Build itself; every other admin hydrates the Build facts from an existing authority
+/// the first Build itself; every other admin fetches the Build facts from an existing authority
 /// (its entry pull, or the fabric control topic).
 ///
 /// Ready also needs the facts of the Build the entry named, the answering admin's current Build: it
 /// must be readable from this admin's own log, and its folded attempt must reach the attempt that
 /// admin held of it (`floor`). An admin that was not served an entry (Day 0) owes no floor. The
-/// reason is typed ([`crate::hydrate::HydrationBlocker`]): the Ready check recovers each one with
+/// reason is typed ([`crate::fetch_build::NodeAdminNotReady`]): the Ready check recovers each one with
 /// the request it names.
-pub async fn hydration_blocker(me: &PathName, builds: &dyn BuildStateAdapter, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::hydrate::HydrationBlocker> {
-    use crate::hydrate::HydrationBlocker as B;
+pub async fn node_admin_not_ready(me: &PathName, builds: &dyn BuildStateAdapter, floor: Option<(crate::build::BuildId, u32)>) -> Option<crate::fetch_build::NodeAdminNotReady> {
+    use crate::fetch_build::NodeAdminNotReady as B;
     if let Some((id, attempt)) = floor {
         match builds.read_build(&id).await {
             Ok(held) if held.attempt < attempt => return Some(B::BehindFloor { me: me.clone(), build_id: id, held: held.attempt, floor: attempt }),

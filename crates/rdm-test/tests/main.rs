@@ -196,8 +196,8 @@ mod rshape_burn_in;
 // ── Testkit functional cells ──
 mod common;
 mod container_pipeline;
-mod hydrate_before_ready;
-mod hydrate_before_ready_admin;
+mod before_ready;
+mod before_ready_admin;
 mod proof_store;
 mod join_before_ready;
 mod member_cert;

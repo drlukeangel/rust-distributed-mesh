@@ -498,7 +498,7 @@ Readiness is the end of [node start](lifecycles/node-start.md), reported by the 
    installed, the required Build floor held, rafka-time refreshed last. Nothing else makes a node
    ready; a partial snapshot or a Blocked hook makes none.
 2. **The application's one contribution is the hook.** Whatever an application must hold before it
-   can serve (Rafka: its resident stores hydrated, [`entity-framework.md`](/home/admin/rafka-v2/docs/architecture/entity-framework.md))
+   can serve
    it does inside `before_ready`, which it may answer Ok, Blocked with a retry event, or Failed by
    name ([Outcomes and the gate](fabric-node-hooks.md#outcomes-and-the-gate)). A node with nothing to
    hold is trivially ready.

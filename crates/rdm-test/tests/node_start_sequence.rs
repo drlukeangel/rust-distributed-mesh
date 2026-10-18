@@ -2,7 +2,7 @@
 //! create composes the whole node.start with FirstStart, a start after a stop runs it with AfterStop).
 //!
 //! The design (node-start.md steps 2-5): join the accepting authority and consume its cert and
-//! rafka-time answer, join the mesh channel, then node.joined; run `hydrate_before_ready` (the app
+//! rafka-time answer, join the mesh channel, then node.joined; run `before_ready` (the app
 //! "reads no topology snapshot as a prerequisite"); obtain complete topology through
 //! node.topology.get; fetch Build facts only when the node is below the authority's floor, "after
 //! the hook and before node.started"; "Refresh rafka-time **last**, so it is current when the node
@@ -14,7 +14,7 @@
 //! step before it has closed: a node-admin's first start (launched by another admin), the same
 //! node-admin's start after its stop, an rpc node's first start and the same rpc node's start after
 //! its stop. The steps are the join (`via-join-admitted`), the mesh channel, node.joined
-//! (`via-membership-joined`), the `hydrate_before_ready` attempt (`via-hydrate-attempt`), the
+//! (`via-membership-joined`), the `before_ready` attempt (`via-before-ready-attempt`), the
 //! topology (`via-topology-taken`), the Build floor (`via-build-floor`, run on every start: an rpc
 //! node holds no Build log and owes none), the rafka-time refresh (`via-rafka-time-refreshed`) and
 //! the report (`via-ready`). What must NOT happen: a topology read before the hook returned, a
@@ -32,11 +32,11 @@ use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{IncarnationId, MemberStatus, MeshDigest, NodeId, PathName};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
-use rdm_admin::app_hydration::{HookOutcome, Hydration};
+use rdm_admin::before_ready::{HookOutcome, BeforeReadyHook};
 use rdm_admin::join::Deployed;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::status::{StatusReply, StatusRequest};
-use rdm_test::hydrate_probe::{Mode, TestHydrator};
+use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use std::time::Duration;
 
 /// What a step that ends at once on a correct node is given before the cell fails by name.
@@ -46,7 +46,7 @@ const WRONG: Duration = Duration::from_secs(60);
 const STEPS: [&str; 7] = [
     "rdm.mesh.node.update.via-join-admitted",
     "rdm.mesh.node.update.via-membership-joined",
-    "rdm.mesh.node.update.via-hydrate-attempt",
+    "rdm.mesh.node.update.via-before-ready-attempt",
     "rdm.mesh.node.update.via-topology-taken",
     "rdm.mesh.node.update.via-build-floor",
     "rdm.mesh.node.update.via-rafka-time-refreshed",
@@ -68,8 +68,8 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 }
 
 /// A hook that passes at once: every start runs exactly one attempt.
-fn passing() -> Hydration {
-    Hydration::new(TestHydrator::new(Mode::Fixed(HookOutcome::Ok)))
+fn passing() -> BeforeReadyHook {
+    BeforeReadyHook::new(TestBeforeReady::new(Mode::Fixed(HookOutcome::Ok)))
 }
 
 /// A launch of `name` by `root`, its data dir holding the runtime record its provider would write.
@@ -178,7 +178,7 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
 
         // The authority: a Day-0 node-admin. Its accepted Build names only itself, and a reconciling
         // root would retire the nodes this cell launches in its own process: it does not reconcile.
-        let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(day0_config(&root_dir), Wiring { before_ready: BeforeReadyHook::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
 
@@ -187,13 +187,13 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let _ = root.runner.joins.expect(deployed(&admin_launch, None));
         let env = admin_launch.to_env();
         let admin_cfg = AdminConfig::from_env(|k| env.get(k).cloned()).expect("the launch is a readable environment");
-        let admin = start_with(admin_cfg, Wiring { hydration: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
+        let admin = start_with(admin_cfg, Wiring { before_ready: passing(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the launched admin comes up");
         until_ready("mesh1.admin.2 (first start)", || admin.digest.lock().unwrap().clone()).await;
 
         // An rpc node's first start: launched by the root.
         let rpc_launch = launch_by(&root, "mesh1.rpc.1", &rpc_dir, vec![]);
         let _ = root.runner.joins.expect(deployed(&rpc_launch, None));
-        let rpc = rdm_test::node::start_hydrating(&rpc_launch, passing(), |b, _| b).await.expect("the rpc node comes up");
+        let rpc = rdm_test::node::start_before_ready(&rpc_launch, passing(), |b, _| b).await.expect("the rpc node comes up");
         until_ready("mesh1.rpc.1 (first start)", || {
             let mut d = rpc.digest.clone();
             d.status = *rpc.status.lock().unwrap();

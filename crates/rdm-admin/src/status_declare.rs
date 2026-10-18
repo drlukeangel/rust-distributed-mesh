@@ -55,8 +55,8 @@ pub struct DeclareWake {
     /// Wakes the hierarchy and peer-mesh investigation loops when a Mesh's round-complete report arrives.
     pub(crate) report_notify: tokio::sync::Notify,
     addressed: Mutex<BTreeSet<NodeId>>,
-    /// The same down ops, counted for a `hydrate_before_ready` hook blocked on its authority's word.
-    pub(crate) hydration: Arc<crate::app_hydration::Addressed>,
+    /// The same down ops, counted for a `before_ready` hook blocked on its authority's word.
+    pub(crate) before_ready: Arc<crate::before_ready::Addressed>,
 }
 
 impl DeclareWake {
@@ -74,7 +74,7 @@ impl DeclareWake {
     /// last outcome.
     pub(crate) fn addressed_by(&self, from: Option<&NodeId>, peer: Option<iroh::PublicKey>) {
         if let Some(peer) = peer {
-            self.hydration.note(&peer);
+            self.before_ready.note(&peer);
         }
         if let Some(from) = from {
             self.addressed.lock().unwrap().insert(from.clone());

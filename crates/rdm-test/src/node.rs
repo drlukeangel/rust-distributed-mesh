@@ -13,17 +13,17 @@ pub use rdm_node::node::{
     RunningNode,
 };
 
-/// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
-/// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
-pub async fn start_hydrating(
+/// [`start_with_seams`] for an app with a hook before Ready: `before_ready` carries its
+/// `before_ready` hook (and the gate its own server-side ops sit behind).
+pub async fn start_before_ready(
     launch: &Launch,
-    hydration: rdm_node::app_hydration::Hydration,
+    before_ready: rdm_node::before_ready::BeforeReadyHook,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
-    start_with_rafka_time_hydrating(
+    start_with_rafka_time_before_ready(
         launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        hydration,
+        before_ready,
         register,
     )
     .await
@@ -57,10 +57,10 @@ pub async fn start_with_seams(
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
     let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
-    start_with_rafka_time_hydrating(
+    start_with_rafka_time_before_ready(
         launch,
         rafka_time,
-        rdm_node::app_hydration::Hydration::none(),
+        rdm_node::before_ready::BeforeReadyHook::none(),
         register,
     )
     .await
@@ -75,10 +75,10 @@ fn node_backend() -> Arc<dyn rdm_node::storage_backend::NodeStorageBackend> {
     return Arc::new(rdm_node::storage_backend::MemoryNodeBackend);
 }
 
-async fn start_with_rafka_time_hydrating(
+async fn start_with_rafka_time_before_ready(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
-    hydration: rdm_node::app_hydration::Hydration,
+    before_ready: rdm_node::before_ready::BeforeReadyHook,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
 ) -> Result<RunningNode> {
     let fault = Arc::new(crate::faults::StorageFault::default());
@@ -88,7 +88,7 @@ async fn start_with_rafka_time_hydrating(
         launch,
         node_backend(),
         rafka_time,
-        hydration,
+        before_ready,
         move |base| Arc::new(crate::faults::FaultedConnectionsStorage::new(base, fault_for_storage)),
         Some(knob_fn),
         move |b, ns| {

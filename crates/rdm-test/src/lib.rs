@@ -7,12 +7,12 @@
 pub use rdm_core::launch;
 pub mod node;
 pub(crate) use rdm_node::taskdump;
-/// The app's `hydrate_before_ready` hook and everything it is handed.
-pub use rdm_node::app_hydration;
+/// The app's `before_ready` hook and everything it is handed.
+pub use rdm_node::before_ready;
 pub use rdm_node::{executable_name, launch_for, read_launch, Role};
 pub use rdm_node::node_rpc;
 pub mod declare_probe;
-pub mod hydrate_probe;
+pub mod before_ready_probe;
 pub mod proof_store;
 pub mod families;
 pub use rdm_node::held_name;
@@ -77,20 +77,20 @@ pub fn skew_os_clock_from_root(root: &std::path::Path, name: &str) -> Option<i64
     Some(ms)
 }
 
-/// The directory under an estate's data root where a scenario records a `hydrate_before_ready` knob
-/// for one node: while the file `<root>/hydrate-knob/<path.name>` exists when the node starts, the
-/// node registers [`hydrate_probe::KnobHydrator`], whose hook is Blocked with the file's text as its
+/// The directory under an estate's data root where a scenario records a `before_ready` knob
+/// for one node: while the file `<root>/before-ready-knob/<path.name>` exists when the node starts, the
+/// node registers [`before_ready_probe::KnobBeforeReady`], whose hook is Blocked with the file's text as its
 /// reason until the text is `pass`.
-pub fn hydrate_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("hydrate-knob")
+pub fn before_ready_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("before-ready-knob")
 }
 
-/// Record `text` as node `name`'s `hydrate_before_ready` knob under `root` ([`hydrate_knob_dir`]).
+/// Record `text` as node `name`'s `before_ready` knob under `root` ([`before_ready_knob_dir`]).
 /// The node's hook reads the knob on every attempt, while the scenario rewrites it, so the text is
 /// written to `<path.name>.staged` beside the knob and renamed over it: a read opens the old file or
 /// the new one, each whole, and never a knob truncated before its new text is written.
-pub fn write_hydrate_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
-    let dir = hydrate_knob_dir(root);
+pub fn write_before_ready_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
+    let dir = before_ready_knob_dir(root);
     std::fs::create_dir_all(&dir)?;
     let staged = dir.join(format!("{name}.staged"));
     std::fs::write(&staged, text)?;
@@ -130,23 +130,23 @@ mod tests {
     use super::*;
     use std::io::Read;
 
-    /// CONTRACT: a rewrite of a node's `hydrate_before_ready` knob never touches the file a reader
+    /// CONTRACT: a rewrite of a node's `before_ready` knob never touches the file a reader
     /// already opened: the reader holding the knob reads the text it opened, whole, and the next
-    /// open reads the new text. The knob's hook (`hydrate_probe::KnobHydrator`) reads the file on
+    /// open reads the new text. The knob's hook (`before_ready_probe::KnobBeforeReady`) reads the file on
     /// every attempt while a scenario rewrites it. What must NOT happen: a rewrite in place, which
     /// truncates the very file a reader holds and writes after it, so a read between the two
     /// sees the knob empty and the hook answers `Blocked` with no reason.
     #[test]
     fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
-        let root = std::env::temp_dir().join(format!("hydrate-knob-rewrite-{}", rdm_core::NodeId::mint()));
+        let root = std::env::temp_dir().join(format!("before-ready-knob-rewrite-{}", rdm_core::NodeId::mint()));
         let (a, b) = ("the rows of orders are not yet published", "the authority of orders is draining");
-        write_hydrate_knob(&root, "mesh1.rpc.2", a).unwrap();
-        let mut held = std::fs::File::open(hydrate_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
-        write_hydrate_knob(&root, "mesh1.rpc.2", b).unwrap();
+        write_before_ready_knob(&root, "mesh1.rpc.2", a).unwrap();
+        let mut held = std::fs::File::open(before_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
+        write_before_ready_knob(&root, "mesh1.rpc.2", b).unwrap();
         let mut read = String::new();
         held.read_to_string(&mut read).unwrap();
         assert_eq!(read, a, "the reader that opened the knob before the rewrite reads the text it opened, whole");
-        assert_eq!(std::fs::read_to_string(hydrate_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
+        assert_eq!(std::fs::read_to_string(before_ready_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
@@ -244,13 +244,13 @@ pub async fn run_proof_launched() -> anyhow::Result<()> {
 
 /// Run a proof role process to completion with testkit seams and oracles.
 pub async fn run_proof(role: Role) -> anyhow::Result<()> {
-    run_proof_with(role, crate::app_hydration::Hydration::none(), |b| b).await
+    run_proof_with(role, crate::before_ready::BeforeReadyHook::none(), |b| b).await
 }
 
-/// [`run_proof`] for a proof role that hydrates before Ready.
+/// [`run_proof`] for a proof role with a `before_ready` hook.
 pub async fn run_proof_with(
     role: Role,
-    hydration: crate::app_hydration::Hydration,
+    before_ready: crate::before_ready::BeforeReadyHook,
     serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder,
 ) -> anyhow::Result<()> {
     crate::node::listen_for_stop();
@@ -271,7 +271,7 @@ pub async fn run_proof_with(
     let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_hydrating(&launch, hydration, |b, seams| {
+        let started = crate::node::start_before_ready(&launch, before_ready, |b, seams| {
             serve_app(oracles.serve(
                 compose(role, &launch.node_id.to_string(), b, seams.client),
                 &launch,
@@ -301,12 +301,12 @@ pub async fn run_proof_with(
     println!("RDM_NODE_READY {}", launch.node_id);
     let ended = tokio::select! {
         () = crate::node::wait_for_signal(&executable) => None,
-        why = running.hydration_failed() => Some(why),
+        why = running.before_ready_failed() => Some(why),
     };
     if let Some(why) = ended {
-        tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("hydrate_before_ready failed; this node ends"));
+        tracing::info_span!("rdm.mesh.node.delete.via-before-ready-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("before_ready failed; this node ends"));
         running.stop().await;
-        return Err(anyhow::anyhow!("{} failed hydrate_before_ready: {why}", launch.name));
+        return Err(anyhow::anyhow!("{} failed before_ready: {why}", launch.name));
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     if crate::node::stop_commanded() {

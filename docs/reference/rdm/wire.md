@@ -20,7 +20,7 @@ Every Node RPC op: each `impl NodeProtocol` in RDM's non-test source, sorted by 
 | `0x71` | `resolve-probe` | `ResolveProbe` | [`ResolveRequest`](#t-rdm_test-resolve_probe-ResolveRequest) | [`ResolveReply`](#t-rdm_test-resolve_probe-ResolveReply) |
 | `0x72` | `declare-probe` | `DeclareProbe` | [`DeclareRequest`](#t-rdm_test-declare_probe-DeclareRequest) | [`DeclareReply`](#t-rdm_test-declare_probe-DeclareReply) |
 | `0x73` | `originate` | `Originate` | [`OriginateRequest`](#t-rdm_test-originate-OriginateRequest) | [`OriginateReply`](#t-rdm_test-originate-OriginateReply) |
-| `0x74` | `hydrate-pull` | `HydratePull` | [`PullRequest`](#t-rdm_test-hydrate_probe-PullRequest) | [`PullReply`](#t-rdm_test-hydrate_probe-PullReply) |
+| `0x74` | `before-ready-pull` | `BeforeReadyPull` | [`PullRequest`](#t-rdm_test-before_ready_probe-PullRequest) | [`PullReply`](#t-rdm_test-before_ready_probe-PullReply) |
 | `0x75` | `fault-door` | `FaultDoor` | [`FaultRequest`](#t-rdm_test-fault_door-FaultRequest) | [`FaultReply`](#t-rdm_test-fault_door-FaultReply) |
 
 ## 0x01 `ping`
@@ -368,7 +368,7 @@ The typed result of a Status call.
 | 17.0 | `receipt` | `ConnectionsReceipt` → [`ConnectionsReceipt`](#t-rdm_core-status-ConnectionsReceipt) |  |  | What the stop's `node.connections.delete { All }` established. |
 | 18 | **`Started`** |  |  | `name() = "started"` | The reply of a `StartNode` call: the parked birth rejoined as itself. |
 | 19 | **`StartFailed`** |  |  | `name() = "start-failed"` | The reply of a `StartNode` call whose start stopped at `step`: nothing after that step ran. |
-| 19.0 | `step` | `String` |  |  | The step that failed: `node.join`, `node.topology` or `node.hydrate`. |
+| 19.0 | `step` | `String` |  |  | The step that failed: `node.join`, `node.topology` or `node.before-ready`. |
 | 19.1 | `reason` | `String` |  |  | Why it failed. |
 | 20 | **`CurrentParked`** |  |  | `name() = "current-parked"` | The exact birth's own answer to a probe while it is parked: `Leaving`, its process alive and |
 | 20.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
@@ -385,7 +385,7 @@ The typed result of a Status call.
 | 24.0 | `node` | `String` |  |  | The node's `path.name`. |
 | 24.1 | `answered` | `String` |  |  | The birth's reply to `apply-node-config` by name, or the call's end by name. |
 | 24.2 | `reason` | `String` |  |  | Its detail. |
-| 25 | **`Blocked`** |  |  | `name() = "blocked"` | The exact birth's own answer to a probe while its `hydrate_before_ready` hook is Blocked: the |
+| 25 | **`Blocked`** |  |  | `name() = "blocked"` | The exact birth's own answer to a probe while its `before_ready` hook is Blocked: the |
 | 25.0 | `node_id` | `NodeId` → [`NodeId`](#t-rdm_core-ids-NodeId) |  |  | The answering birth's logical node. |
 | 25.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rdm_core-ids-IncarnationId) |  |  | The answering birth's incarnation. |
 | 25.2 | `reason` | `String` |  |  | The hook's own blocker, in words. |
@@ -1464,14 +1464,14 @@ An originate door answer.
 | 13.0 | `by` | `AnsweredBy` → [`AnsweredBy`](#t-rdm_test-originate-AnsweredBy) |  | Who marked the stop. |
 | 13.1 | `reason` | `String` |  | The reason recorded. |
 
-## 0x74 `hydrate-pull`
+## 0x74 `before-ready-pull`
 
-`impl NodeProtocol for HydratePull` · `crates/rdm-test/src/hydrate_probe.rs` · rdm-test
+`impl NodeProtocol for BeforeReadyPull` · `crates/rdm-test/src/before_ready_probe.rs` · rdm-test
 
 | const | value |
 |---|---|
 | `OP` | `0x74` |
-| `NAME` | `"hydrate-pull"` |
+| `NAME` | `"before-ready-pull"` |
 | `FORWARDABLE` | trait default `false` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | trait default `false` |
 | `REQUEST_VARIANTS` | `1` |
@@ -1479,11 +1479,11 @@ An originate door answer.
 | `MAX_REQUEST_FRAME_BYTES` | `256` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
-<a id="t-rdm_test-hydrate_probe-PullRequest"></a>
+<a id="t-rdm_test-before_ready_probe-PullRequest"></a>
 
 ### `PullRequest`
 
-`crates/rdm-test/src/hydrate_probe.rs` · enum · 1 variants · rdm-test
+`crates/rdm-test/src/before_ready_probe.rs` · enum · 1 variants · rdm-test
 
 A pull.
 
@@ -1491,18 +1491,18 @@ A pull.
 |---|---|---|---|---|
 | 0 | **`Pull`** |  |  | Every row this authority holds. |
 
-<a id="t-rdm_test-hydrate_probe-PullReply"></a>
+<a id="t-rdm_test-before_ready_probe-PullReply"></a>
 
 ### `PullReply`
 
-`crates/rdm-test/src/hydrate_probe.rs` · enum · 7 variants · rdm-test
+`crates/rdm-test/src/before_ready_probe.rs` · enum · 7 variants · rdm-test
 
 A pull's answer.
 
 | # | variant · field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | **`Rows`** |  |  | The rows, complete. |
-| 0.0 | `rows` | `Vec<Row>` → [`Row`](#t-rdm_test-hydrate_probe-Row) |  | The rows in version order. |
+| 0.0 | `rows` | `Vec<Row>` → [`Row`](#t-rdm_test-before_ready_probe-Row) |  | The rows in version order. |
 | 1 | **`PeerUnresolved`** |  |  | The peer the call needed could not be resolved. |
 | 1.0 | `reason` | `String` |  | Why. |
 | 2 | **`NotReady`** |  |  | The authority's own hook has not passed. |
@@ -2727,7 +2727,7 @@ Why a resolver gave no node.
 
 `crates/rdm-core/src/status.rs` · enum · 4 variants · rdm-core
 
-The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
+The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
@@ -2737,11 +2737,11 @@ The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks
 | 2 | **`AuthorityReady`** |  |  | `name() = "authority-ready"` | The authority published ReadyForTraffic. |
 | 3 | **`AuthorityAddressed`** |  |  | `name() = "authority-addressed"` | The authority addressed this node (it sent a down op). |
 
-<a id="t-rdm_test-hydrate_probe-Row"></a>
+<a id="t-rdm_test-before_ready_probe-Row"></a>
 
 ### `Row`
 
-`crates/rdm-test/src/hydrate_probe.rs` · struct · 2 fields · rdm-test
+`crates/rdm-test/src/before_ready_probe.rs` · struct · 2 fields · rdm-test
 
 One row of the authority's state.
 

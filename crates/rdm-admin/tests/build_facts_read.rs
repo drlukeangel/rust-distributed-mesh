@@ -1,15 +1,15 @@
 //! `FetchBuildFacts` (op `0x1F`) and the Ready check's recovery of missing control facts (i143 R-G6),
 //! over real Node RPC between in-process node-admins: what a responder serves from its own Build log,
-//! what a caller counts as hydration, and how the Hydrator rotates, backs off and repeats.
+//! what a caller counts as a fetched Build, and how the FetchBuild rotates, backs off and repeats.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_admin::accepted::FabricTopology;
-use rdm_admin::admin::hydration_blocker;
+use rdm_admin::admin::node_admin_not_ready;
 use rdm_admin::build::BuildId;
 use rdm_admin::build_facts_read::{fetch_build_facts, BuildFactsDoor, FetchFailure};
 use rdm_admin::build_state::{AttemptOpened, AttemptReason, AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, LocalBuildLog, MemoryBuildStateAdapter};
-use rdm_admin::hydrate::{HydrationBlocker, Hydrator, Responder, Responders};
+use rdm_admin::fetch_build::{NodeAdminNotReady, FetchBuild, Responder, Responders};
 use rdm_admin::model::{FabricId, PathName};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::build_facts::{BuildFacts, BuildFactsReply};
@@ -112,17 +112,17 @@ async fn caller(name: &str, fabric: &FabricId, peers: &[&Node]) -> (Admin, Node)
     (a, n)
 }
 
-fn hydrator(c: &(Admin, Node), responders: Responders, entry: Option<rdm_admin::hydrate::EntryRepeat>) -> Hydrator {
-    Hydrator::new(c.0.name.clone(), c.1.client.clone(), c.0.log.clone() as Arc<dyn LocalBuildLog>, responders, entry)
+fn fetch_build(c: &(Admin, Node), responders: Responders, entry: Option<rdm_admin::fetch_build::EntryRepeat>) -> FetchBuild {
+    FetchBuild::new(c.0.name.clone(), c.1.client.clone(), c.0.log.clone() as Arc<dyn LocalBuildLog>, responders, entry)
 }
 
 /// Drive the Ready check's turn until it finds no blocker, recording each distinct blocker kind.
-async fn drive(a: &Admin, h: &mut Hydrator, within: Duration) -> Result<Vec<&'static str>, Vec<&'static str>> {
+async fn drive(a: &Admin, h: &mut FetchBuild, within: Duration) -> Result<Vec<&'static str>, Vec<&'static str>> {
     let until = Instant::now() + within;
     let mut seen: Vec<&'static str> = Vec::new();
     loop {
         let floor = a.floor.lock().unwrap().clone();
-        let blocker = hydration_blocker(&a.name, &*a.log, floor).await;
+        let blocker = node_admin_not_ready(&a.name, &*a.log, floor).await;
         if let Some(b) = &blocker {
             if seen.last() != Some(&b.kind()) {
                 seen.push(b.kind());
@@ -303,8 +303,8 @@ impl Spans {
         self.all.iter().filter(|s| s.name == name).collect()
     }
 
-    /// Every span named `name`, each a direct child of the cell's root: the trace the caller of the Hydrator was in is
-    /// the trace of the request the Hydrator spawned.
+    /// Every span named `name`, each a direct child of the cell's root: the trace the caller of the FetchBuild was in is
+    /// the trace of the request the FetchBuild spawned.
     fn children(&self, name: &str) -> Vec<&Seen> {
         let found = self.named(name);
         for s in &found {
@@ -363,11 +363,11 @@ fn a_build_the_entry_named_is_held_current_once_its_facts_are_fetched() {
         let joiner = caller("mesh1.admin.2", &fabric, &[&responder]).await;
         entry_named(&joiner.0, &id, 2);
         assert_eq!(joiner.0.log.current_build().await.unwrap().into_build_id(), None, "no Build is held: none is current");
-        let b = hydration_blocker(&joiner.0.name, &*joiner.0.log, joiner.0.floor.lock().unwrap().clone()).await.unwrap();
-        assert!(matches!(&b, HydrationBlocker::NoCurrentBuild { wanted: Some(w), .. } if *w == id), "{b:?}");
+        let b = node_admin_not_ready(&joiner.0.name, &*joiner.0.log, joiner.0.floor.lock().unwrap().clone()).await.unwrap();
+        assert!(matches!(&b, NodeAdminNotReady::NoCurrentBuild { wanted: Some(w), .. } if *w == id), "{b:?}");
 
-        let mut h = hydrator(&joiner, responders(vec![&responder]), None);
-        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("hydrates");
+        let mut h = fetch_build(&joiner, responders(vec![&responder]), None);
+        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(seen, vec!["no-current-build-wanted"], "the one blocker the joiner named");
         assert_eq!(joiner.0.log.current_build().await.unwrap().into_build_id(), Some(id.clone()), "the fetched Build is current");
         assert_eq!(joiner.0.log.read_build(&id).await.unwrap().attempt, 2, "the joiner's own log holds the Build through the floor");
@@ -441,10 +441,10 @@ fn an_incomplete_responder_is_passed_over_and_only_full_holdings_count() {
         assert!(!got.complete, "the first responder says its holdings are not whole");
         assert!(joiner.0.log.facts().await.unwrap().is_empty(), "a read alone absorbs nothing");
 
-        let mut h = hydrator(&joiner, responders(vec![&first, &second]), None);
-        drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("hydrates from the second");
-        assert_eq!(first.calls.load(Ordering::SeqCst), 2, "the first responder was asked (once by the read above, once by the Hydrator) and passed over");
-        assert_eq!(second.calls.load(Ordering::SeqCst), 1, "the second responder's full holdings hydrated it");
+        let mut h = fetch_build(&joiner, responders(vec![&first, &second]), None);
+        drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches from the second");
+        assert_eq!(first.calls.load(Ordering::SeqCst), 2, "the first responder was asked (once by the read above, once by the FetchBuild) and passed over");
+        assert_eq!(second.calls.load(Ordering::SeqCst), 1, "the second responder's full holdings supplied it");
         assert_eq!(joiner.0.log.read_build(&id).await.unwrap().attempt, 2);
         for n in [&first, &second, &joiner.1] {
             n.ep.close().await;
@@ -463,10 +463,10 @@ fn an_incomplete_responder_is_passed_over_and_only_full_holdings_count() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a stream that ends before its `End` is never hydration: nothing is absorbed, the blocker
+/// CONTRACT: a stream that ends before its `End` is never a fetched Build: nothing is absorbed, the blocker
 /// stands, the target is left alone for its backoff, and the same request is made again from the
 /// beginning and then counts. Its trace: the cut read is a call span under the cell's root, the
-/// Hydrator's repeated read is one fetch span (three facts) holding its own call.
+/// FetchBuild's repeated read is one fetch span (three facts) holding its own call.
 #[test]
 fn an_interrupted_stream_never_counts_and_the_read_is_made_again() {
     let cap = capture();
@@ -503,8 +503,8 @@ fn an_interrupted_stream_never_counts_and_the_read_is_made_again() {
         assert!(matches!(cut, FetchFailure::Interrupted(_)), "{cut}");
         assert!(joiner.0.log.facts().await.unwrap().is_empty(), "an interrupted stream absorbs nothing");
 
-        let mut h = hydrator(&joiner, responders(vec![&responder]), None);
-        drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("the repeated read hydrates");
+        let mut h = fetch_build(&joiner, responders(vec![&responder]), None);
+        drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("the repeated read fetches the Build");
         assert_eq!(asked.load(Ordering::SeqCst), 2, "the cut read, then the read made again");
         assert_eq!(joiner.0.log.current_build().await.unwrap().into_build_id(), Some(id.clone()));
         for n in [&responder, &joiner.1] {
@@ -514,7 +514,7 @@ fn an_interrupted_stream_never_counts_and_the_read_is_made_again() {
     });
     let spans = cap.spans(story);
     let fetches = spans.children(FETCH);
-    assert_eq!(fetches.len(), 1, "the Hydrator read once; the cut read was the cell's own;\n{}", spans.render());
+    assert_eq!(fetches.len(), 1, "the FetchBuild read once; the cut read was the cell's own;\n{}", spans.render());
     assert_fetch(&spans, fetches[0], "mesh1.admin.2", &id, "no-current-build-wanted", "mesh1.admin.1", Some(3));
     assert_eq!(spans.named(CALL).len(), 2, "the cut read's call and the fetch's call;\n{}", spans.render());
 }
@@ -530,7 +530,7 @@ fn id_of(req: &rdm_core::build_facts::BuildFactsRequest) -> String {
 
 // @feature: node-lifecycle
 /// CONTRACT: the fabric-primary is asked first. When it cannot answer (it refuses NotReady, or its
-/// peer does not resolve), the next known node-admin is asked, and its holdings hydrate the joiner. The
+/// peer does not resolve), the next known node-admin is asked, and its holdings supply the joiner. The
 /// fabric-primary is not killed: it is made unreachable by what it answers. Its trace: four fetch spans
 /// under the cell's root (the refusing fabric-primary, the node-admin that answered, the unresolvable
 /// peer, the node-admin that answered), each refusal beside a `via-fetch-failed` rejection naming its reason.
@@ -546,8 +546,8 @@ fn an_unreachable_fabric_primary_rotates_to_another_node_admin() {
         let second = node_of(&other).await;
         let joiner = caller("mesh1.admin.3", &fabric, &[&not_ready, &second]).await;
         entry_named(&joiner.0, &id, 1);
-        let mut h = hydrator(&joiner, responders(vec![&not_ready, &second]), None);
-        drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("hydrates from the second");
+        let mut h = fetch_build(&joiner, responders(vec![&not_ready, &second]), None);
+        drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches from the second");
         assert_eq!(not_ready.calls.load(Ordering::SeqCst), 1, "the fabric-primary was asked first, once");
         assert_eq!(second.calls.load(Ordering::SeqCst), 1);
 
@@ -560,8 +560,8 @@ fn an_unreachable_fabric_primary_rotates_to_another_node_admin() {
             let list = list.clone();
             Box::pin(async move { list })
         });
-        let mut h2 = hydrator(&joiner2, responders, None);
-        drive(&joiner2.0, &mut h2, Duration::from_secs(10)).await.expect("hydrates past the unresolvable fabric-primary");
+        let mut h2 = fetch_build(&joiner2, responders, None);
+        drive(&joiner2.0, &mut h2, Duration::from_secs(10)).await.expect("fetches past the unresolvable fabric-primary");
         for n in [&not_ready, &second, &joiner.1, &joiner2.1] {
             n.ep.close().await;
         }
@@ -596,8 +596,8 @@ fn a_restart_that_lost_the_builds_facts_fetches_them() {
         let responder = node_of(&full).await;
         let restarted = caller("mesh1.admin.2", &fabric, &[&responder]).await;
         entry_named(&restarted.0, &id, 2);
-        let mut h = hydrator(&restarted, responders(vec![&responder]), None);
-        let seen = drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("hydrates");
+        let mut h = fetch_build(&restarted, responders(vec![&responder]), None);
+        let seen = drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(seen, vec!["no-current-build-wanted"]);
         assert_eq!(restarted.0.log.read_build(&id).await.unwrap().attempt, 2);
         for n in [&responder, &restarted.1] {
@@ -612,7 +612,7 @@ fn a_restart_that_lost_the_builds_facts_fetches_them() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a Hydrator turn that runs on a runtime whose worker threads hold no dispatcher (the runtime a
+/// CONTRACT: a FetchBuild turn that runs on a runtime whose worker threads hold no dispatcher (the runtime a
 /// `#[tokio::test(flavor = "multi_thread")]` cell gets: only the thread that called `block_on` holds the
 /// capture) still has its whole story captured and ended when the story ends: the fetch it spawns runs on
 /// the dispatcher of the turn that started it, the dial its call starts ends on the call's dispatcher, and
@@ -631,8 +631,8 @@ fn a_fetch_spawned_onto_a_worker_that_holds_no_dispatcher_is_still_captured() {
         let responder = node_of(&full).await;
         let restarted = caller("mesh1.admin.2", &fabric, &[&responder]).await;
         entry_named(&restarted.0, &id, 2);
-        let mut h = hydrator(&restarted, responders(vec![&responder]), None);
-        drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("hydrates");
+        let mut h = fetch_build(&restarted, responders(vec![&responder]), None);
+        drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(restarted.0.log.read_build(&id).await.unwrap().attempt, 2);
         for n in [&responder, &restarted.1] {
             n.ep.close().await;
@@ -669,8 +669,8 @@ fn a_build_behind_the_entry_floor_is_fetched_up_to_it() {
         let joiner = caller("mesh1.admin.3", &fabric, &[&first, &second]).await;
         holds(&joiner.0, &id, 1).await;
         *joiner.0.floor.lock().unwrap() = Some((id.clone(), 3));
-        let mut h = hydrator(&joiner, responders(vec![&first, &second]), None);
-        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("hydrates");
+        let mut h = fetch_build(&joiner, responders(vec![&first, &second]), None);
+        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches the Build");
         assert_eq!(seen, vec!["behind-floor"]);
         assert_eq!(joiner.0.log.read_build(&id).await.unwrap().attempt, 3);
         assert_eq!(first.calls.load(Ordering::SeqCst), 1, "the responder behind the floor gave facts that did not clear it, and was not asked again");
@@ -703,7 +703,7 @@ fn an_unidentified_build_is_never_fetched_the_entry_is_retrieved_again() {
         let responder = node_of(&full).await;
         let joiner = caller("mesh1.admin.2", &fabric, &[&responder]).await;
         let entries = Arc::new(AtomicU32::new(0));
-        let entry: rdm_admin::hydrate::EntryRepeat = {
+        let entry: rdm_admin::fetch_build::EntryRepeat = {
             let (entries, floor, id) = (entries.clone(), joiner.0.floor.clone(), id.clone());
             Arc::new(move || {
                 let (entries, floor, id) = (entries.clone(), floor.clone(), id.clone());
@@ -716,8 +716,8 @@ fn an_unidentified_build_is_never_fetched_the_entry_is_retrieved_again() {
                 })
             })
         };
-        let mut h = hydrator(&joiner, responders(vec![&responder]), Some(entry));
-        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("hydrates once the entry names the Build");
+        let mut h = fetch_build(&joiner, responders(vec![&responder]), Some(entry));
+        let seen = drive(&joiner.0, &mut h, Duration::from_secs(10)).await.expect("fetches once the entry names the Build");
         assert_eq!(seen, vec!["no-current-build", "no-current-build-wanted"]);
         assert!(entries.load(Ordering::SeqCst) >= 3, "the entry was retrieved until it named a Build");
         assert_eq!(responder.calls.load(Ordering::SeqCst), 1, "nothing was fetched before the Build was identified");
@@ -739,7 +739,7 @@ fn an_unidentified_build_is_never_fetched_the_entry_is_retrieved_again() {
 
 #[test]
 fn the_backoff_is_bounded() {
-    use rdm_admin::hydrate::{BACKOFF_BASE, BACKOFF_CAP};
+    use rdm_admin::fetch_build::{BACKOFF_BASE, BACKOFF_CAP};
     assert!(BACKOFF_BASE < BACKOFF_CAP);
     assert!(BACKOFF_CAP <= Duration::from_secs(5));
 }

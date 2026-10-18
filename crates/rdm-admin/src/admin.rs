@@ -2909,16 +2909,16 @@ mod tests {
         use crate::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildStateAdapter as _, MemoryBuildStateAdapter};
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         let builds = MemoryBuildStateAdapter::new();
-        let blocked = hydration_blocker(&me, &builds, None).await.expect("blocked while unhydrated");
+        let blocked = node_admin_not_ready(&me, &builds, None).await.expect("blocked while it holds no Build");
         assert_eq!(blocked.kind(), "no-current-build");
         assert!(blocked.to_string().starts_with("mesh1.admin.2: holds no current Build"), "{blocked}");
         let id = crate::build::BuildId::parse("7wy02yhavgde").unwrap();
-        let blocked = hydration_blocker(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
-        assert_eq!(blocked.need(), crate::hydrate::Need::BuildFacts(id.clone()), "{blocked}");
+        let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked while the entry's Build is not held");
+        assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(id.clone()), "{blocked}");
         assert!(blocked.to_string().contains(&format!("holds no facts of Build {id}")), "{blocked}");
         builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
-        assert_eq!(hydration_blocker(&me, &builds, None).await, None, "an admin served no entry owes no attempt floor");
-        let blocked = hydration_blocker(&me, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
+        assert_eq!(node_admin_not_ready(&me, &builds, None).await, None, "an admin served no entry owes no attempt floor");
+        let blocked = node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await.expect("blocked below the entry's attempt").to_string();
         assert!(blocked.contains(&format!("holds attempt 0 of Build {id}")) && blocked.contains("held attempt 2"), "{blocked}");
         for attempt in 1..=2 {
             if attempt > 1 {
@@ -2926,10 +2926,10 @@ mod tests {
             }
             builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
         }
-        assert_eq!(hydration_blocker(&me, &builds, Some((id.clone(), 2))).await, None, "its attempt facts reached the entry's");
+        assert_eq!(node_admin_not_ready(&me, &builds, Some((id.clone(), 2))).await, None, "its attempt facts reached the entry's");
         let other = crate::build::BuildId::parse("qsmy968wj1zt").unwrap();
-        let blocked = hydration_blocker(&me, &builds, Some((other.clone(), 9))).await.expect("a floor naming a Build not held blocks until its facts are held");
-        assert_eq!(blocked.need(), crate::hydrate::Need::BuildFacts(other), "{blocked}");
+        let blocked = node_admin_not_ready(&me, &builds, Some((other.clone(), 9))).await.expect("a floor naming a Build not held blocks until its facts are held");
+        assert_eq!(blocked.need(), crate::fetch_build::Need::BuildFacts(other), "{blocked}");
     }
 
     /// CONTRACT (R-S2): the declarer is woken by a view that changed and by the declare gate
@@ -2998,7 +2998,7 @@ mod tests {
             rounds: Default::default(),
             configs: Default::default(),
             configure: Default::default(),
-            hydration: Default::default(),
+            before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,

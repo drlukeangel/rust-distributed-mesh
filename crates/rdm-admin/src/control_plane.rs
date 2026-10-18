@@ -1043,7 +1043,7 @@ pub enum Refusal {
     NotAuthority(Option<String>),
     /// The attempt number this request computed was opened first by another action.
     AttemptTaken(String),
-    /// The admin cannot decide the request yet (not hydrated).
+    /// The admin cannot decide the request yet (it holds no Build).
     Unavailable(String),
     /// The Build state could not be read or written.
     State(BuildStateError),
