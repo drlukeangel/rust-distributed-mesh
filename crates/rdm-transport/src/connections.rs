@@ -1049,14 +1049,15 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                     cert,
                     traceparent: carrier_tp,
                 };
-                tracing::info_span!(
-                    parent: &tunnel_span,
-                    "rdm.node.connections.update.via-presented",
-                    destination = %destination.name,
-                    alpn = %alpn_str,
-                    cert_expires_at = 0u64,
-                )
-                .in_scope(|| tracing::info!("carrier presented member credential to destination"));
+                tunnel_span.in_scope(|| {
+                    tracing::info_span!(
+                        "rdm.node.connections.update.via-presented",
+                        destination = %destination.name,
+                        alpn = %alpn_str,
+                        cert_expires_at = 0u64,
+                    )
+                    .in_scope(|| tracing::info!("carrier presented member credential to destination"));
+                });
                 if write_control_msg(&mut dst_ctrl_send, &dst_present).await.is_err() {
                     return Ok(());
                 }
@@ -1470,14 +1471,15 @@ impl Dialer {
             cert,
             traceparent,
         };
-        tracing::info_span!(
-            parent: caller_span,
-            "rdm.node.connections.update.via-presented",
-            destination = %destination.name,
-            alpn = %alpn_str,
-            cert_expires_at = 0u64,
-        )
-        .in_scope(|| tracing::info!("presented member credential on the connection's control stream"));
+        caller_span.in_scope(|| {
+            tracing::info_span!(
+                "rdm.node.connections.update.via-presented",
+                destination = %destination.name,
+                alpn = %alpn_str,
+                cert_expires_at = 0u64,
+            )
+            .in_scope(|| tracing::info!("presented member credential on the connection's control stream"));
+        });
 
         if let Err(reason) = write_control_msg(&mut ctrl_send, &present).await {
             self.record_direct_failure(own, destination, &reason, caller_span).await;
@@ -1603,17 +1605,18 @@ impl Dialer {
         traceparent: Option<String>,
     ) -> Result<Connection, ConnectError> {
         let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
-        let tunnel_span = tracing::info_span!(
-            parent: caller_span,
-            "rdm.node.connections.create.via-tunnel",
-            source = %own.name,
-            carrier = %carrier.name,
-            destination = %destination.name,
-            alpn = %alpn_str,
-            entry = tracing::field::Empty,
-            kind = tracing::field::Empty,
-            state = tracing::field::Empty,
-        );
+        let tunnel_span = caller_span.in_scope(|| {
+            tracing::info_span!(
+                "rdm.node.connections.create.via-tunnel",
+                source = %own.name,
+                carrier = %carrier.name,
+                destination = %destination.name,
+                alpn = %alpn_str,
+                entry = tracing::field::Empty,
+                kind = tracing::field::Empty,
+                state = tracing::field::Empty,
+            )
+        });
         tunnel_span.in_scope(|| tracing::info!("opening data-plane proxy tunnel through carrier"));
         let tunnel_tp = crate::traceparent_of(&tunnel_span).or(traceparent);
 
@@ -1658,14 +1661,15 @@ impl Dialer {
             cert,
             traceparent: tunnel_tp,
         };
-        tracing::info_span!(
-            parent: &tunnel_span,
-            "rdm.node.connections.update.via-presented",
-            destination = %carrier.name,
-            alpn = %alpn_str,
-            cert_expires_at = 0u64,
-        )
-        .in_scope(|| tracing::info!("presented member credential to carrier on tunnel control stream"));
+        tunnel_span.in_scope(|| {
+            tracing::info_span!(
+                "rdm.node.connections.update.via-presented",
+                destination = %carrier.name,
+                alpn = %alpn_str,
+                cert_expires_at = 0u64,
+            )
+            .in_scope(|| tracing::info!("presented member credential to carrier on tunnel control stream"));
+        });
 
         write_control_msg(&mut ctrl_send, &present)
             .await
