@@ -344,6 +344,7 @@ pub(crate) struct Hub {
     gossip: Gossip,
     fabric: rdm_core::FabricId,
     peers: Vec<iroh::EndpointId>,
+    joined_peers: Mutex<HashMap<String, BTreeSet<iroh::EndpointId>>>,
     own: BTreeSet<String>,
     held: Mutex<BTreeSet<String>>,
     entries: tokio::sync::Mutex<HashMap<String, Arc<Entry>>>,
@@ -372,6 +373,7 @@ impl Hub {
             fabric: fabric.clone(),
             peers: seeds.iter().map(|a| a.id).collect(),
             own,
+            joined_peers: Default::default(),
             held: Mutex::new(BTreeSet::new()),
             entries: Default::default(),
             author,
@@ -431,8 +433,24 @@ impl Hub {
         incarnation: rdm_core::IncarnationId,
         types: BTreeSet<String>,
         held: BTreeSet<String>,
+        peer: Option<iroh::EndpointId>,
     ) -> anyhow::Result<()> {
+        if let Some(peer) = peer {
+            let mut peers = self.joined_peers.lock().unwrap();
+            for kind in &held {
+                peers.entry(kind.clone()).or_default().insert(peer);
+            }
+        }
         self.hold(&held).await?;
+        if let Some(peer) = peer {
+            for kind in &held {
+                let entry = self.ensure(kind).await?;
+                let sender = entry.state.sender.lock().unwrap().clone();
+                if let Some(sender) = sender {
+                    sender.join_peers(vec![peer]).await?;
+                }
+            }
+        }
         let mut members = self.members.lock().unwrap();
         let entry = members
             .entry((node, incarnation))
@@ -485,9 +503,15 @@ impl Hub {
         {
             return Ok(e.clone());
         }
+        let mut peers = self.peers.clone();
+        if let Some(learned) = self.joined_peers.lock().unwrap().get(kind) {
+            peers.extend(learned);
+        }
+        peers.sort_unstable();
+        peers.dedup();
         let channel = self
             .gossip
-            .subscribe(channel_id(&self.fabric, kind), self.peers.clone())
+            .subscribe(channel_id(&self.fabric, kind), peers)
             .await?;
         let (sender, mut stream) = channel.split();
         let (tx, rx) = mpsc::channel(QUEUE);

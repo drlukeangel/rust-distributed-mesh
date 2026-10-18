@@ -586,6 +586,9 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         .await
         .unwrap()
         .unwrap();
+    // Observe both forwarding edges without initiating either join. The receive-side
+    // NeighborUp alone does not establish that the middle holder can forward back yet.
+    let mut middle = b.gossip.subscribe(channel_id(&fabric, LATER), vec![]).await.unwrap();
     a.membership.learn(member_digest(&b), "peer-types-probe");
     a.membership
         .learn_app_types(
@@ -605,8 +608,34 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         .await
         .expect("the new type joins through its reporting holder, even with no boot seeds")
         .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !middle.neighbors().any(|p| p == a.ep.id()) || !middle.neighbors().any(|p| p == c.ep.id()) {
+            middle.next().await.expect("the middle holder stays subscribed").unwrap();
+        }
+    }).await.expect("both forwarding edges are established");
     let mut receiver = a.membership.join_channel(LATER).await.unwrap();
     let publisher = c.membership.join_channel(LATER).await.unwrap();
     publisher.publish(event(1, vec![7])).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), &[7]);
+
+    // Rejoining uses the reporting holders retained for this type, without acquiring boot seeds.
+    drop(receiver);
+    drop(observed);
+    a.membership.park().await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while middle.neighbors().any(|p| p == a.ep.id()) {
+            middle.next().await.expect("the middle holder stays subscribed").unwrap();
+        }
+    }).await.expect("the first subscription has left");
+    a.membership.unpark().await;
+    let mut rejoined = a.gossip.subscribe(channel_id(&fabric, LATER), vec![]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), rejoined.joined()).await.expect("the held type rejoins its reporting holder").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !middle.neighbors().any(|p| p == a.ep.id()) {
+            middle.next().await.expect("the middle holder stays subscribed").unwrap();
+        }
+    }).await.expect("the forwarding edge is restored");
+    let mut receiver = a.membership.join_channel(LATER).await.unwrap();
+    publisher.publish(event(2, vec![8])).await.unwrap();
+    assert_eq!(receive(&mut receiver).await.data.as_ref(), &[8]);
 }

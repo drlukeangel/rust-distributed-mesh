@@ -1385,7 +1385,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let (membership, records) = (membership.clone(), records.clone());
                                             Box::pin(async move {
                                                 records.declare_app_types(&d, types.clone()).await?;
-                                                membership.learn_app_types(d.node.node_id.clone(), d.node.incarnation.clone(), types.clone(), types).await.map_err(|e| e.to_string())
+                                                membership.learn_app_types_from(&d, types.clone(), types).await.map_err(|e| e.to_string())
                                             })
                                         }
                                     }),
@@ -1525,7 +1525,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                             if let Some(n) = nodes.iter().find(|n| n.node_id == birth.0 && n.incarnation_id.as_ref() == Some(&birth.1)) {
                                                                 let hash = rdm_core::app_types::hash(&n.held);
                                                                 if hash == n.held_hash && n.types.is_subset(&n.held) {
-                                                                    if membership.learn_app_types(birth.0.clone(), birth.1.clone(), n.types.clone(), n.held.clone()).await.is_ok() {
+                                                                    if membership.learn_app_types_from(&d, n.types.clone(), n.held.clone()).await.is_ok() {
                                                                         tracing::info_span!("rdm.node_admin.node.update.via-held-types", node_id = %birth.0, incarnation = %birth.1, types = n.types.len(), held = n.held.len()).in_scope(|| tracing::info!("peer node.get supplied the joined types"));
                                                                         return Some((birth, d.held_hash));
                                                                     }
@@ -1536,7 +1536,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 } else if let Ok(Some(row)) = rows.node_row_at(&d.node.name).await {
                                                     if row.node_id == birth.0 {
                                                         if let Some(t) = row.app_types.filter(|t| t.incarnation == birth.1) {
-                                                            if membership.learn_app_types(birth.0.clone(), birth.1.clone(), t.types.clone(), t.types).await.is_ok() { return Some((birth, d.held_hash)); }
+                                                            if membership.learn_app_types_from(&d, t.types.clone(), t.types).await.is_ok() { return Some((birth, d.held_hash)); }
                                                         }
                                                     }
                                                 }

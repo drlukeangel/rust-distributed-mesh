@@ -2856,7 +2856,16 @@ impl Membership {
     /// The hash carried by this birth's next digest.
     pub fn held_hash(&self) -> [u8; 32] { self.apps.hash() }
     /// Hold a verified member or peer's declaration and joined types; ordinary app declarations stay immutable.
-    pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> { self.apps.learn(node, incarnation, types, held).await }
+    pub async fn learn_app_types_from(&self, d: &MeshDigest, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
+        anyhow::ensure!(d.fabric_id == self.fabric, "app declaration belongs to another fabric");
+        self.mesh.register(d);
+        let peer = gossip_addr(d).map(|a| a.id);
+        self.apps.learn(d.node.node_id.clone(), d.node.incarnation.clone(), types, held, peer).await
+    }
+    /// Learn metadata from an exact birth already held in the membership book.
+    pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> { let d = self.book.get(node.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
+        let peer = d.as_ref().and_then(gossip_addr).map(|a| a.id);
+        self.apps.learn(node, incarnation, types, held, peer).await }
     /// The type metadata learned for one exact birth.
     pub fn member_app_types(&self, node: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId) -> Option<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> { self.apps.member(node, incarnation) }
     /// This membership's fabric identity.

@@ -31,7 +31,9 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q57 | Codex | i147 e5 | node-admin's own channels: `types` through `Wiring` | x | ruled 2026-10-17; §8 corrected `7304c9b2` |
 
-Next free number: **Q58**.
+| Q58 | Codex | i147 e5 | app declaration before Day-0 authority is Ready | [packet](../proposal/i147-q58-join-declaration-before-ready.md), A recommended | asked; no authority change implemented |
+
+Next free number: **Q59**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i147-q19-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier

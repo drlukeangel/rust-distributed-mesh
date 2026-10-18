@@ -63,7 +63,7 @@ impl fmt::Display for Violation {
                 write!(f, "rule 2: {file}:{line} uses the legacy transport plane (`{token}`) from a canonical i143 source")
             }
             Self::Alpn { file, line, token, why } => {
-                write!(f, "rule 3: {file}:{line} `{token}`: {why}; RDM's only ALPNs are rafka-node-rpc/1 and iroh-gossip")
+                write!(f, "rule 3: {file}:{line} `{token}`: {why}; RDM owns rafka-node-rpc/1 and iroh-gossip; app ALPNs must come from Wiring")
             }
         }
     }
@@ -116,8 +116,95 @@ fn non_test(text: &str) -> &str {
     text.find("#[cfg(test)]").map(|i| &text[..i]).unwrap_or(text)
 }
 
+/// App ALPN registrations must consume the declaration owned by a typed Wiring parameter.
+/// Binding provenance is checked structurally, including local shadowing; a handler's arbitrary
+/// variable or iterator never becomes an allowed registration merely by its spelling.
+fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
+    use syn::visit::Visit;
+    #[derive(Default)]
+    struct Sites {
+        wiring: std::collections::BTreeSet<String>,
+        alpns: std::collections::BTreeSet<String>,
+        sites: std::collections::BTreeSet<(usize, String)>,
+    }
+    fn binding(p: &syn::Pat) -> Option<String> {
+        match p { syn::Pat::Ident(p) if p.by_ref.is_none() => Some(p.ident.to_string()), _ => None }
+    }
+    fn wiring_type(t: &syn::Type) -> bool {
+        match t {
+            syn::Type::Reference(t) => wiring_type(&t.elem),
+            syn::Type::Path(t) => t.path.segments.last().is_some_and(|s| s.ident == "Wiring"),
+            _ => false,
+        }
+    }
+    impl<'ast> Visit<'ast> for Sites {
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            let old = (std::mem::take(&mut self.wiring), std::mem::take(&mut self.alpns));
+            for arg in &f.sig.inputs {
+                if let syn::FnArg::Typed(arg) = arg {
+                    if wiring_type(&arg.ty) { if let Some(n) = binding(&arg.pat) { self.wiring.insert(n); } }
+                }
+            }
+            self.visit_block(&f.block);
+            (self.wiring, self.alpns) = old;
+        }
+        fn visit_block(&mut self, b: &'ast syn::Block) {
+            let old = (self.wiring.clone(), self.alpns.clone());
+            for stmt in &b.stmts {
+                self.visit_stmt(stmt);
+                if let syn::Stmt::Local(local) = stmt {
+                    if let Some(n) = binding(&local.pat) { self.wiring.remove(&n); self.alpns.remove(&n); }
+                }
+            }
+            (self.wiring, self.alpns) = old;
+        }
+        fn visit_expr_for_loop(&mut self, f: &'ast syn::ExprForLoop) {
+            let declared = (|| {
+                let syn::Expr::Call(call) = &*f.expr else { return None };
+                let syn::Expr::Path(path) = &*call.func else { return None };
+                let names: Vec<_> = path.path.segments.iter().map(|s| s.ident.to_string()).collect();
+                if names != ["std", "mem", "take"] && names != ["core", "mem", "take"] { return None }
+                if call.args.len() != 1 { return None }
+                let syn::Expr::Reference(r) = call.args.first()? else { return None };
+                if r.mutability.is_none() { return None }
+                let syn::Expr::Field(field) = &*r.expr else { return None };
+                if field.member != syn::Member::Named(syn::Ident::new("alpns", proc_macro2::Span::call_site())) { return None }
+                let syn::Expr::Path(base) = &*field.base else { return None };
+                if !self.wiring.contains(&base.path.get_ident()?.to_string()) { return None }
+                let syn::Pat::Tuple(pat) = &*f.pat else { return None };
+                if pat.elems.len() != 2 { return None }
+                binding(pat.elems.first()?)
+            })();
+            let old = self.alpns.clone();
+            if let Some(n) = declared { self.alpns.insert(n); }
+            self.visit_block(&f.body);
+            self.alpns = old;
+        }
+        fn visit_expr_assign(&mut self, e: &'ast syn::ExprAssign) {
+            if let syn::Expr::Path(p) = &*e.left {
+                if let Some(n) = p.path.get_ident() { self.alpns.remove(&n.to_string()); self.wiring.remove(&n.to_string()); }
+            }
+            syn::visit::visit_expr_assign(self, e);
+        }
+        fn visit_expr_method_call(&mut self, c: &'ast syn::ExprMethodCall) {
+            if c.method == "accept" {
+                if let Some(syn::Expr::Path(p)) = c.args.first() {
+                    if let Some(n) = p.path.get_ident() {
+                        if self.alpns.contains(&n.to_string()) { self.sites.insert((c.method.span().start().line, n.to_string())); }
+                    }
+                }
+            }
+            syn::visit::visit_expr_method_call(self, c);
+        }
+    }
+    let mut sites = Sites::default();
+    if let Ok(file) = syn::parse_file(text) { sites.visit_file(&file); }
+    sites.sites
+}
+
 /// Rule 3 over one file. `entry_allowed`: `ENTRY_ALPN` is still live (R-J1 has not landed).
 fn alpn_rule(rel: &str, text: &str, entry_allowed: bool, out: &mut Vec<Violation>) {
+    let wiring_sites = wiring_accepts(non_test(text));
     let entry_why = "R-J1 retires it: op 0x1D exists, so ENTRY_ALPN is deleted";
     for (i, line) in non_test(text).lines().enumerate() {
         let c = code(line);
@@ -145,7 +232,7 @@ fn alpn_rule(rel: &str, text: &str, entry_allowed: bool, out: &mut Vec<Violation
                 if !entry_allowed {
                     flag(arg, entry_why);
                 }
-            } else if !ACCEPTED.contains(&arg) {
+            } else if !ACCEPTED.contains(&arg) && !wiring_sites.contains(&(i + 1, arg.to_string())) {
                 flag(arg, "a Router::accept registration for an ALPN other than Node RPC or gossip");
             }
         }
