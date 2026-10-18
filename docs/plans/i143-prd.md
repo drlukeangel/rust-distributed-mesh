@@ -2622,6 +2622,7 @@ open (added 2026-10-15 from the `7257ff09` release run). Landed: `f877a260` (For
     - `mesh2.admin.2` heard none of mesh1's members from about 22.97 s to 26.05 s, when it marked all of them stale at 3,075 ms silent (trace `6858cf17a6f20c2ef10d22b306c7a794`). `mesh2.admin.1` heard mesh1 throughout.
     - The first run on `18bf0ffa` passed this checkpoint.
     - Read: one backbone member's feed from mesh1 was not repaired for 3 s after one of mesh1's admins left its gossip neighbours and rejoined.
+  - The s89 landing's first gate (`7f9b1f1d`) was red on `admin_start_declares`, i146 e3's cell, not this landing's: four landing gates red, the mechanism read from its own spans for the first time. It is tied to Q58 (`i146-owed-messages-prd.md`).
 - [x] `i143-rshape-lifecycle-chaos-process` (the i144 dev's, read 2026-10-17 from `release-run-8c2e79c6.log`): green 3/3 on `18bf0ffa`.
   - Its three reds in that run, and the authority job's `mock_recovery_retains_build_and_advances_attempt`, failed one precondition, `rshape_burn_in.rs:323`: the cell's provider state counted every `rshape-*` process on the box, so another job's estate's node-admins were taken for its own.
   - A cell's provider state is now its own estate's: a process whose environment names the estate root, a container mounting under it, and the provider actions read under it (`e3942be0`).
