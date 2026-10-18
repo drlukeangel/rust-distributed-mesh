@@ -3,7 +3,7 @@
 This ledger records every Rafka transport/pool/reachability change that RDM must disposition before i143 can publish an import-eligible revision.
 
 **Fixed audit base:** `8704558070`  
-**Review-through tip for this reconciliation:** `67755f3cdf41c1993da07c65761ca20dd02aa544`  
+**Review-through tip for this reconciliation:** `77fdfd4948660b7ff2cd87cd77f8e31bab52adcb` (extended 2026-10-18 from `67755f3cdf41c1993da07c65761ca20dd02aa544`; the rows of the extension are the table below the first boundary table)  
 **Canonical ownership:** `docs/architecture/build.md` and `docs/architecture/deployment-provider.md`
 
 The fixed base does not move. A newer Rafka tip extends the audit range.
@@ -266,6 +266,67 @@ row says why.
 | `5e5bdbd8c4` | lifecycle | an unwritten mesh status is handled on reset; the node connection check-in follows `StateCommit` | **RAFKA DOMAIN**. Rafka product lifecycle check-in in the connection-row writer's start; the rows it writes are unchanged |
 | `4968fc4b5e` | watermark #2966 #2967 | the broker never evicts a silent writer; a periodic lease sweep reports lapses to node-admin (`write_hooks.rs` `report_writer_lapse_to_node_admin`); `op_38_watermark_heartbeat.rs` doc line reference | **RAFKA DOMAIN**. Rafka writer-lease and watermark semantics; RDM owns neither; the `rafka-mesh-ops` change is a doc comment |
 | `21baf663c1` | watermark #2967 | the lease sweep timer runs on a 1 s cadence (`index_writer.rs`) | **RAFKA DOMAIN**. Rafka writer-lease cadence; no transport behavior |
+
+### Boundary commits 67755f3cdf..77fdfd4948
+
+Read 2026-10-18 by the rafka-v2 agent (i141/i142 preparation, U5), applied by the i143 lead. Every
+non-merge boundary commit after `67755f3cdf` through `77fdfd4948`; none changes byte movement,
+request certainty, dial or pool freshness, dispatch or admission. No row is MIRROR pending.
+
+| Rafka SHA | issue | change | disposition / proof |
+|---|---|---|---|
+| `0a22883c87` | #2973 | watermark: reverse lease/probe closure path; silence is never a trigger | **RAFKA DOMAIN**. Writer-ingress/writer-incarnation product semantics; no byte movement, certainty, freshness, dispatch or admission change |
+| `29bb42034d` | #2989 | seams: unify system org resolver in framework without sentinel fallback | **RAFKA DOMAIN**. Entity/topology/system-org product state in a transport-adjacent crate; no transport change |
+| `c696cb823d` | #2970 | delete incarnation plane; writer id from process birth | **RAFKA DOMAIN**. Writer-incarnation product semantics; no transport change |
+| `08d00e6aaa` | i128 | derive need suffixes via topic_path_suffix | **RAFKA DOMAIN**. Entity-framework topic path of the connections row; no transport change |
+| `1502fa5e16` | #2976 | render need suffixes without resolving system org | **RAFKA DOMAIN**. Entity-framework topic path; no transport change |
+| `16ecaa7f55` | #3041 | delete path-config projection, resident rows and birth hydration | **RAFKA DOMAIN**. Path-config product state; no transport change |
+| `7e792b320b` | #2977 | framework mint_id/mint_typed in entity and node crates | **RAFKA DOMAIN**. Id minting of product entities; no transport change |
+| `03daf85bef` | #3048 | bind writer id from birth at boot, refuse fallback | **RAFKA DOMAIN**. Writer identity product semantics; no transport change |
+| `1132b710fa` | #3048 | lazily resolve default write exec; writer id derived | **RAFKA DOMAIN**. Writer identity product semantics; no transport change |
+| `1b2fd20e2e` | #3048 | delete NODE_WRITER_ID static | **RAFKA DOMAIN**. Writer identity product semantics; no transport change |
+| `297d999f95` | #3048 | boot and refusal cells for writer id from birth | **RAFKA DOMAIN**. Tests of writer identity; no behavior |
+| `30013f6526` | i117 e10 | Revert "route carried and registry-shard topics to fabric-primary mesh on peer mesh" | **RAFKA DOMAIN**. Topic placement product state; no transport change |
+| `39389139ba` | i117 e10 | insert_if_absent writer removed; write is binary put | **RAFKA DOMAIN**. broker_data product plane; removes a product write, not transport |
+| `3ce81c6f98` | i117 e10 | op 64 and insert-if-absent wire removed | **RAFKA DOMAIN**. broker_data product op removed; no transport change |
+| `4d3637bc1e` | #2940 | Revert "restore day0 symbol facade and doc citations" | **RAFKA DOMAIN**. Docs/citations; no behavior |
+| `50ac836430` | i117 e10 | one-door contract test and harness repairs | **RAFKA DOMAIN**. Product write contract tests; no transport change |
+| `5a576d512c` | #2940 | day0 row-equality functional proof | **RAFKA DOMAIN**. Test only |
+| `5f5616232c` | #3058 | resolve optional runtime assets from the deployment workspace | **RAFKA DOMAIN**. Node build/deploy assets; no transport change |
+| `6c920e7941` | #2908 | delete resync obligation instance read apparatus | **RAFKA DOMAIN**. Re-sync product plane; no transport change |
+| `7d0c55d9ef` | i117 e10 | route carried and registry-shard topics to fabric-primary mesh on peer mesh | **RAFKA DOMAIN**. Topic placement product state; no transport change |
+| `820f3c86e9` | #2940 | move authz data types to rafka-iam-types | **RAFKA DOMAIN**. Authz types; no transport change |
+| `8dd8906726` | #2908 | remove withdraw_index_if / TargetClaimOutcome::Split | **RAFKA DOMAIN**. broker_data index product plane; no transport change |
+| `9d63971ab6` | #3039 | remove path_config_override projection references in tier tests | **RAFKA DOMAIN**. Tests only |
+| `a2b2734e94` | i117 e10 | recovery door, electorate transition and claim classes removed | **RAFKA DOMAIN**. Product write/claim semantics; no transport change |
+| `b0cb1751ad` | #3048 | refuse sentinel in default write context; WriterBirthUnknown | **RAFKA DOMAIN**. Writer identity product semantics; no transport change |
+| `b52adaecd3` | #2908 | broker instance resolution through ObligationIo | **RAFKA DOMAIN**. Re-sync product plane; no transport change |
+| `ba728b63f6` | #2940 | the boot does not read for the system org | **RAFKA DOMAIN**. System-org product state; no transport change |
+| `ddc0392260` | #2940 | restore day0 symbol facade and doc citations | **RAFKA DOMAIN**. Docs/citations; no behavior |
+| `e55664c4cf` | #2940 | mock-linked gateway children boot on a seeded system org | **RAFKA DOMAIN**. Test only |
+| `f77f9307b6` | i117 e10 | remove deleted op 64 from verbatim copy test and frame docs | **RAFKA DOMAIN**. broker_data docs/test; no behavior |
+| `f9176fc4be` | — | birth batch byte-for-byte vs pinned tip fixture | **RAFKA DOMAIN**. Test only |
+| `fcdb8418d1` | #3071 | rafka-reader test files into one functional binary | **RAFKA DOMAIN**. Test layout only |
+| `3cdf349574` | #3071 | node-base test files into one functional binary | **RAFKA DOMAIN**. Test layout only |
+| `6fe2805254` | — | peer_read_forward cell exports through a thread-scoped sink | **RAFKA DOMAIN**. Test telemetry only |
+| `97ab95ee1d` | i128 | dead-pub: test-only items behind test-helpers | **RAFKA DOMAIN**. Visibility/dead code; no behavior |
+| `9960b23512` | i128 | semgrep hits fixed at the site or waived | **RAFKA DOMAIN**. Lint-site fixes; no transport behavior change |
+| `a2a1180da1` | i128 | unresolved verdict: id-index read failure is unavailable; wildcard arms name their states | **RAFKA DOMAIN**. node_rpc.rs arm names its case; no behavior change |
+| `ac5fcbbd3b` | i128 | dead-pub: delete 22 unreferenced pub items | **RAFKA DOMAIN**. Dead code; no behavior |
+| `ca1e66d1ab` | #3071 | citations follow gateway tests into tests/functional | **RAFKA DOMAIN**. Docs/citations only |
+| `ccd4bc7874` | #3071 | broker test files into one functional binary | **RAFKA DOMAIN**. Test layout only |
+| `4502c4d547` | i128 | a list reads its rows in one multi-key read | **RAFKA DOMAIN**. broker_data read product plane; no transport change |
+| `54adf84e06` | i128 | in-process multi-key read answers as one multi-key read | **RAFKA DOMAIN**. broker_data read product plane; no transport change |
+| `77d91badc4` | — | fabric/mesh/node spec and the i143 record live in RDM | **RAFKA DOMAIN**. Doc move only |
+| `843fa81002` | #3115 | write executor built without writer identity; pre-birth write refused by name | **RAFKA DOMAIN**. Writer-ingress product semantics; no transport change |
+| `820af95557` | — | actual trace parent in peer-read fixtures | **RAFKA DOMAIN**. Test only |
+| `96dfa5b61c` | — | shared connection and broadcast fixtures across cells | **RAFKA DOMAIN**. Test fixtures only |
+| `a6c1fc6936` | — | feature-gate executes only discovered functional module tests | **RAFKA DOMAIN**. Test runner only |
+| `a89d36046a` | — | tie remaining acceptance cases to owners | **RAFKA DOMAIN**. Test ties only |
+| `e0a6da6492` | — | assert peer-read spans while exporting telemetry | **RAFKA DOMAIN**. Test only |
+| `ed66f89e82` | — | export the complete real-iroh membership story (cell) | **RAFKA DOMAIN**. Test telemetry only |
+| `f722b69a9a` | #3071 | gateway shared functional binary layout | **RAFKA DOMAIN**. Test layout only |
+| `77fdfd4948` | i142 U2 | reconnect series a recovery round; route lease counter a revision | **RAFKA DOMAIN**. Naming only; postcard-positional, no byte moves; matches RDM 3eaae3e6 |
 
 ## Connections parity (i66.e3 → RDM)
 

@@ -270,7 +270,7 @@ pub struct ScanInput<'a> {
     pub ledger_text: &'a str,
     /// Overrides the ledger's review-through tip.
     pub through: Option<&'a str>,
-    /// rafka-v2 `docs/architecture/connections.md`; `None` skips the
+    /// RDM's `docs/architecture/connections.md`; `None` skips the
     /// connections-parity gate (the CLI always supplies it).
     pub connections_text: Option<&'a str>,
 }
@@ -611,12 +611,19 @@ pub fn scan_files(repo: &Path, ledger: &Path, through: Option<&str>, connections
     Ok(report)
 }
 
-/// Default connections architecture doc inside a rafka-v2 checkout.
-pub fn default_connections(repo: &Path) -> PathBuf {
-    repo.join("docs/architecture/connections.md")
+/// Default connections architecture doc: RDM's `docs/architecture/connections.md` (the page moved
+/// from rafka-v2 at `77d91badc4`); `--connections` overrides it.
+pub fn default_connections(_repo: &Path) -> PathBuf {
+    rdm_root().join("docs/architecture/connections.md")
 }
 
 /// Default ledger location inside a rafka-v2 checkout.
-pub fn default_ledger(repo: &Path) -> PathBuf {
-    repo.join("docs/plans/i143-transport-parity.md")
+pub fn default_ledger(_repo: &Path) -> PathBuf {
+    rdm_root().join("docs/plans/i143-transport-parity.md")
+}
+
+/// The RDM checkout this scanner is built from: the ledger and the connections page live here
+/// since rafka-v2 `77d91badc4` moved the spec and the i143 record into RDM.
+fn rdm_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
