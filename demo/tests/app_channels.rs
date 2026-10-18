@@ -4,7 +4,7 @@ use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::catalog::OpOwner;
 use rdm_core::{IncarnationId, NodeId};
 use rdm_node::gossip::{Channel, Event};
-use rdm_test::hydrate_probe::{HydratePull, PullReply, PullRequest, Row};
+use rdm_test::before_ready_probe::{BeforeReadyPull, PullReply, PullRequest, Row};
 use std::{
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -55,7 +55,7 @@ async fn recv(channel: &mut Channel) -> Row {
 }
 async fn pull(client: &rdm_transport::NodeRpcClient, root: &NodeId) -> Vec<Row> {
     let (out, _) = client
-        .call::<HydratePull>(
+        .call::<BeforeReadyPull>(
             &rdm_transport::NodeTarget::ExactNode(root.clone()),
             &PullRequest::Pull,
             &rdm_transport::CallOptions::default(),
@@ -130,10 +130,10 @@ async fn broker(
         last_accepted_name: None,
         held: false,
     });
-    rdm_node::node::start_with_rafka_time_hydrating_and(
+    rdm_node::node::start_with_rafka_time_before_ready_and(
         &launch,
         rdm_transport::clock::RafkaTime::unadopted(),
-        rdm_node::app_hydration::Hydration::none(),
+        rdm_node::before_ready::BeforeReadyHook::none(),
         |s| s,
         None,
         |b, _| b,
@@ -159,7 +159,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_ro
             let snapshot = snapshot.clone();
             let release = release.clone();
             Box::new(move |b: rdm_transport::ServerBuilder| {
-                b.serve::<HydratePull, _, _>(OpOwner::Testkit, move |_, _| {
+                b.serve::<BeforeReadyPull, _, _>(OpOwner::Testkit, move |_, _| {
                     let rows = snapshot.clone();
                     let release = release.clone();
                     let entered = entered.clone();
