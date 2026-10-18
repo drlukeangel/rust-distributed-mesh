@@ -1258,7 +1258,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
                 assert_eq!(handler_runs, 1, "{}: replied stored with no handler execution in its trace", op.key);
                 assert_eq!(call.out["reply"]["executing_node"], op.target_id.as_str(), "{}: the reply names the requested node", op.key);
             }
-            // A reply that is a protocol refusal (the node answered `Draining`): the request reached a
+            // A reply that is a protocol refusal (the node answered `ConnectionsDeleting`): the request reached a
             // live protocol door and was refused, so nothing was applied. A refusal carries no provenance.
             Bucket::Reply => {
                 let refused = call.out["reply"]["result"]["refused"].as_str().unwrap_or_else(|| panic!("{}: a Reply that is neither stored nor a named refusal: {}", op.key, call.out));
@@ -4338,7 +4338,7 @@ async fn retire_run(cell: &str, shape: Shape) {
         assert_eq!(cuts.len(), 1, "{node}: the stop cut its own transport once: {stop}");
         assert!(cuts[0]["start_ns"].as_u64().unwrap() >= all[0]["end_ns"].as_u64().unwrap_or(u64::MAX), "{node}: the transport cut follows the whole All: {stop}");
         // Ordinary work that reaches a routable node whose connections are being deleted is refused by name
-        // before its body is read: a broker answers the typed `Draining` reply, a gateway refuses to carry.
+        // before its body is read: a broker answers the typed `ConnectionsDeleting` refusal, a gateway refuses to carry.
         // No handler ran for any of it and none of its values were stored (account() checked the trace
         // and the final state). None was refused before the All began.
         let t_apply = all[0]["start_ns"].as_u64().unwrap();
@@ -4424,7 +4424,7 @@ async fn retire_run(cell: &str, shape: Shape) {
 /// { All } until its in-flight work reaches zero, its Leaving, its own transport cut) and answers
 /// `stopped`, and the retire steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
 /// TerminateRuntime, NodeDeleted); ordinary work that reaches a node whose connections are being deleted
-/// is refused with the typed `Draining` reply before its body is read, with no handler run and no
+/// is refused with the typed `ConnectionsDeleting` refusal before its body is read, with no handler run and no
 /// value stored; every operation ends in exactly one typed bucket, an Indeterminate put is reported
 /// applied or not and never re-sent; the old birth's runtime is terminal in the provider, its NodeDeleted
 /// names the exact birth, and the NodeId stays out of every admin's view for a staleness window. A
@@ -4434,8 +4434,8 @@ async fn retire_run(cell: &str, shape: Shape) {
 /// happen: a retired node's work applied after its refusal, a held runtime taken for dead, an
 /// Indeterminate put re-sent, a retired NodeId back in a view.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mock_drain_and_retire_preserve_status_and_terminal_proof() {
-    retire_run("mock_drain_and_retire_preserve_status_and_terminal_proof", any_tier()).await;
+async fn mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof() {
+    retire_run("mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof", any_tier()).await;
 }
 
 
