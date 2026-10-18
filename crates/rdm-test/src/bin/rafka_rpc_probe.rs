@@ -357,7 +357,9 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
 /// those tasks. A guard dropped while they are still alive flushes a file with the call's spans and
 /// no root.
 fn main() -> std::process::ExitCode {
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("the probe's runtime");
+    // One invocation runs one async call sequence. Its I/O tasks share this runtime;
+    // creating a worker for every host CPU adds no call concurrency.
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the probe's runtime");
     let telemetry = runtime.block_on(async { rdm_transport::init_evidence_telemetry("rafka-rpc-probe") });
     let code = runtime.block_on(probe());
     drop(runtime);

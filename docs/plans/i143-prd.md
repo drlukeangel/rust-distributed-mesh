@@ -2458,6 +2458,9 @@ Page diffs (delegated ruling `R-FM2`):
 
 ### State
 
+Probe startup read: even rejecting `--nope` created 23 OS threads on this 20-CPU host (`s88-probe-workers-before.log`, syscall observation, unchanged exit 2 and Refused JSON). The CLI executes one async call sequence, yet constructed a host-sized multithread runtime. It now runs that same sequence and its asynchronous I/O tasks on a current-thread runtime; endpoint close → runtime drop → telemetry drop is unchanged. This removes unnecessary per-probe workers at their source. It is not yet claimed to resolve the concurrent export red; all forty Direct/carried calls, unconditional file/root checks, and the new rounds assertion must verify it. No mesh receive path, telemetry deadline or missing-span assertion changed.
+
+
 **Landing `89d6ded2` RED (195 s): two owned cells, no outside disposition.** Transport process checks 167/167 GREEN. `rounds.rs:390` asserted the old no-row-before-state-commit rule; its four observed files are exactly Q54's four acknowledged ReadyForTraffic declarations under `status/<mesh>/declared`. The conformance assertion now requires that exact set of four birth-keyed rows, while every other held-row, connection, name-claim and subsequent publication assertion stands. RED source is `89d6ded2`, log `s88-resumed-named-land.log` and per-cell `gates-e7s3-89d6ded2.log.d/rounds.log`. The probe remains an owned read: run 11, exit 0, Reply, no new file, 20/20 unconfirmed at 2000 ms, trace `dfc38c2384ff83302cc162c1e4914311`; `gates-e7s3-89d6ded2.log.d/rdm-test:main.log`. No bounds or file/span assertions changed.
 
 
