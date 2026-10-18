@@ -691,6 +691,89 @@ pub(crate) fn otlp_log_export_level() -> tracing::Level {
 mod evidence_tests {
     use opentelemetry::trace::{Tracer, TracerProvider as _};
 
+    /// The process drain's one deadline includes a held fmt log, after the
+    /// evidence and collector processors. No log writer can hold the exit forever.
+    #[test]
+    fn a_held_log_writer_ends_the_exit_drain_at_its_one_bound_named() {
+        use std::io::{BufRead, Read, Write};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+        const CHILD: &str = "RDM_HELD_LOG_EXIT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            struct HeldLog {
+                entered: std::sync::mpsc::Sender<()>,
+                held: std::sync::mpsc::Receiver<()>,
+            }
+            impl Write for HeldLog {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    let _ = self.entered.send(());
+                    let _ = self.held.recv();
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            }
+            let (entered, writing) = std::sync::mpsc::channel();
+            let (_hold, held) = std::sync::mpsc::channel();
+            let sink = crate::log_sink::LogSink::start(HeldLog { entered, held });
+            assert!(super::STDERR_SINK.set(sink.clone()).is_ok());
+            {
+                use tracing_subscriber::fmt::MakeWriter;
+                let mut line = sink.make_writer();
+                line.write_all(b"a held log line\n").unwrap();
+            }
+            writing.recv_timeout(Duration::from_secs(10)).expect("the writer entered before the drain clock starts");
+            let provider = opentelemetry_sdk::trace::TracerProvider::builder().build();
+            let exporters = super::Exporters::new(provider, None, None);
+            println!("DRAIN_STARTED");
+            let started = Instant::now();
+            exporters.drain("the held-log exit drain");
+            println!("DRAIN_DONE_MS={}", started.elapsed().as_millis());
+            std::process::exit(0);
+        }
+        let name = concat!(module_path!(), "::a_held_log_writer_ends_the_exit_drain_at_its_one_bound_named");
+        let name = name.split_once("::").unwrap().1;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"]).env(CHILD, "1")
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let output = child.stdout.take().unwrap();
+        let mut error = child.stderr.take().unwrap();
+        let errors = std::thread::spawn(move || { let mut s = String::new(); error.read_to_string(&mut s).unwrap(); s });
+        let (lines, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(output).lines() {
+                if lines.send(line.unwrap()).is_err() { break; }
+            }
+        });
+        let ready_by = Instant::now() + Duration::from_secs(10);
+        let mut output = Vec::new();
+        loop {
+            match received.recv_timeout(ready_by.saturating_duration_since(Instant::now())) {
+                Ok(line) => { let ready = line == "DRAIN_STARTED"; output.push(line); if ready { break; } }
+                Err(e) => { let _ = child.kill(); let _ = child.wait(); panic!("the child did not enter its held-log drain: {e}; {output:?}; {}", errors.join().unwrap()); }
+            }
+        }
+        let bound = super::export::DRAIN_BOUND + Duration::from_millis(500);
+        let end = Instant::now() + bound;
+        let mut elapsed = None;
+        while let Ok(line) = received.recv_timeout(end.saturating_duration_since(Instant::now())) {
+            if let Some(value) = line.strip_prefix("DRAIN_DONE_MS=") {
+                elapsed = value.parse::<u128>().ok();
+                output.push(line);
+                break;
+            }
+            output.push(line);
+        }
+        if elapsed.is_none() { let _ = child.kill(); }
+        let status = child.wait().unwrap();
+        let _ = reader.join();
+        let error = errors.join().unwrap();
+        assert!(elapsed.is_some(), "the held log kept the drain past its one bound: status={status:?}; stdout={output:?}; stderr={error}");
+        assert!(status.success(), "the child failed: {status:?}; {output:?}; {error}");
+        assert!(elapsed.unwrap() < bound.as_millis(), "the drain exceeded its existing bound: {output:?}; {error}");
+        assert!(error.contains("stderr log flush ended at its bound"), "the unconfirmed log flush is named: {error}");
+    }
+
+
     /// CONTRACT: a span ended just before the provider shuts down (the guard's drop) is a complete
     /// JSON line of the evidence file, in order, and a flush alone already puts the spans ended
     /// before it on disk; nothing was lost on the way.
