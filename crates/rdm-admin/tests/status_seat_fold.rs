@@ -43,10 +43,12 @@ struct Taken {
 async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     let dir = std::env::temp_dir().join(format!("status-seat-fold-{}", NodeId::mint()));
     let (mesh_id, fabric_id) = (MeshId::mint(), FabricId::mint());
-    let before_view = view(&mesh_id, &fabric_id);
+    let mut before_view = view(&mesh_id, &fabric_id);
+    before_view.nodes.push(node("mesh1.rpc.2", false, false));
     let rpc = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
     let rpc_birth = (rpc.node_id.clone(), rpc.incarnation_id.clone().unwrap());
-    let other = (NodeId::mint(), IncarnationId::mint());
+    let other_node = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.2").unwrap();
+    let other = (other_node.node_id.clone(), other_node.incarnation_id.clone().unwrap());
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
     let root = rdm_admin::store_root::StoreRoot::at(&dir);
     let a = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
@@ -357,7 +359,16 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 }).await;
                 assert_eq!(reply, StatusReply::Applied, "the predecessor acknowledged this exact birth's Ready");
                 assert_eq!(storage.node_declared().await.unwrap().len(), 1, "the predecessor reads the acknowledged row");
-                if published { assert_eq!(pad.publish().await.unwrap().written(), 1); }
+                let disk = rdm_admin::store_root::StoreRoot::at(&dir);
+                let independent = FileStatusStorage::open(&disk, "mesh1", &IncarnationId::mint()).await.unwrap();
+                assert_eq!(independent.node_declared().await.unwrap().len(), 1, "Applied already made the row durable before publication");
+                storage.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
+                assert!(independent.mesh_statuses().await.unwrap().is_empty(), "Q54 does not publish the other held rows");
+                if published {
+                    assert_eq!(pad.publish().await.unwrap().written(), 1, "only the held mesh row remains to publish");
+                    assert_eq!(independent.mesh_statuses().await.unwrap().len(), 1);
+                }
+                drop(independent);
                 drop(authority);
                 drop(storage);
                 drop(held_root);

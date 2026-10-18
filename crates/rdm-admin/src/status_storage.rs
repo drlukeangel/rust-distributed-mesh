@@ -684,7 +684,9 @@ impl FileStatusStorage {
         Ok(Self {
             meshes: root.records(&base, "meshes", writer).await?,
             fabric: root.records(&base, "fabric", writer).await?,
-            declared: root.records(&base, "declared", writer).await?,
+            // Q54: an Applied declaration is durable even before state-commit.
+            // All other status stores retain their existing publication boundary.
+            declared: FileRecords::open(&base, "declared", writer).await?,
             operations: root.records(&base, "operations", writer).await?,
             silence: root.records(&base, "silence", writer).await?,
             exits: root.records(&base, "exits", writer).await?,

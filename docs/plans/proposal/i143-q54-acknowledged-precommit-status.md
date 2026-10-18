@@ -1,6 +1,6 @@
 # Q54 — does Applied make a node declared-state row durable before state-commit?
 
-Asked 2026-10-17. Unruled. Q53's permission to fix the mesh stands; this is the newly exposed conflict with R14's publication boundary. No phase boundary has been changed.
+Ruled A by Luke, 2026-10-17. Q53's permission to fix the mesh stands; this is the newly exposed conflict with R14's publication boundary. No phase boundary has been changed.
 
 ## 1. Spec
 
@@ -54,7 +54,7 @@ Every arm assumes Q53's mesh-change permission stands and no re-fold, wait, fall
 - **A:** Make NodeDeclaredRow an acknowledged durable fact: open the existing `status/<mesh>/declared` store directly on the shared root, and complete its write before Applied, including before state-commit. Same row, same key/path/format, no second copy. This explicitly excepts these facts from R14 item 9; other stores keep their phase boundary. Wire: unchanged; publisher: existing mesh-primary; timer: unchanged; tier: unchanged; fork: none. The exact page line below lands with the code. This makes both Q53 acquisition cases carry Ready.
 - **B:** Keep R14's publication boundary and qualify Q53's first-projection guarantee to published states. A pre-commit Applied is a private held acknowledgement, not durable acquisition evidence. The living birth's existing eligible declaration to its new exact authority must restore its state; any missing declaration still needs its own read and fix. Wire: unchanged; publisher: existing mesh-primary; timer: no new timer; tier: unchanged; fork: none. This changes the guarantee and does not alone dispose of the live 60 s setup red.
 
-### Exact page line for A (not applied)
+### Exact approved page line for A
 
 `docs/architecture/lifecycles/states.md`, Rounds:
 
@@ -66,4 +66,4 @@ New:
 
 > Before state-commit, RDM holds its entity rows in the scratchpad; state-commit publishes the required held rows to the configured stores. A node declared-state fact acknowledged as Applied is written to `status/<mesh>/declared` on the shared store root before the reply, including before state-commit; a successor acquires that fact without creating a new lifecycle transition.
 
-This ruling would override R14 item 9 for that one store. No architecture page is edited yet. Packet format: [ruling-packet skill](/home/admin/rafka-v2/.claude/skills/ruling-packet/SKILL.md); the need for this decision comes from the two quoted contracts, not an additional approval rule in the skill.
+This ruling overrides R14 item 9 for that one store; the exact page line lands with the implementation. The fold ignores rows for births absent from its incoming view. Packet format: [ruling-packet skill](/home/admin/rafka-v2/.claude/skills/ruling-packet/SKILL.md); the need for this decision comes from the two quoted contracts, not an additional approval rule in the skill.

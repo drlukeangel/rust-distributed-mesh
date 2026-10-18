@@ -48,8 +48,7 @@ successful admission reply does not complete a round: the matching upward comple
 and planned-birth checklist do. Required writes finish before their completion check-ins.
 Gossip disseminates the resulting states and overlays for peer topology and routing; it never
 completes a round, and neither caller progress nor round completion waits for peers to receive
-gossip. Before state-commit, RDM holds its rows in the scratchpad; state-commit publishes the
-required held rows to the configured stores.
+gossip. Before state-commit, RDM holds its entity rows in the scratchpad; state-commit publishes the required held rows to the configured stores. A node declared-state fact acknowledged as Applied is written to `status/<mesh>/declared` on the shared store root before the reply, including before state-commit; a successor acquires that fact without creating a new lifecycle transition.
 
 | state | carried down | checked in | between |
 |---|---|---|---|

@@ -227,6 +227,13 @@ impl SeatFold {
         };
         match tracing::Instrument::instrument(read, span.clone()).await {
             Ok((meshes, events, rows, operations)) => {
+                // Acquisition belongs to the exact births in the incoming view,
+                // including predecessors still held there, never to a path.name.
+                let holds_birth = |node_id: &NodeId, incarnation: &IncarnationId| {
+                    now.births().any(|n| &n.node_id == node_id && n.incarnation_id.as_ref() == Some(incarnation))
+                };
+                let rows: Vec<_> = rows.into_iter().filter(|row| holds_birth(&row.node_id, &row.incarnation_id)).collect();
+                let operations = operations.into_iter().filter(|row| holds_birth(&row.node_id, &row.incarnation_id));
                 for row in operations { declared.lock().unwrap().operations.insert(row.key(), row); }
                 span.record("node_declared_rows", rows.len());
                 span.record("mesh_status_rows", meshes.len());
