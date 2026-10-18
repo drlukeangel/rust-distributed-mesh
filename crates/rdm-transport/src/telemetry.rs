@@ -548,15 +548,31 @@ pub fn init_steps() -> Option<&'static InitSteps> {
 
 /// Each step of an init, once its subscriber is installed: one span per step carrying how long the
 /// step took (the steps ran before any subscriber could record them), under one span naming the
-/// slowest.
-fn report_init_steps(steps: InitSteps) {
+/// slowest, in the current span.
+fn emit_init_steps(steps: &InitSteps) {
     let (slowest, slowest_ms) = steps.slowest().map_or(("", 0), |(step, took)| (step, took.as_millis() as u64));
     tracing::info_span!("rdm.mesh.telemetry.create.via-init", steps = %steps, slowest, slowest_ms, "otel.kind" = "internal").in_scope(|| {
         for (step, took) in &steps.0 {
             tracing::info_span!("rdm.mesh.telemetry.create.via-init-step", step = *step, elapsed_ms = took.as_millis() as u64, "otel.kind" = "internal").in_scope(|| {});
         }
     });
+}
+
+/// The init's steps held for [`init_steps`], reported now unless the process reports them inside its
+/// own call ([`init_evidence_telemetry_for_one_call`]).
+fn report_init_steps(steps: InitSteps, now: bool) {
+    if now {
+        emit_init_steps(&steps);
+    }
     let _ = INIT_STEPS.set(steps);
+}
+
+/// Report this process's init steps in the current span: a one-call process does it inside its
+/// call's root, so the invocation is one trace ([`init_evidence_telemetry_for_one_call`]).
+pub fn report_init_steps_here() {
+    if let Some(steps) = INIT_STEPS.get() {
+        emit_init_steps(steps);
+    }
 }
 
 /// Telemetry for i143 binaries. Spans go to the JSONL evidence sink when
@@ -564,6 +580,17 @@ fn report_init_steps(steps: InitSteps) {
 /// is set; with neither, only the fmt layer runs. Returns `None` when no
 /// exporter is configured. Each step's time is reported ([`init_steps`]).
 pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
+    init_evidence(service_name, true)
+}
+
+/// [`init_evidence_telemetry`] for a process that runs one call and ends (the probe): its init
+/// steps are held, not reported, until it reports them inside the call's own root span
+/// ([`report_init_steps_here`]), so each invocation is one trace.
+pub fn init_evidence_telemetry_for_one_call(service_name: &str) -> Option<TelemetryGuard> {
+    init_evidence(service_name, false)
+}
+
+fn init_evidence(service_name: &str, report_now: bool) -> Option<TelemetryGuard> {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
     install_propagator();
     let service = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| service_name.to_string());
@@ -635,7 +662,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
             None => tracing_subscriber::registry().with(stderr_layer!()).try_init(),
         };
         steps.timed("subscriber", step);
-        report_init_steps(steps);
+        report_init_steps(steps, report_now);
         return None;
     }
     let provider = builder.build();
@@ -658,7 +685,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
     let step = std::time::Instant::now();
     let _ = watchdog::spawn();
     steps.timed("watchdog", step);
-    report_init_steps(steps);
+    report_init_steps(steps, report_now);
     Some(guard(provider, logs, evidence))
 }
 
