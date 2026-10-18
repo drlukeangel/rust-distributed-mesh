@@ -362,9 +362,22 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         };
         let own = async {
             let mut own_views = serde_json::Map::new();
+            let mut local = tokio::task::JoinSet::new();
             for name in &isolated_admins {
-                let seen = if cut == Cut::PeerMesh { local_nodes_at(&nodes, &silenced, name).await } else { nodes_at(&estate, name).await };
+                if cut == Cut::PeerMesh {
+                    let (nodes, silenced, name) = (nodes.clone(), silenced.clone(), name.clone());
+                    local.spawn(async move { let seen = local_nodes_at(&nodes, &silenced, &name).await; (name, seen) });
+                    continue;
+                }
+                let seen = nodes_at(&estate, name).await;
                 own_views.insert(name.clone(), match seen {
+                    Some(v) => json!(v.iter().map(|n| (s(&n["name"]), s(&n["status"]))).collect::<BTreeMap<_, _>>()),
+                    None => json!("unanswered"),
+                });
+            }
+            while let Some(read) = local.join_next().await {
+                let (name, seen) = read.expect("the isolated admin's own view read completes");
+                own_views.insert(name, match seen {
                     Some(v) => json!(v.iter().map(|n| (s(&n["name"]), s(&n["status"]))).collect::<BTreeMap<_, _>>()),
                     None => json!("unanswered"),
                 });
@@ -407,6 +420,11 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // The heal. A deadline release also runs if an observation has not returned.
     let _ = lift_now.send(());
     let (healed_at, actual_silence, completed) = lift.join().expect("the cut's release completed");
+    std::fs::write(dir.join("held-observations.json"), serde_json::to_vec_pretty(&json!({
+        "planned_silence_ms": planned_silence.as_millis(), "hold_ms": hold.as_millis(),
+        "actual_silence_ms": actual_silence.as_millis(), "observations_completed_before_release": completed,
+        "silence": silence, "last_provider": last, "last_rules": last_rules,
+    })).unwrap()).unwrap();
     assert!(actual_silence < hold, "the cut was lifted after {actual_silence:?}, past its declared {hold:?} hold");
     assert!(completed, "the observations exceeded the planned {planned_silence:?} silence; the cut was lifted at its release deadline");
     let after_heal = inspect_all(&silenced);

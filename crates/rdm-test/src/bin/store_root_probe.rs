@@ -3,7 +3,9 @@
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -100,15 +102,29 @@ fn main() -> Result<()> {
             let a = vec![b'A'; BYTES];
             let b = vec![b'B'; BYTES];
             ensure!(fs::read(root.join("atomic"))? == a, "the initial atomic value is coherent");
+            // Observe replacements from the filesystem, rather than flooding the
+            // shared mount with reads while the writer is syncing its 64 files.
+            let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+            ensure!(fd >= 0, "watch the shared directory: {}", std::io::Error::last_os_error());
+            let mut changes = unsafe { File::from_raw_fd(fd) };
+            let path = std::ffi::CString::new(root.as_os_str().as_bytes())?;
+            let watched = unsafe { libc::inotify_add_watch(changes.as_raw_fd(), path.as_ptr(), libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE) };
+            ensure!(watched >= 0, "watch shared replacements: {}", std::io::Error::last_os_error());
             fs::write(root.join("reader-ready"), b"ready")?;
             let until = Instant::now() + Duration::from_secs(10);
             let mut reads = 0;
             while !root.join("done").exists() {
                 ensure!(Instant::now() < until, "writer did not complete its replacements");
+                let mut poll = libc::pollfd { fd: changes.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                let remaining = until.saturating_duration_since(Instant::now());
+                let ready = unsafe { libc::poll(&mut poll, 1, remaining.as_millis().max(1) as i32) };
+                if ready < 0 { return Err(std::io::Error::last_os_error().into()); }
+                ensure!(ready > 0, "writer did not complete its replacements");
+                let mut notifications = [0u8; 8192];
+                changes.read(&mut notifications)?;
                 let value = fs::read(root.join("atomic"))?;
                 ensure!(value == a || value == b, "torn replacement: {} bytes", value.len());
                 reads += 1;
-                std::thread::yield_now();
             }
             ensure!(reads > 0, "the reader observed no replacements");
             ensure!(fs::read(root.join("atomic"))? == b, "the final atomic value is coherent");

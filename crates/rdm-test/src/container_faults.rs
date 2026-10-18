@@ -274,9 +274,17 @@ impl Silenced {
         Err(format!("{} ({} already silenced were restored; failures: {back:?})", failed.join("; "), applied.len()))
     }
 
-    /// Inspect the exact containers concurrently; an unreadable container is named.
+    /// Read every exact container in one daemon query; an unreadable container is named.
     pub fn inspect(&self) -> Result<std::collections::BTreeMap<String, Inspected>, String> {
-        on_members(&self.members, |m| inspect(&m.id).map(|i| (m.node.clone(), i)).map_err(|e| format!("{}: {e}", m.node))).into_iter().collect()
+        let mut args = vec!["inspect"];
+        args.extend(self.members.iter().map(|m| m.id.as_str()));
+        let raw = docker(&args)?;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&raw).map_err(|e| format!("docker inspect the silenced containers: {e}"))?;
+        self.members.iter().map(|member| {
+            let row = rows.iter().find(|row| row["Id"] == member.id)
+                .ok_or_else(|| format!("{}: the daemon holds no exact container {}", member.node, member.id))?;
+            Ok((member.node.clone(), inspected(row)))
+        }).collect()
     }
 
     fn install_rules(&self) -> String {
@@ -353,10 +361,14 @@ pub fn inspect(id: &str) -> Result<Inspected, String> {
     let raw = docker(&["inspect", id])?;
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("docker inspect {id}: unreadable ({e})"))?;
     let c = v.get(0).ok_or_else(|| format!("docker inspect {id}: the daemon holds no such container"))?;
+    Ok(inspected(c))
+}
+
+fn inspected(c: &serde_json::Value) -> Inspected {
     let st = &c["State"];
     let mut networks: Vec<String> = c["NetworkSettings"]["Networks"].as_object().map(|m| m.keys().cloned().collect()).unwrap_or_default();
     networks.sort();
-    Ok(Inspected {
+    Inspected {
         id: c["Id"].as_str().unwrap_or_default().to_string(),
         status: st["Status"].as_str().unwrap_or_default().to_string(),
         running: st["Running"].as_bool().unwrap_or(false),
@@ -366,7 +378,7 @@ pub fn inspect(id: &str) -> Result<Inspected, String> {
         exit_code: st["ExitCode"].as_i64().unwrap_or(0),
         oom_killed: st["OOMKilled"].as_bool().unwrap_or(false),
         networks,
-    })
+    }
 }
 
 /// The `(rafka.fabric, rafka.node)` labels the provider put on container `id`.

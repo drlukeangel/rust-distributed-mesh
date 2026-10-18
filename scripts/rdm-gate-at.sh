@@ -265,7 +265,13 @@ per_exe(){
                 echo "$name:storage sh:${c%)} --skip a_list_racing_a_removal_answers_the_records_that_remain storage:: record_store:: fabric_storage::)" >> $D/jobs
                 echo "$name:lib sh:${c%)} --skip storage:: --skip record_store:: --skip fabric_storage::)" >> $D/jobs
             elif [ "$b" = "main" ]; then
-                echo "$name:$b sh:${c%)} --test-threads=8)" >> $D/jobs
+                # The release container-proof job owns these exact cells once;
+                # fast still runs them here because that job is release-only.
+                if [ "$GATE" = release ]; then
+                    echo "$name:$b sh:${c%)} --test-threads=8 --skip container_proof:: --skip provider_state::container::)" >> $D/jobs
+                else
+                    echo "$name:$b sh:${c%)} --test-threads=8)" >> $D/jobs
+                fi
             else
                 echo "$name:$b sh:$c" >> $D/jobs
             fi
