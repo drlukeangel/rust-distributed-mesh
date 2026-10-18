@@ -768,6 +768,19 @@ join result
 
 The exact span name follows repository observability canon.
 
+**A cut-off view.** A node's view is cut off while it hears no other member of its mesh and holds a member
+whose silence no lifecycle gossip event it applied explains; it ends when the view hears a member again or
+when that silence is explained, and one silence window of healing follows. What a cut-off or healing view
+may not do is [fabric-authority.md §2.3.1](fabric-authority.md#231-topology-authority),
+[build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) and §12. Expected
+silence never cuts a view off and is never stale: a member whose node.stop this view admitted or applied
+(stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose
+deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an
+event the view applied, and is not counted. A view that holds no other member, or whose other members all
+left it that way, is not cut off: a mesh-primary whose mesh has no other live member keeps its seat,
+publishes as its primary and serves its mesh's topology and rafka-time, and a stopped member's start reads
+them from it ([node.start](lifecycles/node-start.md) step 4).
+
 ### 6.1 Deletions: an event for promptness, `Members` for retention
 
 A known exact deletion is membership state and a lifecycle event, never a second gossip protocol.

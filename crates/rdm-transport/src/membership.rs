@@ -2855,29 +2855,30 @@ impl Membership {
 
     /// Evidence of what this node holds: a mesh it first hears, or hears
     /// again, and a mesh none of whose members it still hears. And whether it
-    /// is cut off: it has heard other members, and now hears none.
+    /// is cut off (gossip.md §6, Q58): it hears no other member of its mesh and
+    /// holds one whose silence no lifecycle event it applied explains.
     fn watch_meshes(&self) {
         let (book, via, cut_off, view) = (self.book.clone(), self.view.via.clone(), self.cut_off.clone(), self.view.clone());
         tokio::spawn(async move {
             let mut held: BTreeSet<String> = BTreeSet::new();
-            let mut heard_others = false;
-            let mut heard: BTreeMap<String, (String, bool)> = BTreeMap::new();
+            let mut heard: BTreeSet<String> = BTreeSet::new();
             loop {
                 let node = view.current_name();
+                let own_mesh = view.mesh.clone();
                 let current = book.current(book.staleness_floor());
-                let now_heard: BTreeMap<String, (String, bool)> = current.iter().map(|d| (d.node.node_id.to_string(), (d.node.name.to_string(), d.status == rdm_core::MemberStatus::Leaving))).collect();
-                for (id, (name, leaving)) in heard.iter().filter(|(id, _)| !now_heard.contains_key(*id)) {
-                    if *leaving || *name == node || book.is_departed(id) {
-                        continue;
-                    }
-                    let silent_ms = book.get(id).map(|(_, silent)| silent.as_millis() as u64).unwrap_or(0);
+                let now_heard: BTreeSet<String> = current.iter().map(|d| d.node.node_id.to_string()).collect();
+                // Q58: a member whose silence a lifecycle event this view applied explains is expected
+                // silence, neither stale nor counted: a stop admitted (`Leaving`) or applied (the stopped
+                // birth left the book), an open restart, a deletion applied (the birth left the book).
+                // What remains is a member of this node's own mesh the book still holds and does not hear.
+                let unexplained = book.unheard_unexplained(&own_mesh, &node);
+                for (id, name, silent_ms) in unexplained.iter().filter(|(id, _, _)| heard.contains(id)) {
                     tracing::info_span!("rdm.mesh.membership.update.via-member-stale", node = %node, member = %name, member_id = %id, silent_ms, staleness_ms = book.staleness_floor().as_millis() as u64)
                         .in_scope(|| tracing::info!("a member is no longer heard within the staleness floor: held, not current"));
                 }
                 heard = now_heard;
                 let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
-                heard_others |= others > 0;
-                let off = heard_others && others == 0;
+                let off = others == 0 && !unexplained.is_empty();
                 if let Some(role) = cut_off.lock().unwrap().observe(off, Instant::now()) {
                     tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role)
                         .in_scope(|| tracing::info!("no other member is heard: what this node holds is not acted on"));
@@ -5646,6 +5647,24 @@ impl DigestBook {
         held
     }
 
+    /// The members of `own_mesh`, other than `me`, this book holds and does not hear within the
+    /// staleness floor, whose silence no lifecycle event it applied explains (gossip.md §6, "A cut-off
+    /// view", Q58): `(node_id, name, silent_ms)`. Expected silence is left out: a member held `Leaving`
+    /// (its stop admitted), a birth under an open restart, a deleted birth; a stopped birth left the
+    /// book with `NodeStopped` and is not here either. A view hearing no other member and holding one of
+    /// these is cut off; a view holding none is not, however many members it stopped.
+    pub fn unheard_unexplained(&self, own_mesh: &str, me: &str) -> Vec<(String, String, u64)> {
+        let now = Instant::now();
+        let floor = self.staleness_floor();
+        let restarting: BTreeSet<String> = self.in_flight().into_iter().filter(|o| o.is_restart()).map(|o| o.node_id.to_string()).collect();
+        let held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
+        held.into_iter()
+            .filter(|(d, silent)| *silent > floor && d.node.name.mesh == own_mesh && d.node.name.to_string() != me)
+            .filter(|(d, _)| d.status != rdm_core::MemberStatus::Leaving && !restarting.contains(d.node.node_id.as_str()) && !self.is_departed_at(d.node.node_id.as_str(), now))
+            .map(|(d, silent)| (d.node.node_id.to_string(), d.node.name.to_string(), silent.as_millis() as u64))
+            .collect()
+    }
+
     /// Every digest held.
     pub fn all(&self) -> Vec<MeshDigest> {
         let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect();
@@ -7086,6 +7105,34 @@ mod tests {
         let targets = held_targets(&book, |_| true);
         assert_eq!(targets.len(), 1, "node.started of the same birth closes the restart");
         assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41000), "and is a target at its own address");
+    }
+
+    /// CONTRACT (gossip.md §6 "A cut-off view", Q58): a member this view stopped is expected silence,
+    /// neither stale nor counted; a view whose only other member it stopped is not cut off, and node.joined
+    /// holds the birth again. A member that falls silent with no event this view applied is unexplained,
+    /// and a view hearing no other member while holding one is cut off.
+    #[test]
+    fn a_member_this_view_stopped_is_expected_silence_and_a_silent_one_is_not() {
+        let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let mut d = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100);
+        d.node.name = "mesh1.admin.2".parse().unwrap();
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(600)).expect("the clock has run ten minutes");
+        assert!(book.record_at(d.clone(), long_ago));
+        assert_eq!(book.unheard_unexplained("mesh1", "mesh1.admin.1").len(), 1, "a member silent with no event is unexplained: the view is cut off");
+        let mut again = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 200);
+        again.node.name = "mesh1.admin.2".parse().unwrap();
+        assert!(book.record(again), "heard again");
+        assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "heard: nothing unexplained");
+        assert!(book.stopped(op(&id, &inc, "node.stop:mesh1.admin.2")), "the stop this view applied");
+        assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty(), "a stopped member is expected silence: the view is not cut off");
+        assert!(book.joined(&op(&id, &inc, "node.start:mesh1.admin.2")), "its start's node.joined holds it again");
+        assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty());
+        let mut later = digest(&id, &inc, None, MemberStatus::Pending, 300);
+        later.node.name = "mesh1.admin.2".parse().unwrap();
+        assert!(book.record(later));
+        assert!(book.unheard_unexplained("mesh1", "mesh1.admin.1").is_empty());
     }
 
     fn born(mesh: &str, kind_ordinal: &str, mesh_id: Option<&MeshId>, at: u64) -> MeshDigest {
