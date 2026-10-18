@@ -181,7 +181,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_STORE_DIR` | `crates/rdm-core/src/launch.rs` | 35 | const `ENV_STORE_DIR` | literal |
 | `RDM_STORE_DIR` | `crates/rdm-core/src/launch.rs` | 204 | fn `Launch::to_env` | `ENV_STORE_DIR`, argument to `.insert` |
 | `RDM_STORE_DIR` | `crates/rdm-core/src/launch.rs` | 231 | fn `Launch::from_env` | `ENV_STORE_DIR`, argument to `req` |
-| `RDM_STORE_DIR` | `crates/rdm-test/src/bin/store_root_probe.rs` | 43 | fn `main` | argument to `std::env::var_os` |
+| `RDM_STORE_DIR` | `crates/rdm-test/src/bin/store_root_probe.rs` | 45 | fn `main` | argument to `std::env::var_os` |
 | `RDM_STORE_DIR` | `crates/rdm-test/src/estate.rs` | 662 | fn `Estate::born` | in `vec!` |
 | `RDM_STORE_DIR` | `crates/rdm-test/src/estate.rs` | 914 | fn `Estate::restart_admin_with` | in `vec!` |
 | `RDM_SUPERSEDES` | `crates/rdm-core/src/launch.rs` | 22 | const `ENV_SUPERSEDES` | literal |

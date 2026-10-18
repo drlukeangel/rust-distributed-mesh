@@ -748,7 +748,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.testkit.fault.remove.via-heal` | `crates/rdm-test/src/disk_faults.rs` | 119 |
 | `rdm.testkit.fault.remove.via-heal` | `crates/rdm-test/src/link_faults.rs` | 105 |
 | `rdm.testkit.fault.update.via-arm` | `crates/rdm-test/src/admin_faults.rs` | 360 |
-| `rdm.testkit.fault.update.via-container-command` | `crates/rdm-test/src/container_faults.rs` | 555 |
+| `rdm.testkit.fault.update.via-container-command` | `crates/rdm-test/src/container_faults.rs` | 567 |
 | `rdm.testkit.fault.update.via-disk-fill` | `crates/rdm-test/src/disk_faults.rs` | 77 |
 | `rdm.testkit.fault.update.via-hold` | `crates/rdm-test/src/admin_faults.rs` | 428 |
 | `rdm.testkit.fault.update.via-hold` | `crates/rdm-test/src/admin_faults.rs` | 456 |
