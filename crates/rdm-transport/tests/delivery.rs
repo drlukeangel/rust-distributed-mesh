@@ -1304,8 +1304,10 @@ async fn owed_dial_superseded(ended_birth: bool) {
         eventually("the superseded attempt is resent, the call still owed", Duration::from_secs(3), || get(&cd.stats().resends) >= 1).await;
         assert!(!call.is_finished(), "a moved slot of a living birth ends nothing");
         assert_eq!(get(&s.stats.dispatched), 0, "no request went through the superseded slot");
-        // The view names the birth's slot again: the next attempt reaches it and is answered.
+        // The view names the birth's slot again: the next attempt reaches it (its dial passes the
+        // same after-connect point, released once more) and is answered.
         resolver.insert(s.node.clone());
+        point.release.notify_one();
         let out = tokio::time::timeout(FLOOR * 4, call).await.expect("the resent call is answered").unwrap();
         assert!(out.reply().is_some(), "the receiver's reply: {out:?}");
         assert_eq!(get(&s.stats.dispatched), 1, "the receiver dispatched the request once");

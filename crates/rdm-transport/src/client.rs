@@ -558,16 +558,26 @@ impl NodeRpcClient {
                 c
             }
             Err(DialError::Superseded) => {
+                let now = self.resolver.resolve(target).ok();
+                // What moved under the dial: the birth, or only its endpoint slot.
+                let moved = match &now {
+                    Some(n) if n.incarnation.as_str() == key.birth() => format!("the endpoint slot of incarnation {} moved from {} to {}", key.birth(), key.peer.fmt_short(), n.endpoint_id.fmt_short()),
+                    Some(n) => format!("incarnation {} superseded by {}", key.birth(), n.incarnation.as_str()),
+                    None => format!("incarnation {} no longer resolves", key.birth()),
+                };
                 // The pool also invalidates a dial when its receiving birth ends. For an Owed
-                // call that proof ends the obligation as receiver-gone, not a stale live slot.
+                // call that proof ends the obligation as receiver-gone; a moved slot of a living
+                // birth is neither the holder's answer nor its proven exit (i146 Q52), so the
+                // attempt sent nothing and the next one dials the slot the view names then.
                 if matches!(opts.budget, Budget::Owed) {
                     if let Some(why) = node.observed.as_ref().and_then(|n| self.receiver_gone(target, &n.incarnation)) {
                         return Phase::ReceiverGone(why);
                     }
+                    tracing::info!(step = "dial-superseded", moved = %moved, "the dial's slot moved under a living birth: the owed request is resent");
+                    return Phase::Done(pre.not_sent(NotSentReason::Connection(format!("the dial was superseded: {moved}"))));
                 }
                 // A pinned endpoint slot on a living birth remains stale.
-                let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.to_string()).unwrap_or_default();
-                stale_span(&request_target, &format!("incarnation {} superseded by {now}", key.birth()));
+                stale_span(&request_target, &moved);
                 return Phase::Done(pre.stale_before_finish(&request_target));
             }
             Err(DialError::Deadline) => {
