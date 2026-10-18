@@ -26,6 +26,17 @@ pub trait ConnectionsStorage: Send + Sync {
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError>;
     /// The raw log, oldest first.
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError>;
+    /// Every resident Direct connection fact across the shared connections store (`connections.md`
+    /// §3.2, §4.1: each source writes under `connections/<node>/`; carrier discovery reads the
+    /// fleet-wide active Direct graph from the store).
+    async fn fleet_directs(&self) -> Result<Vec<NodeConnection>, StorageError> {
+        Ok(self
+            .connections()
+            .await?
+            .into_iter()
+            .filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct)
+            .collect())
+    }
 }
 
 /// A connections store held in memory.
@@ -67,7 +78,7 @@ fn connection_key(i: &ConnectionIndex) -> String {
 /// `<store root>/connections/<node>/<source>--<destination>--<kind>.json` and its raw log
 /// `history.jsonl`: the node's own connections rows, written by the node itself.
 #[derive(Debug)]
-pub struct FileConnectionsStorage(FileRecords, std::sync::Arc<HistoryLog>);
+pub struct FileConnectionsStorage(FileRecords, std::sync::Arc<HistoryLog>, std::path::PathBuf);
 
 /// A node's raw connection log, `history.jsonl`: appended one line per fact, one appender at a
 /// time; held in the scratchpad, like the node's connections rows, until its publication.
@@ -117,6 +128,7 @@ impl FileConnectionsStorage {
     /// written by the process born as `writer`: held in the root's scratchpad until its publication.
     pub async fn open(root: &crate::store_root::StoreRoot, node: &PathName, writer: &IncarnationId) -> Result<Self, StorageError> {
         let dir = root.connections(node);
+        let connections_root = root.dir().join("connections");
         let records = root.records(&dir, "", writer).await?;
         let log = std::sync::Arc::new(HistoryLog {
             path: dir.join("history.jsonl"),
@@ -127,7 +139,7 @@ impl FileConnectionsStorage {
         if !root.scratchpad().is_some_and(|s| s.enrol(log.clone())) {
             *log.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
-        Ok(Self(records, log))
+        Ok(Self(records, log, connections_root))
     }
 
     /// Append `fact` to the raw log, one appender at a time: held while the log holds its lines,
@@ -158,6 +170,71 @@ impl ConnectionsStorage for FileConnectionsStorage {
     }
     async fn append_history(&self, fact: &NodeConnection) -> Result<(), StorageError> {
         self.append_history_line(fact).await
+    }
+    async fn fleet_directs(&self) -> Result<Vec<NodeConnection>, StorageError> {
+        let mut by_index: BTreeMap<ConnectionIndex, NodeConnection> = self
+            .connections()
+            .await?
+            .into_iter()
+            .filter(|r| r.kind == rdm_core::connections::ConnectionKind::Direct)
+            .map(|r| (r.index(), r))
+            .collect();
+        let connections_root = self.2.clone();
+        let disk_rows = crate::record_store::blocking_io(move || {
+            let mut rows = Vec::new();
+            let node_dirs = match std::fs::read_dir(&connections_root) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(rows),
+                Err(e) => {
+                    return Err(StorageError::Io {
+                        file: connections_root.display().to_string(),
+                        reason: e.to_string(),
+                    })
+                }
+            };
+            let mut dirs: Vec<std::path::PathBuf> = node_dirs
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            dirs.sort();
+            for dir in dirs {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                let mut files: Vec<std::path::PathBuf> = entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| !n.starts_with('.') && n.ends_with("--direct.json"))
+                    })
+                    .collect();
+                files.sort();
+                for path in files {
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            let row = FileRecords::decode::<NodeConnection>(&path, &bytes, CONNECTION_FORMAT)?;
+                            if row.kind == rdm_core::connections::ConnectionKind::Direct {
+                                rows.push(row);
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => {
+                            return Err(StorageError::Io {
+                                file: path.display().to_string(),
+                                reason: e.to_string(),
+                            })
+                        }
+                    }
+                }
+            }
+            Ok(rows)
+        })
+        .await?;
+        for row in disk_rows {
+            by_index.entry(row.index()).or_insert(row);
+        }
+        Ok(by_index.into_values().collect())
     }
     async fn history(&self) -> Result<Vec<NodeConnection>, StorageError> {
         let path = &self.1.path;

@@ -806,8 +806,8 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_st
 
     // Open a stream on ALPN_B's Proxy before ALPN_A is restored:
     let (mut b_send, mut b_recv) = conn_b_proxy.open_bi().await.unwrap();
-    let (mut b_srv_send, mut b_srv_recv) = srv_b1.accept_bi().await.unwrap();
     b_send.write_all(b"b-before-a-restored").await.unwrap();
+    let (mut b_srv_send, mut b_srv_recv) = srv_b1.accept_bi().await.unwrap();
     let mut buf = [0u8; 19];
     b_srv_recv.read_exact(&mut buf).await.unwrap();
     assert_eq!(&buf, b"b-before-a-restored");

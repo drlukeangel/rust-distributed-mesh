@@ -252,6 +252,9 @@ pub trait ConnectionsSink: Send + Sync {
     /// Notify the sink that an inbound Direct connection from `peer` on `alpn` was admitted
     /// (`connections.md` §9.4, §10, §13 G: a recovery trigger, never a Direct row).
     fn accepted(&self, _peer: &Birth, _alpn: &[u8]) {}
+    /// Refresh foreign resident `Direct` rows from the shared connections store before carrier
+    /// discovery (`connections.md` §3.2, §4.1).
+    async fn refresh_fleet_directs(&self) {}
 }
 
 /// An in-memory [`ConnectionsSink`] for standalone transport tests that do not boot a full `rdm-node`.
@@ -1383,6 +1386,7 @@ impl Dialer {
         {
             Ok(conn) => Ok(conn),
             Err(ConnectError::NotSent { reason }) if self.alpn.forwardable => {
+                self.registry.inner.sink.refresh_fleet_directs().await;
                 let choice = {
                     let held = self.registry.inner.sink.held();
                     let g = held.lock().unwrap();

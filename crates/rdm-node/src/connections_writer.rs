@@ -254,8 +254,31 @@ impl ConnectionsWriter {
         };
         tracing::info_span!("rdm.node_admin.connection.update.via-hydrate", node = %own.name, applied)
             .in_scope(|| tracing::info!("the held projection is hydrated from this node's own index"));
+        let _ = self.refresh_fleet_directs().await;
         self.sync_recovery();
         let _ = self.settle_owed().await;
+        Ok(applied)
+    }
+
+    /// Read the fleet-wide resident `Direct` rows from the shared connections store
+    /// (`connections.md` §3.2, §4.1: every source writes under `connections/<node>/`; carrier
+    /// discovery reads the fleet-wide active Direct graph from the store) and fold foreign rows
+    /// into the held projection.
+    pub async fn refresh_fleet_directs(&self) -> Result<usize, String> {
+        let rows = self
+            .inner
+            .storage
+            .fleet_directs()
+            .await
+            .map_err(|e| e.to_string())?;
+        let own = self.own();
+        let mut held = self.inner.held.lock().unwrap();
+        let mut applied = 0;
+        for row in rows {
+            if row.source.name != own.name && held.apply(row).is_ok() {
+                applied += 1;
+            }
+        }
         Ok(applied)
     }
 
@@ -680,6 +703,10 @@ impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
 
     fn accepted(&self, peer: &rdm_transport::connections::Birth, alpn: &[u8]) {
         self.accepted_on_alpn(peer, alpn);
+    }
+
+    async fn refresh_fleet_directs(&self) {
+        let _ = self.refresh_fleet_directs().await;
     }
 }
 

@@ -250,7 +250,7 @@ impl FileRecords {
         self.0.dir.join(format!(".{key}.{}.json.tmp", self.0.writer))
     }
 
-    fn decode<T: DeserializeOwned>(path: &Path, bytes: &[u8], format: &str) -> Result<T, StorageError> {
+    pub(crate) fn decode<T: DeserializeOwned>(path: &Path, bytes: &[u8], format: &str) -> Result<T, StorageError> {
         let stored: Stored<T> =
             serde_json::from_slice(bytes).map_err(|e| StorageError::Unrecognised { file: path.display().to_string(), reason: e.to_string() })?;
         if stored.format != format {
