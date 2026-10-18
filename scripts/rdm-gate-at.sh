@@ -209,11 +209,13 @@ for pkg, bins in sorted(base.items()):
                 print(f"[discovery] removed by name: {pkg}:{tname} {t}")
             else:
                 missing.append(t)
-        if missing or cand_tot + allowed_used < base_tot or (c_info is None and pkg in cand and m_cnt == 0):
+        # A binary deleted with its code and no test left in it is not a test loss.
+        if missing or (c_info is None and pkg in cand and m_cnt > 0 and not left):
             sample = ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
-            reason = f"missing tests: {sample}" if missing else ("binary missing from package" if c_info is None else f"workspace total fell {base_tot} -> {cand_tot} beyond the {allowed_used} removed by name")
+            reason = f"missing tests: {sample}" if missing else "binary missing from package"
             errors.append(f"{pkg}:{tname} ({b_info['kind']}) count fell {m_cnt} -> {c_cnt} ({reason})")
-if cand_tot + allowed_used < base_tot and not errors:
+# The workspace total may fall by exactly the cells removed by name, counted over every binary.
+if cand_tot + allowed_used < base_tot:
     errors.append(f"workspace total test discovery fell {base_tot} -> {cand_tot} beyond the {allowed_used} removed by name")
 if errors:
     for e in errors:
