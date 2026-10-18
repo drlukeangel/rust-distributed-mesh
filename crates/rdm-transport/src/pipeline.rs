@@ -115,7 +115,7 @@ impl SpanProcessor for CountingBatchProcessor {
         }
     }
 
-    /// Blocks until the queue has drained into the exporter and returns the SDK's answer. It has
+    /// Blocks until the queue has emptied into the exporter and returns the SDK's answer. It has
     /// no timeout of its own: call it on a path that has a deadline.
     fn force_flush(&self) -> TraceResult<()> {
         self.inner.force_flush()

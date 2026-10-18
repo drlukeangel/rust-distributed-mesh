@@ -5,7 +5,7 @@
 //! that thread. The batch processors reach it through bounded queues that drop on overflow; the
 //! exporter wrappers ([`WatchedSpans`], [`WatchedLogs`]) turn every failed batch into a count and
 //! name each outage once, when it starts and when it ends. A caller that must wait for the
-//! queue to drain (a guard dropping, a process about to exit) waits at most [`DRAIN_BOUND`].
+//! queue to empty (a guard dropping, a process about to exit) waits at most [`EXIT_FLUSH_BOUND`].
 
 use futures_util::future::BoxFuture;
 use opentelemetry_sdk::export::logs::{LogBatch, LogExporter};
@@ -20,7 +20,7 @@ use std::time::Duration;
 /// [`crate::flush_before_exit`]. Past it the wait is abandoned and the process goes on; it is not
 /// configurable (the SDK reads its own bound from `OTEL_BSP_EXPORT_TIMEOUT`, which is why the
 /// bound is held here and not there).
-pub(crate) const DRAIN_BOUND: Duration = Duration::from_secs(2);
+pub(crate) const EXIT_FLUSH_BOUND: Duration = Duration::from_secs(2);
 
 /// The longest one export request to the collector may take before it counts as failed.
 pub(crate) const EXPORT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -72,7 +72,7 @@ impl ExportRuntime {
         })
     }
 
-    /// Whether the export thread has begun running the export runtime: an exit drain that finds it
+    /// Whether the export thread has begun running the export runtime: an exit flush that finds it
     /// not yet running names it, since every export waits on it.
     pub(crate) fn running() -> bool {
         EXPORT_THREAD_RUNNING.load(Ordering::SeqCst)
@@ -218,23 +218,23 @@ impl<E: LogExporter> LogExporter for WatchedLogs<E> {
     }
 }
 
-/// Run each job on a thread of its own and wait at most [`DRAIN_BOUND`] for all of them; when the
+/// Run each job on a thread of its own and wait at most [`EXIT_FLUSH_BOUND`] for all of them; when the
 /// collector is known to be down they are not waited for at all. Past the bound the threads are
 /// left behind (the process goes on, or exits and takes them) and the wait is named on stderr.
 pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
-    if !bounded_until(what, jobs, true, std::time::Instant::now() + DRAIN_BOUND) {
+    if !bounded_until(what, jobs, true, std::time::Instant::now() + EXIT_FLUSH_BOUND) {
         name_abandoned(what);
     }
 }
 
-/// `what`, a wait on the collector, was abandoned at [`DRAIN_BOUND`]: named on stderr with what the
+/// `what`, a wait on the collector, was abandoned at [`EXIT_FLUSH_BOUND`]: named on stderr with what the
 /// collector's outage dropped so far.
 pub(crate) fn name_abandoned(what: &str) {
-    eprintln!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", DRAIN_BOUND.as_millis(), dropped_by_outage());
+    eprintln!("telemetry: {what} did not finish within {} ms; abandoned, {} spans and log records dropped by the outage so far", EXIT_FLUSH_BOUND.as_millis(), dropped_by_outage());
 }
 
-/// [`bounded`] up to `deadline`, one deadline for every wait of a drain, so a drain ends within one
-/// [`DRAIN_BOUND`]. A job that never waits on the collector (the evidence file's flush) passes
+/// [`bounded`] up to `deadline`, one deadline for every wait of an exit flush, so the flush ends within
+/// one [`EXIT_FLUSH_BOUND`]. A job that never waits on the collector (the evidence file's flush) passes
 /// `skip_when_collector_down = false` and is waited for whatever the collector's state (i146 Q42).
 /// Whether every job finished by `deadline` (a wait skipped because the collector is down counts as
 /// finished: it was never owed); the caller names a wait that did not.
@@ -243,7 +243,7 @@ pub(crate) fn bounded_until(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>, ski
     let mut started = 0;
     for job in jobs {
         let done = done.clone();
-        let spawned = std::thread::Builder::new().name("rdm-telemetry-drain".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("rdm-exit-flush".into()).spawn(move || {
             job();
             let _ = done.send(());
         });

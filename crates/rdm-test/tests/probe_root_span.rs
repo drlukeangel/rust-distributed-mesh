@@ -51,7 +51,7 @@ fn failure_context(out: &std::process::Output, evidence: &std::path::Path, run: 
     format!("{run}: status={:?}; trace={traces:?}; evidence_dir={}; listing={listing:#?}; stdout={}; stderr={}", out.status, evidence.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
-/// `(unwritten, handed)` when the probe's exit drain ended its evidence flush at its bound and named
+/// `(unwritten, handed)` when the probe's exit ended its evidence flush at its bound and named
 /// its loss on stderr.
 fn named_loss(stderr: &str) -> Option<(usize, usize)> {
     let line = stderr.lines().find(|l| l.contains("the evidence flush ended at its bound"))?;
@@ -171,8 +171,10 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
 }
 
 /// CONTRACT: a probe that refuses its arguments exits with status 2, prints the typed `Refused` line with
-/// the reason, AND leaves a span file holding the refusal span with that reason. An error state keeps its
-/// evidence: the process ends by returning from `main`, so the telemetry guard flushes first.
+/// the reason, AND leaves a span file holding the refusal span with that reason, or its exit flush ended
+/// at its bound and named the loss whole (i146 Q42, Q60: the bound is the contract, a named, bounded
+/// loss). An error state keeps its evidence: the process ends by returning from `main`, so the telemetry
+/// guard flushes first.
 #[test]
 fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let evidence = std::env::temp_dir().join(format!("rdm-probe-refusal-{}", std::process::id()));
@@ -185,7 +187,16 @@ fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let reason = v["reason"].as_str().unwrap_or_else(|| panic!("no refusal reason: {}", context())).to_string();
     assert!(reason.contains("--no-such-flag"), "the refusal names the argument: {reason}; {}", context());
     let spans: String = std::fs::read_dir(&evidence).unwrap_or_else(|e| panic!("evidence read failed: {e}; {}", context())).flatten().filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.")).map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).collect();
-    assert!(spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments"), "the refusal left no span: {spans:?}; {}", context());
-    assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}; {}", context());
+    if spans.contains("rdm.node_rpc.proof_store.reject.via-probe-arguments") {
+        assert!(spans.contains("--no-such-flag"), "the refusal span carries its reason: {spans:?}; {}", context());
+    } else {
+        let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
+        match named_loss(&String::from_utf8_lossy(&out.stderr)) {
+            Some((unwritten, handed)) if unwritten > 0 && written + unwritten >= handed => {
+                println!("the refusing probe's exit flush ended at its bound, {written} written and {unwritten} named unwritten of {handed} handed");
+            }
+            _ => panic!("the refusal left no span and named no loss whole: {written} spans; {spans:?}; {}", context()),
+        }
+    }
     let _ = std::fs::remove_dir_all(&evidence);
 }

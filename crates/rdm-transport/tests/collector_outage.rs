@@ -4,16 +4,17 @@
 //! initialises telemetry against the broken collector, emits spans and log lines from a
 //! multi-threaded runtime, flushes and exits the way a node does. The parent half starts the child
 //! with the collector endpoint and a private evidence directory in its environment, and asserts
-//! what the outside sees: the child ends within its bound, its emitting never waited, and its
-//! stderr names the outage once, not once per span.
+//! what the outside sees: the child's exit flush returns and its exit is called by the flush's bound
+//! (i146 Q60), its emitting never waited, and its stderr names the outage once, not once per span.
+//! The child's start-up and the kernel's teardown are recorded, never bounded.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const CHILD: &str = "RDM_OUTAGE_CHILD";
-/// A child that has emitted its spans ends within this: the drain's bound plus start-up.
-const EXIT_BOUND: Duration = Duration::from_secs(5);
+/// The exit flush's bound, `rdm_transport::export::EXIT_FLUSH_BOUND` (2 s).
+const EXIT_FLUSH_BOUND: Duration = Duration::from_secs(2);
 const SPANS: usize = 2000;
 
 /// The child half: runs only when the parent set `RDM_OUTAGE_CHILD`.
@@ -45,11 +46,13 @@ async fn outage_child() {
     // A second of outage with spans queued, then the exit a node makes.
     tokio::time::sleep(Duration::from_millis(1200)).await;
     println!("EXITING_AT_MS={}", unix_ms());
+    let flush = Instant::now();
     rdm_transport::flush_before_exit();
     drop(telemetry);
-    println!("DRAINED_MS={}", started.elapsed().as_millis());
+    println!("EXIT_FLUSH_RETURNED_AFTER_MS={}", flush.elapsed().as_millis());
     println!("IO_PRESSURE_EXIT={}", io_pressure());
     println!("BLKIO_EXIT={}", blkio_ticks());
+    println!("EXIT_CALLED_AT_MS={}", unix_ms());
     std::process::exit(0);
 }
 
@@ -164,14 +167,16 @@ fn number(out: &str, key: &str) -> u128 {
 }
 
 /// CONTRACT: against a collector that refuses, never answers, or is unroutable, a process that
-/// emits spans and log lines ends within its drain bound, emitting 2000 spans never waits on the
-/// collector, and stderr names the outage once per signal, never once per span or batch.
+/// emits spans and log lines returns from its exit flush and calls its exit by the flush's bound
+/// (i146 Q60), emitting 2000 spans never waits on the collector, and stderr names the outage once per
+/// signal, never once per span or batch. Its start-up and the kernel's teardown are recorded on the
+/// cell's span, never bounded.
 fn outage_changes_nothing(endpoint: &str) {
     let (took, out, err, evidence) = run_child(endpoint);
     let at = |k: &str| number(&out, k);
-    assert!(
-        took < EXIT_BOUND + Duration::from_secs(3),
-        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms ({}; {}), test entry to exit begun {} ms, exit begun to process ended {} ms (stdout: {out})",
+    let (flushed, called) = (at("EXIT_FLUSH_RETURNED_AFTER_MS"), at("EXIT_CALLED_AT_MS").saturating_sub(at("EXITING_AT_MS")));
+    let story = format!(
+        "the child took {took:?} to end against {endpoint}: spawn to test entry {} ms, telemetry init {} ms ({}; {}), test entry to exit begun {} ms, the exit flush {flushed} ms, the exit called at +{called} ms, the process's end seen at +{} ms",
         at("ENTERED_AT_MS").saturating_sub(at("SPAWNED_AT_MS")),
         at("INIT_MS"),
         slowest_init_step(&out, &evidence),
@@ -179,8 +184,15 @@ fn outage_changes_nothing(endpoint: &str) {
         at("EXITING_AT_MS").saturating_sub(at("ENTERED_AT_MS")),
         at("ENDED_AT_MS").saturating_sub(at("EXITING_AT_MS")),
     );
-    let drained = number(&out, "DRAINED_MS");
-    assert!(drained < 1200 + EXIT_BOUND.as_millis(), "the drain took until {drained} ms against {endpoint}");
+    {
+        let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-exit-teardown").expect("the cell's evidence file can be created");
+        tracing::info_span!("rdm.test.telemetry.update.via-exit-teardown", case = endpoint, flushed_ms = flushed as u64, called_ms = called as u64, teardown = %story)
+            .in_scope(|| tracing::info!("the child's start-up and the kernel's teardown, recorded unbounded"));
+        drop(capture);
+    }
+    let bound = (EXIT_FLUSH_BOUND + Duration::from_millis(500)).as_millis();
+    assert!(flushed < bound, "the exit flush returned by its bound: after {flushed} ms against {endpoint}; {story} (stdout: {out})");
+    assert!(called < bound, "the exit was called at its bound: at +{called} ms against {endpoint}; {story} (stdout: {out})");
     let emit = number(&out, "EMIT_MS");
     assert!(emit < 2000, "emitting {SPANS} spans took {emit} ms against {endpoint}: export waited on the collector");
     let failing = err.lines().filter(|l| l.contains("export to") && l.contains("is failing")).count();

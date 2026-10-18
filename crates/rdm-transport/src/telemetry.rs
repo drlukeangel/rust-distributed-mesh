@@ -1,5 +1,5 @@
 //! Process telemetry for every mesh binary: OTLP span and log export, the JSONL evidence sink, and the
-//! bounded drain a process runs before it exits.
+//! bounded flush a process runs before it exits.
 //!
 //! A process calls one `init_*` function ([`init_telemetry`], [`init_telemetry_for_cli`],
 //! [`init_evidence_telemetry`]) and holds the returned [`TelemetryGuard`] for its lifetime. The
@@ -23,37 +23,40 @@ pub use crate::pipeline::{enable_callsites, install_span_capture, span_capture, 
 
 use export::{ExportRuntime, WatchedLogs, WatchedSpans};
 
-/// The exporters one `init_*` built: drained at most once, by whichever of the guard's `Drop` and
+/// The exporters one `init_*` built: flushed at most once, by whichever of the guard's `Drop` and
 /// [`flush_before_exit`] comes first.
 #[derive(Clone)]
 struct Exporters {
     provider: TracerProvider,
     /// The OTLP log provider the log adapter emits through, when a collector is configured.
     logs: Option<opentelemetry_sdk::logs::LoggerProvider>,
-    /// The evidence file's processor, when the process writes one: flushed on its own at the drain.
+    /// The evidence file's processor, when the process writes one: flushed first and on its own.
     evidence: Option<crate::evidence_capture::SharedEvidence>,
-    drained: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    flushed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Exporters {
     fn new(provider: TracerProvider, logs: Option<opentelemetry_sdk::logs::LoggerProvider>, evidence: Option<crate::evidence_capture::SharedEvidence>) -> Self {
-        Self { provider, logs, evidence, drained: Default::default() }
+        Self { provider, logs, evidence, flushed: Default::default() }
     }
 
-    /// Shut the providers down (the shutdown drains what is queued for the collector), each
-    /// on a thread of its own: waited for at most [`export::DRAIN_BOUND`] together, and not at
-    /// all while the collector is known to be down, because what is queued for it is dropped.
-    fn drain(&self, what: &'static str) {
-        if self.drained.swap(true, std::sync::atomic::Ordering::SeqCst) {
+    /// Flush the evidence file, then shut the providers down (the shutdown sends what is queued for
+    /// the collector), each on a thread of its own: waited for at most [`export::EXIT_FLUSH_BOUND`]
+    /// together, the collector's part not at all while the collector is known to be down, because
+    /// what is queued for it is dropped. The bound holds the code's own wait (i146 Q60): it returns at
+    /// the bound with any loss named, and a thread still inside a filesystem call is the kernel's to
+    /// end.
+    fn flush_before_exit(&self, what: &'static str) {
+        if self.flushed.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        // One deadline for the whole drain. The evidence file first, whatever the collector's state:
+        // One deadline for the whole flush. The evidence file first, whatever the collector's state:
         // its spans are this process's own record, and no collector outage may cost them (i146 Q42).
         // Its first export opens the file.
-        let deadline = std::time::Instant::now() + export::DRAIN_BOUND;
+        let deadline = std::time::Instant::now() + export::EXIT_FLUSH_BOUND;
         if let Some(evidence) = self.evidence.clone() {
             if !export::ExportRuntime::running() {
-                eprintln!("telemetry: {what}: the export thread has not begun running; the evidence flush waits for it within {} ms", export::DRAIN_BOUND.as_millis());
+                eprintln!("telemetry: {what}: the export thread has not begun running; the evidence flush waits for it within {} ms", export::EXIT_FLUSH_BOUND.as_millis());
             }
             let loss = evidence.0.loss();
             let flushed = export::bounded_until(
@@ -71,7 +74,7 @@ impl Exporters {
             if !flushed {
                 eprintln!(
                     "telemetry: the evidence flush ended at its bound ({} ms): {} of {} spans not confirmed written to the evidence file",
-                    export::DRAIN_BOUND.as_millis(),
+                    export::EXIT_FLUSH_BOUND.as_millis(),
                     loss.lost(),
                     loss.handed()
                 );
@@ -97,19 +100,19 @@ impl Exporters {
     }
 }
 
-/// The handle of the exporters one `init_*` call built. Dropping it drains the queued spans and
-/// logs, bounded by [`export::DRAIN_BOUND`], and shuts the exporters down.
+/// The handle of the exporters one `init_*` call built. Dropping it flushes the queued spans and
+/// logs, bounded by [`export::EXIT_FLUSH_BOUND`], and shuts the exporters down.
 pub struct TelemetryGuard {
     exporters: Exporters,
 }
 
-/// What an intentional `process::exit` drains: the exporters the guard owns, which `exit` never drops.
-/// The fmt log's writer, drained with the exporters: its lines are queued to a thread of their own.
+/// The fmt log's writer, flushed with the exporters: its lines are queued to a thread of their own.
 static STDERR_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock::new();
 
+/// What an intentional `process::exit` flushes: the exporters the guard owns, which `exit` never drops.
 static EXIT_FLUSH: std::sync::OnceLock<Exporters> = std::sync::OnceLock::new();
 
-/// The transport diagnostic file's writer ([`transport_diag`]), drained with the fmt log's.
+/// The transport diagnostic file's writer ([`transport_diag`]), flushed with the fmt log's.
 static DIAG_SINK: std::sync::OnceLock<log_sink::LogSink> = std::sync::OnceLock::new();
 
 /// Flush both logs within the same process deadline as the evidence and collector.
@@ -117,26 +120,26 @@ fn flush_log_sinks(deadline: std::time::Instant) {
     for (name, sink) in [("stderr log", STDERR_SINK.get()), ("transport diagnostic log", DIAG_SINK.get())] {
         if let Some(sink) = sink {
             if !sink.flush_until(deadline) {
-                eprintln!("telemetry: the {name} flush ended at its bound ({} ms); queued lines not confirmed written", export::DRAIN_BOUND.as_millis());
+                eprintln!("telemetry: the {name} flush ended at its bound ({} ms); queued lines not confirmed written", export::EXIT_FLUSH_BOUND.as_millis());
             }
         }
     }
 }
 
-/// Drain and shut down the exporters before a deliberate `process::exit`, which skips the guard's
+/// Flush and shut down the exporters before a deliberate `process::exit`, which skips the guard's
 /// `Drop`: spans closed just before the exit (the reason it exits for) reach the evidence file and the
-/// collector. A process that never initialised telemetry has nothing to drain. The wait is bounded
-/// by [`export::DRAIN_BOUND`]: an unreachable collector never holds the exit.
+/// collector. A process that never initialised telemetry has only its logs to flush. The wait is
+/// bounded by [`export::EXIT_FLUSH_BOUND`]: an unreachable collector never holds the exit.
 pub fn flush_before_exit() {
     match EXIT_FLUSH.get() {
-        Some(exporters) => exporters.drain("the exit drain"),
-        None => flush_log_sinks(std::time::Instant::now() + export::DRAIN_BOUND),
+        Some(exporters) => exporters.flush_before_exit("the exit flush"),
+        None => flush_log_sinks(std::time::Instant::now() + export::EXIT_FLUSH_BOUND),
     }
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        self.exporters.drain("the guard's drain");
+        self.exporters.flush_before_exit("the guard's flush");
     }
 }
 
@@ -164,7 +167,7 @@ pub fn init_telemetry(service_name: &str) -> TelemetryGuard {
 
 /// Initialize OTLP tracing for short-lived CLI processes.
 /// Spans export in the background like a service's; the guard's `Drop` and
-/// [`flush_before_exit`] drain what is queued, each waiting at most [`export::DRAIN_BOUND`],
+/// [`flush_before_exit`] flush what is queued, each waiting at most [`export::EXIT_FLUSH_BOUND`],
 /// so a CLI never waits on a collector that is down.
 ///
 /// Also installs the W3C TraceContext propagator globally.
@@ -724,7 +727,7 @@ pub(crate) fn otlp_log_export_level() -> tracing::Level {
 mod evidence_tests {
     use opentelemetry::trace::{Tracer, TracerProvider as _};
 
-    /// The process drain's one deadline includes a held fmt log, after the
+    /// The exit flush's one deadline includes a held fmt log, after the
     /// evidence and collector processors. No log writer can hold the exit forever.
     #[test]
     fn a_held_log_writer_ends_the_exit_flush_at_its_one_bound_named() {
@@ -754,13 +757,13 @@ mod evidence_tests {
                 let mut line = sink.make_writer();
                 line.write_all(b"a held log line\n").unwrap();
             }
-            writing.recv_timeout(Duration::from_secs(10)).expect("the writer entered before the drain clock starts");
+            writing.recv_timeout(Duration::from_secs(10)).expect("the writer entered before the exit flush's clock starts");
             let provider = opentelemetry_sdk::trace::TracerProvider::builder().build();
             let exporters = super::Exporters::new(provider, None, None);
-            println!("DRAIN_STARTED");
+            println!("FLUSH_STARTED");
             let started = Instant::now();
-            exporters.drain("the held-log exit drain");
-            println!("DRAIN_DONE_MS={}", started.elapsed().as_millis());
+            exporters.flush_before_exit("the held-log exit flush");
+            println!("FLUSH_DONE_MS={}", started.elapsed().as_millis());
             std::process::exit(0);
         }
         let name = concat!(module_path!(), "::a_held_log_writer_ends_the_exit_flush_at_its_one_bound_named");
@@ -781,15 +784,15 @@ mod evidence_tests {
         let mut output = Vec::new();
         loop {
             match received.recv_timeout(ready_by.saturating_duration_since(Instant::now())) {
-                Ok(line) => { let ready = line == "DRAIN_STARTED"; output.push(line); if ready { break; } }
-                Err(e) => { let _ = child.kill(); let _ = child.wait(); panic!("the child did not enter its held-log drain: {e}; {output:?}; {}", errors.join().unwrap()); }
+                Ok(line) => { let ready = line == "FLUSH_STARTED"; output.push(line); if ready { break; } }
+                Err(e) => { let _ = child.kill(); let _ = child.wait(); panic!("the child did not enter its held-log exit flush: {e}; {output:?}; {}", errors.join().unwrap()); }
             }
         }
-        let bound = super::export::DRAIN_BOUND + Duration::from_millis(500);
+        let bound = super::export::EXIT_FLUSH_BOUND + Duration::from_millis(500);
         let end = Instant::now() + bound;
         let mut elapsed = None;
         while let Ok(line) = received.recv_timeout(end.saturating_duration_since(Instant::now())) {
-            if let Some(value) = line.strip_prefix("DRAIN_DONE_MS=") {
+            if let Some(value) = line.strip_prefix("FLUSH_DONE_MS=") {
                 elapsed = value.parse::<u128>().ok();
                 output.push(line);
                 break;
@@ -800,9 +803,9 @@ mod evidence_tests {
         let status = child.wait().unwrap();
         let _ = reader.join();
         let error = errors.join().unwrap();
-        assert!(elapsed.is_some(), "the held log kept the drain past its one bound: status={status:?}; stdout={output:?}; stderr={error}");
+        assert!(elapsed.is_some(), "the held log kept the exit flush past its one bound: status={status:?}; stdout={output:?}; stderr={error}");
         assert!(status.success(), "the child failed: {status:?}; {output:?}; {error}");
-        assert!(elapsed.unwrap() < bound.as_millis(), "the drain exceeded its existing bound: {output:?}; {error}");
+        assert!(elapsed.unwrap() < bound.as_millis(), "the exit flush exceeded its bound: {output:?}; {error}");
         assert!(error.contains("stderr log flush ended at its bound"), "the unconfirmed log flush is named: {error}");
     }
 

@@ -31,7 +31,7 @@ use std::time::Duration;
 const EVIDENCE_FLUSH_BOUND: Duration = Duration::from_secs(10);
 
 /// The evidence processor, shared between the provider and its owner (a capture, a process's exit
-/// drain), so the owner flushes the evidence file alone and never waits on the collector for it.
+/// flush), so the owner flushes the evidence file alone and never waits on the collector for it.
 #[derive(Debug, Clone)]
 pub(crate) struct SharedEvidence(pub(crate) Arc<CountingBatchProcessor>);
 

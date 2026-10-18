@@ -55,7 +55,7 @@ impl LogSink {
         Self { tx }
     }
 
-    /// Flush the lines already handed over, within the process drain's remaining
+    /// Flush the lines already handed over, within the exit flush's remaining
     /// deadline. A held writer leaves them unconfirmed instead of holding the exit.
     pub(crate) fn flush_until(&self, deadline: std::time::Instant) -> bool {
         let (ack, done) = channel();
@@ -145,7 +145,7 @@ mod tests {
             emitter.await.unwrap();
             ticker.await.unwrap()
         });
-        assert!(sink.flush_until(Instant::now() + crate::export::DRAIN_BOUND), "the log flush completes within the process bound");
+        assert!(sink.flush_until(Instant::now() + crate::export::EXIT_FLUSH_BOUND), "the log flush completes within the process bound");
         assert_eq!(lines.load(Ordering::SeqCst), 5, "every line handed over reaches the sink");
         assert!(worst < Duration::from_millis(100), "the worker was held {worst:?} by a log write");
     }
