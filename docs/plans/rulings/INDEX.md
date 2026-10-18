@@ -23,10 +23,13 @@ packet takes the next free number here before it is written; a collision is renu
 | Q51 | Dev | i144 e6 | after a takeover, who holds the lost mesh's seat, rows and name | A, `Deleted { exit_proof: takeover }` | landed e6.3 `8b0e58d0` |
 | Q52 | Dev | i146 e3 | the owed declaration keeps its carried route in one Owed call | B | landed `0ef6c700` |
 | Q53 | Codex | i143 s88 | the successor's status fold published Pending over Ready | A, fix the root | ruled 2026-10-17 |
-| Q54 | Codex | i143 s88 | an Applied declared-state row is durable before state-commit | A recommended | **awaiting Luke** |
+| Q54 | Codex | i143 s88 | an Applied declared-state row is durable before state-commit | A | implemented on Codex branch; acquisition controls green |
 | Q55 | Dev | i146 e3 | a signal stop is node.stop's own steps; Draining and the linger go | x | landed `0ef6c700`; the declared value becomes `Stopped` (node-stop.md step 4) in the dev's next landing |
 
-Next free number: **Q56**.
+
+| Q56 | Codex → Dev | i143 s88 | acquisition of held Mesh state after the pre-commit writer ends | assigned to i144 by Q54 | read packet on Codex branch |
+
+Next free number: **Q57**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i147-q19-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier

@@ -1,4 +1,4 @@
-# Q55 — acquisition of held Mesh state after the pre-commit writer ends
+# Q56 — acquisition of held Mesh state after the pre-commit writer ends
 
 Assigned to the i144 owner by Luke's Q54 A, 2026-10-17. This read accompanies that assignment; Codex does not widen Q54 to another held store. Q54's declared-state implementation and exact-birth controls are green. This is the subsequent live recovery failure, after healthy setup and the injected loss.
 
