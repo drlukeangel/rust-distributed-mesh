@@ -565,7 +565,13 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, "mesh1.admin.1", vec![]).await;
     let b = node(&fabric, &mesh, "mesh1.admin.2", vec![address(&a)]).await;
+    while a.membership.neighbours() < 1 || b.membership.neighbours() < 1 {
+        tokio::task::yield_now().await;
+    }
     let c = node_declaring(&fabric, &mesh, "mesh1.rpc.1", vec![address(&b)], &[LATER]).await;
+    while b.membership.neighbours() < 2 || c.membership.neighbours() < 1 {
+        tokio::task::yield_now().await;
+    }
     b.membership.learn(member_digest(&c), "join-types-probe");
     b.membership
         .learn_app_types(
@@ -576,19 +582,34 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         )
         .await
         .unwrap();
-    // Establish the member-to-own-admin edge without giving A any new bootstrap peer.
+    // Establish the member-to-own-admin edge on both sides without giving A any new
+    // bootstrap peer, before A joins LATER through B so B's HyParView active_view
+    // already holds C when A's Join arrives at B.
     let mut member = c
         .gossip
         .subscribe(channel_id(&fabric, LATER), vec![b.ep.id()])
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), member.joined())
+    let mut middle = b
+        .gossip
+        .subscribe(channel_id(&fabric, LATER), vec![])
         .await
-        .unwrap()
         .unwrap();
-    // Observe both forwarding edges without initiating either join. The receive-side
-    // NeighborUp alone does not establish that the middle holder can forward back yet.
-    let mut middle = b.gossip.subscribe(channel_id(&fabric, LATER), vec![]).await.unwrap();
+    member.joined().await.unwrap();
+    while !member.neighbors().any(|p| p == b.ep.id()) {
+        member
+            .next()
+            .await
+            .expect("the publisher stays subscribed")
+            .unwrap();
+    }
+    while !middle.neighbors().any(|p| p == c.ep.id()) {
+        middle
+            .next()
+            .await
+            .expect("the middle holder stays subscribed")
+            .unwrap();
+    }
     a.membership.learn(member_digest(&b), "peer-types-probe");
     a.membership
         .learn_app_types(
@@ -604,21 +625,26 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         .subscribe(channel_id(&fabric, LATER), vec![])
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), observed.joined())
+    observed
+        .joined()
         .await
-        .expect("the new type joins through its reporting holder, even with no boot seeds")
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !middle.neighbors().any(|p| p == a.ep.id()) || !middle.neighbors().any(|p| p == c.ep.id()) {
-            middle.next().await.expect("the middle holder stays subscribed").unwrap();
-        }
-        while !member.neighbors().any(|p| p == a.ep.id()) {
-            member.next().await.expect("the publisher stays subscribed").unwrap();
-        }
-        while b.membership.neighbours() < 2 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }).await.expect("both forwarding edges are established");
+        .expect("the new type joins through its reporting holder, even with no boot seeds");
+    while !middle.neighbors().any(|p| p == a.ep.id())
+        || !middle.neighbors().any(|p| p == c.ep.id())
+    {
+        middle
+            .next()
+            .await
+            .expect("the middle holder stays subscribed")
+            .unwrap();
+    }
+    while !member.neighbors().any(|p| p == a.ep.id()) {
+        member
+            .next()
+            .await
+            .expect("the publisher stays subscribed")
+            .unwrap();
+    }
     let mut receiver = a.membership.join_channel(LATER).await.unwrap();
     let publisher = c.membership.join_channel(LATER).await.unwrap();
     publisher.publish(event(1, vec![7])).await.unwrap();
@@ -628,29 +654,49 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     drop(receiver);
     drop(observed);
     a.membership.park().await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while middle.neighbors().any(|p| p == a.ep.id()) {
-            middle.next().await.expect("the middle holder stays subscribed").unwrap();
-        }
-        while member.neighbors().any(|p| p == a.ep.id()) {
-            member.next().await.expect("the publisher stays subscribed").unwrap();
-        }
-        while b.membership.neighbours() > 1 || c.membership.neighbours() > 1 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    }).await.expect("the first subscription has left");
+    while middle.neighbors().any(|p| p == a.ep.id()) {
+        middle
+            .next()
+            .await
+            .expect("the middle holder stays subscribed")
+            .unwrap();
+    }
+    while member.neighbors().any(|p| p == a.ep.id()) {
+        member
+            .next()
+            .await
+            .expect("the publisher stays subscribed")
+            .unwrap();
+    }
+    while b.membership.neighbours() > 1 || c.membership.neighbours() > 1 {
+        tokio::task::yield_now().await;
+    }
     a.membership.unpark().await;
-    let mut rejoined = a.gossip.subscribe(channel_id(&fabric, LATER), vec![]).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), rejoined.joined()).await.expect("the held type rejoins its reporting holder").unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !middle.neighbors().any(|p| p == a.ep.id()) {
-            middle.next().await.expect("the middle holder stays subscribed").unwrap();
-        }
-        while !member.neighbors().any(|p| p == a.ep.id()) {
-            member.next().await.expect("the publisher stays subscribed").unwrap();
-        }
-    }).await.expect("the forwarding edge is restored");
+    let mut rejoined = a
+        .gossip
+        .subscribe(channel_id(&fabric, LATER), vec![])
+        .await
+        .unwrap();
+    rejoined
+        .joined()
+        .await
+        .expect("the held type rejoins its reporting holder");
+    while !middle.neighbors().any(|p| p == a.ep.id()) {
+        middle
+            .next()
+            .await
+            .expect("the middle holder stays subscribed")
+            .unwrap();
+    }
+    while !member.neighbors().any(|p| p == a.ep.id()) {
+        member
+            .next()
+            .await
+            .expect("the publisher stays subscribed")
+            .unwrap();
+    }
     let mut receiver = a.membership.join_channel(LATER).await.unwrap();
     publisher.publish(event(2, vec![8])).await.unwrap();
     assert_eq!(receive(&mut receiver).await.data.as_ref(), &[8]);
 }
+
