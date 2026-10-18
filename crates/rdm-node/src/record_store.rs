@@ -298,11 +298,42 @@ impl FileRecords {
                 }
             }
         };
-        let stored: Stored<serde_json::Value> = serde_json::from_slice(&bytes).map_err(|e| StorageError::Unrecognised { file: path.display().to_string(), reason: e.to_string() })?;
-        if !formats.contains(&stored.format.as_str()) {
+        Self::tagged(&path, &bytes, formats).map(Some)
+    }
+
+    /// [`Self::read_tagged`] of `keys`, in order, up to the first key no row was ever written at (or
+    /// whose held row is removed): one call on the blocking pool for the whole run, never one per
+    /// row. The rows the store holds at the keys are read before the disk, as a point read reads them.
+    /// Each row's format and record, in key order.
+    pub async fn read_tagged_run(&self, keys: Vec<String>, formats: &[&str]) -> Result<Vec<(String, serde_json::Value)>, StorageError> {
+        let run: Vec<(PathBuf, Option<Option<Vec<u8>>>)> = keys.iter().map(|k| (self.path(k), self.held_row(k).map(|row| row.bytes().map(<[u8]>::to_vec)))).collect();
+        let formats: Vec<String> = formats.iter().map(|f| f.to_string()).collect();
+        blocking_io(move || {
+            let mut rows = Vec::new();
+            for (path, held) in run {
+                let bytes = match held {
+                    Some(Some(bytes)) => bytes,
+                    Some(None) => break,
+                    None => match std::fs::read(&path) {
+                        Ok(bytes) => bytes,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                        Err(e) => return Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+                    },
+                };
+                rows.push(Self::tagged(&path, &bytes, &formats)?);
+            }
+            Ok(rows)
+        })
+        .await
+    }
+
+    /// The format and record of the row `bytes` at `path`; a format outside `formats` is refused by name.
+    fn tagged<F: AsRef<str> + std::fmt::Debug>(path: &Path, bytes: &[u8], formats: &[F]) -> Result<(String, serde_json::Value), StorageError> {
+        let stored: Stored<serde_json::Value> = serde_json::from_slice(bytes).map_err(|e| StorageError::Unrecognised { file: path.display().to_string(), reason: e.to_string() })?;
+        if !formats.iter().any(|f| f.as_ref() == stored.format) {
             return Err(StorageError::Unrecognised { file: path.display().to_string(), reason: format!("format {:?}, this build reads {formats:?} here", stored.format) });
         }
-        Ok(Some((stored.format, stored.record)))
+        Ok((stored.format, stored.record))
     }
 
     /// Every record in the store, in key order: while the store holds its writes, the rows it holds
@@ -1205,6 +1236,37 @@ mod tests {
         let later = FileRecords::open_held(&d, "later", &w, &pad, "later".into()).await.unwrap();
         assert!(!later.holding(), "a store opened after the publication writes to the disk from its open");
         assert_eq!(pad.publish().await.unwrap().written(), 0, "a second publication finds nothing held");
+    }
+
+    /// CONTRACT (the Build journal's read path; i144 e6, `fabric_primary.rs:204`): a run read answers
+    /// the rows at its keys in order, the rows a store holds over the disk's, up to the first key no row
+    /// stands at (a held removal included), in one blocking call; a format outside those asked is
+    /// refused by name. Must NOT happen: a row past the first absent key, a held row answered from the
+    /// disk, or a blocking call per row.
+    #[tokio::test]
+    async fn a_run_read_answers_the_rows_at_its_keys_to_the_first_absent_one_in_one_blocking_call() {
+        let d = tempdir("records-run");
+        let w = crate::model::IncarnationId::parse(&rdm_core::fixture_crockford60("run")).unwrap();
+        let keys = || ["01", "02", "03", "04"].map(String::from).to_vec();
+        let values = |run: Vec<(String, serde_json::Value)>| run.into_iter().map(|(_, r)| r.as_str().unwrap_or_default().to_string()).collect::<Vec<_>>();
+        // On the disk: 01, 02 and 04; 03 never written.
+        let disk = FileRecords::open(&d, "lane", &w).await.unwrap();
+        for (k, v) in [("01", "one"), ("02", "two"), ("04", "four")] {
+            disk.write(k, "thing/1", &v.to_string()).await.unwrap();
+        }
+        let io = IoTime::default();
+        let run = io_time_with(io.clone(), disk.read_tagged_run(keys(), &["thing/1"])).await.unwrap();
+        assert_eq!(values(run), vec!["one", "two"], "the run ends at the first key no row stands at");
+        assert_eq!(io.calls(), 1, "one blocking call for the run");
+        // A store holding its writes answers its held rows over the disk's; a held removal ends the run.
+        let pad = Scratchpad::new();
+        let held = FileRecords::open_held(&d, "lane", &w, &pad, "lane".into()).await.unwrap();
+        held.write("02", "thing/1", &"held-two".to_string()).await.unwrap();
+        held.write("03", "thing/1", &"held-three".to_string()).await.unwrap();
+        assert_eq!(values(held.read_tagged_run(keys(), &["thing/1"]).await.unwrap()), vec!["one", "held-two", "held-three", "four"]);
+        held.remove("02").await.unwrap();
+        assert_eq!(values(held.read_tagged_run(keys(), &["thing/1"]).await.unwrap()), vec!["one"], "a held removal ends the run");
+        assert!(matches!(disk.read_tagged_run(keys(), &["other/1"]).await, Err(StorageError::Unrecognised { .. })), "a format outside those asked is refused by name");
     }
 
     /// CONTRACT (`FileRecords::remove`: "of two removers of one row exactly one is answered `true`"):

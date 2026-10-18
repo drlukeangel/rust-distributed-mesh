@@ -271,15 +271,24 @@ impl Lanes {
                 continue;
             }
             let (from, mut next, mut sealed, mut facts) = (rev.next, rev.next, None, Vec::new());
-            while let Some(e) = read_entry(&rev.store, next).await? {
-                match e {
-                    Entry::Fact(f) => facts.push((LaneKey { lane: lane.clone(), revision, seq: next }, f)),
-                    Entry::Seal(s) => {
-                        sealed = Some((next, s));
-                        break;
+            // The revision's keys are read in runs, one blocking call each, to its first unwritten key.
+            'run: loop {
+                let keys: Vec<String> = (next..next + RUN_KEYS).map(seq_key).collect();
+                let run = rev.store.read_tagged_run(keys, &FORMATS).await?;
+                let whole = run.len() as u64 == RUN_KEYS;
+                for (format, record) in run {
+                    match entry_of(&rev.store, next, &format, record)? {
+                        Entry::Fact(f) => facts.push((LaneKey { lane: lane.clone(), revision, seq: next }, f)),
+                        Entry::Seal(s) => {
+                            sealed = Some((next, s));
+                            break 'run;
+                        }
                     }
+                    next += 1;
                 }
-                next += 1;
+                if !whole {
+                    break;
+                }
             }
             revs.push(RevRead { revision, from, next, sealed, facts });
         }
@@ -386,11 +395,19 @@ impl Lanes {
 }
 
 async fn read_entry(store: &FileRecords, seq: u64) -> Result<Option<Entry>, StorageError> {
-    let file = || format!("{}/{}.json", store.store_name(), seq_key(seq));
     let Some((format, record)) = store.read_tagged(&seq_key(seq), &FORMATS).await? else { return Ok(None) };
-    let decoded = if format == FACT_FORMAT { serde_json::from_value(record).map(Entry::Fact) } else { serde_json::from_value(record).map(Entry::Seal) };
-    decoded.map(Some).map_err(|e| StorageError::Unrecognised { file: file(), reason: format!("{format}: {e}") })
+    entry_of(store, seq, &format, record).map(Some)
 }
+
+/// The entry `record`, in `format`, at `seq` of `store`'s revision.
+fn entry_of(store: &FileRecords, seq: u64, format: &str, record: serde_json::Value) -> Result<Entry, StorageError> {
+    let decoded = if format == FACT_FORMAT { serde_json::from_value(record).map(Entry::Fact) } else { serde_json::from_value(record).map(Entry::Seal) };
+    decoded.map_err(|e| StorageError::Unrecognised { file: format!("{}/{}.json", store.store_name(), seq_key(seq)), reason: format!("{format}: {e}") })
+}
+
+/// The keys a lane read asks the store for in one blocking call: a revision's run of facts is read
+/// in calls of this many keys, to its first unwritten one.
+const RUN_KEYS: u64 = 256;
 
 #[cfg(test)]
 mod tests {
