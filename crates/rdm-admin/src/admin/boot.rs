@@ -1384,7 +1384,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         move |d: MeshDigest, types: std::collections::BTreeSet<String>| {
                                             let (membership, records) = (membership.clone(), records.clone());
                                             Box::pin(async move {
-                                                records.declare_app_types(&d, types.clone()).await?;
+                                                records.declare_app_types_or_hold(&d, types.clone()).await?;
                                                 membership.learn_app_types_from(&d, types.clone(), types).await.map_err(|e| e.to_string())
                                             })
                                         }
@@ -2336,9 +2336,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // A role taken or given up this round is held from the anti-entropy until its
                                                 // seat is announced below: a role's first aggregate follows its seat record.
                                                 let announcing = if (mesh_primary, fabric_primary) != (was_mesh_primary, was_fabric_primary) { Some(roles.write().await) } else { None };
+                                                // The declarations held before this admin wrote rows (Q59 = x) are its first write
+                                                // after it takes a seat that writes them.
+                                                let took_a_writing_seat = (mesh_primary && !was_mesh_primary) || (fabric_primary && !was_fabric_primary);
                                                 was_mesh_primary = mesh_primary;
                                                 backbone.set_mesh_primary(mesh_primary);
                                                 backbone.set_fabric_primary(fabric_primary);
+                                                if took_a_writing_seat {
+                                                    records.write_held_declarations().await;
+                                                }
                                                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
                                                 // new holder authors no ready on a topology reading.
                                                 if fabric_primary && !was_fabric_primary {

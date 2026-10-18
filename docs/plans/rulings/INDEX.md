@@ -31,10 +31,12 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q57 | Codex | i147 e5 | node-admin's own channels: `types` through `Wiring` | x | ruled 2026-10-17; §8 corrected `7304c9b2` |
 
-| Q58 | Codex | i147 e5 | app declaration before Day-0 authority is Ready | [packet](../proposal/i147-q58-join-declaration-before-ready.md), A recommended | asked; no authority change implemented |
+| Q58 | Dev | i146 e3 | a mesh-primary whose only other member it stopped by command counts its view cut off and refuses that member's start ([packet](../proposal/i146-q58-cut-off-on-a-commanded-stop.md)) | A, in the pages' words ([ruling](i146-q58-cut-off-on-a-commanded-stop.md)) | asked 2026-10-18; ruled 2026-10-18, delegated (ruled by the lead); the dev builds it in e4s8, gossip.md §6 paragraph with the code |
 
-Next free number: **Q59**.
+| Q59 | Codex | i147 e5 | app declaration before the Day-0 writer is Ready ([packet](../proposal/i147-q59-join-declaration-before-ready.md)) | x ([ruling](i147-q59-join-declaration-before-ready.md)): the Day-0 admin holds the declaration at the Join and writes it with its first write after it takes the seat; no new writer | asked 2026-10-18 as Q58, renumbered; ruled 2026-10-18 (Luke); built and landed with e5 |
+
+Next free number: **Q60**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
-`i146-q55-…`, `i147-q19-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
+`i146-q55-…`, `i146-q58-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
 R-series (R-MSG1, R-RX1…, R-FM1/2, R-CT1, R14).

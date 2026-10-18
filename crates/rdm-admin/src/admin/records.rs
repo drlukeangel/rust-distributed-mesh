@@ -346,6 +346,10 @@ pub struct Records {
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
     /// that no create of it claimed. Set once at start.
     pub(crate) rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
+    /// App declarations taken at a Join while this admin wrote no rows yet (a Day-0 admin before it
+    /// is Ready holds its mesh's seat by no view: Q59 = x), written with its first write after it
+    /// takes the seat.
+    pub(crate) held_declarations: Mutex<Vec<(rdm_core::MeshDigest, std::collections::BTreeSet<String>)>>,
     /// What the provider holds recorded at a path (`crate::seat_revision::PathProbe`), asked for a node the
     /// accepted topology names that no view and no durable runtime row holds a birth of. Set once at start.
     pub(crate) path_probe: std::sync::OnceLock<Arc<dyn crate::seat_revision::PathProbe>>,
@@ -430,6 +434,37 @@ impl Records {
     pub async fn declare_app_types(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<(), String> {
         let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
         rows.declare_app_types(d, types).await
+    }
+
+    /// Record the declaration now, or hold it until this admin writes its mesh's rows (gossip.md §8,
+    /// Q59 = x): a launched birth's declaration reaching a Day-0 admin before it is Ready has no row
+    /// writer yet, and the Join is answered on the held declaration. `Ok(true)` written, `Ok(false)` held.
+    pub async fn declare_app_types_or_hold(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<bool, String> {
+        let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
+        if rows.writes_now(&d.node.name.mesh, &d.node.name).await {
+            rows.declare_app_types(d, types).await.map(|_| true)
+        } else {
+            tracing::info_span!("rdm.node_admin.node.update.via-declaration-held", node = %rows.me(), subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
+                .in_scope(|| tracing::info!("no writer of the mesh's rows yet: the declaration is held until this admin takes the seat"));
+            self.held_declarations.lock().unwrap().push((d.clone(), types));
+            Ok(false)
+        }
+    }
+
+    /// Write every declaration held for the seat this admin now holds; one still refused stays held.
+    pub async fn write_held_declarations(&self) {
+        let held: Vec<_> = std::mem::take(&mut *self.held_declarations.lock().unwrap());
+        for (d, types) in held {
+            match self.declare_app_types(&d, types.clone()).await {
+                Ok(()) => tracing::info_span!("rdm.node_admin.node.update.via-declaration-written", subject = %d.node.name, node_id = %d.node.node_id, types = types.len())
+                    .in_scope(|| tracing::info!("a declaration held before the seat is written beside the row")),
+                Err(why) => {
+                    tracing::info_span!("rdm.node_admin.node.reject.via-declaration-held", subject = %d.node.name, node_id = %d.node.node_id, detail = %why)
+                        .in_scope(|| tracing::info!("the held declaration is still refused: kept"));
+                    self.held_declarations.lock().unwrap().push((d, types));
+                }
+            }
+        }
     }
 
     /// The probe of what the provider holds recorded at a path (set once, at start).

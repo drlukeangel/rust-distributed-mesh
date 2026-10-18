@@ -768,6 +768,19 @@ join result
 
 The exact span name follows repository observability canon.
 
+**A cut-off view.** A node's view is cut off while it hears no other member of its mesh and holds a member
+whose silence no lifecycle gossip event it applied explains; it ends when the view hears a member again or
+when that silence is explained, and one silence window of healing follows. What a cut-off or healing view
+may not do is [fabric-authority.md §2.3.1](fabric-authority.md#231-topology-authority),
+[build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) and §12. Expected
+silence never cuts a view off and is never stale: a member whose node.stop this view admitted or applied
+(stopping; stopped, `NodeStopped` until node.joined), whose node.restart is open (`NodeRestarting`) or whose
+deletion it applied (`NodeDeleted`, for the deleted retention) left the view's current members through an
+event the view applied, and is not counted. A view that holds no other member, or whose other members all
+left it that way, is not cut off: a mesh-primary whose mesh has no other live member keeps its seat,
+publishes as its primary and serves its mesh's topology and rafka-time, and a stopped member's start reads
+them from it ([node.start](lifecycles/node-start.md) step 4).
+
 ### 6.1 Deletions: an event for promptness, `Members` for retention
 
 A known exact deletion is membership state and a lifecycle event, never a second gossip protocol.
@@ -856,7 +869,9 @@ for its life (a node-admin's through `Wiring`: its embedded app's own kinds); an
 the node has joined, equal to `types` for an ordinary node and, for a node-admin, its own `types`,
 its members' declarations and what it learned from other node-admins, growing as members join and
 never shrinking within a birth. A node-admin joins its own `types` before its hydration hook, as
-every node does. Its mesh's node-admin records the declaration beside the row,
+every node does. Its mesh's node-admin records the declaration beside the row (a node-admin that
+writes no rows yet, the Day-0 admin before it is Ready, holds the declaration and writes it with its
+first write after it takes the seat; the join is answered on the held declaration),
 joins every type it does not already hold before it answers the join, and writes its own row's
 `held_hash` (blake3 of the sorted `held`), the one hash that rides a digest. Another node-admin
 that sees a new `held_hash` on the backbone reads that admin's `node.get` and holds what it

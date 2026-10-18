@@ -271,6 +271,16 @@ impl NodeRows {
         Some(format!("{me} ({}) is not the writer of {mesh}'s node rows and refuses the row at {subject}: {writer}", self.me_id))
     }
 
+    /// This admin's `path.name`.
+    pub fn me(&self) -> &PathName {
+        &self.me
+    }
+
+    /// Whether this admin writes `mesh`'s rows now, over its view as it is now.
+    pub async fn writes_now(&self, mesh: &str, subject: &PathName) -> bool {
+        self.writer_check(mesh, subject).await.is_ok()
+    }
+
     /// The writer check at the moment of a write, over this admin's view as it is now.
     async fn writer_check(&self, mesh: &str, subject: &PathName) -> Result<PathName, RowRefused> {
         let t = self.view.read().await;

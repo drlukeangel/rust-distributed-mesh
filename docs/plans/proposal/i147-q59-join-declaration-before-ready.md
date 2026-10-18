@@ -1,4 +1,4 @@
-# Q58 — recording an app declaration before the Day-0 writer is Ready
+# Q59 (asked as Q58, renumbered by the lead) — recording an app declaration before the Day-0 writer is Ready
 
 ## 1. Spec
 
