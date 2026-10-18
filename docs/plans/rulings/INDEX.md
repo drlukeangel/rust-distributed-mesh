@@ -20,7 +20,7 @@ packet takes the next free number here before it is written; a collision is renu
 | Q47 + Q49 | Codex | i146 / i144 | stop/start streams; applied operation effects | A, A | landed `01e4bd08` |
 | Q48 | Dev | i144 e6 | the seat-moves fold is strict | A | built |
 | Q50 | Codex | i143 s88 | the container healing cell lifts its cut before the R-FM1 hold | A | in flight |
-| Q51 | Dev | i144 e6 | after a takeover, who holds the lost mesh's seat, rows and name | A, `Deleted { exit_proof: takeover }` | ruled 2026-10-17 |
+| Q51 | Dev | i144 e6 | after a takeover, who holds the lost mesh's seat, rows and name | A, `Deleted { exit_proof: takeover }` | landed e6.3 `8b0e58d0` |
 | Q52 | Dev | i146 e3 | the owed declaration keeps its carried route in one Owed call | B | ruled 2026-10-17 |
 | Q53 | Codex | i143 s88 | the successor's status fold published Pending over Ready | A, fix the root | ruled 2026-10-17 |
 | Q54 | Codex | i143 s88 | an Applied declared-state row is durable before state-commit | A recommended | **awaiting Luke** |
