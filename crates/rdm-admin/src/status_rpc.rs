@@ -874,7 +874,7 @@ impl StatusAuthority {
                     // cannot publish stopped between the seen check and setting stopping.
                     let _admission = self.operation_effects.write().await;
                     accepted = true;
-                    let declared = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Leaving };
+                    let declared = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Stopped };
                     let identity = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
                     let completed = self.declared.lock().unwrap().operations.contains_key(&operation_row(&declared, &identity).key());
                     if !start && !completed {
@@ -1183,7 +1183,7 @@ impl StatusAuthority {
         // mesh-primary publishes NodeStopped with that identity, as from the stop stream's `stopped`,
         // whichever of the two reached it first; the other finds the row held (`AlreadyApplied`) and
         // publishes nothing. A restart's stop is never NodeStopped (NodeRestarting holds it).
-        if let (StatusReply::Applied, Effect::Node(row, NodeState::Leaving, Some(operation))) = (&reply, &effect) {
+        if let (StatusReply::Applied, Effect::Node(row, NodeState::Stopped, Some(operation))) = (&reply, &effect) {
             if !operation.operation.starts_with("node.restart:") {
                 if let Some(publish) = self.stopped.get() {
                     publish(row.clone(), operation.clone()).await;
@@ -1197,9 +1197,9 @@ impl StatusAuthority {
     /// executor (node-stop.md steps 4-5): its Leaving is recorded in the same declared-state row the
     /// birth's own declaration names, so NodeStopped is published once, from whichever arrived first.
     pub async fn stop_received(&self, op: &rdm_core::LifecycleOp) -> StatusReply {
-        let row = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Leaving };
+        let row = crate::status_storage::NodeDeclaredRow { node_id: op.node_id.clone(), incarnation_id: op.incarnation.clone(), name: op.name.clone(), state: NodeState::Stopped };
         let operation = DeclaredOperation { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
-        let reply = self.persist_then_commit(Effect::Node(row, NodeState::Leaving, Some(operation))).await;
+        let reply = self.persist_then_commit(Effect::Node(row, NodeState::Stopped, Some(operation))).await;
         tracing::info_span!("rdm.node_admin.node.update.via-stop-received", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, outcome = reply.name(), "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the stop stream's stopped is recorded in the birth's declared-state row"));
         reply
@@ -1258,7 +1258,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
         S::ConnectionsDeleting => NodeState::ConnectionsDeleting,
         // A birth under restart is leaving; the frozen status vocabulary has no Restarting.
-        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted => NodeState::Leaving,
+        S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted => NodeState::Stopped,
     }
 }
 
@@ -1652,7 +1652,7 @@ mod tests {
     /// CONTRACT (i146 Q29, Q36; node-stop.md step 5): a birth's Leaving that names the operation which
     /// stopped it, applied by its mesh-primary, publishes NodeStopped once with that identity, whether
     /// the birth's declaration or the stop stream's `stopped` reached it first; the other finds the
-    /// row held (`AlreadyApplied`) and publishes nothing. A Leaving naming no operation (a state the
+    /// row held (`AlreadyApplied`) and publishes nothing. A Stopped naming no operation (a state the
     /// birth measured itself) and a restart's stop publish nothing. Must NOT happen: NodeStopped twice
     /// for one stop, or a lifecycle frame from a declaration that names no operation.
     #[tokio::test]
@@ -1713,7 +1713,7 @@ mod tests {
         });
         let _ = authority.stopped.set(publisher);
         let stop_of = |n: &crate::model::Node, kind: &str| DeclaredOperation { build_id: "b".into(), attempt: 2, operation: format!("{kind}:{}", n.name) };
-        let declare = |n: &crate::model::Node, operation: Option<DeclaredOperation>| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Leaving, operation };
+        let declare = |n: &crate::model::Node, operation: Option<DeclaredOperation>| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::Stopped, operation };
         let stream = |n: &crate::model::Node, op: &DeclaredOperation| rdm_core::LifecycleOp { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), name: n.name.clone(), event_at_rafka_ms: 0 };
 
         // The declaration first, then a repeat of it, then the stop stream's stopped.
@@ -1779,7 +1779,7 @@ mod tests {
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await?;
             match row.state {
-                NodeState::Leaving => self.ready_landed.notified().await,
+                NodeState::Stopped => self.ready_landed.notified().await,
                 NodeState::ReadyForTraffic => self.ready_landed.notify_one(),
                 _ => {}
             }
@@ -1870,11 +1870,11 @@ mod tests {
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state, operation: None };
-        let (leaving, ready) = (declare(NodeState::Leaving), declare(NodeState::ReadyForTraffic));
+        let (leaving, ready) = (declare(NodeState::Stopped), declare(NodeState::ReadyForTraffic));
         let (a, b) = tokio::join!(authority.apply(Some(rpc.clone()), &leaving), authority.apply(Some(rpc.clone()), &ready));
         assert_eq!((a, b), (R::Applied, R::Applied), "both decided forward from the same held state");
         let held = authority.declared.lock().unwrap().node(&rpc.node_id, &birth);
-        assert_eq!(held, Some(NodeState::Leaving), "memory holds the greater state");
+        assert_eq!(held, Some(NodeState::Stopped), "memory holds the greater state");
         let rehydrated = Declared::rehydrate(&*status).await.unwrap();
         assert_eq!(rehydrated.node(&rpc.node_id, &birth), held, "a restarted authority folds the rows back to a state behind the one it held");
     }

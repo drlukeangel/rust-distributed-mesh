@@ -1236,7 +1236,7 @@ fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
         MemberStatus::Pending => N::Pending,
         MemberStatus::ReadyForTraffic => N::ReadyForTraffic,
         MemberStatus::ConnectionsDeleting => N::ConnectionsDeleting,
-        MemberStatus::Leaving => N::Leaving,
+        MemberStatus::Leaving => N::Stopped,
     }
 }
 

@@ -1769,7 +1769,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             d.clone()
                                         });
                                         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-                                        // Its stop's Leaving names the stop, as every node's does (node-status.md "Status
+                                        // Its stop's Stopped names the stop, as every node's does (node-status.md "Status
                                         // report", node-stop.md step 4; i146 Q37): owed in its declarer and sent at once,
                                         // before the stop's reply, since the declarer's own turns are held while it is stopped.
                                         // An admin that is its own mesh's primary has no primary to report to, and after its

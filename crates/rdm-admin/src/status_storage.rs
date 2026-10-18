@@ -86,9 +86,9 @@ impl NodeDeclaredRow {
     pub fn keys_of_birth(node_id: &NodeId, incarnation_id: &IncarnationId) -> Vec<String> {
         // Exhaustive: a new state is a compile error here until its key is tombstoned too.
         let every = |s: NodeState| match s {
-            NodeState::Pending | NodeState::ReadyForTraffic | NodeState::ConnectionsDeleting | NodeState::Leaving => s,
+            NodeState::Pending | NodeState::ReadyForTraffic | NodeState::ConnectionsDeleting | NodeState::Stopped => s,
         };
-        [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::ConnectionsDeleting, NodeState::Leaving].into_iter().map(every).map(|s| Self::key_of(node_id, incarnation_id, s)).collect()
+        [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::ConnectionsDeleting, NodeState::Stopped].into_iter().map(every).map(|s| Self::key_of(node_id, incarnation_id, s)).collect()
     }
 }
 

@@ -98,8 +98,8 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
 
     // 5. Forward moves apply and the view follows.
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"])).0, "applied");
-    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "leaving"])).0, "applied");
-    assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "Leaving");
+    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "stopped"])).0, "applied");
+    assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "Stopped");
     assert_eq!(estate.node_value("mesh1.rpc.2").await["declared"], "ReadyForTraffic", "rpc.2 declared only its birth");
 
     estate.artifact("declarations.json", &json!({"primary": primary["name"], "other_admin": other_admin["name"], "node": rpc1["name"]}));
@@ -115,7 +115,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     // node's own ConnectionsDeleting at stop is a backward move too: refused by name, never regressing.
     let backward: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-invalid-node-transition" && s["attributes"]["sender"] == "mesh1.rpc.1").collect();
     assert!(backward.iter().any(|s| s["attributes"]["detail"] == "ReadyForTraffic"), "Pending after ReadyForTraffic: {backward:?}");
-    assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Leaving"), "{backward:?}");
+    assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Stopped"), "{backward:?}");
     assert_eq!(on_primary("rejected-stale-incarnation"), 1);
     assert_eq!(on_primary("rejected-not-authority"), 1, "subject-unknown on the primary");
     assert!(decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-not-authority").all(|s| s["attributes"]["detail"] == "subject-unknown"), "the primary refuses no caller: {decided:?}");

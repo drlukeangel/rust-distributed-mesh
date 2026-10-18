@@ -250,9 +250,9 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ReadyForTraffic)).await), StatusReply::AlreadyApplied);
     // Backward is refused naming the current state; a skip forward applies.
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Pending)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
-    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Leaving)).await), StatusReply::Applied);
-    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ConnectionsDeleting)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Leaving));
+    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Stopped)).await), StatusReply::Applied);
+    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ConnectionsDeleting)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped });
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }
 
 /// CONTRACT: the authority is the seat the subject's declaration needs, never the caller
@@ -315,7 +315,7 @@ async fn a_declaration_from_an_endpoint_the_authority_never_heard_of_is_decided_
     assert_eq!(reply(&call(&rig, &stranger, &declare(&stranger, NodeState::ReadyForTraffic)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
     let unknown_mesh = StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic };
     assert_eq!(reply(&call(&rig, &stranger, &unknown_mesh).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a mesh the fabric-primary does not hold");
-    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Leaving, operation: None };
+    let stale = StatusRequest::DeclareNodeState { node_id: rpc1.node.node_id.clone(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: None };
     assert_eq!(reply(&call(&rig, &stranger, &stale).await), StatusReply::RejectedStaleIncarnation { held: rpc1.node.incarnation_id.clone().unwrap() });
     let foreign = birth("mesh2.rpc.1", NodeKind::RpcNode, "mesh2", false, false);
     rig.topology.write().await.nodes.push(foreign.node.clone());
@@ -422,16 +422,16 @@ async fn a_connections_deleting_authority_accepts_upward_status_and_decides_it_f
     let (rig, b) = rig().await;
     rig.server.begin_connections_delete();
     for subject in [&b["rpc1"], &b["admin2"]] {
-        for state in [NodeState::ConnectionsDeleting, NodeState::Leaving] {
+        for state in [NodeState::ConnectionsDeleting, NodeState::Stopped] {
             let request = declare(subject, state);
             assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::Applied);
             assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::AlreadyApplied);
         }
     }
-    let for_another = declare(&b["rpc1"], NodeState::Leaving);
+    let for_another = declare(&b["rpc1"], NodeState::Stopped);
     assert_eq!(reply(&call(&rig, &b["rpc2"], &for_another).await), StatusReply::AlreadyApplied, "decided for rpc.1, whoever sends it");
     let stranger = birth("mesh1.rpc.9", NodeKind::RpcNode, "mesh1", false, false);
-    assert_eq!(reply(&call(&rig, &b["rpc2"], &declare(&stranger, NodeState::Leaving)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+    assert_eq!(reply(&call(&rig, &b["rpc2"], &declare(&stranger, NodeState::Stopped)).await), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
 }
 
 /// A birth of the fixture serving Status on its own key, recording every request it decodes and
@@ -2409,7 +2409,7 @@ async fn lifecycle_stream_frames_alone_record_the_reported_state_and_typed_failu
             assert!(rig.storage.node_operations().await.unwrap().is_empty());
         } else {
             assert!(matches!((&result, start), (A::Started {}, true) | (A::Stopped { .. }, false)), "{result:?}");
-            let state = if start { NodeState::ReadyForTraffic } else { NodeState::Leaving };
+            let state = if start { NodeState::ReadyForTraffic } else { NodeState::Stopped };
             assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node_id, subject.incarnation_id.as_ref().unwrap()), Some(state), "recorded before the outer Build can complete");
             assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
         }
@@ -2508,7 +2508,7 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
                 while rdm_transport::DeliveryStats::get(&server.delivery().stats().acks_received) < 2 { tokio::task::yield_now().await; }
             }).await.expect("the stop's acceptance and closure are recovered before the connection is cut");
             assert!(server.close_connections_except(&[], "the cell cuts the stop stream after closure") > 0);
-            let declaration = StatusRequest::DeclareNodeState { node_id, incarnation, state: NodeState::Leaving, operation: Some(rdm_core::status::DeclaredOperation { build_id, attempt, operation }) };
+            let declaration = StatusRequest::DeclareNodeState { node_id, incarnation, state: NodeState::Stopped, operation: Some(rdm_core::status::DeclaredOperation { build_id, attempt, operation }) };
             let (out, _) = client_slot.get().unwrap().call::<Status>(&NodeTarget::ExactNode(primary), &declaration, &CallOptions::default()).await;
             assert!(matches!(out, RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied)), "the owed stop declaration is applied before the terminal exists");
             Ok(N::NodeStopped)
@@ -2533,5 +2533,5 @@ async fn a_stop_stream_lost_after_the_closure_is_recorded_once_from_the_owed_dec
     assert!(matches!(end, A::Stopped { .. }), "{end:?}");
     assert_eq!(published.load(Ordering::SeqCst), 1, "the declaration publishes stopped; the recovered terminal publishes nothing twice");
     assert_eq!(rig.storage.node_operations().await.unwrap().len(), 1);
-    assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Leaving));
+    assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, subject.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Stopped));
 }

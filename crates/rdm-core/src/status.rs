@@ -50,8 +50,10 @@ pub enum NodeState {
     ReadyForTraffic,
     /// Connections-deleting: it takes no new work.
     ConnectionsDeleting,
-    /// Leaving: it has announced its departure.
-    Leaving,
+    /// Stopped: declared at node.stop's end, after its connections are deleted and its transport cut
+    /// (node-stop.md step 4); "in the system with its identity kept, receiving no traffic, silent on
+    /// gossip and not advancing" (states.md, Stopped nodes).
+    Stopped,
 }
 
 /// A Mesh's status, as declared.
@@ -1708,7 +1710,7 @@ pub fn member_of_declared(s: NodeState) -> crate::MemberStatus {
         NodeState::Pending => M::Pending,
         NodeState::ReadyForTraffic => M::ReadyForTraffic,
         NodeState::ConnectionsDeleting => M::ConnectionsDeleting,
-        NodeState::Leaving => M::Leaving,
+        NodeState::Stopped => M::Leaving,
     }
 }
 
@@ -1719,7 +1721,7 @@ pub fn declared_of_member(s: crate::MemberStatus) -> NodeState {
         M::Pending => NodeState::Pending,
         M::ReadyForTraffic => NodeState::ReadyForTraffic,
         M::ConnectionsDeleting => NodeState::ConnectionsDeleting,
-        M::Leaving => NodeState::Leaving,
+        M::Leaving => NodeState::Stopped,
     }
 }
 
@@ -1738,7 +1740,7 @@ mod tests {
             (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedStaleFabric { held: FabricId::mint() }, ReplyKind::new(crate::outcome::Code::Aborted)),
             (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, ReplyKind::new(crate::outcome::Code::NotFound)),
-            (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Status::not_ready("n".into()), ReplyKind::NotReady),
@@ -1835,7 +1837,7 @@ mod tests {
             assert_eq!(Status::decode_request(&Status::encode_request(&q).unwrap()).unwrap(), q);
         }
         // A declaration naming the operation that produced its state (i146 Q36).
-        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Leaving, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.rpc.1".into() }) };
+        let named = StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Stopped, operation: Some(DeclaredOperation { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.rpc.1".into() }) };
         assert_eq!(Status::decode_request(&Status::encode_request(&named).unwrap()).unwrap(), named);
     }
 
@@ -2051,7 +2053,7 @@ mod tests {
         use NodeState::*;
         assert_eq!(transition(None, Pending), Transition::Apply);
         assert_eq!(transition(Some(Pending), ReadyForTraffic), Transition::Apply);
-        assert_eq!(transition(Some(Pending), Leaving), Transition::Apply, "a skip is a forward move");
+        assert_eq!(transition(Some(Pending), Stopped), Transition::Apply, "a skip is a forward move");
         assert_eq!(transition(Some(ReadyForTraffic), ReadyForTraffic), Transition::AlreadyApplied);
         assert_eq!(transition(Some(ConnectionsDeleting), ReadyForTraffic), Transition::Backward { current: ConnectionsDeleting });
         assert_eq!(transition(Some(MeshState::Dead), MeshState::Pending), Transition::Backward { current: MeshState::Dead });

@@ -3691,8 +3691,8 @@ fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let id = s(&rec["node_id"]);
     let served: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
-    let all: Vec<&Value> = named(spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
-    let cut: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
+    let all: Vec<&Value> = named(spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["operation"] != "signal").collect();
+    let cut: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["operation"] != "signal").collect();
     let probes = named(spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).count();
     let mut decls: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| sp["attributes"]["sender"] == node.as_str()).collect();
     decls.sort_by_key(|sp| start_ns(sp));
@@ -4347,10 +4347,10 @@ async fn retire_run(cell: &str, shape: Shape) {
             .collect();
         assert!(!hits.is_empty(), "{node}: no ordinary work was refused while its connections were deleted: the window held no refusal ({stop})");
         assert!(hits.iter().all(|h| h["finished_ms"].as_u64().unwrap() >= t_apply / 1_000_000), "{node}: a refusal answered before the node's All began ({t_apply}): {hits:?}");
-        // The status family stays admissible through the All: the node's own Leaving declaration (node-stop.md
-        // step 3: the only one its stop makes), after the All began, is decided by its receiver, `applied`.
-        let decided: Vec<&Value> = stop["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied" && d["state"] == "Leaving").collect();
-        assert!(!decided.is_empty(), "{node}: no receiver decided a Leaving declaration from the node after its All began: {stop}");
+        // The status family stays admissible through the All: the node's own Stopped declaration (node-stop.md
+        // step 4: the only one its stop makes), after the All began, is decided by its receiver, `applied`.
+        let decided: Vec<&Value> = stop["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied" && d["state"] == "Stopped").collect();
+        assert!(!decided.is_empty(), "{node}: no receiver decided a Stopped declaration from the node after its All began: {stop}");
         // The caller's certainty: the stop's reply is `stopped`, its completion.
         let receipts = stop["stop_command_sent"].as_array().unwrap();
         assert!(receipts.iter().any(|r| r["admission"] == "stopped"), "{node}: the stop-node was not answered stopped: {stop}");

@@ -170,9 +170,10 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .expect("the victim served stop-node");
     let stopped_at = start(&stop_span);
     assert_eq!(s(&stop_span["attributes"]["receipt"]), "established", "the victim's All let its in-flight work reach zero: {stop_span}");
+    // The victim's stop, never the signal stop the estate's teardown runs on a node born later at its path.
     let all = named(&spans, "rdm.node_admin.node.connections.delete.via-stop")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == VICTIM)
+        .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["operation"] != "signal")
         .cloned()
         .collect::<Vec<Value>>();
     assert_eq!(all.len(), 1, "the victim's stop ran its node.connections.delete {{ All }} once: {all:#?}");
@@ -182,7 +183,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert!(all_at > start(deleting[0]) && all_at < terminal, "the All lands between the pre-notice and the terminal proof");
     let cut_at = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut")
         .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == VICTIM)
+        .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["operation"] != "signal")
         .map(start)
         .min()
         .expect("the victim's stop cut its own transport");

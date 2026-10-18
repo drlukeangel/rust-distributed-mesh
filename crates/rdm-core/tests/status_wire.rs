@@ -33,7 +33,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn requests_match_the_frozen_thirty_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
-        (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
+        (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
         (DeclareMeshState { mesh_id: mesh(), state: MeshState::Leaving }, "010c31313233343536373839616202"),
         (ApplyNodeState { node_id: node(), incarnation: birth(), state: NodeState::ConnectionsDeleting }, "020c3031323334353637383961620c39776370726667777674687902"),
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
@@ -109,7 +109,7 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
         (RejectedStaleMesh { held: mesh() }, "050c313132333435363738396162"),
         (RejectedStaleFabric { held: fabric() }, "060c323132333435363738396162"),
         (RejectedNotAuthority { why: NotAuthority::SenderNotSubject { sender: "peer-path".into() } }, "070109706565722d70617468"),
-        (RejectedInvalidNodeTransition { current: NodeState::Leaving }, "0803"),
+        (RejectedInvalidNodeTransition { current: NodeState::Stopped }, "0803"),
         (RejectedInvalidMeshTransition { current: MeshState::Dead }, "0903"),
         (PeerUnresolved { reason: "p".into() }, "0a0170"),
         (NotReady { reason: "n".into() }, "0b016e"),
@@ -316,7 +316,7 @@ fn golden<T: serde::Serialize>(value: T, expected: &str) {
 fn nested_enum_discriminants_and_fields_are_frozen_too() {
     for (state, expected) in [
         (NodeState::Pending, "00"), (NodeState::ReadyForTraffic, "01"),
-        (NodeState::ConnectionsDeleting, "02"), (NodeState::Leaving, "03"),
+        (NodeState::ConnectionsDeleting, "02"), (NodeState::Stopped, "03"),
     ] { golden(state, expected); }
     for (state, expected) in [
         (MeshState::Pending, "00"), (MeshState::ReadyForTraffic, "01"),

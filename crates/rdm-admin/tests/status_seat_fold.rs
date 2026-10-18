@@ -291,13 +291,13 @@ async fn applied_operations_survive_a_cycle_begin_and_a_successor_reopening_the_
     let node_id = NodeId::mint();
     let incarnation = IncarnationId::mint();
     let row = NodeOperationRow {
-        node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: "mesh1.rpc.1".parse().unwrap(), state: NodeState::Leaving,
+        node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: "mesh1.rpc.1".parse().unwrap(), state: NodeState::Stopped,
         operation: rdm_core::status::DeclaredOperation { build_id: "b".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() },
     };
     let next = NodeOperationRow { operation: rdm_core::status::DeclaredOperation { attempt: 2, ..row.operation.clone() }, ..row.clone() };
     {
         let store = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
-        store.put_node_declared(&NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: row.name.clone(), state: NodeState::Leaving }).await.unwrap();
+        store.put_node_declared(&NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation.clone(), name: row.name.clone(), state: NodeState::Stopped }).await.unwrap();
         store.put_node_operation(&row).await.unwrap();
         store.put_node_operation(&next).await.unwrap();
         store.remove_node_declared(&node_id, &incarnation).await.unwrap();

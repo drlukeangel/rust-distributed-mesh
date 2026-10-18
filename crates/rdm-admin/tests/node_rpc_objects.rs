@@ -138,10 +138,10 @@ fn each_status_object_sends_todays_request_and_returns_the_typed_reply() {
 fn a_status_object_distinguishes_a_refusal_from_not_sent_and_indeterminate() {
     let cap = capture();
     cap.run(async {
-        let served = serve(StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, Duration::ZERO).await;
+        let served = serve(StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped }, Duration::ZERO).await;
         let rpc = NodeRpc::new(&served.client);
         let refused = rpc.get(&served.birth, &CallOptions::default()).await.unwrap();
-        assert_eq!(refused, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
+        assert_eq!(refused, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Stopped });
 
         let nowhere = ExactBirth { target: NodeTarget::ExactNode(NodeId::mint()), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
         let not_sent = rpc.get(&nowhere, &CallOptions::default()).await.unwrap_err();

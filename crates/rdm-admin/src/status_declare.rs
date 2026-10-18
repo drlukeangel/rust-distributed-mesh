@@ -212,7 +212,7 @@ pub(crate) struct Declarer {
     /// Every declaration ever owed, by key: what is re-owed when the authority moves.
     requests: Mutex<BTreeMap<Key, (Authority, StatusRequest, Option<String>)>>,
     /// The operation that produced each own state of this birth's current cycle (node-status.md
-    /// "Status report", i146 Q37): a start's ReadyForTraffic names the start, a stop's Leaving the
+    /// "Status report", i146 Q37): a start's ReadyForTraffic names the start, a stop's Stopped the
     /// stop; a state this admin measured itself names none.
     own_operations: Mutex<BTreeMap<NodeState, DeclaredOperation>>,
     /// The Owed call in flight for each key sent and not yet answered.
@@ -304,7 +304,7 @@ impl Declarer {
         self.own_operations.lock().unwrap().get(&state).cloned()
     }
 
-    /// Owe this admin's own `state` to its mesh's primary, naming `operation` (a stop's Leaving names
+    /// Owe this admin's own `state` to its mesh's primary, naming `operation` (a stop's Stopped names
     /// the stop, node-stop.md step 4): the declaration [`Declarer::round`] sends.
     pub(crate) fn owe_own(&self, me: &PathName, node_id: &NodeId, incarnation: &IncarnationId, state: NodeState, operation: Option<DeclaredOperation>) {
         if let Some(op) = &operation {
@@ -1024,16 +1024,16 @@ mod tests {
         assert_eq!(operation_of(&d, NodeState::ReadyForTraffic), None, "its birth's node.started is a state it measured");
 
         let stop = op("node.stop:mesh1.admin.2", 1);
-        d.owe_own(&me, &me_id, &inc, NodeState::Leaving, Some(stop.clone()));
-        assert_eq!(operation_of(&d, NodeState::Leaving), Some(stop), "its stop's Leaving names the stop");
+        d.owe_own(&me, &me_id, &inc, NodeState::Stopped, Some(stop.clone()));
+        assert_eq!(operation_of(&d, NodeState::Stopped), Some(stop), "its stop's Stopped names the stop");
         let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
-        assert!(due.contains(&(Key::OwnState(INC.into(), NodeState::Leaving), "mesh1.admin.1".to_string())), "owed to its mesh's primary: {due:?}");
+        assert!(due.contains(&(Key::OwnState(INC.into(), NodeState::Stopped), "mesh1.admin.1".to_string())), "owed to its mesh's primary: {due:?}");
 
         let start = op("node.start:mesh1.admin.2", 2);
         d.begin_own_cycle(&me, INC, &start);
         owed_from_view(&d, &me, &me_id, &inc, M::ReadyForTraffic, false, None, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::ReadyForTraffic), Some(start), "the start's node.started names the start");
-        assert!(!d.requests.lock().unwrap().contains_key(&Key::OwnState(INC.into(), NodeState::Leaving)), "the stop's Leaving belongs to the stopped cycle");
+        assert!(!d.requests.lock().unwrap().contains_key(&Key::OwnState(INC.into(), NodeState::Stopped)), "the stop's Stopped belongs to the stopped cycle");
 
         owed_from_view(&d, &me, &me_id, &inc, M::ConnectionsDeleting, false, None, &v, &ids);
         assert_eq!(operation_of(&d, NodeState::ConnectionsDeleting), None, "a Draining it measured names none");

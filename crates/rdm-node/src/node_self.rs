@@ -175,6 +175,15 @@ pub type Declare = Arc<dyn Fn(NodeState, Option<rdm_core::status::DeclaredOperat
 /// The operation a stop by this process's own signal names on its leave step's spans.
 pub const SIGNAL_STOP: &str = "signal";
 
+/// Who a stop answers to (i146 Q55): the mesh-primary's `StopNode` on its command stream, or this
+/// process's own signal, the node its own subject. One workflow serves both ([`NodeSelf::stop_steps`]).
+enum StopBy<'a> {
+    /// The command: who commanded it, the connection its call rides, its operation and its stream.
+    Command { commander: Option<&'a NodeId>, spare: Option<iroh::PublicKey>, op: &'a LifecycleOp, progress: Option<CommandProgress> },
+    /// This process's own signal.
+    Signal,
+}
+
 /// What a stop by this process's own signal leaves behind (i146 Q55): the receipt of its
 /// `node.connections.delete { All }`, and each declaration it owes its mesh-primary, one owed call
 /// apiece that the process's exit drops (node-rpc.md §34).
@@ -889,7 +898,7 @@ impl NodeSelf {
                 return rdm_core::reply::status::busy_holding_connections(connections);
             }
         }
-        let (_, left) = self.leave_mesh(spare, operation).await;
+        let (_, left) = self.leave_mesh(spare.as_slice(), operation).await;
         StatusReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
     }
 
@@ -897,7 +906,7 @@ impl NodeSelf {
     /// `node.stop` step 3. Emits `rdm.node.mesh.update.via-leaving`, leaves the mesh channel (and
     /// the backbone for a node-admin, each emitting `rdm.node.mesh.update.via-left`), and cuts the
     /// Node RPC pool while sparing `spare`.
-    async fn leave_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> (CutReport, Vec<WhichMesh>) {
+    async fn leave_mesh(&self, spare: &[iroh::PublicKey], operation: &str) -> (CutReport, Vec<WhichMesh>) {
         use tracing::Instrument;
         let leaving_span = tracing::info_span!(
             "rdm.node.mesh.update.via-leaving",
@@ -909,9 +918,12 @@ impl NodeSelf {
             "otel.kind" = "internal"
         );
         async {
+            // The primitive's progress, `leaving`, from its command until the mesh is left: nothing
+            // publishes it, in that state or after it (node-mesh-leave.md).
+            let _ = (self.set_status)(MemberStatus::Leaving);
             let session = self.session.lock().unwrap().clone();
             let report = match &session {
-                Some(session) => session.cut(spare.as_slice()).await,
+                Some(session) => session.cut(spare).await,
                 None => {
                     self.membership.park().await;
                     tracing::info_span!(
@@ -1007,9 +1019,9 @@ impl NodeSelf {
                     parent: &parent,
                     "rdm.node_admin.status.update.via-stop-node",
                     node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-                    commander = %named(commander.as_ref()), state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
+                    commander = %named(commander.as_ref()), state = "Stopped", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
-                let receipt = self.stop_steps(commander.as_ref(), spare, &op, progress.clone()).instrument(span.clone()).await;
+                let (receipt, _) = self.stop_steps(StopBy::Command { commander: commander.as_ref(), spare, op: &op, progress: progress.clone() }).instrument(span.clone()).await;
                 span.record("receipt", receipt.name());
                 *self.cycle.lock().unwrap() = Cycle::Stopped(receipt.clone());
                 let _ = tx.send(Some(receipt.clone()));
@@ -1019,22 +1031,43 @@ impl NodeSelf {
         StatusReply::Stopped { receipt }
     }
 
-    /// The stop's own steps (node-stop.md steps 2-3): the whole `node.connections.delete { All }`,
-    /// then the transport cut; the receipt is the All's.
-    async fn stop_steps(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, op: &LifecycleOp, progress: Option<CommandProgress>) -> ConnectionsReceipt {
+    /// node.stop's steps (node-stop.md steps 2-4), one workflow over the primitives for both of its
+    /// subjects (i146 Q55): the mesh-primary's `StopNode` on its command stream, or this process's own
+    /// signal. The whole `node.connections.delete { All }`, the node's own tasks held, `node.mesh.leave`,
+    /// then `Stopped` to the mesh-primary. A command's stop answers on its stream and declares `Stopped`
+    /// naming its operation; a signal's stop owes connections-deleting at the block and `Stopped` after
+    /// the leave, waits on no answer, and hands each owed declaration back for the process's exit to
+    /// drop (node-rpc.md §34). The receipt is the All's.
+    async fn stop_steps(&self, by: StopBy<'_>) -> (ConnectionsReceipt, Vec<tokio::task::JoinHandle<()>>) {
         use tracing::Instrument;
-        parking().park();
+        let (commander, spare, op, progress) = match by {
+            StopBy::Command { commander, spare, op, progress } => (commander, spare, Some(op), progress),
+            StopBy::Signal => (None, None, None, None),
+        };
+        let operation = op.map_or(SIGNAL_STOP, |o| o.operation.as_str());
+        // A commanded stop parks its live process; a signal's process ends with its stop.
+        if op.is_some() {
+            parking().park();
+        }
         if let Some(retire) = &self.retire {
             retire.cancel();
         }
         // 1. node.connections.delete { All } (node-stop.md step 2), whole: admission of new
         // application work is blocked, the eligible work in flight finishes under the bound, and every
         // open Direct or Proxy entry is closed, its drop written under the name the birth holds. The
-        // receipt never turns a deadline into zero.
+        // receipt never turns a deadline into zero. A command's own call is in flight and is not
+        // eligible work; a signal has none, and owes its connections-deleting once the block is in force.
+        let deleting = Mutex::new(None);
         let deleted = self
-            .delete_connections(&ConnectionScope::All)
-            .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %op.operation, commander = %named(commander)))
+            .delete_connections_asked(&ConnectionScope::All, u64::from(op.is_some()), || {
+                if op.is_none() {
+                    *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting);
+                }
+                async {}
+            })
+            .instrument(tracing::info_span!("rdm.node_admin.node.connections.delete.via-stop", node = %self.held_name(), operation = %operation, commander = %named(commander)))
             .await;
+        let mut owed: Vec<tokio::task::JoinHandle<()>> = deleting.into_inner().unwrap().into_iter().collect();
         let receipt = deleted.receipt.expect("All carries its receipt");
         if let Some(progress) = &progress {
             let _ = progress.lock().await.progress(NodeCommandReply::StopConnectionsDeleted { receipt: receipt.clone() }).await;
@@ -1045,7 +1078,7 @@ impl NodeSelf {
         if let Some(session) = &session {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.update.via-stop-quiesce",
-                node = %self.held_name(), operation = %op.operation, turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
+                node = %self.held_name(), operation = %operation, turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty
             );
             let held = session.park_tasks().instrument(span.clone()).await;
             span.record("turns_in_progress", held.turns_in_progress);
@@ -1056,7 +1089,7 @@ impl NodeSelf {
         // more before the cut, itself Leaving: "Its last aggregate before a stop carries itself
         // Leaving." It follows the hold, so no gated turn publishes after it; after the cut it
         // publishes nothing (node-stop.md step 4, R-ON1).
-        if let Some(backbone) = self.backbone.as_ref().filter(|b| b.is_mesh_primary()) {
+        if let (Some(backbone), Some(op)) = (self.backbone.as_ref().filter(|b| b.is_mesh_primary()), op) {
             let mesh_deleted = self.membership.book.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
             if (!op.is_restart() && !op.is_stop()) || mesh_deleted {
                 let del_op = if op.is_stop() {
@@ -1087,74 +1120,47 @@ impl NodeSelf {
         // Node RPC pool, sparing the commander's connection the stop call rides. Never its endpoint.
         let cut = tracing::info_span!(
             "rdm.node_admin.node.update.via-stop-transport-cut",
-            node = %self.held_name(), operation = %op.operation,
+            node = %self.held_name(), operation = %operation,
             neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
         );
-        let (report, _) = self.leave_mesh(spare, &op.operation).instrument(cut.clone()).await;
+        let (report, _) = self.leave_mesh(spare.as_slice(), operation).instrument(cut.clone()).await;
         cut.record("neighbours", report.neighbours);
         cut.record("pooled", report.pooled);
         cut.record("accepted", report.accepted);
         cut.record("turns_in_progress", report.turns_in_progress);
-        // stopping is this node's own status from the moment its tasks are cut; nothing publishes it.
-        let _ = (self.set_status)(MemberStatus::Leaving);
         // The cut's span ends with the cut: what follows is the declaration, not the cut.
         cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
         drop(cut);
-        // 6. Parked, this birth declares its state to its mesh-primary, naming this stop (i146 Q29, Q36;
-        // node-stop.md step 4): the owed twin of the reply's `stopped`, from which the mesh-primary
-        // publishes NodeStopped when the reply does not reach it. It is sent before the reply, so the
-        // mesh-primary never holds the reply, and never begins this birth's next cycle, ahead of it.
-        if let Some(declare) = &self.declare {
-            declare(NodeState::Leaving, Some(declared(op))).await;
+        // 6. This birth declares `Stopped` to its mesh-primary (i146 Q29, Q36, Q55; node-stop.md step 4).
+        // A command's names its stop: the owed twin of the reply's `stopped`, from which the
+        // mesh-primary publishes NodeStopped when the reply does not reach it, sent before the reply so
+        // the mesh-primary never holds the reply, and never begins this birth's next cycle, ahead of it.
+        // A signal's names no operation and is owed, never waited on.
+        match op {
+            Some(op) => {
+                if let Some(declare) = &self.declare {
+                    declare(NodeState::Stopped, Some(declared(op))).await;
+                }
+            }
+            None => owed.extend(self.owe(NodeState::Stopped)),
         }
-        receipt
+        (receipt, owed)
     }
 
-    /// The stop this process's own signal runs (i146 Q55; node-stop.md steps 2-4, the node its own
-    /// subject): the whole `node.connections.delete { All }` under the birth's bound, its
-    /// connections-deleting owed to its mesh-primary once the block on new work is in force; its own
-    /// tasks held; `node.mesh.leave` as a stop runs it (its gossip neighbours left, its Node RPC pool
-    /// cut, nothing published); then its stopped state owed to its mesh-primary. No step waits on an
-    /// answer: each declaration is one owed call, handed back for the process's exit to drop
-    /// (node-rpc.md §34).
+    /// Owe `state` to the mesh-primary without waiting for its answer (a signal's stop, i146 Q55): one
+    /// owed call, handed back for the process's exit to drop (node-rpc.md §34).
+    fn owe(&self, state: NodeState) -> Option<tokio::task::JoinHandle<()>> {
+        let declare = self.declare.clone()?;
+        tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.held_name(), state = ?state)
+            .in_scope(|| tracing::info!("the state is owed to the mesh-primary; the stop does not wait for its answer"));
+        Some(tokio::spawn(declare(state, None)))
+    }
+
+    /// The stop this process's own signal runs: node.stop's steps with the node its own subject
+    /// ([`Self::stop_steps`], i146 Q55).
     pub async fn stop_on_signal(&self) -> SignalStopped {
-        use tracing::Instrument;
-        let owe = |state: NodeState| {
-            let declare = self.declare.clone()?;
-            tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.held_name(), state = ?state)
-                .in_scope(|| tracing::info!("the state is owed to the mesh-primary; the stop does not wait for its answer"));
-            Some(tokio::spawn(declare(state, None)))
-        };
-        let deleting = Mutex::new(None);
-        let span = tracing::info_span!("rdm.node.node.connections.delete.via-signal-stop", node = %self.held_name(), deadline_ms = self.connections_delete_deadline.as_millis() as u64, receipt = tracing::field::Empty);
-        let deleted = self
-            .delete_connections_asked(&ConnectionScope::All, 0, || {
-                *deleting.lock().unwrap() = owe(NodeState::ConnectionsDeleting);
-                async {}
-            })
-            .instrument(span.clone())
-            .await;
-        let receipt = deleted.receipt.expect("All carries its receipt");
-        span.record("receipt", receipt.name());
-        drop(span);
-        let session = self.session.lock().unwrap().clone();
-        if let Some(session) = &session {
-            let span = tracing::info_span!("rdm.node.node.update.via-signal-stop-quiesce", node = %self.held_name(), turns_in_progress = tracing::field::Empty, waited_for = tracing::field::Empty);
-            let held = session.park_tasks().instrument(span.clone()).await;
-            span.record("turns_in_progress", held.turns_in_progress);
-            span.record("waited_for", held.waited_for.as_str());
-        }
-        let cut = tracing::info_span!("rdm.node.node.update.via-signal-stop-transport-cut", node = %self.held_name(), neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty);
-        let (report, _) = self.leave_mesh(None, SIGNAL_STOP).instrument(cut.clone()).await;
-        cut.record("neighbours", report.neighbours);
-        cut.record("pooled", report.pooled);
-        cut.record("accepted", report.accepted);
-        cut.in_scope(|| tracing::info!("the stop left its mesh: gossip neighbours and the Node RPC pool; nothing was published"));
-        drop(cut);
-        // Leaving is the leave step's progress: this node's own status, which nothing publishes.
-        let _ = (self.set_status)(MemberStatus::Leaving);
-        let stopped = owe(NodeState::Leaving);
-        SignalStopped { receipt, declarations: deleting.into_inner().unwrap().into_iter().chain(stopped).collect() }
+        let (receipt, declarations) = self.stop_steps(StopBy::Signal).await;
+        SignalStopped { receipt, declarations }
     }
 
     /// The start: a parked birth rejoins as itself through its session. A birth that is not parked
@@ -1255,18 +1261,18 @@ impl NodeSelf {
                     StatusReply::Started
                 }
                 Err(failed) => {
-                    // The start stopped at its step: the node is parked again, as it was: its tasks
-                    // held (a turn its rejoin let begin runs to its end), then its connections cut,
-                    // sparing every call commanding the start so each is answered.
-                    let _ = (self.set_status)(MemberStatus::Leaving);
-                    self.server.begin_connections_delete();
-                    self.block_new_connections("its start stopped at a step and it is stopped again");
-                    let _ = session.park_tasks().await;
+                    // The start stopped at its step: the node is parked again, as it was, through the
+                    // stop's own primitives: its connections deleted (the calls commanding the start
+                    // are in flight and not eligible work), its tasks held (a turn its rejoin let begin
+                    // runs to its end), its mesh left, sparing every call commanding the start so each
+                    // is answered.
                     let calls = match &*self.cycle.lock().unwrap() {
                         Cycle::Starting { calls, .. } => calls.clone(),
                         _ => spare.into_iter().collect(),
                     };
-                    let _ = session.cut(&calls).await;
+                    let _ = self.delete_connections_asked(&ConnectionScope::All, calls.len() as u64, || async {}).await;
+                    let _ = session.park_tasks().await;
+                    let _ = self.leave_mesh(&calls, &op.operation).await;
                     *self.cycle.lock().unwrap() = Cycle::Stopped(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
                     rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason)

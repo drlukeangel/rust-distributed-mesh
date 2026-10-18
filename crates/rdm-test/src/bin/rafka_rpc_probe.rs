@@ -144,7 +144,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         "pending" => NodeState::Pending,
         "ready-for-traffic" => NodeState::ReadyForTraffic,
         "connections-deleting" => NodeState::ConnectionsDeleting,
-        "leaving" => NodeState::Leaving,
+        "stopped" => NodeState::Stopped,
         other => return Err(format!("--state {other:?} is not a node state")),
     };
     let (client, _) = enter(&a.admin_birth).await?;

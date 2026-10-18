@@ -2428,7 +2428,7 @@ A node birth's lifecycle state, as declared.
 | 0 | **`Pending`** |  |  | Born and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
 | 2 | **`ConnectionsDeleting`** |  |  | Connections-deleting: it takes no new work. |
-| 3 | **`Leaving`** |  |  | Leaving: it has announced its departure. |
+| 3 | **`Stopped`** |  |  | Stopped: declared at node.stop's end, after its connections are deleted and its transport cut |
 
 <a id="t-rdm_core-views-NodeStatus"></a>
 

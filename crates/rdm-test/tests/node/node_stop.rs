@@ -134,10 +134,12 @@ async fn stop_then_start(test: &str, node: &str) {
     estate.stop().await;
     let spans = estate.spans();
     let of_node = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == node).collect() };
+    // The commanded stop's steps; the estate's teardown runs the same workflow on its signal, named `signal`.
+    let of_stop = |name: &str| -> Vec<&Value> { of_node(name).into_iter().filter(|sp| sp["attributes"]["operation"] != "signal").collect() };
     let stop_span = of_node("rdm.node_admin.status.update.via-stop-node");
     assert_eq!(stop_span.len(), 1, "{stop_span:?}");
-    assert_eq!(of_node("rdm.node_admin.node.connections.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
-    assert_eq!(of_node("rdm.node_admin.node.update.via-stop-transport-cut").len(), 1, "then cuts its transport once");
+    assert_eq!(of_stop("rdm.node_admin.node.connections.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
+    assert_eq!(of_stop("rdm.node_admin.node.update.via-stop-transport-cut").len(), 1, "then cuts its transport once");
     assert_eq!(of_node("rdm.node_admin.node.update.via-node-stopped").len(), 1, "the mesh primary publishes NodeStopped once");
     // i146 Q36, the control: the stop answered within its bound is recorded in the birth's declared
     // row once, from whichever of its declaration naming the stop and the stop stream's stopped reached
@@ -152,10 +154,10 @@ async fn stop_then_start(test: &str, node: &str) {
         let admin = named(&spans, "rdm.node_admin.status.update.via-declare").into_iter().filter(move |sp| sp["attributes"]["key"].as_str().is_some_and(|k| k.starts_with("OwnState(") && k.ends_with(&format!(", {state})"))));
         own.chain(admin).filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with(kind))).collect()
     };
-    let declared = declared_of("Leaving", "node.stop:");
-    assert!(!declared.is_empty(), "{node}'s stop declared its Leaving naming the stop");
+    let declared = declared_of("Stopped", "node.stop:");
+    assert!(!declared.is_empty(), "{node}'s stop declared its Stopped naming the stop");
     let applied = received.iter().chain(declared.iter()).filter(|sp| sp["attributes"]["outcome"] == "applied").count();
-    assert_eq!(applied, 1, "exactly one of the declaration and the stop stream's stopped applied the birth's Leaving: received {received:#?}, declared {declared:#?}");
+    assert_eq!(applied, 1, "exactly one of the declaration and the stop stream's stopped applied the birth's Stopped: received {received:#?}, declared {declared:#?}");
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");
     assert_eq!((served.len(), served[0]["attributes"]["outcome"].as_str()), (1, Some("started")), "{served:?}");
@@ -173,7 +175,7 @@ async fn stop_then_start(test: &str, node: &str) {
         // A connection between the two births dialled after the cut, by either end: the caller's own
         // dial (within the call's attempts too), or the parked birth's dial to its mesh-primary for the
         // declaration naming its stop (node-stop.md step 4, i146 Q36).
-        let cut = start_ns(of_node("rdm.node_admin.node.update.via-stop-transport-cut")[0]);
+        let cut = start_ns(of_stop("rdm.node_admin.node.update.via-stop-transport-cut")[0]);
         let identity = attr(call, "delivery_id");
         let (caller, caller_incarnation) = identity.split('#').next().unwrap_or_default().split_once('/').map(|(n, i)| (n.to_string(), i.to_string())).unwrap_or_default();
         let caller_addr = mesh.iter().find(|n| n.node_id.as_str() == caller).and_then(|n| n.transport_addr).unwrap_or_else(|| panic!("the start's caller {caller} is a node of mesh1")).to_string();
@@ -582,7 +584,7 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
     let primary = views.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh1's primary");
     let leaving: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Leaving" && attr(sp, "operation") == format!("node.stop:{NODE}"))
+        .filter(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Stopped" && attr(sp, "operation") == format!("node.stop:{NODE}"))
         .collect();
     assert!(leaving.iter().all(|sp| attr(sp, "to") == primary), "the stop's declaration is addressed to mesh1's primary only: {leaving:#?}");
     assert!(leaving.iter().any(|sp| attr(sp, "outcome") == "applied"), "and applied by it, direct or carried: {leaving:#?}");
@@ -600,7 +602,7 @@ async fn a_stop_the_birth_never_admitted_sets_no_stopping_and_its_resubmission_p
 
 /// CONTRACT (i146 Q29, Q36; node-stop.md step 5): `node.stop` of `mesh1.rpc.1` runs and the birth parks;
 /// the stop stream's `stopped` reaches the mesh-primary and is held there before it is recorded (the
-/// faulted admin's `stopped` event cut). The parked birth's declaration of Leaving, naming the stop's
+/// faulted admin's `stopped` event cut). The parked birth's declaration of Stopped, naming the stop's
 /// operation, reaches the mesh-primary meanwhile: it is applied, and the mesh-primary publishes
 /// NodeStopped from it with the stop's identity, so `node.get` lists the birth parked while the stream's
 /// `stopped` is still held. Released, the stream's `stopped` finds the birth's row held (already
@@ -649,7 +651,7 @@ async fn a_stop_whose_stream_stopped_is_held_is_published_stopped_once_from_the_
     estate.stop().await;
     let spans = estate.spans();
     let operation = format!("node.stop:{NODE}");
-    let declared = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Leaving" && attr(sp, "operation") == operation && attr(sp, "outcome") == "applied").expect("the parked birth's declaration of Leaving naming its stop was applied");
+    let declared = named(&spans, "rdm.node_rpc.status.update.via-declare-own").into_iter().find(|sp| attr(sp, "node") == NODE && attr(sp, "state") == "Stopped" && attr(sp, "operation") == operation && attr(sp, "outcome") == "applied").expect("the parked birth's declaration of Stopped naming its stop was applied");
     let node_stopped: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| attr(sp, "node") == NODE).collect();
     assert_eq!(node_stopped.len(), 1, "NodeStopped is published once for the birth: {node_stopped:#?}");
     assert_eq!(attr(node_stopped[0], "operation"), operation, "NodeStopped names the stop: {}", node_stopped[0]);
@@ -1030,7 +1032,8 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
     let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == q7).collect();
     assert_eq!(rejected.len(), 2, "one refusal per call: {rejected:#?}");
     for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.node.connections.delete.via-stop", "rdm.node_admin.seat.update.via-primary-update", "rdm.node_admin.seat.update.via-seat-row-written"] {
-        let ran: Vec<&Value> = named(&spans, name);
+        // The estate's teardown runs the stop workflow on its signal (`signal`): not the refused stop.
+        let ran: Vec<&Value> = named(&spans, name).into_iter().filter(|sp| attr(sp, "operation") != "signal").collect();
         assert!(ran.is_empty(), "the refused stop ran {name}: {ran:#?}");
     }
     let to_none: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-hand-over").into_iter().filter(|sp| attr(sp, "to") == "none").collect();
@@ -1040,11 +1043,11 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
 
 /// CONTRACT (i146 Q37; node-status.md "Status report"; node-stop.md steps 4-5; node-primary-update.md
 /// steps 5-8; the seat taker's SeatFold, R14): a stopped birth's stop is published NodeStopped once,
-/// by the mesh primary that applied its Leaving, and a move of its mesh's seat publishes it no second
-/// time. In a fabric of two meshes, mesh2's rpc node that is not its cohort's primary is stopped: it stops, declares its Leaving naming the
+/// by the mesh primary that applied its Stopped, and a move of its mesh's seat publishes it no second
+/// time. In a fabric of two meshes, mesh2's rpc node that is not its cohort's primary is stopped: it stops, declares its Stopped naming the
 /// stop, and mesh2's primary publishes NodeStopped. Then mesh2's primary is stopped: its Build moves
 /// mesh2's seat to mesh2's other admin first, which folds the mesh's status rows (the stopped birth's
-/// Leaving among them), and the old holder's own stop declares its Leaving naming that stop to the new
+/// Stopped among them), and the old holder's own stop declares its Stopped naming that stop to the new
 /// holder, which applies it and publishes the old holder's NodeStopped once. The stopped birth hears no
 /// seat move (its gossip was cut at its stop, node-stop.md step 3): it re-declares nothing to the new
 /// holder, whose SeatFold already holds its row. The new holder starts the stopped birth, which rejoins
@@ -1093,26 +1096,26 @@ async fn a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat(
     assert!(!installed.is_empty(), "{successor_s} installed itself as mesh2's primary");
     assert!(start_ns(stopped_published[0]) < start_ns(installed[0]), "the stopped birth's NodeStopped came from the holder before the move");
     let folded: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-seat-fold").into_iter().filter(|sp| attr(sp, "node") == successor_s && attr(sp, "member") == stopped_s).collect();
-    // The stopped birth's Leaving naming its stop, declared to the new holder (the estate's teardown
-    // declares every node's own Leaving too, naming no operation).
+    // The stopped birth's Stopped naming its stop, declared to the new holder (the estate's teardown
+    // owes every node's own Stopped too, naming no operation).
     let stopped_operation = format!("node.stop:{stopped_s}");
     let redeclared: Vec<&Value> = named(&spans, "rdm.node_rpc.status.update.via-declare-own")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == stopped_s && attr(sp, "state") == "Leaving" && attr(sp, "operation") == stopped_operation && attr(sp, "to") == successor_s)
+        .filter(|sp| attr(sp, "node") == stopped_s && attr(sp, "state") == "Stopped" && attr(sp, "operation") == stopped_operation && attr(sp, "to") == successor_s)
         .collect();
     assert!(redeclared.is_empty(), "a stopped birth hears no seat move, so it re-declares nothing to the new holder: {redeclared:#?}");
     assert!(folded.iter().any(|sp| attr(sp, "outcome") == "stopped"), "the new holder's SeatFold holds the stopped birth stopped: {folded:#?}");
-    // The old holder's own stop: its Leaving names the stop, applied by the new holder, published once.
+    // The old holder's own stop: its Stopped names the stop, applied by the new holder, published once.
     let holder_stop = format!("node.stop:{holder_s}");
     let holder_declared: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-declare")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == holder_s && attr(sp, "key").ends_with(", Leaving)") && attr(sp, "operation") == holder_stop)
+        .filter(|sp| attr(sp, "node") == holder_s && attr(sp, "key").ends_with(", Stopped)") && attr(sp, "operation") == holder_stop)
         .collect();
     // The declaration rides an Owed call (i146 e3 owner 3): the new holder takes it applied, or already
     // applied when the stop stream's `stopped` reached it first (Q36: "from whichever arrives first").
     assert!(
         holder_declared.iter().any(|sp| attr(sp, "to") == successor_s && matches!(attr(sp, "outcome").as_str(), "applied" | "already-applied")),
-        "{holder_s}'s stop declared its Leaving naming the stop to {successor_s}: {holder_declared:#?}"
+        "{holder_s}'s stop declared its Stopped naming the stop to {successor_s}: {holder_declared:#?}"
     );
     let holder_stopped = stopped_of(&holder_s);
     assert_eq!(holder_stopped.len(), 1, "NodeStopped for the old holder is published once: {holder_stopped:#?}");

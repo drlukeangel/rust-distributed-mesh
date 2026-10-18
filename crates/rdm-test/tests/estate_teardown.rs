@@ -88,7 +88,7 @@ async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before
         let owed = of("rdm.node_rpc.status.update.via-owed-on-signal", node);
         let owed_state = |state: &str| owed.iter().find(|s| s["attributes"]["state"] == state).copied();
         let deleting = owed_state("ConnectionsDeleting").unwrap_or_else(|| panic!("{node} owed its connections-deleting to its mesh-primary: {owed:?}"));
-        let stopped = owed_state("Leaving").unwrap_or_else(|| panic!("{node} owed its stopped state to its mesh-primary: {owed:?}"));
+        let stopped = owed_state("Stopped").unwrap_or_else(|| panic!("{node} owed its stopped state to its mesh-primary: {owed:?}"));
         let leaving = of("rdm.node.mesh.update.via-leaving", node);
         assert_eq!(leaving.len(), 1, "{node} left its mesh once: {leaving:?}");
         assert_eq!(leaving[0]["attributes"]["operation"], "signal", "{node}'s leave is its own stop's: {leaving:?}");
