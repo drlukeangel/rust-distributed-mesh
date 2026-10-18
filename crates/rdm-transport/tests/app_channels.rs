@@ -612,6 +612,12 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         while !middle.neighbors().any(|p| p == a.ep.id()) || !middle.neighbors().any(|p| p == c.ep.id()) {
             middle.next().await.expect("the middle holder stays subscribed").unwrap();
         }
+        while !member.neighbors().any(|p| p == a.ep.id()) {
+            member.next().await.expect("the publisher stays subscribed").unwrap();
+        }
+        while b.membership.neighbours() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }).await.expect("both forwarding edges are established");
     let mut receiver = a.membership.join_channel(LATER).await.unwrap();
     let publisher = c.membership.join_channel(LATER).await.unwrap();
@@ -626,6 +632,12 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         while middle.neighbors().any(|p| p == a.ep.id()) {
             middle.next().await.expect("the middle holder stays subscribed").unwrap();
         }
+        while member.neighbors().any(|p| p == a.ep.id()) {
+            member.next().await.expect("the publisher stays subscribed").unwrap();
+        }
+        while b.membership.neighbours() > 1 || c.membership.neighbours() > 1 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }).await.expect("the first subscription has left");
     a.membership.unpark().await;
     let mut rejoined = a.gossip.subscribe(channel_id(&fabric, LATER), vec![]).await.unwrap();
@@ -633,6 +645,9 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     tokio::time::timeout(Duration::from_secs(10), async {
         while !middle.neighbors().any(|p| p == a.ep.id()) {
             middle.next().await.expect("the middle holder stays subscribed").unwrap();
+        }
+        while !member.neighbors().any(|p| p == a.ep.id()) {
+            member.next().await.expect("the publisher stays subscribed").unwrap();
         }
     }).await.expect("the forwarding edge is restored");
     let mut receiver = a.membership.join_channel(LATER).await.unwrap();

@@ -692,6 +692,7 @@ impl Hub {
             }
             state.left.store(true, Ordering::Release);
             state.sender.lock().unwrap().take();
+            drop(stream);
             state.finished.send_replace(true);
         });
         Ok(e)
