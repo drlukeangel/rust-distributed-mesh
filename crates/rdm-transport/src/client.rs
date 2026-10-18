@@ -1629,3 +1629,31 @@ impl Drop for CallSpanGuard {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::framing::Birth;
+    use rdm_core::{IncarnationId, NodeId};
+
+    fn birth() -> Birth {
+        Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }
+    }
+
+    /// CONTRACT (i146 Q52): the carrier's response frame to a carried attempt answers the request it
+    /// carried: only its `invocation_id` becomes the request's, and the frame keeps its own identity, so
+    /// its ack names the carrier's frame and the carrier settles it; any frame that is not a response is
+    /// unchanged. Must NOT happen: the ack naming the carried request, or the frame's sequence moved.
+    #[test]
+    fn a_carriers_response_answers_the_carried_request_and_keeps_its_own_identity() {
+        let (origin, carrier) = (birth(), birth());
+        let attempt = DeliveryId { sender: origin.clone(), delivery_seq: 7 };
+        let request = DeliveryId { sender: origin, delivery_seq: 3 };
+        let frame = TransportHeader::Response { sender: carrier.clone(), delivery_seq: 11, forget_below: 5, invocation_id: attempt, seq: 0 };
+        let answered = answering(frame.clone(), request.clone());
+        assert_eq!(answered, TransportHeader::Response { sender: carrier.clone(), delivery_seq: 11, forget_below: 5, invocation_id: request.clone(), seq: 0 }, "it answers the carried request");
+        assert_eq!(answered.ack(), frame.ack(), "its ack names the carrier's frame");
+        let ack = TransportHeader::Ack { sender: carrier, delivery_seq: 11 };
+        assert_eq!(answering(ack.clone(), request), ack, "an ack is unchanged");
+    }
+}

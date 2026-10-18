@@ -1284,3 +1284,27 @@ trait InstrumentIn: Future + Sized {
 }
 
 impl<F: Future> InstrumentIn for F {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::{IncarnationId, NodeId};
+
+    /// CONTRACT (i146 Q52; node-rpc-envelope.md transport frames): an Owed request's carried attempt is
+    /// a frame of its own toward the carrier, written once: while it is in flight it holds the sender's
+    /// `forget_below` toward that carrier at its identity, and once its guard drops it is settled, so
+    /// `forget_below` moves past it and the carrier forgets it; the request it carried stays unacked
+    /// toward its receiver. Must NOT happen: a finished carried attempt pinning the carrier's duplicate
+    /// window, or its settling touching the carried request.
+    #[test]
+    fn a_carried_attempts_own_identity_is_settled_when_its_guard_drops() {
+        let d = Delivery::new(Birth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
+        let (receiver, carrier) = (iroh::SecretKey::generate().public(), iroh::SecretKey::generate().public());
+        let owed = d.mint(&[receiver]);
+        let attempt = d.mint_once(&[carrier]);
+        assert_eq!(d.lowest_unacked(&[carrier]), attempt.id().delivery_seq, "the attempt in flight holds forget_below toward its carrier");
+        drop(attempt);
+        assert_eq!(d.lowest_unacked(&[carrier]), d.minted() + 1, "the finished attempt is settled: forget_below toward the carrier moves past it");
+        assert_eq!(d.lowest_unacked(&[receiver]), owed.delivery_seq, "the carried request stays unacked toward its receiver");
+    }
+}
