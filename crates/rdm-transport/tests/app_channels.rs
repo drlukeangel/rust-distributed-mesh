@@ -227,3 +227,15 @@ fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
     ] {let result=compile(body);let error=String::from_utf8_lossy(&result.stderr);assert!(!result.status.success()&&error.contains(code),"{code}: {error}");}
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Holding a member's channel permits receipt, but does not declare its type for this author.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_it() {
+    let n=node(&FabricId::mint(),&MeshId::mint(),"mesh1.admin.1",vec![]).await;
+    let kind="app.member-owned";
+    let member=NodeId::mint();let birth=IncarnationId::mint();
+    n.membership.learn_app_types(member,birth,[kind.to_string()].into(),[kind.to_string()].into()).await.unwrap();
+    assert!(n.membership.held_types().contains(kind));assert!(!n.membership.app_types().contains(kind));
+    let channel=n.membership.join_channel(kind).await.expect("a learned type has a receiver");
+    assert!(matches!(channel.publish(event(1,vec![1])).await,Err(ChannelError::UndeclaredType{r#type})if r#type==kind),"holding a member's channel does not let this birth author its events");
+}
