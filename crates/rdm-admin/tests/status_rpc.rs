@@ -328,7 +328,7 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
 }
 
 /// CONTRACT (#2805): after the exact birth's server drains, its status door stays admitted while
-/// every other call is refused as Draining: a probe answers the current state. A node command
+/// every other call is refused `ConnectionsDeleting`: a probe answers the current state. A node command
 /// classifies as exactly one CommandAdmission arm and a refusal is never admitted: Refused (a
 /// stale incarnation, `ApplyNodeState` as a drain), NotSent (cut before the send), Indeterminate
 /// (the reply lost). The completion wait of an admitted command that never completes is the retire

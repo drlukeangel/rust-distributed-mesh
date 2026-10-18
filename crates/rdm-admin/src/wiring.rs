@@ -70,6 +70,25 @@ pub trait DeclarationSeam: Send + Sync {
     async fn before_declaration(&self, node: &str, state: rdm_core::status::NodeState);
 }
 
+/// Asked by the reconcile loop before each of its passes (the drift check, `reconcile_drift`, and the
+/// fabric-primary's pick-up of active Builds): a testkit cut holds the drift pass there, so a birth a
+/// failed Build left surplus is not removed until the release (i146 Q39). The loop awaits a hold outside
+/// every lock and before the pass's turn of the admin's stop gate, inside the pass's
+/// `rdm.node_admin.build.update.via-drift-held` span, which names what held it and lasts as long as the
+/// hold. The product passes none, so every pass runs at once.
+pub trait DriftSeam: Send + Sync {
+    /// `Some` when something holds the reconcile pass of `node` (its `path.name`), `None` when nothing does.
+    fn before_drift_pass(&self, node: &str) -> Option<DriftHold>;
+}
+
+/// A held reconcile pass: what holds it, and the wait that ends at its release.
+pub struct DriftHold {
+    /// What holds the pass, named on its span.
+    pub by: String,
+    /// Ends when the pass may run.
+    pub released: Pin<Box<dyn Future<Output = ()> + Send>>,
+}
+
 /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
 /// the gate of its [`Hydration`](crate::app_hydration::Hydration) into each
 /// (`ServerBuilder::serve_gated`) so none answers before its hook returned `Ok`.
@@ -168,6 +187,8 @@ pub struct Wiring {
     pub declaration_seam: Option<Arc<dyn DeclarationSeam>>,
     /// Asked before a command's stopped frame is recorded by its owner.
     pub command_frame_seam: Option<Arc<dyn CommandFrameSeam>>,
+    /// Asked by the reconcile loop before each drift pass.
+    pub drift_seam: Option<Arc<dyn DriftSeam>>,
     /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the

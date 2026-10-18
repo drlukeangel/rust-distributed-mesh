@@ -3,7 +3,7 @@
 //! Location and identity only. It answers where an exact node is now
 //! (`Found`), that it departed (`Gone`) or that this process does not know it
 //! (`Unknown`); it owns no topology, Build, election, lifecycle or death
-//! policy. A `Draining` or `Leaving` birth still resolves `Found`, and
+//! policy. A `ConnectionsDeleting` or `Leaving` birth still resolves `Found`, and
 //! silence, a failed dial or a partition never makes a node `Gone`.
 //!
 //! `Gone` comes only from a departure the process was told of: the exact

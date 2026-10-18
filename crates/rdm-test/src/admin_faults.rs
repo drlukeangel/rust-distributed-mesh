@@ -152,6 +152,14 @@ pub enum CutSpec {
         /// The runtimes' pids.
         pids: Vec<u32>,
     },
+    /// The reconcile loop's pass on this admin (the drift check and the pick-up of active Builds,
+    /// `rdm_admin::wiring::DriftSeam`) is about to run: held before the pass's turn and outside every
+    /// lock, until the release, so a birth a failed Build left surplus is not removed meanwhile (i146
+    /// Q39). `node` narrows the cut to one admin.
+    DriftPass {
+        /// The admin's `path.name`.
+        #[serde(default)] node: Option<String>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -267,6 +275,11 @@ pub enum Probe {
         /// The runtime's pid, when the handle names one.
         pid: Option<u32>,
     },
+    /// A reconcile pass about to run.
+    DriftPass {
+        /// The admin whose pass it is.
+        node: String,
+    },
 }
 
 impl CutSpec {
@@ -290,6 +303,7 @@ impl CutSpec {
             (CutSpec::Declaration { node, state }, Probe::Declaration { node: n, state: s }) => node_is(node, n) && state.as_deref().is_none_or(|w| w == s),
             (CutSpec::RoundAction { node, round }, Probe::RoundAction { node: n, round: r }) => node_is(node, n) && round.as_deref().is_none_or(|w| w == *r),
             (CutSpec::ProviderUnproven { pids }, Probe::ProviderInspect { pid }) => pid.is_some_and(|p| pids.contains(&p)),
+            (CutSpec::DriftPass { node }, Probe::DriftPass { node: n }) => node_is(node, n),
             _ => false,
         }
     }
@@ -314,6 +328,7 @@ impl Probe {
             Probe::Declaration { node, state } => Hit::Declaration { node: node.clone(), state: state.clone() },
             Probe::RoundAction { node, round } => Hit::RoundAction { node: node.clone(), round: round.to_string() },
             Probe::ProviderInspect { pid } => Hit::ProviderInspect { pid: *pid },
+            Probe::DriftPass { node } => Hit::DriftPass { node: node.clone() },
         }
     }
 }
@@ -411,25 +426,34 @@ impl AdminFaults {
     /// matching call parks until the release (a second writer of the same thing cannot slip past a
     /// cut the first one is parked at).
     pub async fn hold(&self, probe: Probe) {
-        let parked = {
-            let mut cuts = self.cuts.lock().unwrap();
-            cuts.iter_mut().find(|(_, c)| !c.released && c.spec.matches(&probe)).map(|(id, c)| {
-                if c.parked > 0 {
-                    c.seen_while_held += 1;
-                }
-                c.hit.get_or_insert_with(|| probe.hit());
-                c.parked += 1;
-                c.held = true;
-                c.held_since.get_or_insert_with(Instant::now);
-                (id.clone(), c.release.subscribe())
-            })
-        };
-        let Some((id, mut release)) = parked else { return };
+        if let Some((id, release)) = self.hold_at_cut(&probe) {
+            self.wait_release(&id, &probe, release).await;
+        }
+    }
+
+    /// Holds the call at the first armed cut that matches it: the cut's id and its release, `None`
+    /// when no cut matches.
+    fn hold_at_cut(&self, probe: &Probe) -> Option<(String, tokio::sync::watch::Receiver<bool>)> {
+        let mut cuts = self.cuts.lock().unwrap();
+        cuts.iter_mut().find(|(_, c)| !c.released && c.spec.matches(probe)).map(|(id, c)| {
+            if c.parked > 0 {
+                c.seen_while_held += 1;
+            }
+            c.hit.get_or_insert_with(|| probe.hit());
+            c.parked += 1;
+            c.held = true;
+            c.held_since.get_or_insert_with(Instant::now);
+            (id.clone(), c.release.subscribe())
+        })
+    }
+
+    /// Waits for the release of the cut `id` that holds the call, then counts the call released.
+    async fn wait_release(&self, id: &str, probe: &Probe, mut release: tokio::sync::watch::Receiver<bool>) {
         let span = tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail());
         span.in_scope(|| tracing::info!("cut holds"));
         let _ = release.wait_for(|released| *released).instrument(span).await;
         let mut cuts = self.cuts.lock().unwrap();
-        if let Some(c) = cuts.get_mut(&id) {
+        if let Some(c) = cuts.get_mut(id) {
             c.parked -= 1;
             if c.parked == 0 {
                 c.held = false;
@@ -724,9 +748,21 @@ impl rdm_admin::fabric_rounds::RoundActions for FaultedRoundActions {
     }
 }
 
-/// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`); the
-/// drain phases belong to a transition into `Draining`, which no admin path runs.
+/// The phases of `Node: Pending -> ReadyForTraffic` the admin runs (`bring_into_traffic`).
 pub(crate) const NODE_READY_PHASES: [HookPhase; 3] = [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition];
+
+/// The reconcile loop's drift seam: an armed [`CutSpec::DriftPass`] holds the admin's pass before it
+/// runs, until the release, and the loop names the cut that holds it.
+struct FaultedDrift(Arc<AdminFaults>);
+
+impl rdm_admin::wiring::DriftSeam for FaultedDrift {
+    fn before_drift_pass(&self, node: &str) -> Option<rdm_admin::wiring::DriftHold> {
+        let probe = Probe::DriftPass { node: node.to_string() };
+        let (id, release) = self.0.hold_at_cut(&probe)?;
+        let faults = self.0.clone();
+        Some(rdm_admin::wiring::DriftHold { by: format!("the testkit cut {id}"), released: Box::pin(async move { faults.wait_release(&id, &probe, release).await }) })
+    }
+}
 
 struct FaultedCommandFrame(Arc<AdminFaults>);
 
@@ -748,6 +784,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
         read_seam: Some(Arc::new(FaultedRead(faults.clone()))),
         declaration_seam: Some(Arc::new(FaultedDeclaration(faults.clone()))),
         command_frame_seam: Some(Arc::new(FaultedCommandFrame(faults.clone()))),
+        drift_seam: Some(Arc::new(FaultedDrift(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),
         fabric_storage: None,
         provider: Some(Box::new(move |inner| Arc::new(FaultedProvider { inner, faults: f_provider }))),

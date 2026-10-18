@@ -2073,9 +2073,9 @@ mod tests {
     /// at this admin's path can be the retired birth's, live and seated, and this admin's own row is
     /// absent. The authority finds itself by the node id it was born with: it decides nothing from
     /// the retired birth's seat and refuses naming the true reason, "a view holding this admin"; a
-    /// drain-node naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
+    /// node command naming its node id goes on to the subject's own door (`NodeSelf::serve`, which
     /// checks the exact birth itself), here not yet filled. What must NOT happen: a member's
-    /// declaration `Applied` on the retired birth's mesh-primary seat, or a drain-node naming this
+    /// declaration `Applied` on the retired birth's mesh-primary seat, or a node command naming this
     /// admin refused as "not the subject node itself".
     #[tokio::test]
     async fn an_authority_whose_view_holds_its_retired_birth_at_its_path_answers_as_itself() {
@@ -2117,7 +2117,7 @@ mod tests {
 
     /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who sent a frame or call: a Node RPC
     /// handler is addressed by target node id + op"): a call naming this admin from an endpoint its view holds no birth for is decided
-    /// for the subject it names, as one from an admin it holds is. A drain-node naming this admin's
+    /// for the subject it names, as one from an admin it holds is. A node command naming this admin's
     /// exact birth reaches the subject's own door (`NodeSelf::serve`, here not yet filled, so
     /// `NotReady` by name), and a probe naming it is answered by the subject. The direction refusals
     /// stay: a command naming another birth of this admin is `RejectedStaleIncarnation`. What must

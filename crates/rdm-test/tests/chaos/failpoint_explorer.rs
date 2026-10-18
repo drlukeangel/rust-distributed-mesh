@@ -489,11 +489,6 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
             "why": "the Day-0 adoption steps are synchronous closures that write runtime-adoption.json with std::fs::write and call no trait object; they run inside start() before any decorator is consulted. A stall needs fault code in the product."
         },
         {
-            "cuts": ["hook:before_drain", "hook:after_drain"],
-            "where": "crates/rafka-node-admin-core/src/lifecycle.rs:354 (drain phases run only when a transition enters Draining); the only Transition the admin builds is crates/rafka-node-admin-core/src/admin.rs:923-929 (Node Pending -> ReadyForTraffic)",
-            "why": "no admin path runs a transition into Draining, so no hook of the drain phases can be reached; building one would be a new transition, not a stall."
-        },
-        {
             "cuts": ["day-0 first Build acceptance at boot"],
             "where": "crates/rafka-node-admin-core/src/admin.rs:1660-1661",
             "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rafka-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."

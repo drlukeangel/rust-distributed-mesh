@@ -465,7 +465,7 @@ fn the_hook_is_handed_the_accepting_authority_of_its_exact_birth() {
 /// CONTRACT: the launcher's `WaitForNodeReady` observer (`rig::LiveMesh::ready`) answers ready for a
 /// birth only once that birth's own digest says ReadyForTraffic, as the node-admin's own observer
 /// does. A node whose hook is blocked is Pending and still answers Ping (it is on the mesh and
-/// serves status, drain-node and stop-node while Pending): the observer names its Pending. What
+/// serves status and its node commands while Pending): the observer names its Pending. What
 /// must NOT happen: a Ping a Pending node answers standing in for ready, which lets a create return
 /// while the birth is still Pending.
 #[test]

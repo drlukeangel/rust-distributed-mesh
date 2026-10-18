@@ -9,7 +9,7 @@
 //! The rules, one function ([`resolve_with`]):
 //! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
 //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not proven gone,
-//!   whatever its status: a `Draining`, `Leaving` or `Restarting` holder keeps the seat until its
+//!   whatever its status: a `ConnectionsDeleting`, `Leaving` or `Restarting` holder keeps the seat until its
 //!   explicit yield (a new holder record, PrimaryUpdated) is held (R-EL1). Silent (`PendingReconnect`),
 //!   an observer-inferred `Dead` and an unheard route are NOT proof: the holder keeps the seat.
 //! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
@@ -796,11 +796,11 @@ mod tests {
     }
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md sections 5-6): a seat moves only by an
-    /// explicit yield or a proven loss, never by the holder's status. A holder that is Draining (a
+    /// explicit yield or a proven loss, never by the holder's status. A holder that is ConnectionsDeleting (a
     /// FabricShutdown this observer has not installed yet), Leaving or Restarting keeps both its
     /// seats against a lower Ready NodeId of its own mesh. Must NOT happen: the observer reading the
     /// status as a yield and seating the lower id (gate 144a45bd: mesh2.admin.2 seated itself over
-    /// the Draining mesh2.admin.1 95 ms after that holder installed the shutdown).
+    /// the ConnectionsDeleting mesh2.admin.1 95 ms after that holder installed the shutdown).
     #[test]
     fn a_connections_deleting_leaving_or_restarting_holder_keeps_both_seats() {
         let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
@@ -883,7 +883,7 @@ mod tests {
         let mut nodes = vec![born("mesh1.admin.1", "900000000000", "a1", Ready), born("mesh1.rpc.1", "100000000000", "r1", Ready), born("mesh1.rpc.2", "500000000000", "r2", Ready)];
         resolve_with(&mut nodes, &inc);
         assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "the recorded living holder keeps the rpc seat");
-        // Its status never yields it (R-EL1): a Draining, Leaving or Restarting holder keeps it.
+        // Its status never yields it (R-EL1): a ConnectionsDeleting, Leaving or Restarting holder keeps it.
         for status in [ConnectionsDeleting, Leaving, Restarting, PendingReconnect] {
             nodes[2].status = status;
             resolve_with(&mut nodes, &inc);

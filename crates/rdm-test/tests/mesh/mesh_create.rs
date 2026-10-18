@@ -82,6 +82,11 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
+    // mesh2 is created on a fabric past its first state-commit, so its rows are written to the store
+    // (node-identity-and-state.md §2.7: "the scratchpad before state-commit, the store after"), where
+    // mesh2's own primary finds the row the fabric-primary's claim wrote. A Build completes on its own
+    // receipts, not on the fabric's state climb (build.md §10), so the cell waits for it here.
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     // {mesh1} -> {mesh1, mesh2}
     let create = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();

@@ -360,7 +360,7 @@ The typed result of a Status call.
 | 14.0 | `kind` | `MalformedKind` → [`MalformedKind`](#t-rdm_core-outcome-MalformedKind) |  |  | How the frame was malformed. |
 | 15 | **`Unauthorized`** |  |  | `name() = "unauthorized"` | The caller is not allowed this call. |
 | 15.0 | `reason` | `String` |  |  | Why the call is refused. |
-| 16 | **`RejectedUnmatchedCompletion`** |  |  | `name() = "rejected-unmatched-completion"` | A completion call (`node-drained`) names no open command of the receiver: the first field |
+| 16 | **`RejectedUnmatchedCompletion`** |  |  | `name() = "rejected-unmatched-completion"` | A completion call (`node.connections.deleted`) names no open command of the receiver: the first field |
 | 16.0 | `field` | `String` |  |  | The field that differs: `build_id`, `attempt`, `operation`, or `command` when the |
 | 16.1 | `expected` | `String` |  |  | What the receiver holds for it. |
 | 16.2 | `reported` | `String` |  |  | What the completion reported. |
@@ -2114,7 +2114,7 @@ A fabric-seat takeover held because the store could not commit it (fabric-node-l
 
 ### `Hit`
 
-`crates/rdm-test/src/fault_door.rs` · enum · 15 variants · rdm-test
+`crates/rdm-test/src/fault_door.rs` · enum · 16 variants · rdm-test
 
 The call a cut held first, as the decorator offered it.
 
@@ -2171,6 +2171,8 @@ The call a cut held first, as the decorator offered it.
 | 13.1 | `round` | `String` |  | The round, as its command names it. |
 | 14 | **`ProviderInspect`** |  |  | A provider `inspect` answered `Unknown` while the cut is armed. |
 | 14.0 | `pid` | `Option<u32>` |  | The runtime's pid, when the handle names one. |
+| 15 | **`DriftPass`** |  |  | A reconcile pass the drift seam held. |
+| 15.0 | `node` | `String` |  | The admin whose pass it is. |
 
 <a id="t-rdm_core-ids-IncarnationId"></a>
 

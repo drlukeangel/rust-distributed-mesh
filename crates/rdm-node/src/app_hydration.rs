@@ -128,7 +128,7 @@ pub struct HydrateCtx {
     /// The membership/gossip handle: the app subscribes its kind topics before it takes its
     /// snapshot, so what changes during the pull arrives by gossip.
     pub membership: Membership,
-    /// Cancelled when the birth is retired (drain-node, stop-node, its process stopping): the hook
+    /// Cancelled when the birth is retired (stop-node, its process stopping): the hook
     /// and any pull it has in flight end.
     pub cancel: CancelToken,
     /// Rafka-time: the process's one instance, adopted by the join that was accepted.

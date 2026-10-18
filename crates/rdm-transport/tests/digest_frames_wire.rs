@@ -34,7 +34,7 @@ const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
     00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00";
 
 /// CONTRACT (gossip.md §3.1 frame catalog): a heartbeat (`Digest`, variant 0) is the digest's wire
-/// shape with the liveness `node_state` at position 2 and no status: a Draining digest and a
+/// shape with the liveness `node_state` at position 2 and no status: a ConnectionsDeleting digest and a
 /// ready-for-traffic one encode alike. A member projection entry, in `Members` (variant 1) and
 /// `MembersDelta` (variant 2), is the digest's wire shape then its status (`ReadyForTraffic` = 1), and
 /// decodes to that status. What must NOT happen: a status on the heartbeat, a projection entry without

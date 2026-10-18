@@ -280,3 +280,51 @@ async fn a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resu
     println!("resumed restart: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }
+
+/// CONTRACT (node-primary-update.md steps 4-6; node-restart.md): a mesh's primary node-admin restarted
+/// through `node.restart` first moves its mesh seat to the mesh's other admin (its write cut-off, the
+/// seat row, the successor installed) and runs on as a member. Restarting that admin moves the seat
+/// back: the row names the first admin the successor, which installs itself as its mesh's row writer
+/// from that revision, so the cut-off its own earlier transfer left on its mesh's rows is lifted
+/// (`via-writes-restored`, naming the row's operation) before it answers, and it writes the second
+/// admin's stop rows. Both restarts complete, each admin the same birth, ready for traffic. Must NOT
+/// happen: a row refused under the first admin's earlier cut-off ("this store's writes are cut off"),
+/// or the second restart's stop not admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows() {
+    let test = "a_mesh_primary_restarted_and_given_its_seat_back_writes_its_mesh_rows";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
+    estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 1)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let before = estate.node_values().await;
+    let admin = |primary: bool| before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && (n["is_primary"] == true) == primary).cloned().unwrap_or_else(|| panic!("mesh2 holds an admin with is_primary={primary}: {before:#?}"));
+    let (first, second) = (admin(true), admin(false));
+    let name = |n: &Value| n["name"].as_str().unwrap_or_default().to_string();
+    let nodes = estate.nodes_obj().await;
+    let mut operations = Vec::new();
+    for target in [&first, &second] {
+        let path: PathName = name(target).parse().unwrap();
+        let mut stream = nodes.restart(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {path}: {e}"));
+        Estate::complete(&mut stream).await;
+        operations.push(format!("node.restart:{path}"));
+        let after = estate.until_node(&name(target), &format!("{path} ready again after its restart"), Duration::from_secs(60), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
+        }).await;
+        assert_eq!((&after["node_id"], &after["incarnation_id"]), (&target["node_id"], &target["incarnation_id"]), "{path} is the same birth after its restart: {after}");
+    }
+    let holder = estate.node_values().await.into_iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2 holds a primary");
+    assert_eq!(holder["node_id"], first["node_id"], "the second restart moved mesh2's seat back to {}", name(&first));
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let cut: Vec<&Value> = spans.iter().filter(|sp| sp["attributes"].as_object().is_some_and(|a| a.values().any(|v| v.as_str().is_some_and(|v| v.contains("this store's writes are cut off"))))).collect();
+    assert!(cut.is_empty(), "no row is refused under an earlier cut-off: {cut:#?}");
+    let restored: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-writes-restored").into_iter().filter(|sp| attr(sp, "reason").contains(&operations[1]) && attr(sp, "reason").starts_with(&name(&first))).collect();
+    assert_eq!(restored.len(), 1, "{} restores its mesh seat's writes once, when the second restart's row installs it: {restored:#?}", name(&first));
+    assert_eq!(attr(restored[0], "mesh_seat"), "true", "{:?}", restored[0]);
+    let trace = restored[0]["trace_id"].as_str().unwrap_or_default().to_string();
+    println!("seat given back: http://192.168.68.99:16687/trace/{trace}");
+    estate.record_trace_url(&trace);
+}

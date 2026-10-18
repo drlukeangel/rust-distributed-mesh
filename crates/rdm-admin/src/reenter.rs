@@ -321,7 +321,7 @@ mod tests {
 
     /// CONTRACT (node-admin-lifecycle.md §4.2: "The new primary sends one bounded Ping, once, to
     /// every node IN ITS OWN MESH"): the entry pings every birth of the own-mesh map, whatever the
-    /// status its source held. A member in a lifecycle transition (Pending, Draining, Leaving) is a
+    /// status its source held. A member in a lifecycle transition (Pending, ConnectionsDeleting, Leaving) is a
     /// node of the mesh: in a leaving mesh every member is, and an entry that pings only the
     /// ReadyForTraffic ones reads no local topology and sweeps none of them.
     #[test]
@@ -339,7 +339,7 @@ mod tests {
     /// CONTRACT (node-admin-lifecycle.md §4.1 step 5: "Read GetTopology from a LOCAL node of the
     /// recovering admin's own mesh"; node-rpc-envelope.md: "A draining node refuses new non-status
     /// calls"): the local node is tried settled births first, then births in transition, each in
-    /// path order, so a Draining node ahead of a ReadyForTraffic one in path order is never the one
+    /// path order, so a ConnectionsDeleting node ahead of a ReadyForTraffic one in path order is never the one
     /// the current topology is read from while the ready one answers.
     #[test]
     fn the_local_node_is_tried_settled_births_first() {

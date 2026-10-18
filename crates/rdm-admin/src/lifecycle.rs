@@ -5,11 +5,11 @@
 //!
 //! ```text
 //! transition(scope, from, to)
-//!   -> BeforeEligibility hooks          (BeforeDrain when entering Draining)
+//!   -> BeforeEligibility hooks
 //!   -> evaluate desired/observed eligibility
 //!   -> AfterEligibilityBeforeCommit hooks
 //!   -> commit                           (only when every required hook is satisfied)
-//!   -> AfterTransition hooks            (AfterDrain when entering Draining)
+//!   -> AfterTransition hooks
 //! ```
 //!
 //! Hooks are registered before the registry seals. Each run appends a receipt
@@ -45,8 +45,6 @@ pub enum LifecycleState {
     Pending,
     /// Ready: it takes traffic.
     ReadyForTraffic,
-    /// Draining: it takes no new work.
-    Draining,
     /// Leaving: it has announced its departure.
     Leaving,
     /// Dead: it is gone.
@@ -72,14 +70,10 @@ pub struct TransitionKey {
 pub enum HookPhase {
     /// Before the transition's eligibility is evaluated.
     BeforeEligibility,
-    /// Before eligibility, when the transition enters `Draining`.
-    BeforeDrain,
     /// After eligibility holds and before the commit.
     AfterEligibilityBeforeCommit,
     /// After the commit.
     AfterTransition,
-    /// After the commit, when the transition entered `Draining`.
-    AfterDrain,
 }
 
 impl HookPhase {
@@ -87,10 +81,8 @@ impl HookPhase {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BeforeEligibility => "before_eligibility",
-            Self::BeforeDrain => "before_drain",
             Self::AfterEligibilityBeforeCommit => "after_eligibility_before_commit",
             Self::AfterTransition => "after_transition",
-            Self::AfterDrain => "after_drain",
         }
     }
 }
@@ -223,11 +215,6 @@ pub enum RegistryError {
     DuplicateHook(String),
     /// A hook allows zero attempts.
     ZeroAttempts(String),
-    /// A drain cut on a transition that does not enter `Draining`.
-    DrainPhaseOffDrain {
-        /// The hook.
-        hook_id: String,
-    },
 }
 
 impl fmt::Display for RegistryError {
@@ -235,7 +222,6 @@ impl fmt::Display for RegistryError {
         match self {
             Self::DuplicateHook(h) => write!(f, "hook `{h}` registered twice"),
             Self::ZeroAttempts(h) => write!(f, "hook `{h}` allows zero attempts"),
-            Self::DrainPhaseOffDrain { hook_id } => write!(f, "hook `{hook_id}`: drain phases only attach to a transition into Draining"),
         }
     }
 }
@@ -268,9 +254,6 @@ impl HookRegistry {
             }
             if s.max_attempts == 0 {
                 errors.push(RegistryError::ZeroAttempts(s.hook_id.clone()));
-            }
-            if matches!(s.phase, HookPhase::BeforeDrain | HookPhase::AfterDrain) && s.transition.to != LifecycleState::Draining {
-                errors.push(RegistryError::DrainPhaseOffDrain { hook_id: s.hook_id.clone() });
             }
         }
         if errors.is_empty() {
@@ -429,12 +412,8 @@ impl LifecycleTransitionPipeline {
         // guard stays entered on the worker thread while the task is parked, and the next span any
         // task creates there takes the closed span as its parent.
         async move {
-            let draining = t.key.to == LifecycleState::Draining;
-            let pre = if draining { [HookPhase::BeforeEligibility, HookPhase::BeforeDrain].as_slice() } else { &[HookPhase::BeforeEligibility] };
-            for &phase in pre {
-                if let Err((hook_id, reason)) = self.run_phase(&t, phase).await {
-                    return TransitionResult::HookFailed { hook_id, phase, reason };
-                }
+            if let Err((hook_id, reason)) = self.run_phase(&t, HookPhase::BeforeEligibility).await {
+                return TransitionResult::HookFailed { hook_id, phase: HookPhase::BeforeEligibility, reason };
             }
             if let Err(reason) = eligible() {
                 return TransitionResult::NotEligible { reason };
@@ -443,11 +422,8 @@ impl LifecycleTransitionPipeline {
                 return TransitionResult::HookFailed { hook_id, phase: HookPhase::AfterEligibilityBeforeCommit, reason };
             }
             commit();
-            let post = if draining { [HookPhase::AfterTransition, HookPhase::AfterDrain].as_slice() } else { &[HookPhase::AfterTransition] };
-            for &phase in post {
-                // The state is committed; a failing post hook leaves a Failed receipt to retry, not a lie about state.
-                let _ = self.run_phase(&t, phase).await;
-            }
+            // The state is committed; a failing post hook leaves a Failed receipt to retry, not a lie about state.
+            let _ = self.run_phase(&t, HookPhase::AfterTransition).await;
             TransitionResult::Committed
         }
         .instrument(span)
@@ -461,7 +437,6 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     const READY: TransitionKey = TransitionKey { scope: LifecycleScope::Fabric, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
-    const DRAIN: TransitionKey = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::ReadyForTraffic, to: LifecycleState::Draining };
 
     /// Records its name into a shared call log; fails while `fail_left > 0`.
     struct Probe {
@@ -546,12 +521,10 @@ mod tests {
     async fn hook_order_is_deterministic_by_phase_then_registration() {
         let log = Arc::new(Mutex::new(vec![]));
         let hooks = HookRegistry::new()
-            .register(spec("after-b", DRAIN, HookPhase::AfterDrain, false), probe("after-drain", &log, 0))
-            .register(spec("post", DRAIN, HookPhase::AfterTransition, false), probe("after-transition", &log, 0))
-            .register(spec("commit-2", DRAIN, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre-commit-2", &log, 0))
-            .register(spec("commit-1", DRAIN, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre-commit-1", &log, 0))
-            .register(spec("drain", DRAIN, HookPhase::BeforeDrain, true), probe("before-drain", &log, 0))
-            .register(spec("elig", DRAIN, HookPhase::BeforeEligibility, true), probe("before-eligibility", &log, 0))
+            .register(spec("post", READY, HookPhase::AfterTransition, false), probe("after-transition", &log, 0))
+            .register(spec("commit-2", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre-commit-2", &log, 0))
+            .register(spec("commit-1", READY, HookPhase::AfterEligibilityBeforeCommit, true), probe("pre-commit-1", &log, 0))
+            .register(spec("elig", READY, HookPhase::BeforeEligibility, true), probe("before-eligibility", &log, 0))
             .seal()
             .unwrap();
         let shape = ShapeFacts { desired_meshes: 1 };
@@ -563,7 +536,7 @@ mod tests {
             let l = log.clone();
             let r = pipeline
                 .transition(
-                    Transition { transition_id: format!("t{i}"), target: "mesh1.rpc.1".into(), key: DRAIN, shape: &shape },
+                    Transition { transition_id: format!("t{i}"), target: "mesh1.rpc.1".into(), key: READY, shape: &shape },
                     || Ok(()),
                     || l.lock().unwrap().push("COMMIT"),
                 )
@@ -573,7 +546,7 @@ mod tests {
         }
         assert_eq!(
             order_at_commit[0],
-            vec!["before-eligibility", "before-drain", "pre-commit-2", "pre-commit-1", "COMMIT", "after-transition", "after-drain"]
+            vec!["before-eligibility", "pre-commit-2", "pre-commit-1", "COMMIT", "after-transition"]
         );
         assert_eq!(order_at_commit[0], order_at_commit[1]);
     }
@@ -648,7 +621,6 @@ mod tests {
             .register(spec("a", READY, HookPhase::BeforeEligibility, true), probe("a", &log, 0))
             .register(spec("a", READY, HookPhase::AfterTransition, true), probe("a", &log, 0))
             .register(zero, probe("z", &log, 0))
-            .register(spec("d", READY, HookPhase::BeforeDrain, true), probe("d", &log, 0))
             .seal()
             .err()
             .unwrap();
@@ -657,7 +629,6 @@ mod tests {
             vec![
                 RegistryError::DuplicateHook("a".into()),
                 RegistryError::ZeroAttempts("z".into()),
-                RegistryError::DrainPhaseOffDrain { hook_id: "d".into() },
             ]
         );
     }

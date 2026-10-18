@@ -1856,6 +1856,38 @@ pub struct FileJournal {
     /// publish, holding the derivation each publication runs. An async lock, so a writer waiting on
     /// another's insert or derivation yields its worker; readers never take it.
     writer: tokio::sync::Mutex<Derived>,
+    /// The turn holding `writer` and since when: what a turn that waits names as its holder.
+    turn_of: Mutex<Option<(&'static str, std::time::Instant)>>,
+    /// The time the holding turn spent in the lane store's own calls (its reads, appends, seals and
+    /// the seals it owes), in nanoseconds: what its span names apart from its wait.
+    turn_lane_ns: std::sync::atomic::AtomicU64,
+}
+
+/// One writer's turn of a [`FileJournal`], on its own span
+/// (`rdm.node_admin.build.update.via-journal-turn`): `waited_ms`, how long it waited for the writer,
+/// and `held_by`, the turn holding it when the wait began; then `held_ms`, how long it held the
+/// writer, and `lane_ms`, how much of that was the lane store's own calls. A turn that waited on
+/// another is told apart from one that waited on the store root.
+struct Turn<'a> {
+    guard: tokio::sync::MutexGuard<'a, Derived>,
+    journal: &'a FileJournal,
+    span: tracing::Span,
+    began: std::time::Instant,
+}
+
+impl std::ops::Deref for Turn<'_> {
+    type Target = Derived;
+    fn deref(&self) -> &Derived {
+        &self.guard
+    }
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let lane_ns = self.journal.turn_lane_ns.swap(0, std::sync::atomic::Ordering::Relaxed);
+        *self.journal.turn_of.lock().unwrap() = None;
+        self.span.record("held_ms", self.began.elapsed().as_millis() as u64).record("lane_ms", lane_ns / 1_000_000);
+    }
 }
 
 impl std::fmt::Debug for FileJournal {
@@ -1888,7 +1920,30 @@ impl FileJournal {
             claim_keys: Mutex::new(std::collections::HashMap::new()),
             log: Mutex::new(FactLog::default()),
             writer: tokio::sync::Mutex::new(Derived::default()),
+            turn_of: Mutex::new(None),
+            turn_lane_ns: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// The writer's turn for `op`, spanned ([`Turn`]).
+    async fn turn(&self, op: &'static str) -> Turn<'_> {
+        use tracing::Instrument;
+        let held_by = (*self.turn_of.lock().unwrap()).map(|(holder, since)| format!("{holder} ({} ms in)", since.elapsed().as_millis())).unwrap_or_default();
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-journal-turn", op, held_by = %held_by, waited_ms = tracing::field::Empty, held_ms = tracing::field::Empty, lane_ms = tracing::field::Empty, "otel.kind" = "internal");
+        let asked = std::time::Instant::now();
+        let guard = self.writer.lock().instrument(span.clone()).await;
+        span.record("waited_ms", asked.elapsed().as_millis() as u64);
+        *self.turn_of.lock().unwrap() = Some((op, std::time::Instant::now()));
+        self.turn_lane_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+        Turn { guard, journal: self, span, began: std::time::Instant::now() }
+    }
+
+    /// `call`, one of the lane store's own, its time counted to the holding turn ([`Turn`]).
+    async fn lane<T>(&self, call: impl std::future::Future<Output = T>) -> T {
+        let at = std::time::Instant::now();
+        let out = call.await;
+        self.turn_lane_ns.fetch_add(at.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        out
     }
 
     /// Set how this journal reads whether this birth holds the fabric and mesh seats (set once at boot):
@@ -2004,7 +2059,7 @@ impl FileJournal {
     /// Read every lane this admin reads, from where it last read each, under the writer's turn `w`.
     async fn sync(&self, w: &Derived) -> Result<(), BuildStateError> {
         for lane in self.read_lanes().await? {
-            let read = self.lanes.read_new(&lane).await.map_err(lane_io)?;
+            let read = self.lane(self.lanes.read_new(&lane)).await.map_err(lane_io)?;
             self.take_read(w, read);
         }
         Ok(())
@@ -2022,10 +2077,10 @@ impl FileJournal {
     /// seal closes yet (the seal its mover owes, completed by this fold), so nothing of this birth's
     /// `revision` lands before them.
     async fn ready_lane(&self, w: &Derived, lane: &crate::build_lanes::LaneId, revision: u64) -> Result<(), BuildStateError> {
-        let read = self.lanes.read_new(lane).await.map_err(lane_io)?;
+        let read = self.lane(self.lanes.read_new(lane)).await.map_err(lane_io)?;
         self.take_read(w, read);
         let Some(seals) = self.seals.get() else { return Ok(()) };
-        for seal in seals(lane.clone(), revision).await.map_err(BuildStateError::Io)? {
+        for seal in self.lane(seals(lane.clone(), revision)).await.map_err(BuildStateError::Io)? {
             if self.lanes.seal_of(lane, seal.revision).is_none() {
                 self.seal(w, lane, &seal, revision).await?;
             }
@@ -2035,7 +2090,7 @@ impl FileJournal {
 
     /// Write `seal` on `lane` (or meet the one standing), spanned, taking the facts it read past.
     async fn seal(&self, w: &Derived, lane: &crate::build_lanes::LaneId, seal: &crate::build_lanes::LaneSeal, writes_under: u64) -> Result<(), BuildStateError> {
-        let sealed = self.lanes.seal(lane, seal).await.map_err(lane_io)?;
+        let sealed = self.lane(self.lanes.seal(lane, seal)).await.map_err(lane_io)?;
         tracing::info_span!("rdm.node_admin.build.update.via-lane-sealed", lane = %lane.name(), revision = seal.revision, at = %sealed.at, sealed_by = sealed.seal.sealed_by, by = %format!("{}:{}:{}", sealed.seal.by.mesh, sealed.seal.by.node_id, sealed.seal.by.incarnation.as_str()), passed = sealed.passed.len(), writes_under)
             .in_scope(|| tracing::info!("a revision a committed seat move moved is sealed: nothing of it commits past the seal"));
         self.take_read(w, sealed.passed);
@@ -2050,7 +2105,7 @@ impl FileJournal {
         let lane = self.lane_of(&fact);
         let revision = self.revision_of(&lane, &fact)?;
         self.ready_lane(w, &lane, revision).await?;
-        match self.lanes.append(&lane, revision, &fact).await.map_err(lane_io)? {
+        match self.lane(self.lanes.append(&lane, revision, &fact)).await.map_err(lane_io)? {
             crate::build_lanes::Appended::At(key) => {
                 self.note_key(&key, &fact);
                 if is_new(&snapshot(&self.log), &fact) {
@@ -2060,7 +2115,7 @@ impl FileJournal {
             }
             crate::build_lanes::Appended::Sealed { at, seal } => Err(stale(at.to_string(), Some(revision), format!("revision {revision} is sealed by seat move {} ({}:{}:{})", seal.sealed_by, seal.by.mesh, seal.by.node_id, seal.by.incarnation.as_str()))),
             crate::build_lanes::Appended::Taken(at) => {
-                let read = self.lanes.read_new(&lane).await.map_err(lane_io)?;
+                let read = self.lane(self.lanes.read_new(&lane)).await.map_err(lane_io)?;
                 self.take_read(w, read);
                 Err(BuildStateError::LaneTaken { at: at.to_string() })
             }
@@ -2089,7 +2144,7 @@ impl FileJournal {
     async fn row_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
         let Some(key) = held.lane_key.as_deref() else { return Ok(false) };
         let key: crate::build_lanes::LaneKey = key.parse().map_err(BuildStateError::Io)?;
-        Ok(match self.lanes.entry(&key).await.map_err(lane_io)? {
+        Ok(match self.lane(self.lanes.entry(&key)).await.map_err(lane_io)? {
             None => true,
             Some(crate::build_lanes::Entry::Fact(BuildFact::Claim(c))) => c.build_id == held.build_id && c.mesh == held.lane && c.attempt == held.attempt,
             Some(_) => false,
@@ -2156,7 +2211,7 @@ fn stale(at: String, revision: Option<u64>, detail: String) -> BuildStateError {
 #[async_trait]
 impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("publish_accepted").await;
         loop {
             self.sync(&w).await?;
             if accepted_conflict(&snapshot(&self.log), accepted)? {
@@ -2170,7 +2225,7 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("open_attempt").await;
         loop {
             self.sync(&w).await?;
             let free = {
@@ -2211,7 +2266,7 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("claim_attempt").await;
         loop {
             self.sync(&w).await?;
             {
@@ -2234,7 +2289,7 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &crate::mesh_claims::MeshClaims, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<InFlightClaim, BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("claim_in_flight").await;
         loop {
             self.sync(&w).await?;
             if !known(&snapshot(&self.log), &claim.build_id) {
@@ -2250,7 +2305,7 @@ impl BuildStateAdapter for FileJournal {
             let standing = holder.as_ref().and_then(|_| self.claim_keys.lock().unwrap().get(&(claim.build_id.clone(), claim.mesh.clone(), claim.attempt)).cloned());
             let key = match standing {
                 Some(k) => k,
-                None => self.lanes.next_key(&lane, revision).await.map_err(lane_io)?,
+                None => self.lane(self.lanes.next_key(&lane, revision)).await.map_err(lane_io)?,
             };
             let named = crate::mesh_claims::InFlight { lane_key: Some(key.to_string()), ..row.clone() };
             if let crate::mesh_claims::Taken::Held(other) = self.take_in_flight(claims, mesh, &named).await? {
@@ -2287,14 +2342,14 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("seal_moved").await;
         for s in &moved.row.seats {
             let lane = match &s.seat {
                 rdm_core::seat::transfer::Seat::FabricPrimary => crate::build_lanes::LaneId::Fabric,
                 rdm_core::seat::transfer::Seat::MeshPrimary { mesh } => crate::build_lanes::LaneId::Mesh(mesh.clone()),
                 rdm_core::seat::transfer::Seat::Cohort { .. } => continue,
             };
-            let read = self.lanes.read_new(&lane).await.map_err(lane_io)?;
+            let read = self.lane(self.lanes.read_new(&lane)).await.map_err(lane_io)?;
             self.take_read(&w, read);
             self.seal(&w, &lane, &crate::build_lanes::LaneSeal { revision: s.from_revision, sealed_by: moved.t, by: by.clone() }, s.revision).await?;
         }
@@ -2302,7 +2357,7 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("adopt_claim").await;
         self.sync(&w).await?;
         let fact = BuildFact::Claim(claim.clone());
         if is_new(&snapshot(&self.log), &fact) {
@@ -2312,12 +2367,12 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("append_step_receipt").await;
         self.append_once(&w, BuildFact::Step(receipt.clone())).await
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("append_attempt_receipt").await;
         self.append_once(&w, BuildFact::Attempt(receipt.clone())).await
     }
 
@@ -2347,7 +2402,7 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
-        let w = self.writer.lock().await;
+        let w = self.turn("forget").await;
         self.append_once(&w, BuildFact::Forget { build_id: build_id.clone() }).await
     }
 }
@@ -3558,6 +3613,38 @@ mod tests {
         assert_eq!(lane_files(&dir).len(), 4, "nothing written past the seal");
         let replay = open_at(&dir).await.unwrap().facts().await.unwrap();
         assert_eq!(replay.iter().map(|f| match f { BuildFact::Accepted(_) => "accepted", BuildFact::Opened(_) => "opened", BuildFact::Claim(_) => "claim", _ => "other" }).collect::<Vec<_>>(), vec!["accepted", "opened", "claim"], "{replay:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (the Build journal wait, i143 e12.s89; i144 e6): each writer's turn of the journal is on
+    /// its own span. A turn that waits for another names how long it waited (`waited_ms`) and the turn
+    /// holding the writer when its wait began (`held_by`); every turn names how long it held the writer
+    /// (`held_ms`) and how much of that was the lane store's own calls (`lane_ms`). Must NOT happen: a
+    /// wait on the writer no span names, or a holder unnamed.
+    #[tokio::test]
+    async fn a_journal_turn_that_waits_names_its_wait_and_the_turn_holding_the_writer() {
+        let dir = tmp();
+        let journal = Arc::new(open_at(&dir).await.unwrap());
+        let capture = crate::span_capture::Capture::new("journal-turn-wait");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let first = journal.turn("publish_accepted").await;
+        let waiter = {
+            let journal = journal.clone();
+            tokio::spawn(async move {
+                let _turn = journal.turn("append_step_receipt").await;
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        drop(first);
+        waiter.await.unwrap();
+        let turns = capture.named("rdm.node_admin.build.update.via-journal-turn");
+        let of = |op: &str| turns.iter().find(|t| t.attributes.get("op").map(String::as_str) == Some(op)).unwrap_or_else(|| panic!("no turn of {op}: {turns:?}")).attributes.clone();
+        let (holder, waiter) = (of("publish_accepted"), of("append_step_receipt"));
+        let ms = |a: &std::collections::BTreeMap<String, String>, k: &str| a.get(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| panic!("{k} unrecorded: {a:?}"));
+        assert!(ms(&waiter, "waited_ms") >= 100, "the waiting turn names its wait: {waiter:?}");
+        assert!(waiter.get("held_by").is_some_and(|h| h.starts_with("publish_accepted (")), "the waiting turn names the turn holding the writer: {waiter:?}");
+        assert!(ms(&holder, "held_ms") >= 100 && ms(&holder, "waited_ms") < 100, "the holding turn names its hold, not a wait: {holder:?}");
+        assert_eq!(ms(&holder, "lane_ms"), 0, "a turn that made no lane call names none: {holder:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -45,6 +45,7 @@ enum CutWire {
     Declaration { node: Option<String>, state: Option<String> },
     RoundAction { node: Option<String>, round: Option<String> },
     ProviderUnproven { pids: Vec<u32> },
+    DriftPass { node: Option<String> },
 }
 
 /// A fault door call.
@@ -201,6 +202,11 @@ pub enum Hit {
         /// The runtime's pid, when the handle names one.
         pid: Option<u32>,
     },
+    /// A reconcile pass the drift seam held.
+    DriftPass {
+        /// The admin whose pass it is.
+        node: String,
+    },
 }
 
 impl Hit {
@@ -223,6 +229,7 @@ impl Hit {
             Hit::Declaration { node, state } => json!({"node": node, "state": state}),
             Hit::RoundAction { node, round } => json!({"node": node, "round": round}),
             Hit::ProviderInspect { pid } => json!({"pid": pid}),
+            Hit::DriftPass { node } => json!({"node": node}),
         }
     }
 }

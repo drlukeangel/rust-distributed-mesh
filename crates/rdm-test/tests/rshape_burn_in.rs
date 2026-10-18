@@ -146,12 +146,12 @@ fn launch_id(node: &str) -> &'static str {
 // ---- the provider, observed -----------------------------------------------------------------------
 
 /// Host processes running any of `paths` (by `/proc/<pid>/exe`).
-fn processes_running(paths: &[PathBuf]) -> Vec<(u32, PathBuf)> {
+fn processes_running(paths: &[PathBuf], root: &Path) -> Vec<(u32, PathBuf)> {
     let mut out = Vec::new();
     for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
         if let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) {
-            if paths.contains(&exe) {
+            if paths.contains(&exe) && std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|env| rdm_test::estate::environ_names_estate(&env, root)) {
                 out.push((pid, exe));
             }
         }
@@ -166,22 +166,26 @@ fn docker(args: &[&str]) -> String {
 }
 
 /// Containers (any state) with a bind mount whose source is one of `paths`.
-fn containers_mounting(paths: &[PathBuf]) -> Vec<String> {
+fn containers_mounting(paths: &[PathBuf], root: &Path) -> Vec<String> {
     let ids = docker(&["ps", "-a", "-q", "--no-trunc"]);
     let mut out = Vec::new();
     for id in ids.lines().filter(|l| !l.is_empty()) {
         let Ok(m) = std::process::Command::new("docker").args(["inspect", "--format", "{{range .Mounts}}{{.Source}}\n{{end}}", id]).output() else { continue };
-        if String::from_utf8_lossy(&m.stdout).lines().any(|s| paths.iter().any(|p| p.as_os_str() == s)) {
+        let sources = String::from_utf8_lossy(&m.stdout);
+        if sources.lines().any(|s| paths.iter().any(|p| p.as_os_str() == s)) && sources.lines().any(|s| Path::new(s).starts_with(root)) {
             out.push(id.to_string());
         }
     }
     out
 }
 
-/// What is running the bound executables right now: host processes and containers.
-fn provider_actions(paths: &[PathBuf]) -> Value {
-    let procs = processes_running(paths);
-    let containers = if provider() == "container" { containers_mounting(paths) } else { Vec::new() };
+/// What of the estate at `root` is running the bound executables right now: host processes whose
+/// environment names that root, and containers mounting a bound executable and a path under it.
+/// Another cell's estate, running beside this one in a concurrent release, is not this estate's
+/// provider state.
+fn provider_actions(paths: &[PathBuf], root: &Path) -> Value {
+    let procs = processes_running(paths, root);
+    let containers = if provider() == "container" { containers_mounting(paths, root) } else { Vec::new() };
     json!({ "processes": procs.iter().map(|(p, e)| json!({"pid": p, "exe": e})).collect::<Vec<_>>(), "containers": containers })
 }
 
@@ -319,8 +323,8 @@ async fn birth(cell: &str, shape: Shape) -> Born {
     // cell's own checkout may be a later commit (the harness), never the candidate.
     let candidate = set.candidate.sha.clone();
     let bound: Vec<PathBuf> = set.bindings.iter().map(|b| b.executable.clone()).collect();
-    let provider_before = provider_actions(&bound);
-    assert_eq!(provider_before, json!({"processes": [], "containers": []}), "empty provider state: nothing runs a bound executable before the estate is born");
+    let provider_before = provider_actions(&bound, &rdm_test::estate::estate_root(cell));
+    assert_eq!(provider_before, json!({"processes": [], "containers": []}), "empty provider state: nothing of this estate runs a bound executable before it is born");
     let dir = cell_dir(cell);
     let mut estate = Estate::bootstrap_external(owner(cell, shape), "fabric1", "mesh1", &set, &candidate, &["broker", "gateway", "compute"]).await.unwrap_or_else(|e| panic!("the consumer's binding set is refused: {e}"));
     estate.set_seed(seed());
@@ -723,15 +727,15 @@ impl Views<'_> {
 /// admin has exited; the exit is awaited here, from observed state. The wall from the stop request
 /// to the last exit is recorded: it is a measurement of the stop, not a tolerance.
 async fn provider_left(f: &Formed, stop_started: Instant, inv: &mut Invariants) -> Value {
-    provider_left_of(&f.bound, stop_started, inv).await
+    provider_left_of(&f.bound, &f.estate.root, stop_started, inv).await
 }
 
-async fn provider_left_of(bound: &[PathBuf], stop_started: Instant, inv: &mut Invariants) -> Value {
+async fn provider_left_of(bound: &[PathBuf], root: &Path, stop_started: Instant, inv: &mut Invariants) -> Value {
     let deadline = Instant::now() + Duration::from_secs(180);
     let (left, stop_returned_ms) = (|| async {
         let returned = stop_started.elapsed().as_millis() as u64;
         loop {
-            let left = provider_actions(bound);
+            let left = provider_actions(bound, root);
             if left["processes"].as_array().is_some_and(|p| p.is_empty()) || Instant::now() >= deadline {
                 return (left, returned);
             }
@@ -1254,7 +1258,7 @@ fn account(spans: &[Value], ops: &[(SyntheticOp, Call)], final_state: &BTreeMap<
                 assert_eq!(handler_runs, 1, "{}: replied stored with no handler execution in its trace", op.key);
                 assert_eq!(call.out["reply"]["executing_node"], op.target_id.as_str(), "{}: the reply names the requested node", op.key);
             }
-            // A reply that is a protocol refusal (the node answered `Draining`): the request reached a
+            // A reply that is a protocol refusal (the node answered `ConnectionsDeleting`): the request reached a
             // live protocol door and was refused, so nothing was applied. A refusal carries no provenance.
             Bucket::Reply => {
                 let refused = call.out["reply"]["result"]["refused"].as_str().unwrap_or_else(|| panic!("{}: a Reply that is neither stored nor a named refusal: {}", op.key, call.out));
@@ -4334,7 +4338,7 @@ async fn retire_run(cell: &str, shape: Shape) {
         assert_eq!(cuts.len(), 1, "{node}: the stop cut its own transport once: {stop}");
         assert!(cuts[0]["start_ns"].as_u64().unwrap() >= all[0]["end_ns"].as_u64().unwrap_or(u64::MAX), "{node}: the transport cut follows the whole All: {stop}");
         // Ordinary work that reaches a routable node whose connections are being deleted is refused by name
-        // before its body is read: a broker answers the typed `Draining` reply, a gateway refuses to carry.
+        // before its body is read: a broker answers the typed `ConnectionsDeleting` refusal, a gateway refuses to carry.
         // No handler ran for any of it and none of its values were stored (account() checked the trace
         // and the final state). None was refused before the All began.
         let t_apply = all[0]["start_ns"].as_u64().unwrap();
@@ -4420,7 +4424,7 @@ async fn retire_run(cell: &str, shape: Shape) {
 /// { All } until its in-flight work reaches zero, its Leaving, its own transport cut) and answers
 /// `stopped`, and the retire steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
 /// TerminateRuntime, NodeDeleted); ordinary work that reaches a node whose connections are being deleted
-/// is refused with the typed `Draining` reply before its body is read, with no handler run and no
+/// is refused with the typed `ConnectionsDeleting` refusal before its body is read, with no handler run and no
 /// value stored; every operation ends in exactly one typed bucket, an Indeterminate put is reported
 /// applied or not and never re-sent; the old birth's runtime is terminal in the provider, its NodeDeleted
 /// names the exact birth, and the NodeId stays out of every admin's view for a staleness window. A
@@ -4430,8 +4434,8 @@ async fn retire_run(cell: &str, shape: Shape) {
 /// happen: a retired node's work applied after its refusal, a held runtime taken for dead, an
 /// Indeterminate put re-sent, a retired NodeId back in a view.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mock_drain_and_retire_preserve_status_and_terminal_proof() {
-    retire_run("mock_drain_and_retire_preserve_status_and_terminal_proof", any_tier()).await;
+async fn mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof() {
+    retire_run("mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof", any_tier()).await;
 }
 
 
@@ -4925,7 +4929,7 @@ async fn churn_run(cell: &str, shape: Shape) {
         originate_op(&f, &mut a, &src, &n, "baseline");
     }
     let base_census = fd_census(src_pid);
-    let base_procs = provider_actions(&f.bound)["processes"].as_array().map(Vec::len).unwrap_or(0);
+    let base_procs = provider_actions(&f.bound, &f.estate.root)["processes"].as_array().map(Vec::len).unwrap_or(0);
     assert_eq!(base_procs, f.shape.total(), "one runtime per node of the shape at the baseline");
     events.push(json!({"event": "baseline", "fd_census": base_census, "provider_processes": base_procs}));
 
@@ -4987,7 +4991,7 @@ async fn churn_run(cell: &str, shape: Shape) {
     let end_census = fd_census(src_pid);
     assert!(end_census["sockets"].as_u64() <= base_census["sockets"].as_u64(), "the source holds no more sockets than at the baseline: base {base_census} end {end_census}");
     assert!(end_census["fds"].as_u64() <= base_census["fds"].as_u64(), "the source holds no more descriptors than at the baseline: base {base_census} end {end_census}");
-    let end_procs = provider_actions(&f.bound)["processes"].as_array().map(Vec::len).unwrap_or(0);
+    let end_procs = provider_actions(&f.bound, &f.estate.root)["processes"].as_array().map(Vec::len).unwrap_or(0);
     assert_eq!(end_procs, f.shape.total(), "the provider runs one runtime per node: the superseded births' runtimes are gone");
     events.push(json!({"event": "terminal", "pooled": pooled, "superseded": superseded, "fd_census_baseline": base_census, "fd_census_end": end_census, "provider_processes": end_procs}));
     inv.holds(
@@ -6739,7 +6743,7 @@ async fn soak_run(cell: &str, story: Story) {
     let stop_t = Instant::now();
     estate.stop().await;
     let mut inv = Invariants::default();
-    let left = provider_left_of(&bound, stop_t, &mut inv).await;
+    let left = provider_left_of(&bound, &estate.root, stop_t, &mut inv).await;
     let spans = estate.spans();
     let index = copy_spans(&estate, &dir);
 

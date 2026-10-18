@@ -18,7 +18,7 @@
 //!   its endpoint bound.
 //! - `StartNode`: a stopped birth rejoins as itself (same node id, incarnation, endpoint key and
 //!   port) through its [`Session`], and answers `Started`, or `StartFailed` naming the step.
-//! - `DrainNode` and `NodeDrained` are reserved Status positions (R-CR4): refused by name.
+//! - `Reserved6` and `Reserved7` are reserved Status positions (R-CR4): refused by name.
 //!
 //! Nothing here waits on an answer for correctness: a lost reply is the commander's indeterminate,
 //! never this node's retry.
@@ -804,8 +804,8 @@ impl NodeSelf {
     }
 
     /// Serve `StopNode` or `StartNode` on the exact birth it names (`node.connections.delete` reaches a
-    /// birth on the node command op 0x22, [`Self::serve_node_command`]); `DrainNode`
-    /// and `NodeDrained` are reserved positions, refused by name, whoever calls
+    /// birth on the node command op 0x22, [`Self::serve_node_command`]); `Reserved6`
+    /// and `Reserved7` are reserved positions, refused by name, whoever calls
     /// (node-rpc.md §14: nothing inside the mesh checks who is calling): `commander` is the caller as
     /// the receiver resolved it (`None` when it holds no birth for the calling endpoint), `spare` the
     /// call's own connection. A round command is served for `commander`, the primary of this birth's
@@ -1315,10 +1315,10 @@ pub async fn wait_for_own_record(dir: &std::path::Path, within: std::time::Durat
 /// design (node-rpc-envelope.md, "Node stop command pair").
 pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
 
-/// What a reserved `DrainNode` or `NodeDrained` is refused with: neither is ever a call (R-CR4).
+/// What a reserved Status position is refused with: none is ever a call (R-CR4).
 pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: Status positions 6, 7, 8 (StopNode), and 16 (StartNode) are reserved, never executed; lifecycle commands use NodeCommand 0x22";
 
-/// A reserved `DrainNode` or `NodeDrained` at `receiver` (node-rpc-envelope.md "Node stop command
+/// A reserved Status position at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
     let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation }) = req else {

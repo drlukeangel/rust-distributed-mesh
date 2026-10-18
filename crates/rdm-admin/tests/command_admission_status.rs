@@ -86,7 +86,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
 /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets its
 /// status"; gossip.md §3.1: a Digest "carries no status"): a member's `DeclareNodeState` applied by its
 /// mesh-primary's status authority sets the member's status in that primary's book, which its member
-/// projection carries: its ReadyForTraffic (node.started), then its Draining (a node-admin frozen by the
+/// projection carries: its ReadyForTraffic (node.started), then its ConnectionsDeleting (a node-admin frozen by the
 /// fabric shutdown says it so, and the shutdown's freeze barrier reads it from the projection). A
 /// refused report sets nothing. Must NOT happen: a member's reported state applied to its declared row
 /// and nowhere else, so every other node holds it as it was.
@@ -163,7 +163,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ReadyForTraffic)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "its node.started sets it ready-for-traffic");
     assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
-    assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported Draining sets it Draining");
+    assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported ConnectionsDeleting sets it ConnectionsDeleting");
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
     assert_eq!(backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::ConnectionsDeleting), "its projection carries it");
     assert!(matches!(authority.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");

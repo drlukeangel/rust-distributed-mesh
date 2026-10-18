@@ -97,7 +97,7 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
 
 /// CONTRACT (gossip.md §3.1: the topology read serves the member projection a node holds): a
 /// `Snapshot` chunk (variant 0) carries each member as a projection entry, its digest (position 2 the
-/// self-published liveness `node_state`, `Alive` = 1) then the status held for it (`Draining` = 2).
+/// self-published liveness `node_state`, `Alive` = 1) then the status held for it (`ConnectionsDeleting` = 2).
 /// What must NOT happen: an entry without its status, or a status inside the digest.
 #[test]
 fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {

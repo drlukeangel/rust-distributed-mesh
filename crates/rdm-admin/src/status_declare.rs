@@ -582,7 +582,7 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &crate::model::IncarnationId, own: rdm_core::MemberStatus, mesh_round_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
     // This admin's own birth, to its own mesh's primary, which sets its status from the report
-    // (node-status.md "Status report"): its node.started once it is ready, and its Draining once it
+    // (node-status.md "Status report"): its node.started once it is ready, and its ConnectionsDeleting once it
     // drains (a drain command, or the fabric shutdown freezing it): its heartbeat says neither.
     use rdm_core::MemberStatus as M;
     let reports: &[NodeState] = match own {
@@ -1004,7 +1004,7 @@ mod tests {
     /// state when one did": a stop's, a start's; i146 Q37, one rule for every node): a node-admin's
     /// stop owes its Leaving naming the stop, the next start's node.started names that start and
     /// nothing of the stopped cycle stays owed, and a state the admin measured itself (its birth's
-    /// node.started, a Draining) names none. Must NOT happen: an admin's start or stop declared as a
+    /// node.started, a ConnectionsDeleting) names none. Must NOT happen: an admin's start or stop declared as a
     /// state it measured, or a cycle's declaration naming the last cycle's operation.
     #[test]
     fn a_node_admins_own_declarations_name_the_operation_that_produced_them() {
@@ -1036,14 +1036,14 @@ mod tests {
         assert!(!d.requests.lock().unwrap().contains_key(&Key::OwnState(INC.into(), NodeState::Stopped)), "the stop's Stopped belongs to the stopped cycle");
 
         owed_from_view(&d, &me, &me_id, &inc, M::ConnectionsDeleting, false, None, &v, &ids);
-        assert_eq!(operation_of(&d, NodeState::ConnectionsDeleting), None, "a Draining it measured names none");
+        assert_eq!(operation_of(&d, NodeState::ConnectionsDeleting), None, "a ConnectionsDeleting it measured names none");
     }
 
     /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
     /// its status"; gossip.md §3.1: a Digest "carries no status"): a node-admin that drains (a drain
-    /// command, or the fabric shutdown freezing it) owes its Draining to its own mesh's primary beside
-    /// its node.started, so the other admins hold it Draining from that primary's projection. Must NOT
-    /// happen: a drained admin whose Draining no other admin can learn.
+    /// command, or the fabric shutdown freezing it) owes its ConnectionsDeleting to its own mesh's primary beside
+    /// its node.started, so the other admins hold it ConnectionsDeleting from that primary's projection. Must NOT
+    /// happen: an admin deleting its connections whose ConnectionsDeleting no other admin can learn.
     #[test]
     fn a_connections_deleting_node_admin_reports_it_to_its_own_mesh_primary() {
         let me: PathName = "mesh1.admin.2".parse().unwrap();
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(
             due,
             vec![(Key::OwnState(INC.into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string()), (Key::OwnState(INC.into(), NodeState::ConnectionsDeleting), "mesh1.admin.1".to_string())],
-            "its node.started and its Draining, each to mesh1's primary"
+            "its node.started and its ConnectionsDeleting, each to mesh1's primary"
         );
     }
 

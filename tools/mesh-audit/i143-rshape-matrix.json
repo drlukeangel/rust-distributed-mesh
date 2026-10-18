@@ -111,7 +111,7 @@
     "C5": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -119,7 +119,7 @@
     "C6": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -127,7 +127,7 @@
     "C7": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -135,7 +135,7 @@
     "C8": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -143,7 +143,7 @@
     "C15": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -151,7 +151,7 @@
     "C16": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -159,7 +159,7 @@
     "C17": {
       "owner_issue": 2947,
       "tests": [
-        "mock_drain_and_retire_preserve_status_and_terminal_proof",
+        "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
         "mock_node_replacement_creates_distinct_logical_identity",
         "mock_role_restarts_preserve_identity_and_birth"
       ]
@@ -451,13 +451,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_drain_and_retire_preserve_status_and_terminal_proof",
+      "test": "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
       "issue": 2947,
       "provider": "process",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-process",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_drain_and_retire_preserve_status_and_terminal_proof",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
@@ -481,13 +481,13 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
-      "test": "mock_drain_and_retire_preserve_status_and_terminal_proof",
+      "test": "mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
       "issue": 2947,
       "provider": "container",
       "tier": "canonical",
       "job": "i143-rshape-lifecycle-chaos-container",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_drain_and_retire_preserve_status_and_terminal_proof -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_drain_and_retire_preserve_status_and_terminal_proof",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_connections_delete_then_node_delete_preserve_status_and_terminal_proof",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {

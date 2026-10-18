@@ -510,6 +510,11 @@ impl FileRecords {
         *self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
     }
 
+    /// Why this store's writes are cut off, while they are.
+    pub fn cut_off_reason(&self) -> Option<String> {
+        self.0.cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// Lift the cut-off: the transfer it was set for committed nothing, so this store's writer
     /// keeps its authority over its keys, and the rows it held through a publication made while it
     /// was cut off are written now.

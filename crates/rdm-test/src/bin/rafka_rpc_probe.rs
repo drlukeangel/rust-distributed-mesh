@@ -360,7 +360,7 @@ fn main() -> std::process::ExitCode {
     // One invocation runs one async call sequence. Its I/O tasks share this runtime;
     // creating a worker for every host CPU adds no call concurrency.
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the probe's runtime");
-    let telemetry = runtime.block_on(async { rdm_transport::init_evidence_telemetry("rafka-rpc-probe") });
+    let telemetry = runtime.block_on(async { rdm_transport::init_evidence_telemetry_for_one_call("rafka-rpc-probe") });
     let code = runtime.block_on(probe());
     drop(runtime);
     drop(telemetry);
@@ -371,12 +371,17 @@ async fn probe() -> std::process::ExitCode {
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            tracing::info_span!("rdm.node_rpc.proof_store.reject.via-probe-arguments", reason = %e).in_scope(|| tracing::info!("the probe refused its arguments"));
+            tracing::info_span!("rdm.node_rpc.proof_store.reject.via-probe-arguments", reason = %e).in_scope(|| {
+                rdm_transport::report_init_steps_here();
+                tracing::info!("the probe refused its arguments")
+            });
             println!("{}", json!({"outcome": "Refused", "reason": e}));
             return std::process::ExitCode::from(2);
         }
     };
     let span = tracing::info_span!("rdm.node_rpc.proof_store.resolve.via-probe", op = %args.op, target = %args.target);
+    // The invocation is one trace: the process's init steps are reported inside its root.
+    span.in_scope(rdm_transport::report_init_steps_here);
     let out = {
         use tracing::Instrument;
         run(args).instrument(span.clone()).await

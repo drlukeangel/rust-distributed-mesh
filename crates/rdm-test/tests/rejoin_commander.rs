@@ -310,7 +310,16 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             );
             let _ = close_lost.await;
         };
-        let (_lost_answer, ()) = tokio::join!(first, rest);
+        // The cell ends with the successor's start: the lost commander's call, on its closed
+        // endpoint, is dropped then.
+        let (mut first, mut rest) = (std::pin::pin!(first), std::pin::pin!(rest));
+        let mut first_ended = false;
+        loop {
+            tokio::select! {
+                () = &mut rest => break,
+                _ = &mut first, if !first_ended => first_ended = true,
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -394,6 +403,94 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         .expect("the started node never answered ReadyForTraffic");
         let blocked = spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.node.reject.via-hydration-blocked" && f.get("cleared_by").map(String::as_str) == Some("authority-addressed")).count();
         assert_eq!(blocked, 1, "the blocker span closes naming the event that cleared it, authority-addressed");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT (node-start.md steps 2 and 4: the start joins back over the call that commanded it, then
+/// reads topology from its mesh-primary, the admin commanding it; node-topology-get.md): a stopped
+/// node's start is commanded by an admin that answers its join and is lost while the start's hook
+/// runs (its endpoint closes before the topology read). A later admin commands the start while it is
+/// under way. The start's topology read and rafka-time refresh go to the later commander, reached back
+/// over its own call, and the start is answered `Started`: the node is ReadyForTraffic, its rafka-time
+/// refresh served by the later commander. Must NOT happen: the read held on the lost commander's
+/// endpoint until its deadline and the start failed at `node.topology`.
+#[test]
+fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_later_commander() {
+    let cell = "a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_later_commander";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        use rdm_admin::app_hydration::HookOutcome;
+        use rdm_test::hydrate_probe::{Mode, TestHydrator};
+        let hydrator = TestHydrator::new(Mode::Local);
+        let Rig { primary, commander: successor, _carried, running: _running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig_hydrating("topology-successor", true, Some(hydrator.clone())).await;
+        // The lost commander: an admin of the mesh that answers the start's join, carried in the
+        // primary's projection.
+        let lost = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.3").await;
+        let _lost_carried = primary.carry_in_projection(&lost);
+        let (born, _) = primary.observer.membership.book.get(node_id.as_str()).unwrap();
+        lost.observer.resolver.insert(ResolvedNode {
+            node_id: born.node.node_id.clone(),
+            name: born.node.name.clone(),
+            endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
+            incarnation: born.node.incarnation.clone(),
+            transport_addr: born.node.transport_addr,
+        });
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };
+        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bq0z8f2kq3e1".into(), attempt, operation: "node.start:mesh1.rpc.1".into() };
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        assert!(matches!(call(&lost, &target, &stop).await, StatusReply::Stopped { .. }), "the lost commander's stop is answered Stopped");
+
+        // The lost commander's start joins it, then holds in its hook until the commander is gone.
+        let (hook_started, hook_resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
+        hydrator.set_mode(Mode::Pause { started: hook_started.clone(), resume: hook_resume.clone(), outcome: HookOutcome::Ok });
+        lost.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        // The lost commander's own call breaks with its endpoint: what it ends in is not this cell's.
+        let first_req = match start(2) {
+            StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, build_id, attempt, operation },
+            _ => unreachable!("the first command is a start"),
+        };
+        let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..CallOptions::default() }).await };
+        let rest = async {
+            tokio::time::timeout(NEVER, hook_started.notified()).await.expect("the lost commander's start never reached its hook: its join was not answered");
+            lost.observer.client.endpoint().close().await;
+            // The later commander commands the start while it is under way; its hook then passes.
+            successor.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+            let later = async { call(&successor, &target, &start(3)).await };
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                hook_resume.notify_one();
+            };
+            let (started, ()) = tokio::join!(later, release);
+            assert_eq!(started, StatusReply::Started, "the later commander's start is answered Started: its reads went to the later commander");
+            tokio::time::timeout(NEVER, async {
+                while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("the started node never answered ReadyForTraffic");
+            let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
+            let refreshed = spans_of(&spans, "rdm.mesh.node.update.via-rafka-time-refreshed", "mesh1.rpc.1");
+            assert!(
+                refreshed.iter().any(|f| f.get("outcome").map(String::as_str) == Some("adopted") && f.get("served_by").is_some_and(|s| s.contains(&successor_short))),
+                "the start's rafka-time refresh is served by the later commander {successor_short}: {refreshed:?}"
+            );
+        };
+        // The cell ends with the later commander's start: the lost commander's call, on its closed
+        // endpoint, is dropped then.
+        let (mut first, mut rest) = (std::pin::pin!(first), std::pin::pin!(rest));
+        let mut first_ended = false;
+        loop {
+            tokio::select! {
+                () = &mut rest => break,
+                _ = &mut first, if !first_ended => first_ended = true,
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

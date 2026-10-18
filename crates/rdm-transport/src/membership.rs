@@ -2014,7 +2014,7 @@ struct View {
     forwarder: Arc<Mutex<Forwarder>>,
     /// Wakes the top-up when a source of the Mesh channel desynchronizes.
     desync: Arc<tokio::sync::Notify>,
-    /// What a node-admin does with a `node-drained` or `node-left` it hears on its mesh channel
+    /// What a node-admin does with a `node-connections-deleted` or `node-left` it hears on its mesh channel
     /// from the node itself: carry it onto the backbone when it holds the command (set by the admin).
     completion_carrier: Arc<Mutex<Option<CompletionCarrier>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
@@ -3104,7 +3104,7 @@ impl Membership {
         d
     }
 
-    /// Install what this node-admin does with a node's own `node-drained` / `node-left` heard on
+    /// Install what this node-admin does with a node's own `node-connections-deleted` / `node-left` heard on
     /// the mesh channel.
     pub fn set_completion_carrier(&self, carrier: CompletionCarrier) {
         *self.view.completion_carrier.lock().unwrap() = Some(carrier);
@@ -3936,7 +3936,7 @@ impl Backbone {
         }
     }
 
-    /// Carry a node's own completion frame (`node-drained`, `node-left`) onto the backbone,
+    /// Carry a node's own completion frame (`node-connections-deleted`, `node-left`) onto the backbone,
     /// preserving `op` and naming this admin in `forwarded_by`.
     pub async fn carry_completion(&self, frame: Frame) {
         let me_name = self.current_name();
@@ -4970,7 +4970,7 @@ impl DigestBook {
         true
     }
 
-    /// The mesh-primary admitted the command `op` (`drain-node`, `stop-node`) on the birth of its own
+    /// The mesh-primary admitted the command `op` (`node.connections.delete`, `stop-node`) on the birth of its own
     /// mesh `op` names, and sets that birth `status` (states.md "Who sets each state": node
     /// connections-deleting at "the admission of `node.connections.delete { scope: All }`; inside
     /// node.stop the visible status is stopping", node stopping at "the stop call's admission"): held
@@ -6044,7 +6044,7 @@ mod tests {
     /// CONTRACT (states.md "Routing"): application routing selects a birth only while it is
     /// ready-for-traffic and its mesh is ready-for-traffic; anything else is a routing stop, and a
     /// later ready-for-traffic for the same exact birth restores selection. A `Pending` birth of a
-    /// ready mesh is not selected; its own ready-for-traffic selects it; its `Draining` stops it; the
+    /// ready mesh is not selected; its own ready-for-traffic selects it; its `ConnectionsDeleting` stops it; the
     /// same birth saying ready-for-traffic again selects it again. Must NOT happen: a `Pending`
     /// birth selected, or a stop that outlives the birth's later ready-for-traffic.
     #[test]
@@ -6057,7 +6057,7 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 110)));
         assert!(book.routable(id.as_str()), "the birth and its mesh are ready-for-traffic");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120)));
-        assert!(!book.routable(id.as_str()), "a Draining birth is a routing stop");
+        assert!(!book.routable(id.as_str()), "a ConnectionsDeleting birth is a routing stop");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 130)), "the same birth's later ready-for-traffic is taken");
         assert!(book.routable(id.as_str()), "a routing stop is no barrier: the later ready-for-traffic restores selection");
     }
@@ -6195,7 +6195,7 @@ mod tests {
     /// of the same `(node.id, incarnation)` arrives; a digest with a different incarnation does not
     /// complete it"; node-status-heartbeat-connections.md §A.1: a heartbeat "never says started"): at
     /// the mesh-primary of mesh1, a restart holds its birth, not routable, through every heartbeat of
-    /// it: its ready, Draining, Leaving, Pending and ready again heartbeats are taken as liveness and
+    /// it: its ready, ConnectionsDeleting, Leaving, Pending and ready again heartbeats are taken as liveness and
     /// close nothing. node.started of another birth of the node closes nothing; node.started of the
     /// same birth closes it, and the birth is routable again. In a second book, a digest of a later
     /// incarnation of the node does not complete the restart of the earlier one. Must NOT happen: a
@@ -6292,7 +6292,7 @@ mod tests {
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
     /// for the exact birth drops it from the book and keeps it unroutable; no digest of the stopped
     /// birth brings it back, whatever its status or sequence and whichever door it arrives through
-    /// (a late `Draining`, an older heartbeat, a pending one with a higher sequence). Only the
+    /// (a late `ConnectionsDeleting`, an older heartbeat, a pending one with a higher sequence). Only the
     /// mesh-primary's `node.joined` ends the stop: the birth is held again `Pending`, as the same
     /// birth, and its later heartbeat moves on from there; a departure ends the stop for good.
     #[test]
@@ -6595,7 +6595,7 @@ mod tests {
     /// mesh-primary" from "the node's node.started report"): at the mesh-primary of mesh1, a member's
     /// heartbeats move no status, whatever the member's own word. Its ready-for-traffic heartbeat
     /// before node.started leaves it Pending, unroutable, and its projection entry Pending;
-    /// node.started sets it ready-for-traffic; a later heartbeat in which it says Draining, held from
+    /// node.started sets it ready-for-traffic; a later heartbeat in which it says ConnectionsDeleting, held from
     /// memory or decoded from the wire, leaves it ready-for-traffic. Must NOT happen: the primary
     /// setting a member's status from its heartbeat.
     #[test]
@@ -6613,7 +6613,7 @@ mod tests {
         node_started(&book, &id, &inc);
         assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "node.started sets it ready-for-traffic");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)), "the heartbeat is taken as liveness");
-        assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "a heartbeat saying Draining moves nothing");
+        assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "a heartbeat saying ConnectionsDeleting moves nothing");
         let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
         assert!(book.record(heard), "the heartbeat from the wire is taken as liveness");
         assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "nor does one from the wire");
@@ -7209,7 +7209,7 @@ mod tests {
     /// own Leaving … carries that same Leaving digest in its final `Members` aggregate over the
     /// node-admin backbone channel"): a peer mesh learns that a leaving mesh's members are leaving
     /// only from each member's own state. A node that joins a peer mesh after those members said
-    /// Draining and Leaving installs their own states from its mesh primary's topology read (op
+    /// ConnectionsDeleting and Leaving installs their own states from its mesh primary's topology read (op
     /// `0x1E`) and forwarder replay, and selects none of them for new work; a member still saying
     /// ReadyForTraffic is routed by that state alone, with no mesh-level hold.
     #[test]
@@ -7239,7 +7239,7 @@ mod tests {
             d
         };
         // mesh2's primary holds mesh1 and forwards it into mesh2; mesh-leaving is heard; then the
-        // leaving primary's next aggregate carries its members' own Draining and Leaving.
+        // leaving primary's next aggregate carries its members' own ConnectionsDeleting and Leaving.
         let primary = test_view("mesh2", "mesh2.admin.1");
         primary.primary.store(true, Ordering::Relaxed);
         // mesh1's primary published mesh1 ready-for-traffic before the leave; the joiner learns it
@@ -7294,7 +7294,7 @@ mod tests {
             (Some(MemberStatus::ReadyForTraffic), Some(MemberStatus::ConnectionsDeleting), Some(MemberStatus::Leaving)),
             "the joiner installed each member at its address with the member's own state"
         );
-        assert!(!joiner.book.routable(draining.node.node_id.as_str()), "a member saying Draining takes no new work");
+        assert!(!joiner.book.routable(draining.node.node_id.as_str()), "a member saying ConnectionsDeleting takes no new work");
         assert!(!joiner.book.routable(leaving.node.node_id.as_str()), "a member saying Leaving takes no new work");
         assert!(joiner.book.routable(admin.node.node_id.as_str()), "a member still saying ReadyForTraffic, of a mesh the joiner holds ready-for-traffic, is selected");
     }
@@ -7439,7 +7439,7 @@ mod tests {
         assert_eq!(book.mesh_primary("mesh1").ok().map(|d| d.node.name.to_string()), Some("mesh1.admin.1".into()));
     }
 
-    /// CONTRACT (R-EL1): a holder that is Draining keeps its seat, so the member still tops up from it.
+    /// CONTRACT (R-EL1): a holder that is ConnectionsDeleting keeps its seat, so the member still tops up from it.
     #[test]
     fn a_connections_deleting_seat_holder_is_still_the_members_mesh_primary() {
         let book = DigestBook::default();

@@ -100,7 +100,7 @@ pub struct MeshDigest {
     /// The mesh this member belongs to, by id; a node-admin's own digest carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_id: Option<MeshId>,
-    /// While `Draining`: the work still in flight at this birth; the drain's own evidence.
+    /// While `ConnectionsDeleting`: the work still in flight at this birth; the connections delete's own evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<u64>,
     /// The node's config: the application's own key/values, written to the node's row by its mesh's primary. Opaque to RDM: nothing reads it to decide. Capped (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`).

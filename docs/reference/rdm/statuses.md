@@ -128,7 +128,7 @@ Where one birth's hook stands.
 
 ### `LifecycleState`
 
-`crates/rdm-admin/src/lifecycle.rs` · enum · 6 variants · rdm-admin
+`crates/rdm-admin/src/lifecycle.rs` · enum · 5 variants · rdm-admin
 
 A node, mesh or fabric status a transition moves between.
 
@@ -138,10 +138,9 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|---|
 | 0 | **`Pending`** | `pending` |  |  | Created and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** | `ready-for-traffic` |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** | `draining` |  |  | Draining: it takes no new work. |
-| 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure. |
-| 4 | **`Dead`** | `dead` |  |  | Dead: it is gone. |
-| 5 | **`Retired`** | `retired` |  |  | Retired: it has been taken out of service. |
+| 2 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure. |
+| 3 | **`Dead`** | `dead` |  |  | Dead: it is gone. |
+| 4 | **`Retired`** | `retired` |  |  | Retired: it has been taken out of service. |
 
 <a id="t-rdm_core-digest-MemberStatus"></a>
 
