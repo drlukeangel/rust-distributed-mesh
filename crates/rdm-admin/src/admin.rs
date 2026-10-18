@@ -3012,7 +3012,7 @@ mod tests {
     #[test]
     fn a_mesh_without_a_ready_admin_cedes_the_fabric_and_stays_pending() {
         use MemberStatus::*;
-        let t = view(&[digest("mesh1.admin.1", Draining), digest("mesh1.rpc.1", ReadyForTraffic), digest("mesh2.admin.1", ReadyForTraffic)]);
+        let t = view(&[digest("mesh1.admin.1", ConnectionsDeleting), digest("mesh1.rpc.1", ReadyForTraffic), digest("mesh2.admin.1", ReadyForTraffic)]);
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh2.admin.1"));
         assert_eq!(t.meshes.iter().find(|m| m.name == "mesh1").unwrap().status, ScopeStatus::Pending);
         let empty = view(&[]);
@@ -3233,7 +3233,7 @@ mod tests {
         facts.seen();
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_none(), "nothing moved: the rebuild waits for its poll");
         let mut draining = rpc.clone();
-        draining.status = MemberStatus::Draining;
+        draining.status = MemberStatus::ConnectionsDeleting;
         draining.digest_seq += 1;
         assert!(book.record(draining));
         assert!(view_rebuild_due(&mut facts, hour, &gate).now_or_never().is_some(), "a birth saying Draining makes the rebuild due at once");

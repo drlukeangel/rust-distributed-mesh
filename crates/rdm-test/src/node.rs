@@ -8,7 +8,7 @@ use rdm_transport::ServerBuilder;
 use rdm_core::launch::Launch;
 
 pub use rdm_node::node::{
-    core_protocols, drain_deadline_from_env, leave_linger_from_env, listen_for_stop,
+    core_protocols, listen_for_stop,
     load_or_mint_key, stop_commanded, stop_requested, wait_for_signal, NodeSeams, RafkaTimeKnobFn,
     RunningNode,
 };

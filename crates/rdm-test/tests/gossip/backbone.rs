@@ -337,7 +337,8 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     let (p1, p2) = (s(&primary(&nodes, "mesh1")["name"]), s(&primary(&nodes, "mesh2")["name"]));
     let cut_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let Some(cut) = Partition::start(&udp_ports(&nodes, &[p1.clone()]), &udp_ports(&nodes, &[p2.clone()])).map_err(netfault).ok() else {
-        return estate.stop().await;
+        estate.stop().await;
+        return;
     };
     tokio::time::sleep(Duration::from_secs(6)).await;
     drop(cut);

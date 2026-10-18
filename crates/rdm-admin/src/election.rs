@@ -655,7 +655,7 @@ mod tests {
         nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::NodeAdmin).map(|n| n.name.to_string())
     }
 
-    use NodeStatus::{Draining, Leaving, Pending, PendingReconnect, ReadyForTraffic as Ready, Restarting};
+    use NodeStatus::{ConnectionsDeleting, Leaving, Pending, PendingReconnect, ReadyForTraffic as Ready, Restarting};
 
     /// CONTRACT (R-A2 cell 1): an admin with a lower NodeId appearing in another mesh leaves the
     /// fabric primary where it is. Must NOT happen: the lower id taking the seat.
@@ -802,9 +802,9 @@ mod tests {
     /// status as a yield and seating the lower id (gate 144a45bd: mesh2.admin.2 seated itself over
     /// the Draining mesh2.admin.1 95 ms after that holder installed the shutdown).
     #[test]
-    fn a_draining_leaving_or_restarting_holder_keeps_both_seats() {
+    fn a_connections_deleting_leaving_or_restarting_holder_keeps_both_seats() {
         let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1)]);
-        for status in [Draining, Leaving, Restarting] {
+        for status in [ConnectionsDeleting, Leaving, Restarting] {
             let mut nodes = vec![born("mesh1.admin.1", "500000000000", "a1", status), born("mesh1.admin.2", "200000000000", "a2", Ready), born("mesh2.admin.1", "100000000000", "b1", Ready)];
             resolve_with(&mut nodes, &inc);
             assert_eq!(mesh_primary(&nodes, "mesh1").as_deref(), Some("mesh1.admin.1"), "{status:?}");
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn the_handover_successor_is_the_lowest_ready_primary_outside_the_departing_mesh() {
         let inc = incumbency(holder("mesh1", "500000000000", "a1", 1), &[holder("mesh1", "500000000000", "a1", 1), holder("mesh2", "900000000000", "b1", 1), holder("mesh3", "700000000000", "c1", 1)]);
-        for status in [Ready, Draining] {
+        for status in [Ready, ConnectionsDeleting] {
             let nodes = vec![
                 born("mesh1.admin.1", "500000000000", "a1", status),
                 born("mesh1.admin.2", "100000000000", "a2", Ready),
@@ -884,7 +884,7 @@ mod tests {
         resolve_with(&mut nodes, &inc);
         assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "the recorded living holder keeps the rpc seat");
         // Its status never yields it (R-EL1): a Draining, Leaving or Restarting holder keeps it.
-        for status in [Draining, Leaving, Restarting, PendingReconnect] {
+        for status in [ConnectionsDeleting, Leaving, Restarting, PendingReconnect] {
             nodes[2].status = status;
             resolve_with(&mut nodes, &inc);
             assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "{status:?}");

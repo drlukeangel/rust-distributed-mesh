@@ -251,7 +251,7 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
     // Backward is refused naming the current state; a skip forward applies.
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Pending)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
     assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Leaving)).await), StatusReply::Applied);
-    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::Draining)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
+    assert_eq!(reply(&call(&rig, rpc1, &declare(rpc1, NodeState::ConnectionsDeleting)).await), StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving });
     assert_eq!(rig.authority.declared.lock().unwrap().node(&rpc1.node.node_id, rpc1.node.incarnation_id.as_ref().unwrap()), Some(NodeState::Leaving));
 }
 
@@ -418,11 +418,11 @@ async fn a_reply_released_after_indeterminate_is_dropped_and_the_retry_is_alread
 /// declaration sent by another node is decided for the subject it names (here already applied),
 /// and a subject the view does not hold is refused by name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_draining_authority_accepts_upward_status_and_decides_it_for_the_subject() {
+async fn a_connections_deleting_authority_accepts_upward_status_and_decides_it_for_the_subject() {
     let (rig, b) = rig().await;
     rig.server.begin_connections_delete();
     for subject in [&b["rpc1"], &b["admin2"]] {
-        for state in [NodeState::Draining, NodeState::Leaving] {
+        for state in [NodeState::ConnectionsDeleting, NodeState::Leaving] {
             let request = declare(subject, state);
             assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::Applied);
             assert_eq!(reply(&call(&rig, subject, &request).await), StatusReply::AlreadyApplied);
@@ -1191,12 +1191,12 @@ async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
     (b, node)
 }
 
-/// [`successor_new`], drained (Draining in the mesh-primary's view, its declared state Draining),
+/// [`successor_new`], its connections deleted (connections-deleting in the mesh-primary's view and its declared state),
 /// answering `node.connections.delete` with every connection cut and nothing held, and every other
 /// request `Applied`.
-async fn successor_drained(rig: &Rig) -> (Birth, ServedNode) {
+async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     let mut b = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
-    (b.node.status, b.node.declared) = (NodeStatus::Draining, Some("Draining".into()));
+    (b.node.status, b.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |req| match req {
         StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rdm_core::ConnectionId::mint()], not_open: vec![], held: vec![], receipt: None },
@@ -1283,10 +1283,10 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        let (succ, node) = successor_drained(&rig).await;
+        let (succ, node) = successor_connections_deleted(&rig).await;
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
-        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Draining, held_connections: vec![] });
+        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] });
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed at the new name");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
 
@@ -1318,8 +1318,8 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
     assert_eq!(spans[1].1.get("answered").map(String::as_str), Some("applied"), "{spans:?}");
     let carried = cap.spans("rdm.node_admin.node.connections.delete.via-mesh-primary");
     assert_eq!(carried.len(), 1, "{carried:?}");
-    assert_eq!((carried[0].1.get("scope").map(String::as_str), carried[0].1.get("status_at_cut").map(String::as_str), carried[0].1.get("outcome").map(String::as_str)), (Some("all"), Some("Draining"), Some("connections-deleted")), "{carried:?}");
-    eprintln!("trace {}: rdm.node_admin.node.connections.delete.via-mesh-primary scope=all status_at_cut=Draining outcome=connections-deleted", carried[0].0);
+    assert_eq!((carried[0].1.get("scope").map(String::as_str), carried[0].1.get("status_at_cut").map(String::as_str), carried[0].1.get("outcome").map(String::as_str)), (Some("all"), Some("ConnectionsDeleting"), Some("connections-deleted")), "{carried:?}");
+    eprintln!("trace {}: rdm.node_admin.node.connections.delete.via-mesh-primary scope=all status_at_cut=ConnectionsDeleting outcome=connections-deleted", carried[0].0);
     for (trace, attrs) in &spans {
         eprintln!("trace {trace}: {NAME_SPAN} outcome={:?} connections={:?} traffic={:?} to={:?} answered={:?}", attrs.get("outcome"), attrs.get("connections"), attrs.get("traffic"), attrs.get("to"), attrs.get("answered"));
     }
@@ -1339,17 +1339,17 @@ fn a_connections_deleted_node_still_holding_a_connection_is_refused_naming_it_an
         let (succ, node) = successor_new(&rig).await;
         let inc = succ.node.incarnation_id.clone().unwrap();
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == succ.node.node_id) {
-            (n.status, n.declared) = (NodeStatus::Draining, Some("Draining".into()));
+            (n.status, n.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         }
-        rig.authority.declared.lock().unwrap().connections_deleted.insert((succ.node.node_id.clone(), inc), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![held_id.clone()], status_at_cut: NodeStatus::Draining });
+        rig.authority.declared.lock().unwrap().connections_deleted.insert((succ.node.node_id.clone(), inc), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![held_id.clone()], status_at_cut: NodeStatus::ConnectionsDeleting });
         let refused = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
-        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Draining, held_connections: vec![held_id.clone()] });
+        assert_eq!(refused, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![held_id.clone()] });
         assert_eq!(rig.nodes.node_row_at(&"mesh1.rpc.3".parse().unwrap()).await.unwrap(), None, "nothing is claimed");
         assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(outcomes_and_connections(&spans), vec![("rejected-admitting-connections".to_string(), "held".to_string())], "{spans:?}");
-    eprintln!("trace {}: {NAME_SPAN} traffic=Draining connections=held held_connections={held_id} outcome=rejected-admitting-connections", spans[0].0);
+    eprintln!("trace {}: {NAME_SPAN} traffic=ConnectionsDeleting connections=held held_connections={held_id} outcome=rejected-admitting-connections", spans[0].0);
 }
 
 /// CONTRACT (proposal §2.1 Claim and move: "a held name answers `NameHeld { by: node.id }` and
@@ -1397,7 +1397,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        let (succ, node) = successor_drained(&rig).await;
+        let (succ, node) = successor_connections_deleted(&rig).await;
         assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }), "the successor's connections are deleted first");
         let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
@@ -1609,7 +1609,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
     cap.run(async {
         let (rig, b) = rig().await;
         let mut succ = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
-        (succ.node.status, succ.node.declared) = (NodeStatus::Draining, Some("Draining".into()));
+        (succ.node.status, succ.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         rig.topology.write().await.nodes.push(succ.node.clone());
         let applies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let a = applies.clone();
@@ -1859,9 +1859,9 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
         let me = &rig.admin;
         let inc = me.node.incarnation_id.clone().unwrap();
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == me.node.node_id) {
-            (n.status, n.declared) = (NodeStatus::Draining, Some("Draining".into()));
+            (n.status, n.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         }
-        rig.authority.declared.lock().unwrap().connections_deleted.insert((me.node.node_id.clone(), inc.clone()), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![], status_at_cut: NodeStatus::Draining });
+        rig.authority.declared.lock().unwrap().connections_deleted.insert((me.node.node_id.clone(), inc.clone()), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![], status_at_cut: NodeStatus::ConnectionsDeleting });
         let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
         let a = asked.clone();
         let held: PathName = me.node.name.clone();

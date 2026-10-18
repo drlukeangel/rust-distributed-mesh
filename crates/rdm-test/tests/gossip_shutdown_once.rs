@@ -111,7 +111,7 @@ async fn a_stopped_node_shuts_its_gossip_down_once_through_its_router() {
     let _sub = events.install();
     let (dir, _admin, launch) = admitted("gossip-once-stop").await;
     let running = node::start(&launch, |b, _| b).await.expect("the admitted node starts");
-    tokio::time::timeout(Duration::from_secs(10), running.stop(Duration::ZERO)).await.expect("the stop ends");
+    tokio::time::timeout(Duration::from_secs(10), running.stop()).await.expect("the stop ends");
     assert_shut_down_once(&events, "stop");
     let _ = std::fs::remove_dir_all(&dir);
 }

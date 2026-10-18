@@ -329,7 +329,7 @@ mod tests {
         let map = vec![
             birth("mesh2.rpc.1", MemberStatus::Leaving),
             birth("mesh2.rpc.2", MemberStatus::ReadyForTraffic),
-            birth("mesh2.rpc.3", MemberStatus::Draining),
+            birth("mesh2.rpc.3", MemberStatus::ConnectionsDeleting),
             birth("mesh2.rpc.4", MemberStatus::Pending),
         ];
         let pinged: Vec<String> = sweep_targets(&map).iter().map(|n| n.name.to_string()).collect();
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn the_local_node_is_tried_settled_births_first() {
         let map = vec![
-            birth("mesh2.rpc.1", MemberStatus::Draining),
+            birth("mesh2.rpc.1", MemberStatus::ConnectionsDeleting),
             birth("mesh2.rpc.2", MemberStatus::Leaving),
             birth("mesh2.rpc.3", MemberStatus::ReadyForTraffic),
             birth("mesh2.rpc.4", MemberStatus::ReadyForTraffic),

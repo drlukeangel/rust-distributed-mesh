@@ -1026,7 +1026,7 @@ impl StatusAuthority {
                         // The node reported it: this mesh-primary records and publishes the state the
                         // node entered (states.md "Who sets each state"), never before.
                         reported = true;
-                        let recorded = self.book.as_ref().is_some_and(|book| book.reported(node_id, incarnation, rdm_core::MemberStatus::Draining));
+                        let recorded = self.book.as_ref().is_some_and(|book| book.reported(node_id, incarnation, rdm_core::MemberStatus::ConnectionsDeleting));
                         let position = frames.position();
                         let span = tracing::info_span!("rdm.node_admin.node.update.via-connections-deleting", invocation_id = tracing::field::Empty, seq = tracing::field::Empty, node = %subject.name, node_id = %node_id, incarnation_id = %incarnation.as_str(), recorder = %me_name, reported_by = "node", recorded, "otel.kind" = "internal");
                         if let Some((invocation, seq)) = position {
@@ -1037,7 +1037,7 @@ impl StatusAuthority {
                     }
                     Ok(NodeCommandReply::ConnectionsDeleted { closed, not_open, held, receipt }) => {
                         tracing::Span::current().record("closed", closed.len()).record("held", held.len());
-                        let kept = ConnectionsDeletedReceipt { all, held: held.clone(), status_at_cut: if all { crate::model::NodeStatus::Draining } else { subject.status } };
+                        let kept = ConnectionsDeletedReceipt { all, held: held.clone(), status_at_cut: if all { crate::model::NodeStatus::ConnectionsDeleting } else { subject.status } };
                         self.declared.lock().unwrap().connections_deleted.insert((node_id.clone(), incarnation.clone()), kept);
                         if let Some(r) = &receipt {
                             // Established completes the closure; Deadline leaves the birth connections-deleting
@@ -1256,7 +1256,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
     match s {
         S::Pending => NodeState::Pending,
         S::ReadyForTraffic => NodeState::ReadyForTraffic,
-        S::Draining => NodeState::Draining,
+        S::ConnectionsDeleting => NodeState::ConnectionsDeleting,
         // A birth under restart is leaving; the frozen status vocabulary has no Restarting.
         S::Leaving | S::Restarting | S::PendingReconnect | S::Dead | S::Deleted => NodeState::Leaving,
     }
@@ -1896,7 +1896,7 @@ mod tests {
             let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
-        let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
+        let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
         let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
@@ -2056,7 +2056,7 @@ mod tests {
         let mut retired = node("mesh1.admin.1");
         retired.kind = NodeKind::NodeAdmin;
         retired.mesh = "mesh1".into();
-        retired.status = crate::model::NodeStatus::Draining;
+        retired.status = crate::model::NodeStatus::ConnectionsDeleting;
         retired.is_primary = true;
         retired.is_fabric_primary = true;
         let mut successor = node("mesh1.admin.1");

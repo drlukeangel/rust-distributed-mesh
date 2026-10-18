@@ -6,7 +6,7 @@ pub use rdm_core::launch::Launch;
 pub use rdm_core::{certs, dto, model, names, status, NodeKind};
 pub use rdm_transport::{NodeRpcClient, ServerBuilder};
 pub use crate::node::{
-    drain_deadline_from_env, leave_linger_from_env, listen_for_stop, stop_commanded,
+    listen_for_stop, stop_commanded,
     stop_requested, wait_for_signal, NodeSeams, RunningNode,
 };
 
@@ -31,7 +31,6 @@ pub mod wire;
 pub mod workflows;
 
 use anyhow::{anyhow, Result};
-use std::time::Duration;
 
 /// The role this process is: its kind decides its path.name segment and which product families
 /// it serves.
@@ -146,24 +145,14 @@ pub async fn run_with(
     };
     if let Some(why) = ended {
         tracing::info_span!("rdm.mesh.node.delete.via-hydration-failed", node = %launch.name, reason = %why).in_scope(|| tracing::error!("hydrate_before_ready failed; this node ends"));
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         return Err(anyhow!("{} failed hydrate_before_ready: {why}", launch.name));
-    }
-    if !crate::node::stop_commanded() {
-        let deadline = drain_deadline_from_env();
-        let drain = tracing::info_span!("rdm.mesh.node.update.via-drain", node = %launch.name, incarnation_id = %launch.incarnation, deadline_ms = deadline.as_millis() as u64, in_flight_at_deadline = tracing::field::Empty);
-        let left = {
-            use tracing::Instrument;
-            running.drain(deadline).instrument(drain.clone()).await
-        };
-        drain.record("in_flight_at_deadline", left);
-        drop(drain);
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
     if crate::node::stop_commanded() {
         running.stop_commanded().await;
     } else {
-        running.stop(leave_linger_from_env()).await;
+        running.stop().await;
     }
     Ok(())
 }

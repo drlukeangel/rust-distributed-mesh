@@ -830,11 +830,12 @@ impl Estate {
     /// container of its Fabric is sent SIGTERM at once, and each leaves as a local stop does
     /// (`rdm.mesh.node.delete.via-signal`), its evidence flushed as it exits, so read `spans()` after
     /// this. A runtime an admin launched while the others were leaving is told the same. One still
-    /// running when the bound passes (a node's leave: its Leaving linger and its transport close, plus
-    /// the grace of one stop) is named and killed, so a stop never hangs on it.
-    pub async fn stop(&mut self) {
+    /// running when the bound passes is named and killed, so a stop never hangs on it: the pids so
+    /// killed are returned, empty when every runtime ended by its own stop.
+    pub async fn stop(&mut self) -> Vec<u32> {
         let mut told = self.terminate(&[]);
         let until = Instant::now() + Duration::from_secs(30);
+        let mut killed = Vec::new();
         loop {
             for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
                 let _ = c.try_wait();
@@ -853,6 +854,7 @@ impl Estate {
                 for (_, id) in &containers {
                     let _ = docker(&["kill", id]);
                 }
+                killed = running;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -861,6 +863,7 @@ impl Estate {
             let _ = c.kill();
             let _ = c.wait();
         }
+        killed
     }
 
     /// Send SIGTERM to every process of this estate not in `told` (the admins it started and every

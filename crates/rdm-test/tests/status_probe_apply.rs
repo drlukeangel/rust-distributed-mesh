@@ -20,7 +20,7 @@ use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};
 /// with an `Established` receipt; the reserved `DrainNode` is refused by name and starts nothing;
 /// `ApplyNodeConfig` answers `Applied` and the node's own topology answer carries the config on its
 /// digest, while one naming another incarnation is `RejectedStaleIncarnation`;
-/// `ApplyNodeState(Draining)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
+/// `ApplyNodeState(ConnectionsDeleting)` is refused `RejectedInvalidNodeTransition` with the held state and moves nothing; a probe
 /// naming another incarnation is `RejectedStaleIncarnation` with the held one; a
 /// `DeclareNodeState` sent downward is refused by direction; a `NodeLeft` is refused by name
 /// `RejectedUnmatchedCompletion { field: "command" }` (node-rpc-envelope.md "Node stop command pair":
@@ -107,7 +107,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
             }
         );
         // ApplyNodeState sets no state: refused with the held state, nothing moves.
-        let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
+        let apply = StatusRequest::ApplyNodeState { node_id: node.node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ConnectionsDeleting };
         assert_eq!(call(apply).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic });
         assert!(matches!(call(probe.clone()).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }), "the refused apply moved nothing");
         // apply-node-config (ops-naming "Node data"): the birth holds the whole config and carries it in its

@@ -195,7 +195,7 @@ async fn a_forward_naming_forward_is_refused_not_forwardable_by_the_admin() {
 ///
 /// CONTRACT: Forward is not served while connections are being deleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_draining_admin_refuses_forward_by_name() {
+async fn a_connections_deleting_admin_refuses_forward_by_name() {
     let r = rig().await;
     r.admin_server.begin_connections_delete();
     let (out, _) = r.origin.call_via::<Status>(&admin_target(&r), &r.target.node_id, &probe(&r.target), &CallOptions::default()).await;

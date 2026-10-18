@@ -258,15 +258,6 @@ fn retire_superseded(endpoint: &Endpoint, observer: &str, moved: Option<Location
     ));
 }
 
-/// `RDM_LEAVE_LINGER_MS` (default 1000): how long a stopping node keeps
-/// announcing `Leaving` before it closes. Every node kind takes the same one.
-pub fn leave_linger_from_env() -> Duration {
-    Duration::from_millis(std::env::var("RDM_LEAVE_LINGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1000))
-}
-
-/// How often a leaving node repeats its `Leaving` during the linger.
-pub const LEAVE_EVERY: Duration = Duration::from_millis(200);
-
 /// How long this process's threads, summed, have spent runnable but waiting for a CPU since
 /// they started (`/proc/self/task/*/schedstat`, second field); `None` where the kernel does not
 /// expose it. Every thread is summed because the runtime's workers are what run a future and the
@@ -292,37 +283,6 @@ pub fn runqueue_wait_since_ms(since: Option<Duration>) -> u64 {
     match (since, runqueue_wait()) {
         (Some(a), Some(b)) => b.saturating_sub(a).as_millis() as u64,
         _ => 0,
-    }
-}
-
-/// Announce a departure: `say` the `Leaving` digest now and again every
-/// `every` until `linger` has passed, then return. Bounded by `linger`: a
-/// `say` that does not finish in time is abandoned. Returns how many
-/// announcements finished.
-///
-/// iroh-gossip acknowledges nothing and closing drops what is unsent, so one
-/// announcement can be lost; repeating it for the linger is the node's own
-/// shutdown, not a delivery layer (nothing is retried after the node leaves).
-pub async fn announce_leaving<F, Fut>(linger: Duration, every: Duration, mut say: F) -> u32
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    let until = tokio::time::Instant::now() + linger;
-    let mut said = 0;
-    loop {
-        let left = until.saturating_duration_since(tokio::time::Instant::now());
-        if left.is_zero() {
-            return said;
-        }
-        if tokio::time::timeout(left, say()).await.is_ok() {
-            said += 1;
-        }
-        let left = until.saturating_duration_since(tokio::time::Instant::now());
-        if left.is_zero() {
-            return said;
-        }
-        tokio::time::sleep(every.min(left)).await;
     }
 }
 
@@ -2694,10 +2654,10 @@ impl View {
     }
 
     /// A peer mesh's member whose own state this node now holds changed (or was first held saying
-    /// Draining or Leaving): what this node routes to it follows that state alone (R4).
+    /// connections-deleting or Leaving): what this node routes to it follows that state alone (R4).
     fn note_member_state(&self, d: &MeshDigest, prior: Option<rdm_core::MemberStatus>, side: Side) {
-        use rdm_core::MemberStatus::{Draining, Leaving};
-        if d.node.name.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, Draining | Leaving)) {
+        use rdm_core::MemberStatus::{ConnectionsDeleting, Leaving};
+        if d.node.name.mesh == self.mesh || prior == Some(d.status) || (prior.is_none() && !matches!(d.status, ConnectionsDeleting | Leaving)) {
             return;
         }
         tracing::info_span!(
@@ -6019,7 +5979,7 @@ mod tests {
         assert!(!book.routable(id.as_str()), "a Pending birth is a routing stop");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 110)));
         assert!(book.routable(id.as_str()), "the birth and its mesh are ready-for-traffic");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 120)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120)));
         assert!(!book.routable(id.as_str()), "a Draining birth is a routing stop");
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 130)), "the same birth's later ready-for-traffic is taken");
         assert!(book.routable(id.as_str()), "a routing stop is no barrier: the later ready-for-traffic restores selection");
@@ -6096,7 +6056,7 @@ mod tests {
         w.seen();
         assert!(!book.statuses.take(&f, &fabric), "the same change again is taken once");
         assert!(!moved_now(&mut w).await, "a repeat moves nothing");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         assert!(moved_now(&mut w).await, "a birth saying another status moves it");
     }
 
@@ -6175,7 +6135,7 @@ mod tests {
         assert!(book.restarting(r.clone()));
         assert!(!book.restarting(r.clone()), "the same event twice is applied once");
         assert!(!book.routable(id.as_str()), "a restarting birth is not routable");
-        for (status, seq) in [(MemberStatus::ReadyForTraffic, 150), (MemberStatus::Draining, 160), (MemberStatus::Leaving, 200), (MemberStatus::Pending, 300), (MemberStatus::ReadyForTraffic, 310)] {
+        for (status, seq) in [(MemberStatus::ReadyForTraffic, 150), (MemberStatus::ConnectionsDeleting, 160), (MemberStatus::Leaving, 200), (MemberStatus::Pending, 300), (MemberStatus::ReadyForTraffic, 310)] {
             assert!(book.record(digest(&id, &inc, None, status, seq)), "its {status:?} heartbeat is taken as liveness");
             assert!(book.restart_of(id.as_str(), &inc).is_some(), "its {status:?} heartbeat closes nothing");
         }
@@ -6264,7 +6224,7 @@ mod tests {
         hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         let o = op(&id, &inc, "node.stop:mesh1.rpc.1");
         assert!(book.stopped(o.clone()));
         assert!(!book.stopped(o.clone()), "the same event twice is applied once");
@@ -6272,7 +6232,7 @@ mod tests {
         assert!(!book.routable(id.as_str()));
         assert_eq!(book.in_flight(), vec![o.clone()]);
         assert!(book.departed().is_empty(), "a stop departs nothing");
-        for late in [digest(&id, &inc, None, MemberStatus::Draining, 111), digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 105), digest(&id, &inc, None, MemberStatus::Pending, 109), digest(&id, &inc, None, MemberStatus::Pending, 120)] {
+        for late in [digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 111), digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 105), digest(&id, &inc, None, MemberStatus::Pending, 109), digest(&id, &inc, None, MemberStatus::Pending, 120)] {
             assert!(!book.record(late.clone()), "{late:?}");
             assert!(!book.record_forwarded(late.clone()), "{late:?}");
             assert!(!book.record_topology(late.clone()), "{late:?}");
@@ -6336,7 +6296,7 @@ mod tests {
         assert_eq!(status(), Some(MemberStatus::Pending), "a heartbeat gives no status: none is held until the projection gives one");
         hear(&mut view.order.lock().unwrap(), &view, &members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "the projection's status");
-        assert!(view.book.record(b(MemberStatus::Draining, 2)));
+        assert!(view.book.record(b(MemberStatus::ConnectionsDeleting, 2)));
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
 
         // The event from the seated primary, carrying the version its stop changed the birth at (v2).
@@ -6462,7 +6422,7 @@ mod tests {
         assert!(view.book.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
         assert!(view.book.started(&id, &inc), "and sets it ready-for-traffic from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.admin.1".to_string()))] {
-            let late = Frame::Members { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::Draining, 6)], in_flight: vec![], departed: vec![] };
+            let late = Frame::Members { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], departed: vec![] };
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
             assert_eq!(view.book.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::ReadyForTraffic, 5)), "{side:?}: the authored status stands");
             assert_eq!(view.book.member_statuses.lock().unwrap().get(id.as_str()).map(|(_, s)| *s), Some(MemberStatus::ReadyForTraffic));
@@ -6575,9 +6535,9 @@ mod tests {
         assert_eq!(book.current(book.staleness_floor()).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), Some(MemberStatus::Pending), "its projection entry is Pending");
         node_started(&book, &id, &inc);
         assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "node.started sets it ready-for-traffic");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)), "the heartbeat is taken as liveness");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)), "the heartbeat is taken as liveness");
         assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "a heartbeat saying Draining moves nothing");
-        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, MemberStatus::Draining, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
+        let Frame::Digest { digest: heard } = Frame::decode(&Frame::Digest { digest: digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 120) }.clone().authored(&test_author(), 0, 1).encode()).unwrap().into_data() else { unreachable!() };
         assert!(book.record(heard), "the heartbeat from the wire is taken as liveness");
         assert_eq!(status(&book), Some(MemberStatus::ReadyForTraffic), "nor does one from the wire");
         assert!(book.routable(id.as_str()));
@@ -6665,7 +6625,7 @@ mod tests {
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         let restart = op(&id, &inc, "node.restart:mesh1.rpc.1");
         assert!(book.restarting(restart.clone()));
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 110)));
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
         assert!(book.started(&id, &inc), "node.started of the birth");
         assert!(book.restart_of(id.as_str(), &inc).is_none());
@@ -6695,7 +6655,7 @@ mod tests {
         assert!(book.get(id.as_str()).is_some());
         let late_joiner = DigestBook::default();
         assert!(late_joiner.stopped(op(&id, &new, "node.stop:mesh1.rpc.1")));
-        assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Draining, 90)));
+        assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::ConnectionsDeleting, 90)));
         assert!(!late_joiner.record(digest(&id, &new, None, MemberStatus::Pending, 91)), "a heartbeat ends no stop");
         assert!(late_joiner.joined(&op(&id, &new, "node.start:mesh1.rpc.1")), "node.joined ends it");
         assert_eq!(late_joiner.get(id.as_str()).map(|(d, _)| (d.status, d.digest_seq)), Some((MemberStatus::Pending, 91)), "held again from the latest heartbeat it refused");
@@ -6822,7 +6782,7 @@ mod tests {
         assert!(book.current_at(book.staleness_floor(), far).iter().any(|d| d.node.node_id == topo), "a topology member stays current");
         let before = book.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
         assert!(book.record_topology(digest(&heard, &birth, None, MemberStatus::ReadyForTraffic, 10)), "an equal forwarded copy");
-        assert!(book.record_topology(digest(&heard, &birth, None, MemberStatus::Draining, 11)), "a newer forwarded copy");
+        assert!(book.record_topology(digest(&heard, &birth, None, MemberStatus::ConnectionsDeleting, 11)), "a newer forwarded copy");
         let after = book.get_at(heard.as_str(), t0 + Duration::from_secs(10)).unwrap().1;
         assert_eq!(before, after, "a forwarded copy does not refresh when the member was heard");
         assert!(after >= Duration::from_secs(10), "the member stays as old as its last direct receipt");
@@ -6838,7 +6798,7 @@ mod tests {
     fn a_member_known_only_from_topology_never_ages_whatever_status_it_is_listed_with() {
         let book = DigestBook::default();
         let t0 = Instant::now();
-        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::ReadyForTraffic, MemberStatus::Draining, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
+        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::ReadyForTraffic, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
         for (id, status) in &listed {
             assert!(book.record_topology_at(digest(id, &IncarnationId::mint(), None, *status, 10), t0));
         }
@@ -7057,48 +7017,6 @@ mod tests {
         assert!(behind.is_empty(), "a reader saw a version whose change the book did not hold yet: {} times, first (version, held) {:?}", behind.len(), behind.first());
     }
 
-    /// The first `Leaving` is lost; one of the later announcements in the
-    /// linger still reaches the fabric.
-    #[tokio::test]
-    async fn a_lost_first_leaving_is_followed_by_one_that_arrives() {
-        let said = Arc::new(Mutex::new(0u32));
-        let heard = Arc::new(Mutex::new(0u32));
-        let (s, h) = (said.clone(), heard.clone());
-        announce_leaving(Duration::from_millis(300), Duration::from_millis(50), move || {
-            let (s, h) = (s.clone(), h.clone());
-            async move {
-                let n = {
-                    let mut s = s.lock().unwrap();
-                    *s += 1;
-                    *s
-                };
-                if n > 1 {
-                    *h.lock().unwrap() += 1;
-                }
-            }
-        })
-        .await;
-        assert!(*heard.lock().unwrap() >= 1, "only the lost first Leaving was said ({} said)", said.lock().unwrap());
-    }
-
-    /// Announcing never keeps the node past its linger, even when an
-    /// announcement never finishes.
-    #[tokio::test]
-    async fn announcing_never_outlives_the_linger() {
-        let linger = Duration::from_millis(300);
-        let start = Instant::now();
-        let n = announce_leaving(linger, Duration::from_millis(50), || std::future::pending::<()>()).await;
-        let took = start.elapsed();
-        assert!(took < linger + Duration::from_millis(150), "a stuck announcement held the node {took:?}");
-        assert_eq!(n, 0, "no announcement finished");
-
-        let start = Instant::now();
-        let n = announce_leaving(linger, Duration::from_millis(50), || async {}).await;
-        let took = start.elapsed();
-        assert!(took < linger + Duration::from_millis(150), "repeating held the node {took:?}");
-        assert!((2..=8).contains(&n), "{n} announcements in a 300 ms linger at 50 ms");
-    }
-
     /// CONTRACT (i143 export gate: a failed rejoin is bounded and never marks Dead): a channel left
     /// alone is refed on a doubling schedule that never waits more than one staleness floor and
     /// reaches it; the schedule is the refeed's only state, so no failed rejoin touches a member.
@@ -7190,7 +7108,7 @@ mod tests {
     /// `0x1E`) and forwarder replay, and selects none of them for new work; a member still saying
     /// ReadyForTraffic is routed by that state alone, with no mesh-level hold.
     #[test]
-    fn a_node_joining_after_the_leaving_meshs_members_said_draining_and_leaving_installs_their_own_states_and_routes_none_of_them() {
+    fn a_node_joining_after_the_leaving_meshs_members_said_connections_deleting_and_leaving_installs_their_own_states_and_routes_none_of_them() {
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
         let (admin, draining, leaving) = (born("mesh1", "admin.1", Some(&m1), 1), born("mesh1", "rpc.1", None, 1), born("mesh1", "rpc.2", None, 1));
@@ -7222,7 +7140,7 @@ mod tests {
         // mesh1's primary published mesh1 ready-for-traffic before the leave; the joiner learns it
         // from the replay.
         primary.take(&Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 }, &fabric, "backbone");
-        for (version, digests) in [(1, vec![admin.clone(), draining.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&draining, MemberStatus::Draining), said(&leaving, MemberStatus::Leaving)])] {
+        for (version, digests) in [(1, vec![admin.clone(), draining.clone(), leaving.clone()]), (2, vec![admin.clone(), said(&draining, MemberStatus::ConnectionsDeleting), said(&leaving, MemberStatus::Leaving)])] {
             let taken = primary.take_snapshot(&members(version, digests), &fabric, Side::Backbone, &mut primary.order.lock().unwrap());
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
             let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, v, &full, version);
@@ -7268,7 +7186,7 @@ mod tests {
         let status = |d: &MeshDigest| joiner.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
         assert_eq!(
             (status(&admin), status(&draining), status(&leaving)),
-            (Some(MemberStatus::ReadyForTraffic), Some(MemberStatus::Draining), Some(MemberStatus::Leaving)),
+            (Some(MemberStatus::ReadyForTraffic), Some(MemberStatus::ConnectionsDeleting), Some(MemberStatus::Leaving)),
             "the joiner installed each member at its address with the member's own state"
         );
         assert!(!joiner.book.routable(draining.node.node_id.as_str()), "a member saying Draining takes no new work");
@@ -7418,12 +7336,12 @@ mod tests {
 
     /// CONTRACT (R-EL1): a holder that is Draining keeps its seat, so the member still tops up from it.
     #[test]
-    fn a_draining_seat_holder_is_still_the_members_mesh_primary() {
+    fn a_connections_deleting_seat_holder_is_still_the_members_mesh_primary() {
         let book = DigestBook::default();
         let (lower, holder) = two_admins(&book, Instant::now());
         book.seats.take(Seat::MeshPrimary, &seat_of(&lower, 3));
         let mut draining = lower.clone();
-        draining.status = MemberStatus::Draining;
+        draining.status = MemberStatus::ConnectionsDeleting;
         draining.digest_seq += 1;
         draining.emitted_at_rafka_ms += 1;
         assert!(book.record(draining));

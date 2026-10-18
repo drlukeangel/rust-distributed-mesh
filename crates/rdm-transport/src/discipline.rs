@@ -166,7 +166,7 @@ mod tests {
     fn a_pending_or_leaving_authority_offers_no_sample() {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let seats = seated(Seat::MeshPrimary, MESH, &id, &inc, 1);
-        for status in [MemberStatus::Pending, MemberStatus::Draining, MemberStatus::Leaving] {
+        for status in [MemberStatus::Pending, MemberStatus::ConnectionsDeleting, MemberStatus::Leaving] {
             let d = digest("mesh1.admin.1", &id, &inc, status, 7_000);
             assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::Refused { authority: "mesh1.admin.1".into(), reason: "authority-not-ready-for-traffic" }, "{status:?}");
         }

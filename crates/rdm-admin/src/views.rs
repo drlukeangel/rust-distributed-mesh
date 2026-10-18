@@ -30,7 +30,7 @@ pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
     match s {
         S::Pending => NodeStatus::Pending,
         S::ReadyForTraffic => NodeStatus::ReadyForTraffic,
-        S::Draining => NodeStatus::Draining,
+        S::ConnectionsDeleting => NodeStatus::ConnectionsDeleting,
         S::Leaving => NodeStatus::Leaving,
         S::PendingReconnect => NodeStatus::PendingReconnect,
         S::Restarting => NodeStatus::Restarting,

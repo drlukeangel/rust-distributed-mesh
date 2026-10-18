@@ -106,6 +106,7 @@ A Forward call.
 | 0.1 | `inner_op` | `u8` |  | The inner call's op. |
 | 0.2 | `inner` | `Vec<u8>` |  | The inner call's request frame, as encoded for `inner_op`. |
 | 0.3 | `remaining_ms` | `u64` |  | The origin's remaining time budget for this call, in whole milliseconds, measured |
+| 0.4 | `owed` | `Option<OwedDelivery>` → [`OwedDelivery`](#t-rdm_core-forward-OwedDelivery) |  | An Owed request's own delivery identity, which its carried attempt keeps toward the |
 
 <a id="t-rdm_core-forward-ForwardReply"></a>
 
@@ -2245,7 +2246,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | The node has not yet declared itself ready. |
 | 1 | **`ReadyForTraffic`** |  |  | The node takes traffic. |
-| 2 | **`Draining`** |  | `rename = "connections-deleting"` | The node takes no new work. |
+| 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | The node takes no new work: its connections are being deleted. |
 | 3 | **`Leaving`** |  |  | The node has announced its departure. |
 
 <a id="t-rdm_core-build-MeshCounts"></a>
@@ -2426,7 +2427,7 @@ A node birth's lifecycle state, as declared.
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | Born and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** |  |  | Draining: it takes no new work. |
+| 2 | **`ConnectionsDeleting`** |  |  | Connections-deleting: it takes no new work. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure. |
 
 <a id="t-rdm_core-views-NodeStatus"></a>
@@ -2443,7 +2444,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|
 | 0 | **`Pending`** |  |  | Born and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** |  | `rename = "connections-deleting"` | Draining: it takes no new work while it finishes what it holds. |
+| 2 | **`ConnectionsDeleting`** |  | `rename = "connections-deleting"` | Connections-deleting: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
 | 5 | **`Restarting`** |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |
@@ -2540,6 +2541,19 @@ The durable `os-stopped` fact on a birth's status row (R-PV1; deployment-provide
 |---|---|---|---|---|
 | 0 | `since` | `u64` |  | When the first `OsStopped` verdict was observed, ms since the Unix epoch. |
 | 1 | `inspections` | `u64` |  | How many inspections have read the runtime `OsStopped` since. |
+
+<a id="t-rdm_core-forward-OwedDelivery"></a>
+
+### `OwedDelivery`
+
+`crates/rdm-core/src/forward.rs` · struct · 2 fields · rdm-core
+
+The delivery identity an Owed request keeps on every leg: each carried attempt is a Forward
+
+| # | field | type | serde | doc |
+|---|---|---|---|---|
+| 0 | `delivery_seq` | `u64` |  | The request's `delivery_seq` in its origin birth's window. |
+| 1 | `forget_below` | `u64` |  | The origin's `forget_below` toward the target. |
 
 <a id="t-rdm_core-path-PathName"></a>
 

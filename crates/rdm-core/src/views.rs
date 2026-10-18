@@ -16,9 +16,9 @@ pub enum NodeStatus {
     Pending,
     /// Ready: it takes traffic.
     ReadyForTraffic,
-    /// Draining: it takes no new work while it finishes what it holds.
+    /// Connections-deleting: it takes no new work while it finishes what it holds.
     #[serde(rename = "connections-deleting")]
-    Draining,
+    ConnectionsDeleting,
     /// Leaving: it has announced its departure and is closing.
     Leaving,
     /// Unheard past the staleness floor: held, never death, and never a reason to restart or

@@ -157,7 +157,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|---|
 | 0 | **`Pending`** | `pending` |  |  | The node has not yet declared itself ready. |
 | 1 | **`ReadyForTraffic`** | `ready-for-traffic` |  |  | The node takes traffic. |
-| 2 | **`Draining`** | `connections-deleting` |  | `rename = "connections-deleting"` | The node takes no new work. |
+| 2 | **`ConnectionsDeleting`** | `connections-deleting` |  | `rename = "connections-deleting"` | The node takes no new work: its connections are being deleted. |
 | 3 | **`Leaving`** | `leaving` |  |  | The node has announced its departure. |
 
 <a id="t-rdm_core-status-MeshState"></a>
@@ -204,7 +204,7 @@ A node birth's lifecycle state, as declared.
 |---|---|---|---|---|---|
 | 0 | **`Pending`** | `Pending` |  |  | Born and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** | `ReadyForTraffic` |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** | `Draining` |  |  | Draining: it takes no new work. |
+| 2 | **`ConnectionsDeleting`** | `ConnectionsDeleting` |  |  | Connections-deleting: it takes no new work. |
 | 3 | **`Leaving`** | `Leaving` |  |  | Leaving: it has announced its departure. |
 
 <a id="t-rdm_core-model-NodeStatus"></a>
@@ -221,7 +221,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|---|
 | 0 | **`Pending`** | `pending` |  |  | Created and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** | `ready-for-traffic` |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** | `draining` |  |  | Draining: it takes no new work. |
+| 2 | **`ConnectionsDeleting`** | `connections-deleting` |  |  | Connections-deleting: it takes no new work. |
 | 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure. |
 | 4 | **`PendingReconnect`** | `pending-reconnect` |  |  | Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks |
 | 5 | **`Restarting`** | `restarting` |  |  | Commanded silence: its mesh executor is restarting this exact birth (`NodeRestarting`, |
@@ -242,7 +242,7 @@ serde: `rename_all = "kebab-case"`
 |---|---|---|---|---|---|
 | 0 | **`Pending`** | `pending` |  |  | Born and not yet ready for traffic. |
 | 1 | **`ReadyForTraffic`** | `ready-for-traffic` |  |  | Ready: it takes traffic. |
-| 2 | **`Draining`** | `connections-deleting` |  | `rename = "connections-deleting"` | Draining: it takes no new work while it finishes what it holds. |
+| 2 | **`ConnectionsDeleting`** | `connections-deleting` |  | `rename = "connections-deleting"` | Connections-deleting: it takes no new work while it finishes what it holds. |
 | 3 | **`Leaving`** | `leaving` |  |  | Leaving: it has announced its departure and is closing. |
 | 4 | **`PendingReconnect`** | `pending-reconnect` |  |  | Unheard past the staleness floor: held, never death, and never a reason to restart or |
 | 5 | **`Restarting`** | `restarting` |  |  | Commanded silence: its mesh executor is restarting this exact birth and owns bringing it |

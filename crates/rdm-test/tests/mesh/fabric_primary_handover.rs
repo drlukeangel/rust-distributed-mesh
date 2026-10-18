@@ -348,9 +348,9 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         // R4: no mesh-level hold at a peer. A node learns mesh1's members are leaving from each
         // member's own Draining and Leaving in what it installs, and routes none of them meanwhile.
         let states: Vec<&Value> = heard(m, "via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.")).collect();
-        let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "Draining" | "Leaving")).collect();
-        assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own Draining or Leaving: {states:?}");
-        assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying Draining or Leaving is not routable at {m}: {leaving_states:?}");
+        let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "ConnectionsDeleting" | "Leaving")).collect();
+        assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own connections-deleting or Leaving: {states:?}");
+        assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying connections-deleting or Leaving is not routable at {m}: {leaving_states:?}");
         assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && sp["attributes"]["channel"] == "mesh-channel"), "a {m} ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
     }
     let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);

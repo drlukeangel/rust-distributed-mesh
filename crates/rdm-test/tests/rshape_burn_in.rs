@@ -4251,7 +4251,7 @@ fn rt_alive(rt: &Rt) -> bool {
 
 /// The typed refusal a node whose connections are being deleted gives ordinary work: a proof-store reply of
 /// `ConnectionsDeleting`, or a carrier that will not carry (`node is connections-deleting`). `None` for any other outcome.
-fn draining_refusal(out: &Value) -> Option<String> {
+fn connections_deleting_refusal(out: &Value) -> Option<String> {
     match out["outcome"].as_str() {
         Some("Reply") => out["reply"]["result"]["refused"].as_str().filter(|r| r.to_lowercase().contains("connectionsdeleting") || r.to_lowercase().contains("connections-deleting")).map(|r| format!("Reply:{r}")),
         Some("NotSent") => out["reason"].as_str().filter(|r| r.contains("connections-deleting")).map(|r| format!("NotSent:{r}")),
@@ -4343,7 +4343,7 @@ async fn retire_run(cell: &str, shape: Shape) {
             .ops
             .iter()
             .filter(|(o, _)| o.target == node || o.via.as_deref() == Some(node.as_str()))
-            .filter_map(|(o, c)| draining_refusal(&c.out).map(|why| json!({"seq": o.seq, "key": o.key, "target": o.target, "via": o.via, "started_ms": c.started_ms, "finished_ms": c.finished_ms, "refusal": why})))
+            .filter_map(|(o, c)| connections_deleting_refusal(&c.out).map(|why| json!({"seq": o.seq, "key": o.key, "target": o.target, "via": o.via, "started_ms": c.started_ms, "finished_ms": c.finished_ms, "refusal": why})))
             .collect();
         assert!(!hits.is_empty(), "{node}: no ordinary work was refused while its connections were deleted: the window held no refusal ({stop})");
         assert!(hits.iter().all(|h| h["finished_ms"].as_u64().unwrap() >= t_apply / 1_000_000), "{node}: a refusal answered before the node's All began ({t_apply}): {hits:?}");

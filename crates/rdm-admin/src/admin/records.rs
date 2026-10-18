@@ -247,7 +247,7 @@ pub(crate) fn node_status(s: MemberStatus) -> NodeStatus {
     match s {
         MemberStatus::Pending => NodeStatus::Pending,
         MemberStatus::ReadyForTraffic => NodeStatus::ReadyForTraffic,
-        MemberStatus::Draining => NodeStatus::Draining,
+        MemberStatus::ConnectionsDeleting => NodeStatus::ConnectionsDeleting,
         MemberStatus::Leaving => NodeStatus::Leaving,
     }
 }

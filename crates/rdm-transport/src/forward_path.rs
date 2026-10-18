@@ -373,7 +373,7 @@ mod tests {
     /// every version is a delta from the one before.
     fn source_at(ids: &[(NodeId, IncarnationId)], version: u64) -> Full {
         let mut d = digest(1, &ids[0].0, &ids[0].1, 1);
-        d.status = if version % 2 == 0 { MemberStatus::ReadyForTraffic } else { MemberStatus::Draining };
+        d.status = if version % 2 == 0 { MemberStatus::ReadyForTraffic } else { MemberStatus::ConnectionsDeleting };
         d.node.transport_addr = format!("127.0.0.1:{}", 42_000 + version).parse().unwrap();
         Full::new(vec![d], Vec::new(), Vec::new())
     }
@@ -656,7 +656,7 @@ mod tests {
         let big = |version: u64| {
             let mut digests: Vec<MeshDigest> = members.iter().enumerate().map(|(k, (id, b))| digest(k as u32 + 1, id, b, 1)).collect();
             if version > 10 {
-                digests[0].status = MemberStatus::Draining;
+                digests[0].status = MemberStatus::ConnectionsDeleting;
             }
             Full::new(digests, Vec::new(), Vec::new())
         };

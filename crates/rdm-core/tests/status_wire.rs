@@ -35,7 +35,7 @@ fn requests_match_the_frozen_thirty_variant_wire_schema() {
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
         (DeclareMeshState { mesh_id: mesh(), state: MeshState::Leaving }, "010c31313233343536373839616202"),
-        (ApplyNodeState { node_id: node(), incarnation: birth(), state: NodeState::Draining }, "020c3031323334353637383961620c39776370726667777674687902"),
+        (ApplyNodeState { node_id: node(), incarnation: birth(), state: NodeState::ConnectionsDeleting }, "020c3031323334353637383961620c39776370726667777674687902"),
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending }, "040c313132333435363738396162056d6573683100"),
         (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } }, "050c323132333435363738396162010d6d657368312e61646d696e2e31"),
@@ -316,7 +316,7 @@ fn golden<T: serde::Serialize>(value: T, expected: &str) {
 fn nested_enum_discriminants_and_fields_are_frozen_too() {
     for (state, expected) in [
         (NodeState::Pending, "00"), (NodeState::ReadyForTraffic, "01"),
-        (NodeState::Draining, "02"), (NodeState::Leaving, "03"),
+        (NodeState::ConnectionsDeleting, "02"), (NodeState::Leaving, "03"),
     ] { golden(state, expected); }
     for (state, expected) in [
         (MeshState::Pending, "00"), (MeshState::ReadyForTraffic, "01"),
@@ -350,7 +350,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     // All | len 2 | "a" | "b"
     golden(TagFilter::All(["a".to_string(), "b".to_string()].into()), "000201610162");
     for (status, expected) in [
-        (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::Draining, "02"), (NodeStatus::Leaving, "03"),
+        (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::ConnectionsDeleting, "02"), (NodeStatus::Leaving, "03"),
         (NodeStatus::PendingReconnect, "04"), (NodeStatus::Restarting, "05"), (NodeStatus::Dead, "06"), (NodeStatus::Deleted, "07"),
     ] { golden(status, expected); }
     for (status, expected) in [

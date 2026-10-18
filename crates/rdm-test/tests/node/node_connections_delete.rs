@@ -61,7 +61,7 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt_no, SETTLE).await;
 
     // The birth is connections-deleting, the same birth, and its process is still alive.
-    let after = estate.until_node(NODE, &format!("{NODE} is connections-deleting"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::Draining).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
+    let after = estate.until_node(NODE, &format!("{NODE} is connections-deleting"), Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ConnectionsDeleting).map(|n| serde_json::to_value(n).expect("a view serializes"))).await;
     assert_eq!(after["node_id"], before["node_id"]);
     assert_eq!(after["incarnation_id"], before["incarnation_id"]);
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists(), "the process {pid} whose connections were deleted is still running");
@@ -126,7 +126,7 @@ async fn a_connections_delete_is_admitted_by_the_node_on_its_command_stream_and_
         .filter(|sp| {
             let n = sp["name"].as_str().unwrap_or_default();
             (n == "rdm.node_admin.node.update.via-connections-deleting" && s(&sp["attributes"]["node"]) == NODE)
-                || ((n == "rdm.mesh.membership.update.from-command-admitted" || n == "rdm.mesh.membership.update.from-status-report") && s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["status"]) == "Draining")
+                || ((n == "rdm.mesh.membership.update.from-command-admitted" || n == "rdm.mesh.membership.update.from-status-report") && s(&sp["attributes"]["node_id"]) == node_id && s(&sp["attributes"]["status"]) == "ConnectionsDeleting")
         })
         .collect();
     // The mesh-primary's call carrying the command to the node.

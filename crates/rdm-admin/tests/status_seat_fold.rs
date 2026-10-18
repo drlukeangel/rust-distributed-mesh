@@ -66,7 +66,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     // What B applied itself meanwhile: a later state for the other birth and an event of its own.
     {
         let mut d = records.declared.lock().unwrap();
-        d.nodes.insert(other.clone(), NodeState::Draining);
+        d.nodes.insert(other.clone(), NodeState::ConnectionsDeleting);
         d.fabric.entry(fabric_id.clone()).or_default().push("b-own".into());
     }
     let before = records.declared.lock().unwrap().clone();
@@ -109,7 +109,7 @@ fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
     assert_eq!(t.before.fabric.get(&t.fabric_id), Some(&vec!["b-own".to_string()]), "a non-holder holds only the events it applied: {:#?}", t.before);
     assert_eq!(t.after.node(&t.rpc.0, &t.rpc.1), Some(NodeState::ReadyForTraffic), "the seat taker folds the primary's declared-state row: {:#?}", t.after);
     assert_eq!(t.after.names.get(&t.rpc).map(|n| n.to_string()), Some("mesh1.rpc.1".to_string()), "and the path.name it was declared at");
-    assert_eq!(t.after.node(&t.other.0, &t.other.1), Some(NodeState::Draining), "the greatest state per birth: what B applied later stands over the row's Pending");
+    assert_eq!(t.after.node(&t.other.0, &t.other.1), Some(NodeState::ConnectionsDeleting), "the greatest state per birth: what B applied later stands over the row's Pending");
     assert_eq!(t.after.meshes.get(&t.mesh_id), Some(&MeshState::ReadyForTraffic), "the seat taker folds the Mesh status row");
     let mut events = t.after.fabric.get(&t.fabric_id).cloned().unwrap_or_default();
     events.sort();

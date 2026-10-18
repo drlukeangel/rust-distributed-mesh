@@ -588,7 +588,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
     let reports: &[NodeState] = match own {
         M::Pending => &[],
         M::ReadyForTraffic | M::Leaving => &[NodeState::ReadyForTraffic],
-        M::Draining => &[NodeState::ReadyForTraffic, NodeState::Draining],
+        M::ConnectionsDeleting => &[NodeState::ReadyForTraffic, NodeState::ConnectionsDeleting],
     };
     if let Some(my) = view.own(me_id) {
         for state in reports {
@@ -1035,8 +1035,8 @@ mod tests {
         assert_eq!(operation_of(&d, NodeState::ReadyForTraffic), Some(start), "the start's node.started names the start");
         assert!(!d.requests.lock().unwrap().contains_key(&Key::OwnState(INC.into(), NodeState::Leaving)), "the stop's Leaving belongs to the stopped cycle");
 
-        owed_from_view(&d, &me, &me_id, &inc, M::Draining, false, None, &v, &ids);
-        assert_eq!(operation_of(&d, NodeState::Draining), None, "a Draining it measured names none");
+        owed_from_view(&d, &me, &me_id, &inc, M::ConnectionsDeleting, false, None, &v, &ids);
+        assert_eq!(operation_of(&d, NodeState::ConnectionsDeleting), None, "a Draining it measured names none");
     }
 
     /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
@@ -1045,16 +1045,16 @@ mod tests {
     /// its node.started, so the other admins hold it Draining from that primary's projection. Must NOT
     /// happen: a drained admin whose Draining no other admin can learn.
     #[test]
-    fn a_draining_node_admin_reports_its_draining_to_its_own_mesh_primary() {
+    fn a_connections_deleting_node_admin_reports_it_to_its_own_mesh_primary() {
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         let v = view("mesh1.admin.1", "mesh2.admin.1");
         let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
         let d = Declarer::new();
-        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::Draining, false, None, &v, &ids);
+        owed_from_view(&d, &me, &id_of(&me.to_string()), &IncarnationId::parse(INC).unwrap(), rdm_core::MemberStatus::ConnectionsDeleting, false, None, &v, &ids);
         let due: Vec<(Key, String)> = d.due(&id_of(&me.to_string()), &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
         assert_eq!(
             due,
-            vec![(Key::OwnState(INC.into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string()), (Key::OwnState(INC.into(), NodeState::Draining), "mesh1.admin.1".to_string())],
+            vec![(Key::OwnState(INC.into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string()), (Key::OwnState(INC.into(), NodeState::ConnectionsDeleting), "mesh1.admin.1".to_string())],
             "its node.started and its Draining, each to mesh1's primary"
         );
     }
@@ -1232,7 +1232,7 @@ mod tests {
         let me: PathName = "mesh1.admin.1".parse().unwrap();
         let mut v = view("mesh1.admin.1", "mesh1.admin.1");
         let retired = v.nodes.iter_mut().find(|n| n.name == me).unwrap();
-        retired.status = NodeStatus::Draining;
+        retired.status = NodeStatus::ConnectionsDeleting;
         let retired = retired.clone();
         let mut reborn = node("mesh1.admin.1", false, false);
         reborn.node_id = NodeId::mint();

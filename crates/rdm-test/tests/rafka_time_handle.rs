@@ -70,7 +70,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
         let (a, via_membership, b) = (handle.now_ms(), running.membership.clock().now_rafka_ms(), handle.now_ms());
         assert!((a..=b).contains(&via_membership), "{a} <= {via_membership} <= {b}");
 
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

@@ -119,12 +119,9 @@ impl Running {
         self.executor.abort();
     }
 
-    /// Leave the fabric the way every node does (node-rpc §35): stop taking
-    /// Build work and say `Draining`, then keep saying `Leaving` for the
-    /// leave linger (`RDM_LEAVE_LINGER_MS`), then close. iroh-gossip
-    /// acknowledges nothing and closing drops what is unsent, so one
-    /// announcement can be lost; an attempt the executor was running is
-    /// continued by the Build's next attempt.
+    /// Leave on this process's signal: stop taking Build work and every task, settle each call this
+    /// node answered with its caller, then close. Nothing is announced; an attempt the executor was
+    /// running is continued by the Build's next attempt.
     pub async fn leave(self) {
         self.hydrate_cancel.cancel();
         self.leave_with(false).await

@@ -48,8 +48,8 @@ pub enum NodeState {
     Pending,
     /// Ready: it takes traffic.
     ReadyForTraffic,
-    /// Draining: it takes no new work.
-    Draining,
+    /// Connections-deleting: it takes no new work.
+    ConnectionsDeleting,
     /// Leaving: it has announced its departure.
     Leaving,
 }
@@ -1707,7 +1707,7 @@ pub fn member_of_declared(s: NodeState) -> crate::MemberStatus {
     match s {
         NodeState::Pending => M::Pending,
         NodeState::ReadyForTraffic => M::ReadyForTraffic,
-        NodeState::Draining => M::Draining,
+        NodeState::ConnectionsDeleting => M::ConnectionsDeleting,
         NodeState::Leaving => M::Leaving,
     }
 }
@@ -1718,7 +1718,7 @@ pub fn declared_of_member(s: crate::MemberStatus) -> NodeState {
     match s {
         M::Pending => NodeState::Pending,
         M::ReadyForTraffic => NodeState::ReadyForTraffic,
-        M::Draining => NodeState::Draining,
+        M::ConnectionsDeleting => NodeState::ConnectionsDeleting,
         M::Leaving => NodeState::Leaving,
     }
 }
@@ -1757,7 +1757,7 @@ mod tests {
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
             (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::Draining, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
+            (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::ConnectionsDeleting, held_connections: vec![ConnectionId::mint()] }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::new(crate::outcome::Code::AlreadyExists)),
             (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
             (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::new(crate::outcome::Code::FailedPrecondition)),
@@ -1791,7 +1791,7 @@ mod tests {
         }
         let reqs = [
             StatusRequest::DeclareNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic, operation: None },
-            StatusRequest::ApplyNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::Draining },
+            StatusRequest::ApplyNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ConnectionsDeleting },
             StatusRequest::ProbeNodeState { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
@@ -2053,7 +2053,7 @@ mod tests {
         assert_eq!(transition(Some(Pending), ReadyForTraffic), Transition::Apply);
         assert_eq!(transition(Some(Pending), Leaving), Transition::Apply, "a skip is a forward move");
         assert_eq!(transition(Some(ReadyForTraffic), ReadyForTraffic), Transition::AlreadyApplied);
-        assert_eq!(transition(Some(Draining), ReadyForTraffic), Transition::Backward { current: Draining });
+        assert_eq!(transition(Some(ConnectionsDeleting), ReadyForTraffic), Transition::Backward { current: ConnectionsDeleting });
         assert_eq!(transition(Some(MeshState::Dead), MeshState::Pending), Transition::Backward { current: MeshState::Dead });
     }
 }

@@ -287,7 +287,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         })
         .expect("mesh2.rpc.1 is in the forwarded full");
     let mut forged = real_digest.clone();
-    forged.status = MemberStatus::Draining;
+    forged.status = MemberStatus::ConnectionsDeleting;
     let gap_frame = Frame::MembersDelta {
         mesh: "mesh2".into(),
         source_publisher: publisher.clone(),

@@ -202,7 +202,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         bumps.push(("loads alone", v.observe(&Full::new(heartbeat.clone(), vec![], vec![]))));
         bumps.push(("an unchanged republish", v.observe(&base)));
         let mut draining = mesh2.digests(2);
-        draining[1].status = MemberStatus::Draining;
+        draining[1].status = MemberStatus::ConnectionsDeleting;
         bumps.push(("a status routing reads", v.observe(&Full::new(draining.clone(), vec![], vec![]))));
         let mut moved = draining.clone();
         moved[2].node.transport_addr = "127.0.0.1:49999".parse().unwrap();
@@ -314,7 +314,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // ---- 4. deltas: exactly the base, a copy is a no-op, anything else desynchronizes -------
         let f7 = rx.held_full("mesh2").unwrap().clone();
         let mut changed_member = big.digests(7);
-        changed_member[3].status = MemberStatus::Draining;
+        changed_member[3].status = MemberStatus::ConnectionsDeleting;
         let f8 = Full::new(changed_member.clone(), vec![], vec![]);
         let d78 = f7.delta_to(&f8);
         assert_eq!((d78.changed.len(), d78.removed.len(), d78.in_flight.len(), d78.departed.len()), (1, 0, 0, 0), "one remote change is one changed member");
@@ -390,7 +390,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let src = publisher("mesh2.admin.1");
         let f41 = Full::new(mesh2.digests(10), vec![], vec![]);
         let mut d43 = mesh2.digests(900);
-        d43[1].status = MemberStatus::Draining;
+        d43[1].status = MemberStatus::ConnectionsDeleting;
         d43[2].in_flight = Some(3);
         let f43 = Full::new(d43, vec![], vec![]);
         let mut fwd = Forwarder::default();
@@ -411,7 +411,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(rebuilt.same_topology(&f43), "the delta carries exactly the difference between the two fulls");
         // A heartbeat-only Mesh produces no delta; an older or equal version produces none.
         let mut beating = mesh2.digests(5_000);
-        beating[1].status = MemberStatus::Draining;
+        beating[1].status = MemberStatus::ConnectionsDeleting;
         beating.iter_mut().for_each(|d| d.in_flight = Some(99));
         assert!(matches!(fwd.source("mesh1.admin.1", "mesh2", &src, 43, &Full::new(beating, vec![], vec![]), 3), Forward::Nothing(_)));
         assert!(matches!(fwd.source("mesh1.admin.1", "mesh2", &src, 40, &f41, 3), Forward::Nothing(_)));
@@ -430,7 +430,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         let huge = Mesh::new("mesh2", 80);
         let Forward::Full(_) = fwd.source("mesh1.admin.2", "mesh2", &src, 46, &Full::new(huge.digests(1), vec![], vec![]), 7) else { panic!("a different publisher: full") };
         let mut churned = huge.digests(2);
-        churned.iter_mut().for_each(|d| d.status = MemberStatus::Draining);
+        churned.iter_mut().for_each(|d| d.status = MemberStatus::ConnectionsDeleting);
         assert!(matches!(fwd.source("mesh1.admin.2", "mesh2", &src, 47, &Full::new(churned, vec![], vec![]), 8), Forward::Full(_)), "a delta that does not fit one message is the full");
         result.insert(
             "forwarder".into(),
@@ -502,7 +502,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!(fwd_bb.held_source("mesh2").unwrap().1, v1, "a heartbeat-only Mesh does not bump topology_version");
         // One remote change: one version bump, one delta, applied by the ordinary member.
         let mut changed = remote.digests(500);
-        changed[7].status = MemberStatus::Draining;
+        changed[7].status = MemberStatus::ConnectionsDeleting;
         let (changed_name, changed_id) = (changed[7].node.name.to_string(), changed[7].node.node_id.to_string());
         src_bb.publish(&src_m, changed.clone()).await;
         let v2 = wait("the ordinary member to apply the delta", || {
@@ -514,7 +514,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert!(mem_m.desynced_sources().is_empty(), "the chain held: no gap, no top-up");
         // The member's book holds the changed member as the delta stated it.
         let seen = mem_m.book.get(changed_id.as_str()).expect("the ordinary member holds the remote member").0;
-        assert_eq!(seen.status, MemberStatus::Draining, "the delta's change is applied to the member's projection");
+        assert_eq!(seen.status, MemberStatus::ConnectionsDeleting, "the delta's change is applied to the member's projection");
         assert!(seen.in_flight.is_none(), "the ordinary member holds no load of a remote member");
 
         drop(src_bb);

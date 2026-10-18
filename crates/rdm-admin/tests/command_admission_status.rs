@@ -68,16 +68,16 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let projected = |d: &MeshDigest| backbone.own_members(&membership).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
     assert_eq!(status(&rpc), Some(MemberStatus::ReadyForTraffic));
 
-    assert!(membership.book.reported(&rpc.node.node_id, &rpc.node.incarnation, MemberStatus::Draining), "the member's report of connections-deleting is recorded");
-    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the node's report of connections-deleting sets the member connections-deleting");
-    assert_eq!(projected(&rpc), Some(MemberStatus::Draining), "the member projection carries it");
+    assert!(membership.book.reported(&rpc.node.node_id, &rpc.node.incarnation, MemberStatus::ConnectionsDeleting), "the member's report of connections-deleting is recorded");
+    assert_eq!(status(&rpc), Some(MemberStatus::ConnectionsDeleting), "the node's report of connections-deleting sets the member connections-deleting");
+    assert_eq!(projected(&rpc), Some(MemberStatus::ConnectionsDeleting), "the member projection carries it");
 
     lifecycle.leaving(&op(&rpc, "node.stop:mesh1.rpc.1")).await;
     assert_eq!(status(&rpc), Some(MemberStatus::Leaving), "the stop's admission sets the member stopping");
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 
     let peer = member(&fabric, "mesh2.rpc.1", 10);
-    assert!(!membership.book.reported(&peer.node.node_id, &peer.node.incarnation, MemberStatus::Draining), "a member of another mesh is not this primary's to record");
+    assert!(!membership.book.reported(&peer.node.node_id, &peer.node.incarnation, MemberStatus::ConnectionsDeleting), "a member of another mesh is not this primary's to record");
     lifecycle.leaving(&op(&peer, "node.stop:mesh2.rpc.1")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
 }
@@ -161,10 +161,10 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     assert_eq!(status(), Some(MemberStatus::Pending));
     assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ReadyForTraffic)).await, StatusReply::Applied);
     assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "its node.started sets it ready-for-traffic");
-    assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::Draining)).await, StatusReply::Applied);
-    assert_eq!(status(), Some(MemberStatus::Draining), "its reported Draining sets it Draining");
+    assert_eq!(authority.apply(Some(subject.clone()), &declare(NodeState::ConnectionsDeleting)).await, StatusReply::Applied);
+    assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "its reported Draining sets it Draining");
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: me.incarnation_id.clone().unwrap(), node_id: me.node_id.clone() }, vec![]).await.unwrap();
-    assert_eq!(backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::Draining), "its projection carries it");
+    assert_eq!(backbone.own_members(&membership).into_iter().find(|d| d.node.node_id == member.node.node_id).map(|d| d.status), Some(MemberStatus::ConnectionsDeleting), "its projection carries it");
     assert!(matches!(authority.apply(Some(subject.clone()), &declare(NodeState::Pending)).await, StatusReply::RejectedInvalidNodeTransition { .. }), "a backward report is refused");
-    assert_eq!(status(), Some(MemberStatus::Draining), "and sets nothing");
+    assert_eq!(status(), Some(MemberStatus::ConnectionsDeleting), "and sets nothing");
 }

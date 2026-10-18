@@ -350,7 +350,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         storage.put_node_row(&written).await.unwrap().unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -475,7 +475,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
         // P's writes, as its seat made them.
         for row in [
-            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
+            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
             NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
             NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
         ] {
@@ -531,7 +531,7 @@ fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() 
     });
     println!("trace_id={trace_id}");
     let row = |name: &str| rows[name].clone().unwrap_or_else(|| panic!("the successor holds no row at {name}: {rows:#?}"));
-    assert_eq!((row("mesh1.rpc.1").status, row("mesh1.rpc.1").config), (NodeStatus::Draining, tier("platinum")), "the live member's row stands as P wrote it");
+    assert_eq!((row("mesh1.rpc.1").status, row("mesh1.rpc.1").config), (NodeStatus::ConnectionsDeleting, tier("platinum")), "the live member's row stands as P wrote it");
     assert_eq!((row("mesh1.rpc.2.old").node_id, row("mesh1.rpc.2.old").status), (old_pred.clone(), NodeStatus::Deleted), "N holds P's .old row");
     assert_eq!((row("mesh1.rpc.2").node_id, row("mesh1.rpc.2").config), (succ.clone(), tier("bronze")), "the successor is seeded from the .old row");
     assert_eq!((row("mesh1.rpc.3").node_id, row("mesh1.rpc.3").config), (fresh.clone(), tier("silver")), "the node created at the Deleted row's name is seeded from it, its row overwritten at that key");
@@ -554,7 +554,7 @@ fn a_node_lets_go_only_of_its_own_row() {
         let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rdm_admin::storage::FileNodesStorage::open(&dir, &rdm_admin::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
-            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::ConnectionsDeleting, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
             store.put_node_row(&held).await.unwrap().unwrap();
             assert!(!store.release_node_row(&held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");

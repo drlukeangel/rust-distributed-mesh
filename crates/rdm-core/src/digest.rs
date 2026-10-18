@@ -35,9 +35,9 @@ pub enum MemberStatus {
     Pending,
     /// The node takes traffic.
     ReadyForTraffic,
-    /// The node takes no new work.
+    /// The node takes no new work: its connections are being deleted.
     #[serde(rename = "connections-deleting")]
-    Draining,
+    ConnectionsDeleting,
     /// The node has announced its departure.
     Leaving,
 }
@@ -66,7 +66,7 @@ impl NodeState {
     pub fn self_published(own: MemberStatus) -> Self {
         match own {
             MemberStatus::Pending => Self::Joining,
-            MemberStatus::ReadyForTraffic | MemberStatus::Draining | MemberStatus::Leaving => Self::Alive,
+            MemberStatus::ReadyForTraffic | MemberStatus::ConnectionsDeleting | MemberStatus::Leaving => Self::Alive,
         }
     }
 }

@@ -12,7 +12,7 @@
 //!    (subject-unknown; decided for the subject, never the caller); under a wrong incarnation:
 //!    `RejectedStaleIncarnation`.
 //! 4. A declaration to the non-primary admin: `RejectedNotAuthority` (receiver-not-primary).
-//! 5. `Draining`, then `Leaving`: `Applied`, and the view follows.
+//! 5. `ConnectionsDeleting`, then `Leaving`: `Applied`, and the view follows.
 //! Every decision is one `rdm.node_admin.status.update.via-declaration` span on the authority.
 
 use rdm_test::estate::{named, Estate, Owner};
@@ -81,23 +81,23 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     // 3. A subject the authority does not hold (decided for the subject, never the caller:
     // node-rpc.md §14); a stale birth.
     let never_born = rdm_core::NodeId::mint();
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-node-id", never_born.as_str()]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting", "--as-node-id", never_born.as_str()]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("SubjectUnknown"), "{r}");
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", rdm_core::IncarnationId::mint().as_str()]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting", "--as-incarnation", rdm_core::IncarnationId::mint().as_str()]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
     // 4. The non-primary admin is not the authority.
     let not_primary = format!("exact:{}", other_admin["node_id"].as_str().unwrap());
-    let r = estate.probe(&["declare", "--target", &node, "--to", &not_primary, "--state", "draining"]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &not_primary, "--state", "connections-deleting"]);
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("ReceiverNotPrimary"), "{r}");
     assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "ReadyForTraffic", "a refusal applies nothing");
 
     // 5. Forward moves apply and the view follows.
-    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining"])).0, "applied");
+    assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"])).0, "applied");
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "leaving"])).0, "applied");
     assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "Leaving");
     assert_eq!(estate.node_value("mesh1.rpc.2").await["declared"], "ReadyForTraffic", "rpc.2 declared only its birth");
@@ -109,10 +109,10 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let spans = estate.spans();
     let decided = named(&spans, "rdm.node_admin.status.update.via-declaration");
     let on_primary = |outcome: &str| decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == outcome && s["attributes"]["sender"] == "mesh1.rpc.1").count();
-    assert_eq!(on_primary("applied"), 3, "RFT (by the node at birth), Draining, Leaving: {decided:?}");
-    assert!(on_primary("already-applied") >= 1, "the oracle's repeat, and the node's own Draining/Leaving at stop: {decided:?}");
+    assert_eq!(on_primary("applied"), 3, "RFT (by the node at birth), ConnectionsDeleting, Leaving: {decided:?}");
+    assert!(on_primary("already-applied") >= 1, "the oracle's repeat, and the node's own ConnectionsDeleting/Leaving at stop: {decided:?}");
     // The oracle's Pending after ReadyForTraffic; and, once the oracle moved the node to Leaving, the
-    // node's own Draining at stop is a backward move too: refused by name, never regressing.
+    // node's own ConnectionsDeleting at stop is a backward move too: refused by name, never regressing.
     let backward: Vec<_> = decided.iter().filter(|s| s["attributes"]["node"] == primary["name"] && s["attributes"]["outcome"] == "rejected-invalid-node-transition" && s["attributes"]["sender"] == "mesh1.rpc.1").collect();
     assert!(backward.iter().any(|s| s["attributes"]["detail"] == "ReadyForTraffic"), "Pending after ReadyForTraffic: {backward:?}");
     assert!(backward.iter().all(|s| s["attributes"]["detail"] == "ReadyForTraffic" || s["attributes"]["detail"] == "Leaving"), "{backward:?}");
@@ -157,7 +157,7 @@ async fn a_declaration_reaching_an_rpc_node_is_answered_not_handled_with_its_rej
     let (rpc1, rpc2) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.rpc.2").await);
     let node = format!("exact:{}", rpc2["node_id"].as_str().unwrap());
     let to = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining"]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "connections-deleting"]);
     assert_eq!(declared(&r).0, "request-not-handled", "an rpc node answers a declaration it has no handler for not handled here: {r}");
     estate.stop().await;
     let spans = estate.spans();

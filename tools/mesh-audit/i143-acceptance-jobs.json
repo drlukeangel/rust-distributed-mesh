@@ -102,10 +102,10 @@
           "dir": "target/i143-acceptance/2805/unit/status_authority_retries_pending_by_natural_key_returns_already_applied"
         },
         {
-          "name": "draining_authority_serves_status_checks_exact_birth",
+          "name": "connections_deleting_authority_serves_status_checks_exact_birth",
           "source": "crates/rdm-admin/tests/status_rpc.rs",
-          "command": "cargo test -p rdm-admin --test main status_rpc::draining_authority_serves_status_checks_exact_birth -- --exact",
-          "dir": "target/i143-acceptance/2805/unit/draining_authority_serves_status_checks_exact_birth"
+          "command": "cargo test -p rdm-admin --test main status_rpc::connections_deleting_authority_serves_status_checks_exact_birth -- --exact",
+          "dir": "target/i143-acceptance/2805/unit/connections_deleting_authority_serves_status_checks_exact_birth"
         },
         {
           "name": "status_authority_answers_applied_only_after_its_row_is_acknowledged",

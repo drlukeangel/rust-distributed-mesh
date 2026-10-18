@@ -143,7 +143,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let state = match a.state.as_deref().ok_or("declare needs --state")? {
         "pending" => NodeState::Pending,
         "ready-for-traffic" => NodeState::ReadyForTraffic,
-        "draining" => NodeState::Draining,
+        "connections-deleting" => NodeState::ConnectionsDeleting,
         "leaving" => NodeState::Leaving,
         other => return Err(format!("--state {other:?} is not a node state")),
     };

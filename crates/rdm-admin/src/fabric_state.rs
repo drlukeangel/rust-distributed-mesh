@@ -216,7 +216,7 @@ pub struct RoundBook {
 }
 
 fn deliverable(n: &Node) -> bool {
-    matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::Draining) && n.incarnation_id.is_some()
+    matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::ConnectionsDeleting) && n.incarnation_id.is_some()
 }
 
 impl RoundBook {
@@ -657,7 +657,7 @@ mod tests {
     /// state changed, and when its destination moved, and not otherwise.
     #[test]
     fn an_undelivered_command_is_sent_again_when_the_targets_state_or_destination_changed() {
-        let (book, k, n, inc) = undelivered(true, NodeStatus::Draining);
+        let (book, k, n, inc) = undelivered(true, NodeStatus::ConnectionsDeleting);
         assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty());
         let ready = Node { status: NodeStatus::ReadyForTraffic, ..n.clone() };
         assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed");

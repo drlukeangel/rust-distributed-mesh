@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn a_draining_or_silent_node_is_found_and_only_a_departure_makes_it_gone() {
+    fn a_connections_deleting_or_silent_node_is_found_and_only_a_departure_makes_it_gone() {
         let r = LiveNodeResolver::default();
         let a = birth("mesh1.rpc.1", 7000);
         r.apply(a.clone(), None);

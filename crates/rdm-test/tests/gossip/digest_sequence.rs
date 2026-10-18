@@ -112,8 +112,8 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         for (label, seq, at, status, want) in [
             ("first heartbeat", 1u64, 1_000u64, MemberStatus::Pending, true),
             ("clock frozen: same stamp, next seq", 2, 1_000, MemberStatus::ReadyForTraffic, true),
-            ("clock stepped back: lower stamp, next seq", 3, 900, MemberStatus::Draining, true),
-            ("a repeat of the held heartbeat", 3, 900, MemberStatus::Draining, false),
+            ("clock stepped back: lower stamp, next seq", 3, 900, MemberStatus::ConnectionsDeleting, true),
+            ("a repeat of the held heartbeat", 3, 900, MemberStatus::ConnectionsDeleting, false),
             ("an older heartbeat stamped far ahead", 2, 99_999_999, MemberStatus::ReadyForTraffic, false),
             ("the oldest heartbeat stamped far ahead", 1, 99_999_999, MemberStatus::Pending, false),
             ("a newer heartbeat stamped at zero", 4, 0, MemberStatus::Leaving, true),
@@ -134,13 +134,13 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
             ("forwarded first", 5u64, 2_000u64, MemberStatus::ReadyForTraffic, true),
             ("forwarded copy of the held heartbeat", 5, 2_000, MemberStatus::ReadyForTraffic, true),
             ("forwarded lower sequence stamped far ahead", 4, 99_999_999, MemberStatus::Pending, false),
-            ("forwarded higher sequence, same stamp", 6, 2_000, MemberStatus::Draining, true),
+            ("forwarded higher sequence, same stamp", 6, 2_000, MemberStatus::ConnectionsDeleting, true),
         ] {
             let taken = fbook.record_forwarded_at(f1.digest(seq, at, status), now);
             assert_eq!(taken, want, "{label}");
             note(label, seq, at, status, taken, &fbook, &fnode);
         }
-        assert_eq!(held(&fbook, &fnode), (6, MemberStatus::Draining, 2_000));
+        assert_eq!(held(&fbook, &fnode), (6, MemberStatus::ConnectionsDeleting, 2_000));
 
         // A new incarnation has its own sequence: it starts again at 1 and is taken along its
         // lineage whatever its stamp; a late digest of the incarnation it replaced is not taken.
@@ -148,7 +148,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         for (label, seq, at, status, want, new_inc) in [
             ("successor incarnation, sequence starts at 1, lower stamp", 1u64, 10u64, MemberStatus::Pending, true, true),
             ("successor's next heartbeat", 2, 10, MemberStatus::ReadyForTraffic, true, true),
-            ("a late digest of the replaced incarnation with a high sequence and a far stamp", 500, 99_999_999, MemberStatus::Draining, false, false),
+            ("a late digest of the replaced incarnation with a high sequence and a far stamp", 500, 99_999_999, MemberStatus::ConnectionsDeleting, false, false),
         ] {
             let d = if new_inc { b2.digest(seq, at, status) } else { b1.digest(seq, at, status) };
             let taken = book.record_at(d, now);
@@ -177,7 +177,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         for (label, clock_ms, status) in [
             ("clock frozen at 5000", 5_000u64, MemberStatus::Pending),
             ("clock still frozen", 5_000, MemberStatus::ReadyForTraffic),
-            ("clock stepped back", 4_000, MemberStatus::Draining),
+            ("clock stepped back", 4_000, MemberStatus::ConnectionsDeleting),
             ("clock jumped far ahead", 99_999_999, MemberStatus::ReadyForTraffic),
             ("clock back at zero", 0, MemberStatus::Leaving),
         ] {

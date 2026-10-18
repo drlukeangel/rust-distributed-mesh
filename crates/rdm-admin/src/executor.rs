@@ -163,7 +163,7 @@ fn mesh_executor(mesh: &str, target: Option<&PathName>, t: &Topology) -> Option<
 /// never the fallback case), `Leaving` and `Deleted`; a departed birth has left the view.
 pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -> Vec<&'a crate::model::Node> {
     use crate::model::NodeStatus;
-    t.cohort(mesh, NodeKind::NodeAdmin).filter(|n| Some(&n.name) != target && matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::Draining | NodeStatus::PendingReconnect | NodeStatus::Restarting)).collect()
+    t.cohort(mesh, NodeKind::NodeAdmin).filter(|n| Some(&n.name) != target && matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::ConnectionsDeleting | NodeStatus::PendingReconnect | NodeStatus::Restarting)).collect()
 }
 
 /// Why no admin executes `op` in view `t`: the mesh's held node-admins by name and status, or

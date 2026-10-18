@@ -84,7 +84,7 @@ async fn a_role_process_serves_core_ping_on_its_one_endpoint() {
     let (client, target) = broker.peer().await;
     let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"role".to_vec() }, &CallOptions::default()).await;
     assert_eq!(out.reply().map(|r| r.value().clone()), Some(PingReply::Pong { payload: b"role".to_vec() }), "{out:?}");
-    broker.running.stop(Duration::ZERO).await;
+    broker.running.stop().await;
 }
 
 #[tokio::test]
@@ -101,7 +101,7 @@ async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
         .await;
     assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == absent), "{out:?}");
     assert_eq!(rdm_transport::ServerStats::get(&gateway.running.server.stats().dispatched), 0, "an unserved op is never dispatched");
-    gateway.running.stop(Duration::ZERO).await;
+    gateway.running.stop().await;
 }
 
 #[tokio::test]
@@ -119,7 +119,7 @@ async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() 
         })
         .await;
     assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == adapter.op), "{out:?}");
-    compute.running.stop(Duration::ZERO).await;
+    compute.running.stop().await;
 }
 
 mod tempdir {
@@ -166,8 +166,8 @@ async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Read { key: "k".into() }, &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::Unserved(u) if u.op() == BrokerData::OP), "a compute serves no broker_data: {out:?}");
     assert_eq!(rdm_transport::ServerStats::get(&compute.running.server.stats().dispatched), 0);
-    broker.running.stop(Duration::ZERO).await;
-    compute.running.stop(Duration::ZERO).await;
+    broker.running.stop().await;
+    compute.running.stop().await;
 }
 
 /// e11.s6 — certainty on a gateway -> broker call, over the gateway's own one client:
@@ -223,8 +223,8 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     let (out, _) = client.call::<BrokerData>(&target, &append("c2"), &CallOptions::default()).await;
     assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "c2".into(), offset: 0, served_by: broker.launch.node_id.to_string() }), "{out:?}");
     assert_eq!(client.pooled().iter().filter(|k| k.peer == broker.key.public()).count(), 1, "one pooled connection to the broker's one birth, kept through every outcome");
-    gateway.running.stop(Duration::ZERO).await;
-    broker.running.stop(Duration::ZERO).await;
+    gateway.running.stop().await;
+    broker.running.stop().await;
 }
 
 /// e11.s9 — the malformed-context arm: a bad traceparent is dropped by the caller (named on a
@@ -242,5 +242,5 @@ async fn a_malformed_traceparent_is_dropped_and_the_call_is_unchanged() {
     };
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Append { key: "ctx".into(), value: b"v".to_vec() }, &opts).await;
     assert_eq!(out.reply().map(|r| r.value().clone()), Some(BrokerDataReply::Appended { key: "ctx".into(), offset: 0, served_by: broker.launch.node_id.to_string() }), "{out:?}");
-    broker.running.stop(Duration::ZERO).await;
+    broker.running.stop().await;
 }

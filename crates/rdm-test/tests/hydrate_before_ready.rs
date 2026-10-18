@@ -208,7 +208,7 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked")[0]["cleared_by"], "authority-ready");
         assert_eq!(spans_named(&spans, "rdm.mesh.node.update.via-ready").len(), 1, "via-ready follows the successful attempt");
         assert_eq!(hydrator.held().0.len(), 3, "the pull's rows are held");
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -250,7 +250,7 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
         // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
         until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -289,7 +289,7 @@ fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
         assert_eq!(hydrator.attempts.load(std::sync::atomic::Ordering::SeqCst), 1, "the hook did not run again");
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -330,7 +330,7 @@ fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
         assert!(hydrator.held().0.is_empty(), "no row was applied after the retirement");
         assert!(!seen.lock().unwrap().contains(&MemberStatus::ReadyForTraffic), "{:?}", seen.lock().unwrap());
         assert!(spans_named(&spans, "rdm.mesh.node.update.via-ready").is_empty());
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -364,7 +364,7 @@ fn rows_gossiped_during_the_pull_change_the_state_once_per_version() {
         assert_eq!(ignored, 1, "row 2 arrived twice and the second was ignored");
         assert_eq!(hydrator.effects.load(std::sync::atomic::Ordering::SeqCst), 3, "one side effect per version");
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -388,7 +388,7 @@ fn a_node_whose_hook_fails_ends_by_name_and_is_never_ready() {
         let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Failed { reason: "the snapshot of kind `config` is not complete at its boundary".into() }));
         let why = match start(&b, &hydrator).await.unwrap() {
             Ok(running) => {
-                running.stop(Duration::ZERO).await;
+                running.stop().await;
                 panic!("a node whose hook failed must end, not come up");
             }
             Err(e) => e.to_string(),
@@ -428,7 +428,7 @@ fn a_node_whose_hook_is_blocked_with_no_reason_ends_by_name_and_is_never_ready()
         let why = match start(&b, &hydrator).await.unwrap() {
             Ok(running) => {
                 let state = running.hydration().map(|h| h.state());
-                running.stop(Duration::ZERO).await;
+                running.stop().await;
                 panic!("a node whose hook was blocked with no reason must end by name, not come up: its hook state {state:?}");
             }
             Err(e) => e.to_string(),
@@ -457,7 +457,7 @@ fn the_hook_is_handed_the_accepting_authority_of_its_exact_birth() {
         let running = start(&b, &hydrator).await.unwrap().expect("the node comes up");
         assert_eq!(*hydrator.contexts.lock().unwrap(), vec![(1, Some("mesh1.admin.1".to_string()), None)]);
         assert_eq!(running.hydration().expect("handle").state(), HydrationState::Passed);
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }
@@ -489,7 +489,7 @@ fn the_launchers_ready_waits_for_the_births_own_ready_for_traffic_not_a_ping() {
         let ready = b.admin.observer.ready(&node).await;
         let why = ready.expect_err("a Pending birth is not ready");
         assert!(why.contains("mesh1.rpc.1") && why.contains("Pending"), "the refusal names the birth and its Pending: {why}");
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&b.dir);
     })
 }

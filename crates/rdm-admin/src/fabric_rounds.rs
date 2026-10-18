@@ -1186,7 +1186,7 @@ mod tests {
     /// round command naming this admin "the subject node itself" and strands the round.
     #[test]
     fn an_admin_finds_its_own_row_by_node_id_while_its_retired_birth_is_still_in_the_view() {
-        let retired = node("mesh1.admin.1", NodeStatus::Draining, false);
+        let retired = node("mesh1.admin.1", NodeStatus::ConnectionsDeleting, false);
         let reborn = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, false);
         let view = projected(vec![retired.clone(), reborn.clone(), node("mesh1.admin.2", NodeStatus::ReadyForTraffic, true)]);
         assert_eq!(view.members().filter(|n| n.name == reborn.name).count(), 2, "both births of mesh1.admin.1 are in the view");

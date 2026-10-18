@@ -113,7 +113,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
             supersedes: None,
             runtime: None,
         },
-        status: MemberStatus::Draining,
+        status: MemberStatus::ConnectionsDeleting,
         node_state: NodeState::Alive,
         admin_api_base: None,
         digest_seq: 7,

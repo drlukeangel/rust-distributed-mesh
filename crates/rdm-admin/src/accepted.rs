@@ -1082,7 +1082,7 @@ mod tests {
     #[test]
     fn a_renamed_predecessor_changes_no_plan() {
         let cur = t(&[("mesh1", 2, 3)]);
-        for status in [NodeStatus::Draining, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::ReadyForTraffic] {
+        for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving, NodeStatus::Dead, NodeStatus::ReadyForTraffic] {
             let mut o = mn();
             let mut old = n("mesh1.rpc.2", status, false);
             old.name = old.name.renamed();
@@ -1324,7 +1324,7 @@ mod tests {
         assert_eq!(BuildOperation::DeleteConnections { node: path.clone(), from_incarnation: from.clone() }.key(), "node.connections.delete:mesh1.rpc.2");
         assert_eq!(BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }.key(), "node.stop:mesh1.rpc.2");
         // A Draining or Leaving birth of the path is still the birth the operation acts on.
-        for status in [NodeStatus::Draining, NodeStatus::Leaving] {
+        for status in [NodeStatus::ConnectionsDeleting, NodeStatus::Leaving] {
             o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = status;
             assert_eq!(plan(&cur, &o, Some(&stop)).operations.len(), 1, "{status:?}");
         }

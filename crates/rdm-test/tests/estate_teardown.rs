@@ -2,17 +2,18 @@
 //! process of its own behind.
 
 use rdm_test::estate::{environ_names_estate, wait_for, Estate, Owner};
+use serde_json::{json, Value};
 use std::path::Path;
 use std::time::Duration;
 
-fn owner() -> Owner {
+fn owner(subfeature: &str, test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "estate-teardown".into(),
-        subfeature: "drop".into(),
+        subfeature: subfeature.into(),
         rung: "M".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "a_dropped_estate_leaves_no_process_of_its_root".into(),
+        test: test.into(),
     }
 }
 
@@ -39,7 +40,7 @@ fn holds_fabric_identity_row(store_root: &Path) -> bool {
 /// (`node.primary.update` to `mesh1.admin.2`) once the Fabric row is durable, and is restarted on its data dir.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_estate_leaves_no_process_of_its_root() {
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("drop", "a_dropped_estate_leaves_no_process_of_its_root"), "fabric1", "mesh1").await;
     let root = estate.root.clone();
     let data_dir = estate.bootstrap_data_dir("mesh1");
     wait_for("the bootstrap admin's Fabric row is durable", Duration::from_secs(30), || async { holds_fabric_identity_row(&estate.fabric_store_root()).then_some(()) }).await;
@@ -57,4 +58,48 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     assert!(!processes_of(&root).is_empty(), "the restarted node-admin runs under the estate's root");
     drop(estate);
     assert_eq!(processes_of(&root), Vec::<u32>::new(), "nothing of the estate is left running after it is dropped");
+}
+
+/// CONTRACT (i146 Q55, Luke 2026-10-17: "an estate stop with SIGTERM to every process at once ends
+/// every rpc node before the SIGKILL, each having reported connections-deleting, left its mesh and
+/// sent Stopped, nothing gossiped by the stopping node"): a fabric of one mesh, two node-admins and
+/// three rpc nodes is stopped with SIGTERM to every process at once. Each rpc node runs node-stop.md
+/// steps 2-4 as its own subject and waits on no answer: it owes its connections-deleting to its
+/// mesh-primary, leaves its mesh (its gossip neighbours left, its Node RPC pool cut), then owes its
+/// stopped state, in that order, and its process ends before the estate's bound. Must NOT happen: a
+/// runtime the bound kills, a heartbeat of a stopping node after its leave, or the retired drain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before_the_kill() {
+    let test = "an_estate_stopped_by_sigterm_ends_every_rpc_node_by_its_own_stop_before_the_kill";
+    let mut estate = Estate::bootstrap(owner("signal-stop", test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    let rpc: Vec<String> = estate.node_values().await.iter().filter(|n| n["kind"] == "rpc_node").filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
+    assert_eq!(rpc.len(), 3, "three rpc nodes: {rpc:?}");
+
+    let killed = estate.stop().await;
+    assert_eq!(killed, Vec::<u32>::new(), "every runtime ended by its own stop before the bound's SIGKILL");
+
+    let spans = estate.spans();
+    let start = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
+    let of = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && s["attributes"]["node"] == node).collect() };
+    let mut evidence = Vec::new();
+    for node in &rpc {
+        let owed = of("rdm.node_rpc.status.update.via-owed-on-signal", node);
+        let owed_state = |state: &str| owed.iter().find(|s| s["attributes"]["state"] == state).copied();
+        let deleting = owed_state("ConnectionsDeleting").unwrap_or_else(|| panic!("{node} owed its connections-deleting to its mesh-primary: {owed:?}"));
+        let stopped = owed_state("Leaving").unwrap_or_else(|| panic!("{node} owed its stopped state to its mesh-primary: {owed:?}"));
+        let leaving = of("rdm.node.mesh.update.via-leaving", node);
+        assert_eq!(leaving.len(), 1, "{node} left its mesh once: {leaving:?}");
+        assert_eq!(leaving[0]["attributes"]["operation"], "signal", "{node}'s leave is its own stop's: {leaving:?}");
+        let left = of("rdm.node.mesh.update.via-left", node);
+        assert!(!left.is_empty(), "{node} left its mesh channel");
+        assert!(start(deleting) <= start(leaving[0]) && start(leaving[0]) <= start(stopped), "{node}: connections-deleting owed, then the leave, then stopped owed");
+        let published_after: Vec<&Value> = of("rdm.mesh.node.update.via-heartbeat", node).into_iter().filter(|h| start(h) > start(left[0])).collect();
+        assert!(published_after.is_empty(), "{node} published nothing after it left its mesh: {published_after:?}");
+        evidence.push(json!({"node": node, "connections_deleting_owed": deleting["trace_id"], "left": leaving[0]["trace_id"], "stopped_owed": stopped["trace_id"]}));
+    }
+    let drained: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-drain").collect();
+    assert!(drained.is_empty(), "no node runs the retired drain: {drained:?}");
+    estate.artifact("signal-stop.json", &json!({"rpc_nodes": evidence}));
 }

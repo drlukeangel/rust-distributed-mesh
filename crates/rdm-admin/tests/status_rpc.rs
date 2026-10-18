@@ -333,15 +333,15 @@ async fn pending_by_natural_key(capture: &Capture, cell: &str, dir: &std::path::
 /// (the reply lost). The completion wait of an admitted command that never completes is the retire
 /// pipeline's Deadline arm, never a success.
 #[test]
-fn draining_authority_serves_status_checks_exact_birth() {
-    let cell = "draining_authority_serves_status_checks_exact_birth";
+fn connections_deleting_authority_serves_status_checks_exact_birth() {
+    let cell = "connections_deleting_authority_serves_status_checks_exact_birth";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let capture = capture(cell);
-    capture.run(draining_status_door(&capture, cell, &dir));
+    capture.run(connections_deleting_status_door(&capture, cell, &dir));
 }
 
-async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
+async fn connections_deleting_status_door(capture: &Capture, cell: &str, dir: &std::path::Path) {
     use rdm_admin::deployment::pipeline::{command_admission, CommandAdmission, Completion};
 
     // The subject: mesh1.admin.2, commanded by its owning mesh-admin mesh1.admin.1.
@@ -368,7 +368,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     assert!(matches!(&probed, StatusReply::Current { node_id: n, .. } if *n == node_id), "{probed:?}");
 
     // ApplyNodeState is not a drain command: refused with the held state, never admitted.
-    let apply = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::Draining };
+    let apply = StatusRequest::ApplyNodeState { node_id: node_id.clone(), incarnation: incarnation.clone(), state: NodeState::ConnectionsDeleting };
     let applied = call(&rig, &executor, &apply, &CallOptions::default()).await;
     assert!(matches!(reply(&applied), StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "{applied:?}");
     let apply_arm = command_admission(&applied);
@@ -717,7 +717,7 @@ fn status_authority_refuses_every_backward_move_by_name() {
     let dir = cell_dir(cell);
     let capture = capture(cell);
     capture.run(async {
-        let nodes = [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::Draining, NodeState::Leaving];
+        let nodes = [NodeState::Pending, NodeState::ReadyForTraffic, NodeState::ConnectionsDeleting, NodeState::Leaving];
         let meshes = [MeshState::Pending, MeshState::ReadyForTraffic, MeshState::Leaving, MeshState::Dead];
         let me = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let senders: Vec<Birth> = (0..4).map(|i| birth(&format!("mesh1.rpc.{}", i + 1), NodeKind::RpcNode, "mesh1", false, false)).collect();
@@ -928,7 +928,7 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
         let rig = rig(me, &[&subject], BTreeMap::new()).await;
         let old_inc = subject.node.incarnation_id.clone().unwrap();
         let decl = |inc: &IncarnationId, st: NodeState| StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: inc.clone(), state: st, operation: None };
-        assert_eq!(reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Draining), &CallOptions::default()).await), StatusReply::Applied, "the old birth reached Draining");
+        assert_eq!(reply(&call(&rig, &subject, &decl(&old_inc, NodeState::ConnectionsDeleting), &CallOptions::default()).await), StatusReply::Applied, "the old birth reached connections-deleting");
         // The restart: same node and key, a new incarnation, now what the view holds.
         let new_inc = IncarnationId::mint();
         {
@@ -937,9 +937,9 @@ fn status_declaration_racing_a_restart_is_refused_stale_then_the_new_birth_appli
         }
         let in_flight = reply(&call(&rig, &subject, &decl(&old_inc, NodeState::Leaving), &CallOptions::default()).await);
         assert_eq!(in_flight, StatusReply::RejectedStaleIncarnation { held: new_inc.clone() });
-        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &old_inc), Some(NodeState::Draining), "the stale declaration moved nothing");
+        assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &old_inc), Some(NodeState::ConnectionsDeleting), "the stale declaration moved nothing");
         let fresh = reply(&call(&rig, &subject, &decl(&new_inc, NodeState::Pending), &CallOptions::default()).await);
-        assert_eq!(fresh, StatusReply::Applied, "the new birth starts on a clean key: Pending after the old birth's Draining is not backward");
+        assert_eq!(fresh, StatusReply::Applied, "the new birth starts on a clean key: Pending after the old birth's connections-deleting is not backward");
         assert_eq!(rig.authority.declared.lock().unwrap().node(&subject.node.node_id, &new_inc), Some(NodeState::Pending));
         let spans = finish(&capture, &dir, json!({"cell": cell, "in_flight": format!("{in_flight:?}"), "fresh": format!("{fresh:?}"), "new_incarnation": new_inc.to_string()}));
         let stale = spans_where(&spans, DECLARATION, &[("outcome", "rejected-stale-incarnation")]);

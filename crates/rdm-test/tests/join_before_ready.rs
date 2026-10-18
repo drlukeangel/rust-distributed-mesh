@@ -6,7 +6,6 @@ use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rdm_test::node;
-use std::time::Duration;
 
 /// CONTRACT: a node whose launching admin answers every `JoinNode` with `NotReady` (the admin
 /// holds no join door) ends by name, the error naming the launching admin and the unreached cause.
@@ -47,7 +46,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
         let started = node::start(&launch, |b, _| b).await;
         let outcome = match started {
             Ok(running) => {
-                running.stop(Duration::ZERO).await;
+                running.stop().await;
                 None
             }
             Err(e) => Some(e.to_string()),

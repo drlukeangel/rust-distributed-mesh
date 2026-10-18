@@ -18,8 +18,8 @@ pub enum NodeStatus {
     Pending,
     /// Ready: it takes traffic.
     ReadyForTraffic,
-    /// Draining: it takes no new work.
-    Draining,
+    /// Connections-deleting: it takes no new work.
+    ConnectionsDeleting,
     /// Leaving: it has announced its departure.
     Leaving,
     /// Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks
@@ -44,7 +44,7 @@ pub enum NodeStatus {
 impl NodeStatus {
     /// A node that may hold or contend for a cohort primary.
     pub fn is_live(self) -> bool {
-        matches!(self, Self::Pending | Self::ReadyForTraffic | Self::Draining)
+        matches!(self, Self::Pending | Self::ReadyForTraffic | Self::ConnectionsDeleting)
     }
 }
 
@@ -287,12 +287,12 @@ mod tests {
     #[test]
     fn view_spelling_matches_the_design_contract() {
         assert_eq!(serde_json::to_value(NodeStatus::ReadyForTraffic).unwrap(), "ready-for-traffic");
-        assert_eq!(serde_json::to_value(crate::views::NodeStatus::Draining).unwrap(), "connections-deleting");
-        assert_eq!(serde_json::to_value(crate::MemberStatus::Draining).unwrap(), "connections-deleting");
-        assert_eq!(serde_json::from_str::<crate::views::NodeStatus>("\"connections-deleting\"").unwrap(), crate::views::NodeStatus::Draining);
-        assert_eq!(serde_json::from_str::<crate::MemberStatus>("\"connections-deleting\"").unwrap(), crate::MemberStatus::Draining);
-        assert_eq!(postcard::to_allocvec(&crate::views::NodeStatus::Draining).unwrap(), [2], "the view enum position stands");
-        assert_eq!(postcard::to_allocvec(&crate::MemberStatus::Draining).unwrap(), [2], "the projection enum position stands");
+        assert_eq!(serde_json::to_value(crate::views::NodeStatus::ConnectionsDeleting).unwrap(), "connections-deleting");
+        assert_eq!(serde_json::to_value(crate::MemberStatus::ConnectionsDeleting).unwrap(), "connections-deleting");
+        assert_eq!(serde_json::from_str::<crate::views::NodeStatus>("\"connections-deleting\"").unwrap(), crate::views::NodeStatus::ConnectionsDeleting);
+        assert_eq!(serde_json::from_str::<crate::MemberStatus>("\"connections-deleting\"").unwrap(), crate::MemberStatus::ConnectionsDeleting);
+        assert_eq!(postcard::to_allocvec(&crate::views::NodeStatus::ConnectionsDeleting).unwrap(), [2], "the view enum position stands");
+        assert_eq!(postcard::to_allocvec(&crate::MemberStatus::ConnectionsDeleting).unwrap(), [2], "the projection enum position stands");
         assert_eq!(serde_json::to_value(NodeKind::RpcNode).unwrap(), "rpc_node");
         assert_eq!(serde_json::to_value(NodeKind::NodeAdmin).unwrap(), "node_admin");
         let n = Node::allocated("mesh1.rpc.2".parse().unwrap());
@@ -304,9 +304,9 @@ mod tests {
     }
 
     #[test]
-    fn only_pending_ready_and_draining_are_live() {
+    fn only_pending_ready_and_connections_deleting_are_live() {
         assert!(NodeStatus::ReadyForTraffic.is_live());
-        assert!(NodeStatus::Draining.is_live());
+        assert!(NodeStatus::ConnectionsDeleting.is_live());
         assert!(!NodeStatus::Leaving.is_live());
         assert!(!NodeStatus::PendingReconnect.is_live());
     }

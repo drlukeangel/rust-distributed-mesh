@@ -61,8 +61,8 @@ pub struct RunningNode {
     /// This process's one Node RPC client and live resolver: every Node RPC
     /// caller in the process takes it by clone.
     pub node_rpc: crate::node_rpc::ProcessNodeRpc,
-    /// The state this birth owes its authority (i143.e4.s11): re-declared every publish cadence
-    /// until the authority answers by name (`declare_loop`).
+    /// The state this birth owes the holder of its mesh's primary seat: one owed call per
+    /// declaration (i146 Q52), retargeted when the seat moves (`declare_loop`).
     pub owed_state: Arc<Mutex<OwedDeclaration>>,
     /// Cancelled when this birth is retired (drain-node, stop-node, its process stopping): the
     /// `hydrate_before_ready` hook and any pull it has in flight end.
@@ -79,24 +79,10 @@ pub struct RunningNode {
     declare_loop: tokio::task::JoinHandle<()>,
 }
 
-/// The digest key carrying a node's in-flight handler count.
-
-/// `RDM_DRAIN_DEADLINE_MS` (default 5000): how long a stopping node waits
-/// for in-flight handlers. Strictly shorter than node-admin's stop grace.
-/// Drain deadline plus the leave linger
-/// ([`rdm_transport::membership::leave_linger_from_env`]) stay inside
-/// node-admin's stop grace.
-pub use rdm_transport::membership::leave_linger_from_env;
-
 /// Whether this process is parked (stopped by `stop-node`, not started again): the shutdown that
-/// follows has no drain leg, and only a live node drains itself on a signal.
+/// follows deletes no connections, and only a live node runs its own stop on a signal.
 pub fn stop_commanded() -> bool {
     crate::node_self::parking().is_parked()
-}
-
-/// The drain deadline from `RDM_DRAIN_DEADLINE_MS`, 5000 ms when unset.
-pub fn drain_deadline_from_env() -> Duration {
-    Duration::from_millis(std::env::var("RDM_DRAIN_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
 }
 
 impl RunningNode {
@@ -132,40 +118,6 @@ impl RunningNode {
         }
     }
 
-    /// Declare this birth's `state` to its authority (i143.e4.s11): the node-admins of its mesh
-    /// it hears, tried in path order until one answers by name (the mesh-primary applies; another
-    /// admin answers `RejectedNotAuthority: receiver-not-primary` and the next is tried). A
-    /// definitive answer ends the attempt; `NotSent`/`Indeterminate` leaves it to the next call
-    /// site. Nothing here gates gossip: the digest already says the state.
-    pub(crate) async fn declare_own(&self, state: rdm_core::status::NodeState) -> Option<String> {
-        self.owed_state.lock().unwrap().owe((state, None));
-        declare_once(&self.digest.node, &self.membership, &self.node_rpc.client, &self.owed_state, &self.held).await
-    }
-
-    /// Two-phase shutdown, phase one (node-rpc §35): new calls get a typed
-    /// `Draining`, the digest says `Draining` with the in-flight count, and
-    /// existing handlers may finish until `deadline`. Returns how many were
-    /// still running at the deadline.
-    pub async fn drain(&self, deadline: Duration) -> u64 {
-        self.cancel.cancel();
-        self.server.begin_connections_delete();
-        *self.status.lock().unwrap() = MemberStatus::Draining;
-        let _ = self.declare_own(rdm_core::status::NodeState::Draining).await;
-        let stats = self.server.stats();
-        let until = tokio::time::Instant::now() + deadline;
-        loop {
-            let in_flight = rdm_transport::ServerStats::get(&stats.in_flight);
-            let mut d = self.digest.clone();
-            d.status = MemberStatus::Draining;
-            d.in_flight = Some(in_flight);
-            let _ = self.membership.publish(&d).await;
-            if in_flight == 0 || tokio::time::Instant::now() >= until {
-                return in_flight;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
     /// The shutdown of a parked process (stopped by `stop-node`, not started again): its mesh
     /// connections were cut and `Leaving` declared when it stopped, so nothing is announced. The
     /// tasks end and the endpoints close once every reply it owes is settled.
@@ -187,38 +139,28 @@ impl RunningNode {
         }
     }
 
-    /// Publish `Leaving` and stop serving.
-    /// Phase two: say `Leaving` on the fabric, keep saying it every
-    /// `LEAVE_EVERY` for `linger`, then shut each router down: `Router::shutdown` shuts every
-    /// protocol it serves down, gossip included, once, and then closes the endpoint. Nothing here
-    /// shuts gossip down beside it: a second `Gossip::shutdown` meets an actor already stopped.
-    ///
-    /// iroh-gossip queues a broadcast and acknowledges nothing, and closing
-    /// the endpoint drops whatever is still unsent; the linger keeps the
-    /// node on the fabric long enough for its own `Leaving` to go out.
-    pub async fn stop(self, linger: Duration) {
-        crate::taskdump::watched("stop", self.stop_inner(linger)).await
+    /// The stop this process's own signal runs (i146 Q55; node-stop.md steps 2-4, the node its own
+    /// subject, [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connections.delete
+    /// { All }` under the birth's bound, its connections-deleting owed to its mesh-primary; the leave
+    /// step (its gossip neighbours left, its Node RPC pool cut, nothing published); its stopped state
+    /// owed to its mesh-primary. Nothing waits on an answer. Then each router shuts down:
+    /// `Router::shutdown` shuts every protocol it serves down, gossip included, once, and then closes
+    /// the endpoint; the owed declarations end with the process (node-rpc.md §34).
+    pub async fn stop(self) {
+        crate::taskdump::watched("stop", self.stop_inner()).await
     }
 
-    async fn stop_inner(self, linger: Duration) {
+    async fn stop_inner(self) {
         self.cancel.cancel();
-        *self.status.lock().unwrap() = MemberStatus::Leaving;
-        let _ = self.declare_own(rdm_core::status::NodeState::Leaving).await;
-        let (digest, membership) = (self.digest.clone(), self.membership.clone());
-        rdm_transport::membership::announce_leaving(linger, rdm_transport::membership::LEAVE_EVERY, || {
-            let mut d = digest.clone();
-            d.status = MemberStatus::Leaving;
-            let m = membership.clone();
-            async move {
-                let _ = m.publish(&d).await;
-            }
-        })
-        .await;
+        let stopped = self.own.stop_on_signal().await;
         self.abort_publisher();
         self.node_rpc_feed.abort();
         self.declare_loop.abort();
         for r in self.routers {
             let _ = r.shutdown().await;
+        }
+        for owed in stopped.declarations {
+            owed.abort();
         }
     }
 }
@@ -1293,7 +1235,7 @@ fn node_state_of(s: MemberStatus) -> rdm_core::status::NodeState {
     match s {
         MemberStatus::Pending => N::Pending,
         MemberStatus::ReadyForTraffic => N::ReadyForTraffic,
-        MemberStatus::Draining => N::Draining,
+        MemberStatus::ConnectionsDeleting => N::ConnectionsDeleting,
         MemberStatus::Leaving => N::Leaving,
     }
 }

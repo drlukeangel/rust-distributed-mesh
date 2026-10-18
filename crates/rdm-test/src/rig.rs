@@ -522,7 +522,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                         match state {
                             NodeState::ReadyForTraffic => book.started(node_id, incarnation),
                             NodeState::Pending => book.reported(node_id, incarnation, M::Pending),
-                            NodeState::Draining => book.reported(node_id, incarnation, M::Draining),
+                            NodeState::ConnectionsDeleting => book.reported(node_id, incarnation, M::ConnectionsDeleting),
                             NodeState::Leaving => book.reported(node_id, incarnation, M::Leaving),
                         };
                         return Ok(rdm_core::reply::applied());

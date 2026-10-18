@@ -8,7 +8,7 @@
 use anyhow::{anyhow, Result};
 use rdm_core::connections::CarrierPolicy;
 use rdm_core::NodeKind;
-use rdm_node::{drain_deadline_from_env, launch_for, leave_linger_from_env, Role};
+use rdm_node::{launch_for, Role};
 use rdm_test::{compose, node, originate, Oracles};
 use tracing::Instrument;
 
@@ -62,13 +62,8 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
     node::wait_for_signal(binary).await;
-    let deadline = drain_deadline_from_env();
-    let drain = tracing::info_span!("rdm.mesh.node.update.via-drain", node = %launch.name, incarnation_id = %launch.incarnation, deadline_ms = deadline.as_millis() as u64, in_flight_at_deadline = tracing::field::Empty);
-    let left = running.drain(deadline).instrument(drain.clone()).await;
-    drain.record("in_flight_at_deadline", left);
-    drop(drain);
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation).in_scope(|| tracing::info!("stopping"));
-    running.stop(leave_linger_from_env()).await;
+    running.stop().await;
     Ok(())
 }
 

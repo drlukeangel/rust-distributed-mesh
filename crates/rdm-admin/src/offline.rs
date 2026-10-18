@@ -74,7 +74,7 @@ pub struct UnreachableMark {
 /// (connections-deleting, stopping, stopped).
 pub(crate) fn marks_over(recorded: Option<rdm_core::MemberStatus>) -> bool {
     match recorded {
-        Some(rdm_core::MemberStatus::Draining | rdm_core::MemberStatus::Leaving) => false,
+        Some(rdm_core::MemberStatus::ConnectionsDeleting | rdm_core::MemberStatus::Leaving) => false,
         Some(rdm_core::MemberStatus::Pending | rdm_core::MemberStatus::ReadyForTraffic) | None => true,
     }
 }
@@ -583,7 +583,7 @@ fn silence_word(status: Option<crate::model::NodeStatus>) -> &'static str {
         None => "cleared",
         Some(Pending) => "pending",
         Some(ReadyForTraffic) => "ready-for-traffic",
-        Some(Draining) => "connections-deleting",
+        Some(ConnectionsDeleting) => "connections-deleting",
         Some(Leaving) => "leaving",
         Some(PendingReconnect) => "pending-reconnect",
         Some(Restarting) => "restarting",
@@ -619,7 +619,7 @@ pub(crate) mod tests {
         for live in [None, Some(M::Pending), Some(M::ReadyForTraffic)] {
             assert!(marks_over(live), "{live:?}: marked");
         }
-        for lifecycle in [M::Leaving, M::Draining] {
+        for lifecycle in [M::Leaving, M::ConnectionsDeleting] {
             assert!(!marks_over(Some(lifecycle)), "{lifecycle:?}: kept, never overwritten");
         }
     }

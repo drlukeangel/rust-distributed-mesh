@@ -79,7 +79,7 @@ fn a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_b
         assert_eq!((issued[0]["outcome"].as_str(), issued[0]["cert_len"].as_str()), ("issued", running.member_cert.len().to_string().as_str()), "{issued:?}");
         assert_eq!(issued[0]["issued_at_rafka_ms"], cert.issued_at_ms.to_string());
 
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -102,7 +102,7 @@ fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation() {
         let first = node::start(&first_launch, |b, _| b).await.expect("the first birth starts");
         let first_bytes = first.member_cert.clone();
         let first_cert = TestMemberCert::decode(&first_bytes).unwrap();
-        first.stop(Duration::ZERO).await;
+        first.stop().await;
 
         let second_launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), Some(first_launch.incarnation.clone()), node_id);
         admin.deployed(&second_launch, &key);
@@ -115,7 +115,7 @@ fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation() {
         assert_eq!((first_cert.node_id.as_str(), first_cert.endpoint_key.as_str()), (second_cert.node_id.as_str(), second_cert.endpoint_key.as_str()), "the same node and key");
         assert!(second_cert.issued_at_ms > first_cert.issued_at_ms, "issued later on rafka-time: {} then {}", first_cert.issued_at_ms, second_cert.issued_at_ms);
 
-        second.stop(Duration::ZERO).await;
+        second.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -177,7 +177,7 @@ fn the_member_cert_is_in_the_hydrate_context_and_equals_the_handles() {
         assert_eq!(seen[0].as_deref(), Some(running.member_cert.as_slice()), "the hook's context carries the handle's bytes");
         assert_eq!(TestMemberCert::decode(&running.member_cert).unwrap().name, "mesh1.rpc.1");
 
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -205,7 +205,7 @@ fn an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and
         assert!(running.member_cert.is_empty(), "no certs: empty bytes");
         let named: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.cert.create.via-no-certs-configured").map(|(_, _, f)| f.clone()).collect();
         assert_eq!(named.len(), 1, "a span names the choice: {named:?}");
-        running.stop(Duration::ZERO).await;
+        running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
