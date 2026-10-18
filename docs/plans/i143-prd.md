@@ -2458,6 +2458,9 @@ Page diffs (delegated ruling `R-FM2`):
 
 ### State
 
+**Landing `89d6ded2` RED (195 s): two owned cells, no outside disposition.** Transport process checks 167/167 GREEN. `rounds.rs:390` asserted the old no-row-before-state-commit rule; its four observed files are exactly Q54's four acknowledged ReadyForTraffic declarations under `status/<mesh>/declared`. The conformance assertion now requires that exact set of four birth-keyed rows, while every other held-row, connection, name-claim and subsequent publication assertion stands. RED source is `89d6ded2`, log `s88-resumed-named-land.log` and per-cell `gates-e7s3-89d6ded2.log.d/rounds.log`. The probe remains an owned read: run 11, exit 0, Reply, no new file, 20/20 unconfirmed at 2000 ms, trace `dfc38c2384ff83302cc162c1e4914311`; `gates-e7s3-89d6ded2.log.d/rdm-test:main.log`. No bounds or file/span assertions changed.
+
+
 Land preflight `c0b26b39` refused the newly added held-log test identifier's word `drain` before a gate ran. Renamed both the cell and its self-invocation to `a_held_log_writer_ends_the_exit_flush_at_its_one_bound_named`; no behavior or bound change. Original RED remains cited above.
 
 
