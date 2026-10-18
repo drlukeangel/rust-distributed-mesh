@@ -460,6 +460,8 @@ seat each. Independent of i146 and i147.
 
 RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview** = `docs/architecture/deployment-provider.md` (this PRD's rewrite); **how-to** = `lifecycles/node-runtime-inspect.md` (the one primitive a caller uses, with its answers); **runbook** = a new `docs/eng/provider-runbook.md` (`planned:docs/eng/provider-runbook.md`): what `os-stopped`, `held-running`, `data-dir-lost` and `data-dir-unreadable` look like on `node.get` and in Jaeger, what each means, and what a person does about each (continue the runtime, repair the disk, delete the node), with the exact span names.
 
+- **Q51 = A (Luke, 2026-10-17; `docs/plans/rulings/i144-q51-lost-mesh-seat-after-takeover.md`).** One takeover row moves the fabric seat and the lost mesh's primary seat; the lost birth's row is `Deleted { exit_proof: takeover { revision } }`; the fabric-primary writes that mesh's rows until the re-born admin takes the vacant seat; four page lines land with the code; durable format moved (optional holder). Dev, lane e4s8, e6 item 3.
+
 ## Verification
 
 - [ ] Seed assertion (§ Seed spec) green in both mods at gate cadence; traces cited in e1's row.
