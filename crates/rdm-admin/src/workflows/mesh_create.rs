@@ -4,4 +4,4 @@
 //! topology names the new mesh. A mesh comes into being with its first node-admin.
 
 pub use crate::deployment::pipeline::CreateMeshStep;
-pub use crate::mesh_claims::{InFlight, MeshClaims, Taken};
+pub use crate::mesh_claims::{InFlight, Taken};

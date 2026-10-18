@@ -414,7 +414,7 @@ pub trait DeploymentProvider: Send + Sync {
 /// runs. A blocking call: run it on the blocking pool.
 pub(crate) fn write_launch_record(data_dir: &std::path::Path, file: &str, record: &serde_json::Value) -> Result<(), String> {
     let tmp = data_dir.join(format!("{file}.tmp"));
-    crate::record_store::write_file(data_dir, &tmp, &data_dir.join(file), record.to_string().as_bytes()).map_err(|e| e.to_string())
+    crate::durable_file::write_file(data_dir, &tmp, &data_dir.join(file), record.to_string().as_bytes()).map_err(|e| e.to_string())
 }
 
 /// The last `n` lines of `text`, joined with ` | `.

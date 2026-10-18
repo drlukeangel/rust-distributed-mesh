@@ -31,7 +31,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tracing::Instrument;
 
-pub use rdm_node::rounds::{run_action, NoScratchpad, RoundActions, StorePublication};
+pub use rdm_node::rounds::{run_action, NoScratchpad, RoundActions};
+#[cfg(feature = "file-backend")]
+pub use rdm_node::rounds::StorePublication;
 
 /// The reason the Build this admin holds accepted, `accepted`, supersedes the round `key`, or `None`
 /// while the round is current (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to

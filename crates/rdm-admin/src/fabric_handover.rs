@@ -157,6 +157,7 @@ pub enum WriteCutOff {
 /// Applies a [`WriteCutOff`] to this admin's stores (`crate::admin`'s wiring).
 pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
 
+#[cfg(feature = "file-backend")]
 /// The file stores on the fabric's store root a seat transfer cuts off (R14 item 4): the
 /// mesh-primary seat's (the Mesh row, its members' Node rows and contacts, the mesh's status rows) and the fabric-primary
 /// seat's (the Fabric record, and every other mesh's rows). Each seat's stores are cut off only when
@@ -172,6 +173,7 @@ pub struct SeatStores {
     pub status: Arc<crate::status_storage::FileStatusStorage>,
 }
 
+#[cfg(feature = "file-backend")]
 impl SeatStores {
     /// Apply `c`: set cuts off every store the moving seats write and waits for every write already
     /// issued; lift gives them back. A seat that does not move keeps its stores: the fabric seat moved

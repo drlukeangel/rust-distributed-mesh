@@ -23,10 +23,12 @@ pub mod node_rpc;
 pub mod node_self;
 pub mod rafka_time;
 pub mod blocking;
+pub mod durable_file;
 #[cfg(feature = "file-backend")]
 pub mod record_store;
 pub mod rounds;
 pub mod storage;
+pub mod storage_backend;
 pub mod storage_error;
 #[cfg(feature = "file-backend")]
 pub mod store_root;
@@ -87,18 +89,21 @@ pub fn executable_name() -> Result<String> {
         .ok_or_else(|| anyhow!("refusing to start: the executable path {} names no file", exe.display()))
 }
 
+#[cfg(feature = "file-backend")]
 /// The one node executable's run: the role is the node_type its launch names ([`Role::of`]), and
 /// the process runs it to completion as [`run`] does.
 pub async fn run_launched() -> Result<()> {
     run(Role::of(&read_launch()?), &[]).await
 }
 
+#[cfg(feature = "file-backend")]
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
 /// the mesh transport stopping for good), then `node.connections.delete` and leave.
 pub async fn run(role: Role, types: &[&str]) -> Result<()> {
     run_with(role, types, crate::app_hydration::Hydration::none(), |b| b).await
 }
 
+#[cfg(feature = "file-backend")]
 /// [`run`] for a product that hydrates before Ready: `hydration` carries its
 /// `hydrate_before_ready` hook, and `serve_app` adds the product's own ops to the catalog before
 /// it seals. A hook that fails after the node came up Pending ends the process by name.
@@ -111,9 +116,23 @@ pub async fn run_with(
     run_with_alpns(role, types, &[], hydration, serve_app).await
 }
 
+#[cfg(feature = "file-backend")]
 /// [`run_with`], also registering the application's data-plane `alpns` on the process's one endpoint.
 pub async fn run_with_alpns(
     role: Role,
+    types: &[&str],
+    alpns: &[rdm_transport::connections::Alpn],
+    hydration: crate::app_hydration::Hydration,
+    serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
+) -> Result<()> {
+    run_on(role, std::sync::Arc::new(crate::storage_backend::FileNodeBackend), types, alpns, hydration, serve_app).await
+}
+
+/// [`run_with_alpns`] on `storage`: the node's connections rows and its commit-state action are the
+/// ones it opens.
+pub async fn run_on(
+    role: Role,
+    storage: std::sync::Arc<dyn crate::storage_backend::NodeStorageBackend>,
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
     hydration: crate::app_hydration::Hydration,
@@ -136,7 +155,7 @@ pub async fn run_with_alpns(
     }
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_with_rafka_time_hydrating_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, |b, _seams| serve_app(b), types, alpns)
+        let started = crate::node::start_on(&launch, storage, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, |b, _seams| serve_app(b), types, alpns)
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,

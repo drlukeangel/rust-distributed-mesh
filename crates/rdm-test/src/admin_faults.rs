@@ -525,7 +525,7 @@ impl BuildStateAdapter for FaultedBuilds {
         }
         Ok(outcome)
     }
-    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &rdm_admin::mesh_claims::MeshClaims, mesh: &str, row: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::build_state::InFlightClaim, BuildStateError> {
+    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn rdm_admin::storage::MeshStorage, mesh: &str, row: &rdm_admin::mesh_claims::InFlight) -> Result<rdm_admin::build_state::InFlightClaim, BuildStateError> {
         let decided = self.inner.claim_in_flight(claim, claims, mesh, row).await?;
         if decided == rdm_admin::build_state::InFlightClaim::Decided(ClaimOutcome::Won) {
             self.faults.hold(Probe::Claimed { build_id: claim.build_id.to_string(), attempt: claim.attempt, executor: claim.executor.clone() }).await;

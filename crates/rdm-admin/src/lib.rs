@@ -59,6 +59,7 @@ pub(crate) mod reenter;
 pub mod round;
 pub mod seat_watch;
 pub use rdm_node::blocking;
+pub use rdm_node::durable_file;
 #[cfg(feature = "file-backend")]
 pub mod record_store;
 pub mod stopped_gc;
@@ -69,6 +70,7 @@ pub(crate) mod span_capture;
 pub use rdm_node::connection_reconnect;
 pub use rdm_node::connections_writer;
 pub mod storage;
+pub mod storage_backend;
 pub use rdm_node::storage_error;
 #[cfg(feature = "file-backend")]
 pub use rdm_node::store_root;

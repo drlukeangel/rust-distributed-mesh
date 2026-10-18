@@ -271,7 +271,7 @@ impl BuildStateAdapter for FramedBuilds {
     async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, BuildStateError> {
         self.inner.claim_attempt(claim).await
     }
-    async fn claim_in_flight(&self, claim: &crate::build_state::BuildAttemptClaim, claims: &crate::mesh_claims::MeshClaims, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
+    async fn claim_in_flight(&self, claim: &crate::build_state::BuildAttemptClaim, claims: &dyn crate::storage::MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
         self.inner.claim_in_flight(claim, claims, mesh, row).await
     }
     async fn in_flight_live(&self, held: &crate::mesh_claims::InFlight) -> Result<bool, BuildStateError> {
@@ -383,7 +383,7 @@ impl BuildStateAdapter for LaneBuilds {
     async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, BuildStateError> {
         self.inner.claim_attempt(&crate::build_state::BuildAttemptClaim { mesh: self.lane(), ..claim.clone() }).await
     }
-    async fn claim_in_flight(&self, claim: &crate::build_state::BuildAttemptClaim, claims: &crate::mesh_claims::MeshClaims, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
+    async fn claim_in_flight(&self, claim: &crate::build_state::BuildAttemptClaim, claims: &dyn crate::storage::MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
         let lane = self.lane();
         self.inner.claim_in_flight(&crate::build_state::BuildAttemptClaim { mesh: lane.clone(), ..claim.clone() }, claims, mesh, &crate::mesh_claims::InFlight { lane, ..row.clone() }).await
     }
@@ -801,7 +801,7 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
         },
     };
     let row = crate::mesh_claims::InFlight { build_id: opened.build_id.clone(), lane: opened.mesh.clone(), attempt: opened.attempt, claimant: me.to_string(), lane_key: None };
-    if let Err(e) = control.claims.release(&mesh, &row).await {
+    if let Err(e) = control.claims.release_in_flight(&mesh, &row).await {
         tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id.log(), lane = %mesh, attempt = opened.attempt, mesh = %mesh, node = %me, error = %e)
             .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
     }

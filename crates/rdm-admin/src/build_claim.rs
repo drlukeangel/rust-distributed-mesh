@@ -15,29 +15,25 @@
 //! that mesh's drift lane.
 //!
 //! Context is attempt-scoped. The fabric-primary keeps one [`CallContext`] per `(build_id,
-//! attempt)` in a record of its own data dir (`attempt-context/`), written when the attempt comes
+//! attempt)` on its Build log ([`AttemptContexts`]; the file backend keeps it in its own data dir,
+//! `attempt-context/`), written when the attempt comes
 //! into being (the REST request span, or the `via-proven-drift` span) and returned in `Won`. It is
 //! never a Build fact: Build facts are re-broadcast to every new neighbour. A next attempt that
 //! has no context of its own inherits the previous attempt's at claim time.
 
 use crate::build::BuildId;
-use crate::mesh_claims::{InFlight, MeshClaims};
-use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome, InFlightClaim};
+use crate::mesh_claims::InFlight;
+use crate::storage::MeshStorage;
+use crate::build_state::{BuildAttemptClaim, BuildStateAdapter, ClaimOutcome, InFlightClaim, LocalBuildLog};
 use crate::model::{EndpointId, NodeId, PathName};
-use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
 use crate::topology::Topology;
 use rdm_transport::ServerBuilder;
 use rdm_core::build_claim::{BuildClaim, BuildClaimReply, BuildClaimRequest};
 use rdm_core::catalog::OpOwner;
 use rdm_core::context::CallContext;
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use tracing::Instrument as _;
-
-const CONTEXT_DIR: &str = "attempt-context";
-const CONTEXT_FORMAT: &str = "attempt-context/1";
 
 /// The caller system every RDM-originated attempt context names.
 pub const CALLER_SYSTEM: &str = "rdm";
@@ -52,36 +48,22 @@ pub fn current_context() -> CallContext {
     }
 }
 
-enum Backing {
-    Files(FileRecords),
-    Memory(Mutex<BTreeMap<String, CallContext>>),
-}
-
-/// The fabric-primary's local record of each attempt's context, keyed `(build_id, attempt)`.
-/// Local to the admin that wrote it: nothing here is gossiped, journaled as a fact or read by
-/// another admin.
+/// Each attempt's context, keyed `(build_id, lane, attempt)`, on the admin's Build log
+/// ([`LocalBuildLog::put_attempt_context`]). Local to the admin that wrote it: nothing here is
+/// gossiped, journaled as a fact or read by another admin.
 pub struct AttemptContexts {
-    backing: Backing,
+    log: Arc<dyn LocalBuildLog>,
 }
 
 impl AttemptContexts {
-    /// The record under `<own_data_dir>/attempt-context/`.
-    pub async fn open(own_data_dir: &Path, writer: &crate::model::IncarnationId) -> Result<Self, StorageError> {
-        Ok(Self { backing: Backing::Files(FileRecords::open(own_data_dir, CONTEXT_DIR, writer).await?) })
+    /// The contexts `log` keeps.
+    pub fn on(log: Arc<dyn LocalBuildLog>) -> Self {
+        Self { log }
     }
 
-    /// A record held in memory only: a fixture whose admin has no data dir.
+    /// Contexts held in memory only: a fixture whose admin has no data dir.
     pub fn in_memory() -> Self {
-        Self { backing: Backing::Memory(Mutex::new(BTreeMap::new())) }
-    }
-
-    /// `<build_id>-<attempt>` for the fabric lane, `<build_id>-<mesh>-<attempt>` for a mesh's drift
-    /// lane: an attempt number names one attempt per lane.
-    fn key(build_id: &BuildId, lane: Option<&str>, attempt: u32) -> String {
-        match lane {
-            None => format!("{build_id}-{attempt}"),
-            Some(mesh) => format!("{build_id}-{mesh}-{attempt}"),
-        }
+        Self::on(Arc::new(crate::build_state::MemoryBuildStateAdapter::new()))
     }
 
     /// Put the context of the fabric lane's `(build_id, attempt)`: a blind put of its own key.
@@ -91,14 +73,7 @@ impl AttemptContexts {
 
     /// Put the context of `(build_id, lane, attempt)`: a blind put of its own key.
     pub async fn put_lane(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &CallContext) -> Result<(), StorageError> {
-        let key = Self::key(build_id, lane, attempt);
-        match &self.backing {
-            Backing::Files(f) => f.write(&key, CONTEXT_FORMAT, context).await,
-            Backing::Memory(m) => {
-                m.lock().unwrap().insert(key, context.clone());
-                Ok(())
-            }
-        }
+        self.log.put_attempt_context(build_id, lane, attempt, context).await
     }
 
     /// The context of the fabric lane's `(build_id, attempt)`, when one was put.
@@ -108,11 +83,7 @@ impl AttemptContexts {
 
     /// The context of `(build_id, lane, attempt)`, when one was put.
     pub async fn get_lane(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<CallContext>, StorageError> {
-        let key = Self::key(build_id, lane, attempt);
-        match &self.backing {
-            Backing::Files(f) => f.read(&key, CONTEXT_FORMAT).await,
-            Backing::Memory(m) => Ok(m.lock().unwrap().get(&key).cloned()),
-        }
+        self.log.attempt_context(build_id, lane, attempt).await
     }
 
     /// The context `attempt` is claimed with: its own, else the previous attempt's (a hand-off
@@ -146,7 +117,7 @@ impl AttemptContexts {
 /// releases the row taken for it; a claim `Lost` to another executor of the same attempt leaves the
 /// row, which names the attempt, to its verdict. Who may claim is the caller's rule
 /// ([`ClaimDoor`]'s seat check, the recovery door's recoverer), decided before this.
-pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &MeshClaims, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str) -> BuildClaimReply {
+pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims: &dyn MeshStorage, contexts: &AttemptContexts, claim: &BuildAttemptClaim, mesh: &str) -> BuildClaimReply {
     let lane = claim.mesh.as_deref();
     let span = tracing::info_span!(
         "rdm.node_admin.build.update.via-claim-decision",
@@ -173,7 +144,7 @@ pub async fn decide_claim(me: &PathName, builds: &dyn BuildStateAdapter, claims:
             },
             Ok(ClaimOutcome::Lost { holder }) => rdm_core::reply::build_claim::lost(holder),
             Ok(ClaimOutcome::NotOpen { next }) => {
-                if let Err(e) = claims.release(mesh, &row).await {
+                if let Err(e) = claims.release_in_flight(mesh, &row).await {
                     return rdm_core::reply::build_claim::not_ready(format!("{me}: attempt {} of {} is not open (next {next:?}) and the in-flight row of mesh {mesh} taken for it could not be released: {e}", claim.attempt, claim.build_id));
                 }
                 rdm_core::reply::build_claim::not_open(next)
@@ -208,7 +179,7 @@ pub struct ClaimDoor {
     /// The observability contexts of the attempts it decided.
     pub contexts: Arc<AttemptContexts>,
     /// Each mesh's in-flight row: what a claim takes before it is decided.
-    pub claims: Arc<MeshClaims>,
+    pub claims: Arc<dyn MeshStorage>,
 }
 
 impl ClaimDoor {
@@ -258,7 +229,7 @@ impl ClaimDoor {
             return refusal;
         }
         let claim = BuildAttemptClaim { claimant: Some(me.to_string()), mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, executor: executor.to_string() };
-        decide_claim(&me, &*self.builds, &self.claims, &self.contexts, &claim, &mesh).await
+        decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &mesh).await
     }
 
     /// A request off the wire: the seat first (a receiver that may not claim in the request's lane

@@ -294,6 +294,12 @@ pub trait FabricStorage: Send + Sync {
     async fn seat_transfers(&self) -> Result<Vec<SeatTransferRow>, FabricStorageError> {
         Ok(self.seat_moves().await?.iter().filter_map(|m| SeatTransferRow::of_move(&m.row)).collect())
     }
+    /// The committed fabric seat record this storage reads (set once at boot, once membership holds
+    /// the seat records): the `fabric/` rows it holds before the fabric's first state-commit (its
+    /// Fabric identity, written while it held the fabric seat) are written only while the record
+    /// still says this writer holds the fabric seat; a writer whose seat moved first drops them,
+    /// named (R14 item 2).
+    fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource);
 }
 
 /// A fabric store held in memory.
@@ -315,6 +321,8 @@ impl FabricStorage for MemoryFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         Ok(self.identity.lock().unwrap().clone())
     }
+    /// One process's rows: nothing is held for a later state-commit, so no seat gates their write.
+    fn set_seat_source(&self, _seat: crate::fabric_builds::SeatSource) {}
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // The look and the insert are one step under the identity's lock.
         let mut held = self.identity.lock().unwrap();
@@ -468,18 +476,6 @@ impl FileFabricStorage {
         Ok(Self { names, records, moves, writer: writer.clone(), seat: SeatSlot::default() })
     }
 
-    /// The committed fabric seat record this writer reads (set once). The `fabric/` rows it holds in
-    /// its scratchpad (its Fabric identity, written while it held the fabric seat)
-    /// are published only while the record still says it does; a writer whose seat moved before the
-    /// publication drops them, named (R14 item 2).
-    pub fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
-        let _ = self.seat.0.set(seat);
-        for store in self.fabric_primary_records() {
-            let (slot, writer) = (self.seat.clone(), self.writer.clone());
-            store.set_publish_gate(std::sync::Arc::new(move || slot.open(&writer)));
-        }
-    }
-
     /// The records the fabric-primary seat writes (R14 item 2): the fabric's claim of its name, and
     /// the Fabric identity and shutdown. What a node.fabric-primary.update moving that seat cuts off,
     /// and what a publication writes only while the committed fabric seat record names this writer.
@@ -494,6 +490,13 @@ impl FileFabricStorage {
 impl FabricStorage for FileFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await
+    }
+    fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
+        let _ = self.seat.0.set(seat);
+        for store in self.fabric_primary_records() {
+            let (slot, writer) = (self.seat.clone(), self.writer.clone());
+            store.set_publish_gate(std::sync::Arc::new(move || slot.open(&writer)));
+        }
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // R-FN1: the fabric's (path, name) claim, an insert-and-fail at `<store_dir>/fabrics/<name>`
@@ -655,15 +658,15 @@ impl crate::record_store::HeldStore for MoveStore {
 /// The seals a birth `by` owes on a Build lane before it appends under a revision (Q35): for every
 /// committed move of the lane's seat from an earlier revision, that revision's seal naming the move.
 pub fn seals_owed(storage: std::sync::Arc<dyn FabricStorage>, by: rdm_core::handover::HandoverBirth) -> crate::build_state::SealsOwed {
-    std::sync::Arc::new(move |lane: crate::build_lanes::LaneId, below: u64| {
+    std::sync::Arc::new(move |lane: crate::build_state::LaneId, below: u64| {
         let (storage, by) = (storage.clone(), by.clone());
         Box::pin(async move {
             let seat = match &lane {
-                crate::build_lanes::LaneId::Fabric => rdm_core::seat::transfer::Seat::FabricPrimary,
-                crate::build_lanes::LaneId::Mesh(mesh) => rdm_core::seat::transfer::Seat::MeshPrimary { mesh: mesh.clone() },
+                crate::build_state::LaneId::Fabric => rdm_core::seat::transfer::Seat::FabricPrimary,
+                crate::build_state::LaneId::Mesh(mesh) => rdm_core::seat::transfer::Seat::MeshPrimary { mesh: mesh.clone() },
             };
             let moves = storage.seat_moves().await.map_err(|e| format!("fabric.storage, the fabric's seat moves could not be read for the seals of {}: {e}", lane.name()))?;
-            Ok(moves.iter().flat_map(|m| m.row.seats.iter().filter(|s| s.seat == seat && s.from_revision < below).map(|s| crate::build_lanes::LaneSeal { revision: s.from_revision, sealed_by: m.t, by: by.clone() }).collect::<Vec<_>>()).collect())
+            Ok(moves.iter().flat_map(|m| m.row.seats.iter().filter(|s| s.seat == seat && s.from_revision < below).map(|s| crate::build_state::LaneSeal { revision: s.from_revision, sealed_by: m.t, by: by.clone() }).collect::<Vec<_>>()).collect())
         })
     })
 }

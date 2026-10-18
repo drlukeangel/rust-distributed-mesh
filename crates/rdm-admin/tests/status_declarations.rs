@@ -76,6 +76,9 @@ impl NodesStorage for Rows {
     async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_runtime(row).await
     }
+    async fn put_admin_runtime(&self, admin: &rdm_admin::model::NodeId, admin_data_dir: &std::path::Path, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_admin_runtime(admin, admin_data_dir, row).await
+    }
     async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.runtimes().await
     }
@@ -656,6 +659,9 @@ struct RefusingRows(MemoryNodesStorage);
 impl NodesStorage for RefusingRows {
     async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.put_runtime(row).await
+    }
+    async fn put_admin_runtime(&self, admin: &rdm_admin::model::NodeId, admin_data_dir: &std::path::Path, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.0.put_admin_runtime(admin, admin_data_dir, row).await
     }
     async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.0.runtimes().await

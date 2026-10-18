@@ -2,10 +2,11 @@
 //! `rafka-node-admin` and a consumer's own node-admin executable are this call under their own
 //! service name.
 
-use crate::admin::{start_with, AdminConfig};
+use crate::admin::{start_on, AdminConfig};
 use crate::wiring::Wiring;
 use tracing::Instrument;
 
+#[cfg(feature = "file-backend")]
 /// Run a node-admin to completion: configured from the environment, serving its control API,
 /// leaving on a fabric shutdown or a signal. `service` is the telemetry service name and the
 /// prefix of its console lines.
@@ -13,10 +14,17 @@ pub async fn run(service: &str) {
     run_with(service, |_| Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), ..Wiring::no_certs() }).await
 }
 
+#[cfg(feature = "file-backend")]
 /// [`run`], for an executable that decorates the parts its node-admin is built from: `wiring` is
 /// called once with the configuration the environment produced, inside the runtime, before the
 /// admin starts.
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
+    run_on(service, std::sync::Arc::new(crate::storage_backend::FileBackend), wiring).await
+}
+
+/// [`run_with`] on `storage`: every durable read and write of the node-admin goes through the six
+/// boundaries it opens.
+pub async fn run_on(service: &str, storage: std::sync::Arc<dyn crate::storage_backend::StorageBackend>, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
     // Heard from the first line: a stop that arrives while the admin boots ends the boot by name.
     listen_for_stop();
     let _telemetry = rdm_transport::init_evidence_telemetry(service);
@@ -49,7 +57,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     let running = {
         use tracing::Instrument;
         let started = tokio::select! {
-            r = start_with(cfg, wiring).instrument(tracing::Span::none()) => r,
+            r = start_on(cfg, wiring, storage).instrument(tracing::Span::none()) => r,
             () = stop_requested() => {
                 // Stopped before it booted: the boot ends by name and the process exits through its
                 // telemetry drain (the guard drops as this returns).

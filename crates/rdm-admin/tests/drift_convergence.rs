@@ -190,7 +190,7 @@ struct Estate {
     records: Arc<rdm_admin::admin::Records>,
     /// Each mesh's in-flight row (R-BI7 caveat 3), one set of rows for every admin of the estate, as
     /// the fabric's shared store root holds them.
-    claims: Arc<rdm_admin::mesh_claims::MeshClaims>,
+    claims: Arc<dyn rdm_admin::storage::MeshStorage>,
 }
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
@@ -224,7 +224,7 @@ async fn estate() -> Estate {
     let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), topology, &fp).await.unwrap();
     let runner = Arc::new(Runner { world: world.clone(), view: view.clone(), book: book.clone(), fabric_id, ran: Mutex::new(Vec::new()), born: Mutex::new(Vec::new()), builds: builds.clone(), hear_after_birth: std::sync::atomic::AtomicBool::new(false), recovering: Mutex::new(Vec::new()), fail_recovery_create: std::sync::atomic::AtomicBool::new(false) });
     let dispatch = crate::loopback::Loopback::new(builds.clone(), builds.clone(), view.clone(), runner.clone());
-    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory()) }
+    Estate { provider: Provider(world.clone()), world, builds, accepted, view, book, runner, dispatch, records: Arc::new(exit_records()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }
 }
 
 /// A new birth at `path`: a runtime in the world, a digest in membership, a live node.

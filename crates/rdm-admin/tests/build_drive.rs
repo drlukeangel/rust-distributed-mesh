@@ -128,7 +128,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         me: me.clone(),
         topology: topology.clone(),
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rdm_admin::storage::MemoryMeshStorage::default()) }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
         departure: proofs.clone(),
@@ -2204,7 +2204,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
         let topology = Arc::new(RwLock::new(t.clone()));
         let contexts = Arc::new(AttemptContexts::in_memory());
-        let claims = Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory());
+        let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
         let mut cp = ControlPlane::new(builds.clone(), accepted, boot.clone(), t, crate::adopted_time()).with_contexts(contexts.clone()).with_claims(claims.clone());
         cp.topology = topology.clone();
 

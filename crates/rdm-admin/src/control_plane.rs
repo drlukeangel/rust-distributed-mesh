@@ -60,7 +60,7 @@ pub struct ControlPlane {
     pub contexts: Arc<crate::build_claim::AttemptContexts>,
     /// Each mesh's in-flight row (R-BI7 caveat 3, `crate::mesh_claims`): what a drift attempt this
     /// admin opens as its mesh's primary takes before any fact of it is written.
-    pub claims: Arc<crate::mesh_claims::MeshClaims>,
+    pub claims: Arc<dyn crate::storage::MeshStorage>,
     /// The rafka-time this admin stamps its Builds and attempts with.
     pub time: rdm_transport::clock::RafkaTime,
     /// Where this fabric-primary admits a Build or an attempt: held from the check that no Build is
@@ -99,7 +99,7 @@ impl ControlPlane {
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
-            claims: Arc::new(crate::mesh_claims::MeshClaims::in_memory()),
+            claims: Arc::new(crate::storage::MemoryMeshStorage::default()),
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
             first_ready: crate::fabric_state::FirstReady::new(),
@@ -123,7 +123,7 @@ impl ControlPlane {
     }
 
     /// This control plane taking each mesh's in-flight row in `claims` (the fabric's store root).
-    pub fn with_claims(mut self, claims: Arc<crate::mesh_claims::MeshClaims>) -> Self {
+    pub fn with_claims(mut self, claims: Arc<dyn crate::storage::MeshStorage>) -> Self {
         self.claims = claims;
         self
     }
@@ -232,7 +232,7 @@ impl ControlPlane {
             // admin whose in-flight row of the mesh names it, the one that opened it.
             if held.held_by.is_none() {
                 let me = self.held_name().await;
-                let row = self.claims.held(mesh).await.map_err(|e| {
+                let row = self.claims.in_flight(mesh).await.map_err(|e| {
                     Refusal::Unavailable(format!("{me}: mesh {mesh} is held by an attempt of {} that no one claimed, and the mesh's in-flight row naming its holder could not be read: {e}", held.current_build_id))
                 })?;
                 held.held_by = row.filter(|r| r.build_id == held.current_build_id && r.lane.as_deref() == Some(mesh)).map(|r| r.claimant);
@@ -295,7 +295,7 @@ impl ControlPlane {
             return Err(Refusal::State(e));
         }
         let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string(), lane_key: None };
-        if let Err(e) = self.claims.release(mesh, &held).await {
+        if let Err(e) = self.claims.release_in_flight(mesh, &held).await {
             span.record("outcome", "in-flight-unreleased");
             span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
             return Err(Refusal::Unavailable(format!("{me}: attempt {attempt} of mesh {mesh}'s lane of {} is ended on {claimant}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", current.build_id)));
@@ -772,7 +772,7 @@ impl ControlPlane {
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
             let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), lane_key: None };
-            let standing = match self.claims.held(&path.mesh).await {
+            let standing = match self.claims.in_flight(&path.mesh).await {
                 Ok(standing) => standing.filter(|held| !held.same_attempt(&row)),
                 Err(e) => return Err(Refusal::Unavailable(format!("{me}: the in-flight row of mesh {} could not be read for attempt {attempt} of {}: {e}", path.mesh, current.build_id))),
             };
@@ -786,7 +786,7 @@ impl ControlPlane {
                 };
                 if let Some((claimant, n, exit)) = departed {
                     let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id.log(), lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %exit.incarnation_id.as_str(), exit_proof = %exit.proof, node = %me, outcome = tracing::field::Empty);
-                    if let Err(e) = self.claims.release(&path.mesh, &held).await {
+                    if let Err(e) = self.claims.release_in_flight(&path.mesh, &held).await {
                         release.record("outcome", "in-flight-unreleased");
                         return Err(Refusal::Unavailable(format!("{me}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", path.mesh, held.attempt, held.build_id)));
                     }
@@ -803,7 +803,7 @@ impl ControlPlane {
                 None => self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await?,
             };
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: me.to_string(), claimant: Some(me.to_string()), mesh: opened.mesh.clone() };
-            match crate::build_claim::decide_claim(&me, &*self.builds, &self.claims, &self.contexts, &claim, &path.mesh).await {
+            match crate::build_claim::decide_claim(&me, &*self.builds, &*self.claims, &self.contexts, &claim, &path.mesh).await {
                 rdm_core::build_claim::BuildClaimReply::Won { .. } => Ok(Recovery::Opened(opened)),
                 // Another attempt took the mesh's row between the read above and this claim: the
                 // attempt stays open, claimed by no one, and the next recovery claims it as it stands.

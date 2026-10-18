@@ -17,7 +17,7 @@
 //! retire) and the lifecycle pipeline (a node's `Pending -> ReadyForTraffic`).
 
 use crate::build::BuildOperation;
-use crate::build_state::{BuildStateAdapter, LocalBuildLog as _};
+use crate::build_state::BuildStateAdapter;
 use crate::deployment::endpoint::spec_for;
 use crate::accepted::AcceptedStore;
 use crate::deployment::pipeline::{adoption_missing, CurrentRuntimeAdoption, Publication, 
@@ -249,6 +249,9 @@ mod tests {
     impl crate::storage::NodesStorage for CountingNodes {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_runtime(row).await
+        }
+        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_admin_runtime(admin, admin_data_dir, row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.0.runtimes().await
@@ -683,6 +686,18 @@ mod tests {
         async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
         }
+        async fn take_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
+        }
+        async fn release_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<(), crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
+        }
+        async fn repoint_in_flight(&self, mesh: &str, _: &crate::mesh_claims::InFlight) -> Result<(), crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
+        }
+        async fn in_flight(&self, mesh: &str) -> Result<Option<crate::mesh_claims::InFlight>, crate::storage_error::StorageError> {
+            Err(crate::storage_error::StorageError::Io { file: format!("meshes/{mesh}/claims/in-flight.json"), reason: "the disk did not answer".into() })
+        }
     }
 
     /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a step is committed by its receipt; CLAUDE.md: an
@@ -875,6 +890,9 @@ mod tests {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.0.put_runtime(row).await
         }
+        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.0.put_admin_runtime(admin, admin_data_dir, row).await
+        }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             Err(crate::storage_error::StorageError::Io { file: "runtimes".into(), reason: "Input/output error (os error 5)".into() })
         }
@@ -929,6 +947,9 @@ mod tests {
     impl crate::storage::NodesStorage for CountsRuntimeLists {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_runtime(row).await
+        }
+        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_admin_runtime(admin, admin_data_dir, row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3297,6 +3318,9 @@ mod tests {
     impl crate::storage::NodesStorage for ProbedRows {
         async fn put_runtime(&self, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_runtime(row).await
+        }
+        async fn put_admin_runtime(&self, admin: &crate::model::NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_admin_runtime(admin, admin_data_dir, row).await
         }
         async fn runtimes(&self) -> Result<Vec<crate::storage::RuntimeRow>, crate::storage_error::StorageError> {
             self.inner.runtimes().await

@@ -6,6 +6,7 @@
 //! record at all) is refused by name, never read as a value.
 
 use crate::blocking::blocking_io;
+use crate::durable_file::{sync_dir, write_file};
 use crate::storage_error::StorageError;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -793,25 +794,6 @@ pub async fn cut_off_and_drain(stores: &[&FileRecords], reason: &str) {
     for s in stores {
         s.drain().await;
     }
-}
-
-/// Write `bytes` to `tmp`, fsync, rename to `path`, and fsync `dir`.
-pub fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    use std::io::Write as _;
-    let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
-    let mut f = std::fs::File::create(tmp).map_err(io)?;
-    f.write_all(bytes).map_err(io)?;
-    f.sync_all().map_err(io)?;
-    std::fs::rename(tmp, path).map_err(io)?;
-    sync_dir(dir, path)
-}
-
-/// Sync `dir` after `file` was renamed, linked or removed in it: a change whose directory sync
-/// fails is a failed change, named.
-fn sync_dir(dir: &Path, file: &Path) -> Result<(), StorageError> {
-    std::fs::File::open(dir)
-        .and_then(|d| d.sync_all())
-        .map_err(|e| StorageError::Io { file: file.display().to_string(), reason: format!("the change landed but the directory {} could not be synced: {e}", dir.display()) })
 }
 
 /// Remove `path` from `dir`, if it is there; a removal that must survive a crash syncs its directory.

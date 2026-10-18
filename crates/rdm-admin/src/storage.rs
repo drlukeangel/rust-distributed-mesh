@@ -22,6 +22,7 @@ use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId
 pub use rdm_client::NameHeld;
 #[cfg(feature = "file-backend")]
 use crate::record_store::FileRecords;
+use crate::mesh_claims::{InFlight, Taken};
 use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,20 +131,44 @@ pub trait MeshStorage: Send + Sync {
     async fn claim_mesh(&self, record: &MeshRecord) -> Result<Result<MeshClaim, MeshClaimRefused>, StorageError>;
     /// Every mesh row held.
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
+    /// Take `mesh`'s in-flight row for `claim` (R-BI7 caveat 3, [`crate::mesh_claims`]): the insert of
+    /// the row's key decides. A row standing for the same attempt is that attempt's own (a repeat take,
+    /// by any claimant): `Won`, and the claim of the attempt itself is decided by the Build log. A row
+    /// standing for another attempt is `Held`, naming it. A row the insert met and the read no longer
+    /// finds was released between the two: refused by name, never answered as either outcome. An
+    /// attempt claim is a Build fact, durable when it is taken, before the fabric's first
+    /// state-commit too (Q61, build.md §5.2).
+    async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError>;
+    /// Release `mesh`'s in-flight row held for `attempt`, at that attempt's verdict: the row goes only
+    /// while it names that attempt, so a release never removes another attempt's row. Its one writer
+    /// is the admin that durably recorded the verdict (the seat that holds the attempt's lane), so no
+    /// two releases of one row race.
+    async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError>;
+    /// Point `mesh`'s in-flight row, standing for `row`'s attempt, at `row`'s lane key when it names
+    /// another (Q35: the row names its claim's lane key): the standing row goes while it is that exact
+    /// row, and `row` is inserted. Nothing when the row names `row`'s key already or another attempt.
+    /// A row another attempt inserts between the two is refused by name: this attempt holds the mesh
+    /// no more.
+    async fn repoint_in_flight(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError>;
+    /// The attempt holding `mesh`, when one does: a point read of its in-flight row.
+    async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError>;
 }
 
-/// A mesh store held in memory.
+/// A mesh store held in memory: the Mesh rows at their names, and each mesh's in-flight row.
 #[derive(Debug, Default)]
-pub struct MemoryMeshStorage(Mutex<BTreeMap<String, MeshRecord>>);
+pub struct MemoryMeshStorage {
+    rows: Mutex<BTreeMap<String, MeshRecord>>,
+    in_flight: Mutex<BTreeMap<String, InFlight>>,
+}
 
 #[async_trait]
 impl MeshStorage for MemoryMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        Ok(self.0.lock().unwrap().get(name).cloned())
+        Ok(self.rows.lock().unwrap().get(name).cloned())
     }
     async fn claim_mesh(&self, record: &MeshRecord) -> Result<Result<MeshClaim, MeshClaimRefused>, StorageError> {
         // The internal index is the map's key: the look and the insert are one step under its lock.
-        let mut rows = self.0.lock().unwrap();
+        let mut rows = self.rows.lock().unwrap();
         let claimed = claim_mesh_against(rows.get(&record.name), record);
         if let Ok(MeshClaim::Written { .. }) = claimed {
             rows.insert(record.name.clone(), record.clone());
@@ -151,7 +176,36 @@ impl MeshStorage for MemoryMeshStorage {
         Ok(claimed)
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        Ok(self.0.lock().unwrap().values().cloned().collect())
+        Ok(self.rows.lock().unwrap().values().cloned().collect())
+    }
+    async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError> {
+        // The map's key is the row's: the look and the insert are one step under its lock.
+        let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(match rows.get(mesh) {
+            Some(held) if held.same_attempt(claim) => Taken::Won,
+            Some(held) => Taken::Held(held.clone()),
+            None => {
+                rows.insert(mesh.to_string(), claim.clone());
+                Taken::Won
+            }
+        })
+    }
+    async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError> {
+        let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if rows.get(mesh).is_some_and(|held| held.same_attempt(attempt)) {
+            rows.remove(mesh);
+        }
+        Ok(())
+    }
+    async fn repoint_in_flight(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError> {
+        let mut rows = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(held) = rows.get_mut(mesh).filter(|h| h.same_attempt(row)) {
+            held.lane_key = row.lane_key.clone();
+        }
+        Ok(())
+    }
+    async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
+        Ok(self.in_flight.lock().unwrap_or_else(|e| e.into_inner()).get(mesh).cloned())
     }
 }
 
@@ -159,20 +213,59 @@ impl MeshStorage for MemoryMeshStorage {
 const MESH_FORMAT: &str = "mesh-record/2";
 
 #[cfg(feature = "file-backend")]
-/// `<store root>/meshes/<name>.json`: each mesh's Mesh row, written by that mesh's primary.
-#[derive(Debug)]
+/// The format of a mesh's in-flight row. A row in the retired `mesh-in-flight/1` (no lane key) is
+/// refused by name.
+const IN_FLIGHT_FORMAT: &str = "mesh-in-flight/2";
+
+#[cfg(feature = "file-backend")]
+/// The key of a mesh's in-flight row under `meshes/<mesh>/claims/`.
+const IN_FLIGHT: &str = "in-flight";
+
+#[cfg(feature = "file-backend")]
+/// `<store root>/meshes/<name>.json`: each mesh's Mesh row, written by that mesh's primary; and
+/// `meshes/<mesh>/claims/in-flight.json`, each mesh's in-flight row ([`crate::mesh_claims`]).
 pub struct FileMeshStorage {
     rows: FileRecords,
     /// Every claim is one at a time, so a claim's look at the key and its write are one step against
     /// every other write of this store.
     claims: tokio::sync::Mutex<()>,
+    root: crate::store_root::StoreRoot,
+    writer: IncarnationId,
+    /// `meshes/<mesh>/claims/`, one store per mesh, opened on its first use.
+    in_flight: tokio::sync::Mutex<BTreeMap<String, FileRecords>>,
+}
+
+#[cfg(feature = "file-backend")]
+impl std::fmt::Debug for FileMeshStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileMeshStorage").field("rows", &self.rows).finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "file-backend")]
 impl FileMeshStorage {
     /// Open the store under the fabric's store root, written by the process born as `writer`.
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &IncarnationId) -> Result<Self, StorageError> {
-        Ok(Self { rows: root.records(root.dir(), "meshes", writer).await?, claims: tokio::sync::Mutex::new(()) })
+        Ok(Self {
+            rows: root.records(root.dir(), "meshes", writer).await?,
+            claims: tokio::sync::Mutex::new(()),
+            root: root.clone(),
+            writer: writer.clone(),
+            in_flight: tokio::sync::Mutex::new(BTreeMap::new()),
+        })
+    }
+
+    /// `mesh`'s claims store. An attempt claim is a Build fact, durable on the root when it is
+    /// taken, before the fabric's first state-commit too (Q61, build.md §5.2): opened directly, never
+    /// held in the scratchpad.
+    async fn claims_of(&self, mesh: &str) -> Result<FileRecords, StorageError> {
+        let mut stores = self.in_flight.lock().await;
+        if let Some(s) = stores.get(mesh) {
+            return Ok(s.clone());
+        }
+        let s = FileRecords::open(&self.root.meshes(mesh), "claims", &self.writer).await?;
+        stores.insert(mesh.to_string(), s.clone());
+        Ok(s)
     }
 
     /// The records the mesh-primary seat writes (its Mesh row): what a seat transfer cuts off.
@@ -200,6 +293,44 @@ impl MeshStorage for FileMeshStorage {
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         self.rows.list(MESH_FORMAT).await
+    }
+    async fn take_in_flight(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError> {
+        let store = self.claims_of(mesh).await?;
+        if store.insert(IN_FLIGHT, IN_FLIGHT_FORMAT, claim).await? {
+            return Ok(Taken::Won);
+        }
+        match store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await? {
+            Some(held) if held.same_attempt(claim) => Ok(Taken::Won),
+            Some(held) => Ok(Taken::Held(held)),
+            None => Err(StorageError::Io {
+                file: format!("{}/{IN_FLIGHT}.json", store.store_name()),
+                reason: format!("mesh {mesh}'s in-flight row was live at the insert for attempt {} of {} and gone at the read after it: its holder's verdict released it between the two; nothing is claimed, and the next claim decides on the free row", claim.attempt, claim.build_id),
+            }),
+        }
+    }
+    async fn release_in_flight(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError> {
+        let store = self.claims_of(mesh).await?;
+        if !store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await?.is_some_and(|held| held.same_attempt(attempt)) {
+            return Ok(());
+        }
+        let attempt = attempt.clone();
+        store.remove_released::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT, move |held| held.same_attempt(&attempt)).await
+    }
+    async fn repoint_in_flight(&self, mesh: &str, row: &InFlight) -> Result<(), StorageError> {
+        let store = self.claims_of(mesh).await?;
+        let Some(standing) = store.read::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT).await?.filter(|h| h.same_attempt(row) && h.lane_key != row.lane_key) else { return Ok(()) };
+        let exact = standing.clone();
+        store.remove_released::<InFlight>(IN_FLIGHT, IN_FLIGHT_FORMAT, move |held| *held == exact).await?;
+        if store.insert(IN_FLIGHT, IN_FLIGHT_FORMAT, row).await? {
+            return Ok(());
+        }
+        Err(StorageError::Io {
+            file: format!("{}/{IN_FLIGHT}.json", store.store_name()),
+            reason: format!("mesh {mesh}'s in-flight row for attempt {} of {} was moved from lane key {} to {} and another attempt took the mesh between the two: this attempt holds it no more", row.attempt, row.build_id, standing.lane_key.as_deref().unwrap_or("none"), row.lane_key.as_deref().unwrap_or("none")),
+        })
+    }
+    async fn in_flight(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
+        self.claims_of(mesh).await?.read(IN_FLIGHT, IN_FLIGHT_FORMAT).await
     }
 }
 
@@ -380,6 +511,10 @@ impl NodeRow {
 pub trait NodesStorage: Send + Sync {
     /// Keep the runtime of one birth (a blind put of its own row).
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError>;
+    /// Keep `row` among the runtime rows of the node-admin `admin` this admin is launching, before
+    /// it starts (`CreateRequest::held_runtimes`): a blind put of its own row in that admin's own
+    /// nodes storage, whose data dir is `admin_data_dir`.
+    async fn put_admin_runtime(&self, admin: &NodeId, admin_data_dir: &Path, row: &RuntimeRow) -> Result<(), StorageError>;
     /// Every birth's runtime row this admin holds; folded by the reader.
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError>;
     /// The runtime row of the exact birth `(node_id, incarnation)`: a point read by its key.
@@ -485,6 +620,13 @@ impl NodesStorage for MemoryNodesStorage {
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
         self.runtimes.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
+    }
+    /// One process's rows: a node-admin launched as another process cannot read them.
+    async fn put_admin_runtime(&self, admin: &NodeId, admin_data_dir: &Path, row: &RuntimeRow) -> Result<(), StorageError> {
+        Err(StorageError::Io {
+            file: admin_data_dir.display().to_string(),
+            reason: format!("a memory nodes storage holds this process's rows only: the node-admin {admin} it launches cannot hold the runtime row of {} ({}) from it", row.node_id, row.incarnation_id.as_str()),
+        })
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         Ok(self.runtimes.lock().unwrap().values().cloned().collect())
@@ -900,6 +1042,9 @@ impl FileNodesStorage {
 impl NodesStorage for FileNodesStorage {
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
         self.runtimes.write(&row.key(), RUNTIME_FORMAT, row).await
+    }
+    async fn put_admin_runtime(&self, _admin: &NodeId, admin_data_dir: &Path, row: &RuntimeRow) -> Result<(), StorageError> {
+        Self::put_runtime_in(admin_data_dir, &self.writer, row).await
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
         self.runtimes.list(RUNTIME_FORMAT).await

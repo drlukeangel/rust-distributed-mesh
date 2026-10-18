@@ -4,6 +4,10 @@
 //! status pending, each mesh's first node-admin is created, the first mesh's primary
 //! becomes the fabric-primary, and the fabric climbs to ready-for-traffic.
 
-pub use crate::fabric_rounds::{FabricRounds, NoScratchpad, RoundActions, StorePublication};
+pub use crate::fabric_rounds::{FabricRounds, NoScratchpad, RoundActions};
+#[cfg(feature = "file-backend")]
+pub use crate::fabric_rounds::StorePublication;
 pub use crate::fabric_state::{FabricState, FirstReady};
-pub use crate::fabric_storage::{FabricClaim, FabricIdentity, FabricStorage, FileFabricStorage, MemoryFabricStorage};
+pub use crate::fabric_storage::{FabricClaim, FabricIdentity, FabricStorage, MemoryFabricStorage};
+#[cfg(feature = "file-backend")]
+pub use crate::fabric_storage::FileFabricStorage;

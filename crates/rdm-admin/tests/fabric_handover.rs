@@ -243,6 +243,9 @@ impl FabricStorage for FailingStorage {
         self.check("seat_moves")?;
         self.inner.seat_moves().await
     }
+    fn set_seat_source(&self, seat: rdm_admin::fabric_builds::SeatSource) {
+        self.inner.set_seat_source(seat)
+    }
 }
 
 /// mesh1's admin (the incumbent) holds the fabric seat at epoch 7 and mesh2's admin (the successor)

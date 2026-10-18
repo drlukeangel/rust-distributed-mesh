@@ -8,6 +8,7 @@ use rdm_admin::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rdm_admin::build_state::{AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rdm_admin::control_plane::{ControlPlane, Recovery, Refusal};
 use rdm_admin::model::*;
+use rdm_admin::storage::MeshStorage as _;
 use rdm_admin::topology::Topology;
 use std::sync::Arc;
 use tracing_subscriber::layer::SubscriberExt;
@@ -564,7 +565,7 @@ async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admit
     let ran: Vec<&str> = lane.steps.iter().filter(|s| s.step == "Complete").map(|s| s.operation.as_str()).collect();
     assert_eq!(ran, vec!["node.delete:mesh2.rpc.1", "node.create:mesh2.rpc.1"], "node.delete, then node.create, in mesh2's lane, and nothing after");
     assert_eq!((p.attempt, p.state, p.executor.clone(), p.steps.len()), (before.attempt, before.state, before.executor.clone(), before.steps.len()), "the fabric lane is untouched");
-    assert_eq!(mp.claims.held("mesh2").await.unwrap(), None, "the attempt's verdict released mesh2's in-flight row");
+    assert_eq!(mp.claims.in_flight("mesh2").await.unwrap(), None, "the attempt's verdict released mesh2's in-flight row");
 
     // The node the recovery created exits as well: mesh2 admits its recovery.
     let (node2, birth2) = (NodeId::mint(), IncarnationId::mint());
@@ -656,7 +657,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
     let capture = Capture { exporter, pipeline };
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let claims = Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory());
+    let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
@@ -721,7 +722,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
         Some(AttemptOutcome::Failed { reason , .. }) => assert!(reason.contains("mesh2.admin.1") && reason.contains(incarnation.as_str()), "attempt 1's verdict names the departed claimant's exact birth: {reason}"),
         other => panic!("attempt 1 of mesh2's lane ends Failed on its claimant's departure: {other:?}"),
     }
-    let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
+    let held = claims.in_flight("mesh2").await.unwrap().expect("mesh2's in-flight row");
     assert_eq!((held.attempt, held.lane.as_deref(), held.claimant.as_str()), (2, Some("mesh2"), "mesh2.admin.2"), "the row names attempt 2 and its claimant");
     let owed = builds.exits_owed(&b0, "mesh2").await.unwrap();
     assert!(owed.iter().any(|o| o.path == member && o.node_id == exited.node_id && o.attempt == 1), "the member's exited birth is owed a submit from attempt 1's verdict: {owed:?}");
@@ -750,7 +751,7 @@ async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh
 async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_released_by_the_new_mesh_primary_on_its_exit_proof() {
     use rdm_admin::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let claims = Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory());
+    let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
@@ -765,7 +766,7 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
     let lost = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), "mesh2.admin.1".parse().unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
     let Ok(Recovery::Opened(first)) = lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await else { panic!("mesh2's primary opens its member's recovery") };
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
-    assert_eq!(claims.held("mesh2").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((1, "mesh2.admin.1".to_string())), "the row the lost primary never released");
+    assert_eq!(claims.in_flight("mesh2").await.unwrap().map(|r| (r.attempt, r.claimant)), Some((1, "mesh2.admin.1".to_string())), "the row the lost primary never released");
 
     let departed: PathName = "mesh2.admin.1".parse().unwrap();
     let departed_birth = before.node(&departed).unwrap().clone();
@@ -793,7 +794,7 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
         other => panic!("on the lost claimant's recorded exit, the row it left is released and mesh2 admits the next attempt: {other:?}"),
     };
     assert_eq!((second.mesh.as_deref(), second.attempt), (Some("mesh2"), 2), "attempt 2 of mesh2's lane");
-    let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
+    let held = claims.in_flight("mesh2").await.unwrap().expect("mesh2's in-flight row");
     assert_eq!((held.attempt, held.claimant.as_str()), (2, "mesh2.admin.2"), "the row names attempt 2 and its claimant");
 }
 
@@ -822,7 +823,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     let capture = Capture { exporter, pipeline };
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let claims = Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory());
+    let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let rows: Arc<rdm_admin::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
@@ -837,7 +838,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     // attempt's open carrying the member's recovery. Its claim was never written.
     let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap() };
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), lane_key: None };
-    assert_eq!(claims.take("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
+    assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
         .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 1, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 1, mesh: Some("mesh2".into()) })
         .await
@@ -889,7 +890,7 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     assert_eq!(opens, vec![1], "one open in mesh2's lane: the attempt is claimed, never reopened");
     assert!(!facts.iter().any(|f| matches!(f, BuildFact::Attempt(a) if a.mesh.as_deref() == Some("mesh2"))), "no verdict for an attempt no one ran: {facts:?}");
     assert!(builds.exits_owed(&b0, "mesh2").await.unwrap().is_empty(), "nothing is owed: the member's recovery is the running attempt");
-    let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
+    let held = claims.in_flight("mesh2").await.unwrap().expect("mesh2's in-flight row");
     assert_eq!((held.build_id.clone(), held.lane.as_deref(), held.attempt), (b0.clone(), Some("mesh2"), 1), "the row names attempt 1");
 
     // Once claimed, the attempt holds mesh2 under its claimant.
@@ -944,7 +945,7 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     let capture = Capture { exporter, pipeline };
 
     let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let claims = Arc::new(rdm_admin::mesh_claims::MeshClaims::in_memory());
+    let claims = Arc::new(rdm_admin::storage::MemoryMeshStorage::default());
     let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
     let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
     let member: PathName = "mesh2.rpc.1".parse().unwrap();
@@ -966,14 +967,14 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     }
     let failed = "node.create:mesh2.rpc.1 step PrepareStorage: node-key is missing in the inherited data dir";
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: failed.into() , code: rdm_core::outcome::Code::FailedPrecondition } }).await.unwrap();
-    claims.release("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), lane_key: None }).await.unwrap();
+    claims.release_in_flight("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into(), lane_key: None }).await.unwrap();
     assert_eq!(builds.exits_owed(&b0, "mesh2").await.unwrap().iter().map(|o| (o.path.clone(), o.attempt)).collect::<Vec<_>>(), vec![(member.clone(), 1)], "after attempt 1's Failed verdict the member is owed a submit");
 
     // The resubmit: mesh2's in-flight row for attempt 2, then attempt 2's open carrying the same
     // recovery. Its claim was never written: the primary was lost between the two.
     let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone() };
     let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into(), lane_key: None };
-    assert_eq!(claims.take("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
+    assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), rdm_admin::mesh_claims::Taken::Won);
     builds
         .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 2, mesh: Some("mesh2".into()) })
         .await

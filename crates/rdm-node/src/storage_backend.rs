@@ -1,0 +1,62 @@
+//! The storage backend a node runs on: its own connections rows (`connections.storage`) and the
+//! commit-state action that makes what it wrote before the fabric's first state-commit durable for
+//! the fabric. A node-admin's backend opens the admin's six boundaries (`rdm_admin::storage_backend`);
+//! a node opens this one at its boot. RDM standalone's is [`FileNodeBackend`] (the `file-backend`
+//! feature, the default), the rows as files on the fabric's store root. [`MemoryNodeBackend`] holds
+//! one process's rows.
+
+use crate::rounds::RoundActions;
+use crate::storage::ConnectionsStorage;
+use async_trait::async_trait;
+use rdm_core::launch::Launch;
+use std::sync::Arc;
+
+/// A node's storage, opened by its backend.
+pub struct NodeStorage {
+    /// The node's own connections rows.
+    pub connections: Arc<dyn ConnectionsStorage>,
+    /// The node's commit-state and open-traffic actions.
+    pub round_actions: Arc<dyn RoundActions>,
+    /// Where the rows are written now, as the boot's span records it.
+    pub writes_to: String,
+}
+
+/// The backend a node's storage is opened from.
+#[async_trait]
+pub trait NodeStorageBackend: Send + Sync {
+    /// Opens the storage of the node `launch` names.
+    async fn open(&self, launch: &Launch) -> Result<NodeStorage, String>;
+}
+
+/// RDM standalone's backend: the node's connections rows under `connections/<its path.name>/` of
+/// the fabric's store root (R14), held in its scratchpad before the fabric's first state-commit and
+/// published by its commit-state action (states.md, Rounds).
+#[cfg(feature = "file-backend")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FileNodeBackend;
+
+#[cfg(feature = "file-backend")]
+#[async_trait]
+impl NodeStorageBackend for FileNodeBackend {
+    async fn open(&self, launch: &Launch) -> Result<NodeStorage, String> {
+        let root = crate::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
+        let connections = crate::storage::FileConnectionsStorage::open(&root, &launch.name, &launch.incarnation).await.map_err(|e| format!("connections storage: {e}"))?;
+        Ok(NodeStorage {
+            connections: Arc::new(connections),
+            round_actions: Arc::new(crate::rounds::StorePublication::new(root.scratchpad().cloned(), None)),
+            writes_to: root.writes_to().to_string(),
+        })
+    }
+}
+
+/// One process's rows: the node's connections held in memory, gone with its process, and nothing
+/// held for a later publication.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MemoryNodeBackend;
+
+#[async_trait]
+impl NodeStorageBackend for MemoryNodeBackend {
+    async fn open(&self, _launch: &Launch) -> Result<NodeStorage, String> {
+        Ok(NodeStorage { connections: Arc::new(crate::storage::MemoryConnectionsStorage::default()), round_actions: Arc::new(crate::rounds::NoScratchpad), writes_to: "memory".into() })
+    }
+}

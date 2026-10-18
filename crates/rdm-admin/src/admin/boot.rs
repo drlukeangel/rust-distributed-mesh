@@ -223,24 +223,33 @@ pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book:
 
 /// Bring a node-admin up: identity, policy, membership, Build state, the
 /// control API, the projection and the executor.
+#[cfg(feature = "file-backend")]
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // `start` carries no hook and no wrapper, so it is an embedding with no application work in state-sync.
     start_with(cfg, crate::wiring::Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), ..crate::wiring::Wiring::no_certs() }).await
 }
 
-/// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built from.
+/// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built
+/// from, on RDM standalone's storage backend ([`crate::storage_backend::FileBackend`]).
+#[cfg(feature = "file-backend")]
 pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Result<Running, String> {
+    start_on(cfg, wiring, Arc::new(crate::storage_backend::FileBackend)).await
+}
+
+/// [`start_with`] on `storage`: every durable read and write of the admin goes through the six
+/// boundaries it opens.
+pub async fn start_on(cfg: AdminConfig, wiring: crate::wiring::Wiring, storage: Arc<dyn crate::storage_backend::StorageBackend>) -> Result<Running, String> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step is a child that lives exactly as long as the step, and `via-ready` closes it.
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = tracing::field::Empty, node_id = tracing::field::Empty, incarnation_id = tracing::field::Empty, kind = "node-admin");
-    let started = start_booted(cfg, wiring, boot.clone()).await;
+    let started = start_booted(cfg, wiring, storage, boot.clone()).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node-admin failed to come up"));
     }
     started
 }
 
-pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, boot: tracing::Span) -> Result<Running, String> {
+pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, storage: Arc<dyn crate::storage_backend::StorageBackend>, boot: tracing::Span) -> Result<Running, String> {
     // Every task this admin runs is spawned behind this gate: a stop parks it, and a start opens it again.
     let park_gate = crate::stop_gate::StopGate::new();
     // The `sync_state` choice is made on purpose: an embedding with no application work says so
@@ -281,13 +290,13 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let storage_err = |e: crate::storage_error::StorageError| e.to_string();
     let incarnation = cfg.launch.as_ref().map(|l| l.incarnation.clone()).unwrap_or_else(IncarnationId::mint);
     if let (None, Ok(p)) = (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
-        crate::store_root::qualify(p.provider).map_err(|e| format!("refusing to start: {e}"))?;
+        storage.qualify(p.provider).map_err(|e| format!("refusing to start: {e}"))?;
     }
     // The own row (data dir), read before the store root opens: the inherited row names its Fabric,
     // whose root this admin opens, and its mesh, whose rows it opens on (R-FI1). An admin started on an
     // inherited root is never handed its fabric id: a different one named beside the row is refused by
     // name.
-    let own_row = crate::storage::FileNodesStorage::own_in(&cfg.data_dir, &incarnation).await.map_err(storage_err)?;
+    let own_row = storage.own_row(&cfg.data_dir, &incarnation).await.map_err(storage_err)?;
     if let (None, Some(own)) = (&cfg.launch, &own_row) {
         if cfg.fabric_id_named && cfg.fabric_id != own.fabric_id {
             return Err(format!(
@@ -303,26 +312,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     }
     storage_step.record("fabric_id", tracing::field::display(&cfg.fabric_id));
     storage_step.record("inherited_root", cfg.launch.is_none() && own_row.is_some());
-    let store_root = crate::store_root::StoreRoot::open(&cfg.store_dir, &cfg.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
-    // Before the fabric's first state-commit every row this admin writes is held in its scratchpad;
-    // its commit-state action publishes them (states.md, Rounds).
-    storage_step.record("writes_to", store_root.writes_to());
-    let round_actions: Arc<dyn crate::fabric_rounds::RoundActions> = Arc::new(crate::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), embedding_round_actions));
-    let fabric_files = Arc::new(crate::fabric_storage::FileFabricStorage::open(&store_root, &incarnation).await.map_err(storage_err)?);
-    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_files.clone());
-    let mesh_files = Arc::new(crate::storage::FileMeshStorage::open(&store_root, &incarnation).await.map_err(storage_err)?);
-    let mesh_storage: Arc<dyn crate::storage::MeshStorage> = mesh_files.clone();
     let own_mesh = match (&cfg.launch, &own_row) {
         (None, Some(own)) => own.name.mesh.clone(),
         _ => cfg.mesh.clone(),
     };
-    let nodes_files = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir, &store_root, &own_mesh, &incarnation).await.map_err(storage_err)?);
-    let nodes_storage: Arc<dyn crate::storage::NodesStorage> = nodes_files.clone();
-    let journal = Arc::new(crate::build_state::FileJournal::open_on_root(&store_root, &own_mesh, &incarnation).await.map_err(|e| e.to_string())?);
-    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir, &incarnation).await.map_err(storage_err)?);
-    // Each mesh's in-flight row on the fabric's store root (R-BI7 caveat 3): the one set of rows the
-    // claim door, the drive's release and the recovery door all take and release.
-    let mesh_claims = Arc::new(crate::mesh_claims::MeshClaims::on_root(store_root.clone(), incarnation.clone()));
+    let scope = crate::storage_backend::StorageScope { data_dir: cfg.data_dir.clone(), store_dir: cfg.store_dir.clone(), fabric_id: cfg.fabric_id.clone(), own_mesh: own_mesh.clone(), writer: incarnation.clone() };
+    let crate::storage_backend::StorageBoundaries { fabric: fabric_backed, meshes: mesh_storage, nodes: nodes_storage, status: status_storage, connections: open_connections, builds: journal, round_actions, cut_off_writes, writes_to } = storage.open(&scope, embedding_round_actions).await?;
+    storage_step.record("writes_to", writes_to.as_str());
+    let fabric_storage: Arc<dyn crate::fabric_storage::FabricStorage> = crate::wiring::apply(wiring.fabric_storage.take(), fabric_backed.clone());
+    let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::on(journal.clone()));
+    // Each mesh's in-flight row (R-BI7 caveat 3): the one set of rows the claim door, the drive's
+    // release and the recovery door all take and release.
+    let mesh_claims = mesh_storage.clone();
     let inherited = match (&cfg.launch, own_row) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
@@ -457,8 +458,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
 
     // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).
-    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> =
-        Arc::new(crate::storage::FileConnectionsStorage::open(&store_root, &name, &incarnation).await.map_err(storage_err)?);
+    let connections_storage: Arc<dyn crate::storage::ConnectionsStorage> = open_connections(name.clone()).await.map_err(storage_err)?;
     boot.record("node", tracing::field::display(&name));
     boot.record("node_id", tracing::field::display(&node_id));
     boot.record("incarnation_id", tracing::field::display(&incarnation.as_str()));
@@ -783,7 +783,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 records.set_me(node_id.clone());
                 // Only the fabric seat holder writes the Fabric rows, and only its held `fabric/` rows are published: the
                 // file store reads the committed fabric seat record, as the Build gate does.
-                fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
+                fabric_backed.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
                 {
                     if inherited.is_some() {
                         // Recovery on an inherited root (fabric-recovery.md): load the existing Build journal once
@@ -796,19 +796,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                     let holds_fabric = Arc::new(move || matches!((seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
                     let mesh_seat_for_holds = mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh);
                     let holds_mesh = Arc::new(move || matches!((mesh_seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
-                    journal.set_fabric_seat(holds_fabric, holds_mesh);
                     // Each lane is written under the revision of its seat's record this birth holds
                     // (Q28, Q35): the fabric seat's for `fabric/builds/`, a mesh's primary seat's for
                     // `meshes/<mesh>/builds/`.
                     let (lane_book, lane_records, lane_me) = (membership.book.clone(), records.clone(), (node_id.clone(), incarnation.clone()));
-                    let revisions: crate::build_state::LaneRevisions = Arc::new(move |lane: &crate::build_lanes::LaneId| {
+                    let revisions: crate::build_state::LaneRevisions = Arc::new(move |lane: &crate::build_state::LaneId| {
                         let incumbency = incumbency_of(&lane_book, &lane_records);
                         match lane {
-                            crate::build_lanes::LaneId::Fabric => crate::seat_watch::lane_seat("the fabric seat record", incumbency.fabric.as_ref(), &lane_me, &incumbency.lost),
-                            crate::build_lanes::LaneId::Mesh(m) => crate::seat_watch::lane_seat(&format!("mesh {m}'s primary seat record"), incumbency.meshes.get(m), &lane_me, &incumbency.lost),
+                            crate::build_state::LaneId::Fabric => crate::seat_watch::lane_seat("the fabric seat record", incumbency.fabric.as_ref(), &lane_me, &incumbency.lost),
+                            crate::build_state::LaneId::Mesh(m) => crate::seat_watch::lane_seat(&format!("mesh {m}'s primary seat record"), incumbency.meshes.get(m), &lane_me, &incumbency.lost),
                         }
                     });
-                    journal.set_lane_seats(revisions, crate::fabric_storage::seals_owed(fabric_storage.clone(), rdm_core::handover::HandoverBirth { mesh: own_mesh.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }));
+                    journal.hold_seats(crate::build_state::JournalSeats { holds_fabric, holds_mesh, revisions, seals: crate::fabric_storage::seals_owed(fabric_storage.clone(), rdm_core::handover::HandoverBirth { mesh: own_mesh.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() }) });
                 }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
                 // seat change.
@@ -829,10 +828,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         }
                     }));
                 }
-                // The status rows of this admin's mesh on the fabric's store root (`status/<mesh>/`): written by
+                // The status rows of this admin's mesh (`status.storage`): written by
                 // the mesh's seat holder, folded into what this admin applied when it takes the seat.
-                let status_files = Arc::new(crate::status_storage::FileStatusStorage::open(&store_root, &own_mesh, &incarnation).await.map_err(storage_err)?);
-                let status_storage: Arc<dyn crate::status_storage::StatusStorage> = status_files.clone();
                 if let Some(own) = &inherited {
                     let _ = status_storage
                         .put_node_exit(&crate::status_storage::NodeExitRow {
@@ -1149,7 +1146,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 decisions: builds.decisions(),
                                 builds: builds_dyn.clone(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
-                                cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
+                                cut_off_writes: cut_off_writes.clone(),
                                 looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()) },
                                 held_takeover: held_takeover.clone(),
                             });

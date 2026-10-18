@@ -196,17 +196,20 @@ fn install_handed(membership: &Membership, control: &crate::wire::JoinControl) {
     tracing::info!(name = ?control.name.as_ref().map(|n| n.to_string()), config_keys = control.config.as_ref().map_or(0, |c| c.len()), "the row's name and config the join handed are held");
 }
 
+#[cfg(feature = "file-backend")]
 /// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
 /// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
 pub async fn start_hydrating(launch: &Launch, hydration: crate::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
     start_with_rafka_time_hydrating_and(launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, register, &[]).await
 }
 
+#[cfg(feature = "file-backend")]
 /// Bring the node up exactly as `launch` says.
 pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rdm_transport::LiveNodeResolver>) -> ServerBuilder) -> Result<RunningNode> {
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
 
+#[cfg(feature = "file-backend")]
 /// Bring the node up with the application data-plane `alpns` registered on its one endpoint.
 pub async fn start_with_alpns(
     launch: &Launch,
@@ -297,12 +300,14 @@ pub async fn wait_for_signal(binary: &str) {
     }
 }
 
+#[cfg(feature = "file-backend")]
 /// [`start`], handing `register` the process's one client too (a product family that calls out,
 /// or carries for others, holds it before the server seals).
 pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rdm_transport::LiveNodeResolver>, Arc<rdm_transport::NodeRpcClient>) -> ServerBuilder) -> Result<RunningNode> {
     start_with_seams(launch, |b, s| register(b, s.resolver, s.client)).await
 }
 
+#[cfg(feature = "file-backend")]
 /// [`start_with_client`], handing `register` every process seam:
 /// the resolver, the client, the connections writer and the held name.
 pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
@@ -310,6 +315,7 @@ pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuild
     start_with_rafka_time_hydrating_and(launch, rafka_time, crate::app_hydration::Hydration::none(), |s| s, None, register, &[]).await
 }
 
+#[cfg(feature = "file-backend")]
 /// Start a node with explicit `rafka_time`, `hydration`, storage decorator, optional rafka-time knob, and `register` callback.
 pub async fn start_with_rafka_time_hydrating_and(
     launch: &Launch,
@@ -323,6 +329,7 @@ pub async fn start_with_rafka_time_hydrating_and(
     start_with_rafka_time_hydrating_alpns_and(launch, rafka_time, hydration, decorate_storage, knob_fn, register, types, &[]).await
 }
 
+#[cfg(feature = "file-backend")]
 /// [`start_with_rafka_time_hydrating_and`], also registering the application's data-plane `alpns`.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_with_rafka_time_hydrating_alpns_and(
@@ -335,11 +342,28 @@ pub async fn start_with_rafka_time_hydrating_alpns_and(
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
 ) -> Result<RunningNode> {
+    start_on(launch, Arc::new(crate::storage_backend::FileNodeBackend), rafka_time, hydration, decorate_storage, knob_fn, register, types, alpns).await
+}
+
+/// [`start_with_rafka_time_hydrating_alpns_and`] on `storage`: the node's connections rows and its
+/// commit-state action are the ones it opens.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_on(
+    launch: &Launch,
+    storage: Arc<dyn crate::storage_backend::NodeStorageBackend>,
+    rafka_time: rdm_transport::clock::RafkaTime,
+    hydration: crate::app_hydration::Hydration,
+    decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
+    knob_fn: Option<RafkaTimeKnobFn>,
+    register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
+    types: &[&str],
+    alpns: &[rdm_transport::connections::Alpn],
+) -> Result<RunningNode> {
     let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
-    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, storage, rafka_time, hydration, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
@@ -349,6 +373,7 @@ pub async fn start_with_rafka_time_hydrating_alpns_and(
 #[allow(clippy::too_many_arguments)]
 async fn start_booted(
     launch: &Launch,
+    storage: Arc<dyn crate::storage_backend::NodeStorageBackend>,
     rafka_time: rdm_transport::clock::RafkaTime,
     hydration: crate::app_hydration::Hydration,
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
@@ -397,25 +422,16 @@ async fn start_booted(
     drop(step);
     // The process's one client, made before the server seals: the server carries the proof
     // store for others through it (one direct inner call per forward, never a second hop).
-    // This node's own connections: hydrated from `connections/<its path.name>/` of the fabric's
-    // store root (R14), then kept by what its client
+    // This node's own connections: hydrated from its connections storage (the file backend's
+    // `connections/<its path.name>/` of the fabric's store root, R14), then kept by what its client
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
-    // The storage fault the originate door arms (testkit only): the product's file storage,
-    // decorated.
+    // The storage fault the originate door arms (testkit only): the backend's storage, decorated.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
-    // Before the fabric's first state-commit the node holds its connections rows in its scratchpad;
-    // its commit-state action publishes them (states.md, Rounds).
-    let store_root = crate::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| anyhow!("refusing to start: {e}"))?;
-    step.record("writes_to", store_root.writes_to());
-    let base_storage: Arc<dyn crate::storage::ConnectionsStorage> = Arc::new(
-        crate::storage::FileConnectionsStorage::open(
-            &store_root,
-            &launch.name,
-            &launch.incarnation,
-        )
-        .await
-        .map_err(|e| anyhow!("connections storage: {e}"))?,
-    );
+    // Before the fabric's first state-commit the file backend holds the node's connections rows in
+    // its scratchpad; its commit-state action publishes them (states.md, Rounds).
+    let node_storage = storage.open(launch).await.map_err(|e| anyhow!("{e}"))?;
+    step.record("writes_to", node_storage.writes_to.as_str());
+    let base_storage = node_storage.connections.clone();
     let connections = Arc::new(crate::connections_writer::ConnectionsWriter::new(
         rdm_core::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         decorate_storage(base_storage),
@@ -642,7 +658,7 @@ async fn start_booted(
                                 Arc::new(
                                     crate::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_retire(cancel.clone())
-                                        .with_round_actions(Arc::new(crate::rounds::StorePublication::new(store_root.scratchpad().cloned(), None))),
+                                        .with_round_actions(node_storage.round_actions.clone()),
                                 )
                             };
                             own.set_connections(connections.clone());

@@ -586,7 +586,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     /// [`Self::claim_attempt`] with the mesh's in-flight row taken in the local log's own turn.
-    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &crate::mesh_claims::MeshClaims, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
+    async fn claim_in_flight(&self, claim: &BuildAttemptClaim, claims: &dyn crate::storage::MeshStorage, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::build_state::InFlightClaim, BuildStateError> {
         let _gate = match claim.mesh {
             None => self.authority.enter().await?,
             Some(_) => self.mesh_seat_gate.enter().await?,

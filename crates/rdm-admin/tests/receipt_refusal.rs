@@ -94,6 +94,15 @@ impl rdm_admin::build_state::LocalBuildLog for Refuses {
     async fn derive_on_every_fact(&self, derive: rdm_admin::build_state::FactDerivation) {
         self.inner.derive_on_every_fact(derive).await
     }
+    async fn put_attempt_context(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32, context: &rdm_core::context::CallContext) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_attempt_context(build_id, lane, attempt, context).await
+    }
+    async fn attempt_context(&self, build_id: &rdm_admin::build::BuildId, lane: Option<&str>, attempt: u32) -> Result<Option<rdm_core::context::CallContext>, rdm_admin::storage_error::StorageError> {
+        self.inner.attempt_context(build_id, lane, attempt).await
+    }
+    fn hold_seats(&self, seats: rdm_admin::build_state::JournalSeats) {
+        self.inner.hold_seats(seats)
+    }
 }
 
 #[async_trait::async_trait]

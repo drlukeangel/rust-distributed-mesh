@@ -10,10 +10,9 @@
 //! the sealer wins. A writer meeting the seal is refused stale and appends nothing past it, and a
 //! reader reconstructs the lane from its keys in order, each revision up to its seal, never past it.
 
-use crate::build_state::BuildFact;
+use crate::build_state::{rev_dir, seq_key, BuildFact, LaneId, LaneKey, LaneSeal, REV_PREFIX};
 use crate::record_store::FileRecords;
 use crate::storage_error::StorageError;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -22,79 +21,13 @@ pub const FACT_FORMAT: &str = "build-fact/1";
 /// The format of a revision's seal at its lane key.
 pub const SEAL_FORMAT: &str = "lane-seal/1";
 const FORMATS: [&str; 2] = [FACT_FORMAT, SEAL_FORMAT];
-const REV_PREFIX: &str = "rev-";
 
-/// A lane: the fabric seat's, or one mesh's primary seat's.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LaneId {
-    /// `fabric/builds/`, written under the fabric seat's revision.
-    Fabric,
-    /// `meshes/<mesh>/builds/`, written under that mesh's primary seat's revision.
-    Mesh(String),
-}
-
-impl LaneId {
-    /// The lane's directory on the fabric's store root.
-    pub fn dir(&self, root: &crate::store_root::StoreRoot) -> PathBuf {
-        match self {
-            Self::Fabric => root.fabric_builds(),
-            Self::Mesh(m) => root.mesh_builds(m),
-        }
+/// `lane`'s directory on the fabric's store root.
+pub fn lane_dir(lane: &LaneId, root: &crate::store_root::StoreRoot) -> PathBuf {
+    match lane {
+        LaneId::Fabric => root.fabric_builds(),
+        LaneId::Mesh(m) => root.mesh_builds(m),
     }
-
-    /// The lane's directory under the store root, as a key names it.
-    pub fn name(&self) -> String {
-        match self {
-            Self::Fabric => "fabric/builds".into(),
-            Self::Mesh(m) => format!("meshes/{m}/builds"),
-        }
-    }
-}
-
-/// One entry's key: its lane, the seat revision it was written under, its sequence there.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LaneKey {
-    /// The lane.
-    pub lane: LaneId,
-    /// The lane's seat revision the entry was written under.
-    pub revision: u64,
-    /// Its place under that revision, from 1.
-    pub seq: u64,
-}
-
-impl std::fmt::Display for LaneKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}/{}", self.lane.name(), rev_dir(self.revision), seq_key(self.seq))
-    }
-}
-
-impl std::str::FromStr for LaneKey {
-    type Err = String;
-
-    /// A key as [`LaneKey`]'s `Display` writes it; anything else is refused by name.
-    fn from_str(s: &str) -> Result<Self, String> {
-        let bad = || format!("{s:?} is not a lane key (fabric/builds/rev-<R>/<seq> or meshes/<mesh>/builds/rev-<R>/<seq>)");
-        let parts: Vec<&str> = s.split('/').collect();
-        let (lane, rev, seq) = match parts.as_slice() {
-            ["fabric", "builds", rev, seq] => (LaneId::Fabric, *rev, *seq),
-            ["meshes", mesh, "builds", rev, seq] if !mesh.is_empty() => (LaneId::Mesh(mesh.to_string()), *rev, *seq),
-            _ => return Err(bad()),
-        };
-        let revision = rev.strip_prefix(REV_PREFIX).filter(|r| r.len() == 20).and_then(|r| r.parse().ok()).ok_or_else(bad)?;
-        let seq = Some(seq).filter(|q| q.len() == 20).and_then(|q| q.parse().ok()).filter(|q| *q > 0).ok_or_else(bad)?;
-        Ok(Self { lane, revision, seq })
-    }
-}
-
-/// The seal of one revision of a lane (`lane-seal/1`): nothing of `revision` commits past it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaneSeal {
-    /// The revision sealed.
-    pub revision: u64,
-    /// The seat move (its `T` in `seat-moves/`) that moved the lane's seat from `revision`.
-    pub sealed_by: u64,
-    /// The exact birth that wrote the seal.
-    pub by: rdm_core::handover::HandoverBirth,
 }
 
 /// One entry of a lane.
@@ -132,14 +65,6 @@ pub struct Sealed {
     pub seal: LaneSeal,
     /// The facts of the revision the seal found below it and read past, in order.
     pub passed: Vec<(LaneKey, BuildFact)>,
-}
-
-fn rev_dir(revision: u64) -> String {
-    format!("{REV_PREFIX}{revision:020}")
-}
-
-fn seq_key(seq: u64) -> String {
-    format!("{seq:020}")
 }
 
 /// One revision of a lane as this process has read it.
@@ -201,7 +126,7 @@ impl Lanes {
         }
         // A Build fact is durable on the root when it is committed, before the fabric's first
         // state-commit too (Q61, build.md §5.2): a lane is never held in the scratchpad.
-        let store = FileRecords::open(&lane.dir(&self.root), &rev_dir(revision), &self.writer).await?;
+        let store = FileRecords::open(&lane_dir(lane, &self.root), &rev_dir(revision), &self.writer).await?;
         let opened = Rev { store, next: 1, sealed: None };
         let mut revs = self.revs.lock().unwrap_or_else(|e| e.into_inner());
         Ok(revs.entry((lane.clone(), revision)).or_insert(opened).clone())
@@ -209,7 +134,7 @@ impl Lanes {
 
     /// The revisions of `lane` on the store root, ascending: the names of its revision directories.
     async fn revisions(&self, lane: &LaneId) -> Result<Vec<u64>, StorageError> {
-        let dir = lane.dir(&self.root);
+        let dir = lane_dir(lane, &self.root);
         let opened: Vec<u64> = self.revs.lock().unwrap_or_else(|e| e.into_inner()).keys().filter(|(l, _)| l == lane).map(|(_, r)| *r).collect();
         let mut found = crate::blocking::blocking_io(move || -> Result<Vec<u64>, StorageError> {
             let entries = match std::fs::read_dir(&dir) {
@@ -446,9 +371,10 @@ mod tests {
             read("seat-moves/00000000000000000001.json"),
             format!(r#"{{"format":"seat-move/1","record":{{"seats":[{{"seat":"FabricPrimary","from_revision":0,"revision":1,"holder":{birth},"from":null}}],"cause":"election","by":{birth}}}}}"#)
         );
-        let claims = crate::mesh_claims::MeshClaims::on_root(root, crate::model::IncarnationId::mint());
+        use crate::storage::MeshStorage as _;
+        let claims = crate::storage::FileMeshStorage::open(&root, &crate::model::IncarnationId::mint()).await.unwrap();
         let row = crate::mesh_claims::InFlight { build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), lane_key: Some("fabric/builds/rev-00000000000000000007/00000000000000000002".into()) };
-        assert_eq!(claims.take("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
+        assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
         assert_eq!(
             read("meshes/mesh2/claims/in-flight.json"),
             format!(r#"{{"format":"mesh-in-flight/2","record":{{"build_id":"{}","attempt":1,"claimant":"mesh1.admin.1","lane_key":"fabric/builds/rev-00000000000000000007/00000000000000000002"}}}}"#, rdm_core::fixture_crockford60("b1"))
@@ -557,7 +483,7 @@ mod tests {
         successor.read_new(&lane).await.unwrap();
         assert!(matches!(successor.append(&lane, 4, &fact(6)).await.unwrap(), Appended::At(LaneKey { revision: 4, seq: 1, .. })));
         // A fact planted past the seal (no writer can put one there) is never read.
-        std::fs::write(lane.dir(&crate::store_root::StoreRoot::at(&d)).join("rev-00000000000000000003").join("00000000000000000005.json"), serde_json::to_vec(&serde_json::json!({"format": FACT_FORMAT, "record": fact(9)})).unwrap()).unwrap();
+        std::fs::write(lane_dir(&lane, &crate::store_root::StoreRoot::at(&d)).join("rev-00000000000000000003").join("00000000000000000005.json"), serde_json::to_vec(&serde_json::json!({"format": FACT_FORMAT, "record": fact(9)})).unwrap()).unwrap();
         let reader = lanes(&d);
         let read: Vec<(String, u32)> = reader.read_new(&lane).await.unwrap().into_iter().map(|(k, f)| (k.to_string(), match f { BuildFact::Attempt(a) => a.attempt, _ => 0 })).collect();
         assert_eq!(
@@ -598,9 +524,10 @@ mod tests {
         let seal = LaneSeal { revision: 3, sealed_by: 1, by: by() };
         assert_eq!(successor.seal(&lane, &seal).await.unwrap().at.seq, 2, "the seal takes the next key, after the fact");
         assert!(matches!(old.append(&lane, 3, &fact(2)).await.unwrap(), Appended::Sealed { .. }), "the old writer meets the seal the other process wrote");
-        let claims = crate::mesh_claims::MeshClaims::on_root(held(&pad_new), crate::model::IncarnationId::mint());
+        use crate::storage::MeshStorage as _;
+        let claims = crate::storage::FileMeshStorage::open(&held(&pad_new), &crate::model::IncarnationId::mint()).await.unwrap();
         let row = crate::mesh_claims::InFlight { build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), lane_key: None };
-        assert_eq!(claims.take("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
+        assert_eq!(claims.take_in_flight("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
         assert!(d.join("meshes/mesh2/claims/in-flight.json").exists(), "the attempt claim stands on the root when it is taken");
         for pad in [pad_old, pad_new] {
             let published = pad.publish().await.unwrap();

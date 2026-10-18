@@ -208,6 +208,12 @@ pub fn writes_for(t: &Topology, me_id: &NodeId, mesh: &str) -> bool {
 }
 
 impl NodeRows {
+
+    /// Keep `row` among the runtime rows of the node-admin `admin` this admin is launching, in its
+    /// own nodes storage at `admin_data_dir`, before it starts ([`NodesStorage::put_admin_runtime`]).
+    pub async fn put_admin_runtime(&self, admin: &NodeId, admin_data_dir: &std::path::Path, row: &crate::storage::RuntimeRow) -> Result<(), crate::storage_error::StorageError> {
+        self.storage.put_admin_runtime(admin, admin_data_dir, row).await
+    }
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
