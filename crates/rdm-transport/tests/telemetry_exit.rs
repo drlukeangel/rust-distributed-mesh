@@ -28,6 +28,27 @@ fn unix_ms() -> u128 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
 }
 
+/// The file the child writes, beside its evidence, when its exit flush returned and when its last
+/// stderr line was written, in unix ms: `<flush returned> <stderr written>`.
+const EXIT_TIMES: &str = "exit-times";
+
+/// Where the time from the child's exit line to its end went, for a bound's failure message: the
+/// exit flush, the child's last stderr line (a write to the pipe this parent reads), and from there
+/// to the process's end as this parent's waiting thread saw it.
+fn exit_story(dir: &std::path::Path, exiting: u128, ended: u128) -> String {
+    let times = std::fs::read_to_string(dir.join(EXIT_TIMES)).unwrap_or_default();
+    let mut parts = times.split_whitespace().filter_map(|t| t.parse::<u128>().ok());
+    match (parts.next(), parts.next()) {
+        (Some(flushed), Some(written)) => format!(
+            "the exit flush returned at +{} ms, the child's last stderr line was written at +{} ms, the process's end was seen at +{} ms",
+            flushed.saturating_sub(exiting),
+            written.saturating_sub(exiting),
+            ended.saturating_sub(exiting)
+        ),
+        _ => format!("the child wrote no exit times ({times:?}); the process's end was seen at +{} ms", ended.saturating_sub(exiting)),
+    }
+}
+
 /// The child half: runs only when the parent set `RDM_EXIT_CHILD` to its case.
 #[test]
 fn exit_child() {
@@ -37,6 +58,9 @@ fn exit_child() {
         let fifo = dir.join(format!("{SERVICE}.{}.spans.jsonl", process_tag()));
         assert!(Command::new("mkfifo").arg(&fifo).status().expect("mkfifo runs").success(), "mkfifo {}", fifo.display());
     }
+    // The child's own record of its exit, beside its evidence and never through the stderr pipe the
+    // parent reads: opened now, so the exit makes one small write to an open file.
+    let mut exit_times = std::fs::File::create(dir.join(EXIT_TIMES)).expect("the exit-times file can be created");
     let _telemetry = rdm_transport::init_evidence_telemetry(SERVICE);
     if case == "collector-down" {
         tracing::info_span!("rdm.test.telemetry.update.via-first-span").in_scope(|| tracing::info!("a span the first export carries to the refusing collector"));
@@ -51,7 +75,9 @@ fn exit_child() {
     eprintln!("EXITING_AT_MS={}", unix_ms());
     let flush_started = Instant::now();
     rdm_transport::flush_before_exit();
+    let flush_returned_at = unix_ms();
     eprintln!("EXIT_FLUSH_RETURNED_AFTER_MS={}", flush_started.elapsed().as_millis());
+    let _ = write!(exit_times, "{flush_returned_at} {}", unix_ms());
     std::process::exit(0);
 }
 
@@ -103,20 +129,22 @@ fn run_child(case: &str, env: &[(&str, &str)]) -> (String, String, u128, std::pa
         }
         s
     });
-    // A child that never ends: this is how long the cell waits to say so.
-    let give_up = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        if let Some(st) = child.try_wait().unwrap() {
-            break st;
-        }
-        if Instant::now() > give_up {
-            child.kill().unwrap();
-            let _ = child.wait();
+    // The process's end, as a thread blocked in wait() sees it the moment the kernel reports it. A
+    // child that never ends: this is how long the cell waits to say so.
+    let pid = child.id();
+    let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = ended_tx.send((status, unix_ms()));
+    });
+    let (status, ended) = match ended_rx.recv_timeout(Duration::from_secs(20)) {
+        Ok((status, ended)) => (status.unwrap(), ended),
+        Err(_) => {
+            // The child this cell spawned, not yet reaped (its wait has not returned).
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
             panic!("the {case} child never ended: stderr {}", err_reader.join().unwrap());
         }
-        std::thread::sleep(Duration::from_millis(10));
     };
-    let ended = unix_ms();
     let (out, err) = (out_reader.join().unwrap(), err_reader.join().unwrap());
     assert!(status.success(), "the {case} child failed: {status:?}\n{out}\n{err}");
     (out, err, ended, dir)
@@ -153,7 +181,7 @@ fn a_process_whose_collector_is_down_keeps_every_span_it_emits_before_it_exits_a
     assert!(err[..exiting].contains("telemetry: the OTLP span export to"), "the collector was found down before the exit (the case's precondition): {err}");
     let exited_at: u128 = err.lines().find_map(|l| l.strip_prefix("EXITING_AT_MS=")).and_then(|v| v.trim().parse().ok()).expect("the exit's time");
     let drained = Duration::from_millis((ended - exited_at) as u64);
-    assert!(drained < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the drain ended within its one bound: {drained:?}; stderr {err}");
+    assert!(drained < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the drain ended within its one bound: {drained:?}; {}; stderr {err}", exit_story(&dir, exited_at, ended));
     let evidence = evidence_of(&dir);
     let burst = evidence.lines().filter(|l| l.contains("rdm.test.telemetry.update.via-burst-span")).count();
     match named_loss(&err) {
@@ -182,7 +210,7 @@ fn an_evidence_file_whose_open_blocks_at_the_exit_ends_the_exit_flush_at_its_bou
     let exiting: u128 = err.lines().find_map(|l| l.strip_prefix("EXITING_AT_MS=")).and_then(|v| v.trim().parse().ok()).expect("the child reached its exit");
     assert!(named_loss(&err).is_some(), "the blocked flush ended at its bound and named its loss: {err}");
     let drained = Duration::from_millis((ended - exiting) as u64);
-    assert!(drained < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the drain ended at its one bound: {drained:?} from the exit to the process's end; stderr {err}");
+    assert!(drained < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the drain ended at its one bound: {drained:?} from the exit to the process's end; {}; stderr {err}", exit_story(&dir, exiting, ended));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -205,6 +233,6 @@ fn a_process_that_emits_one_span_and_exits_immediately_leaves_its_span_file() {
             assert!(unwritten > 0 && written + unwritten >= handed, "a bounded loss is named whole: {written} written and {unwritten} named unwritten of {handed} handed; stderr {err}");
         }
     }
-    assert!(Duration::from_millis((ended - exiting) as u64) < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the immediate exit shares Q42's existing drain bound: {err}");
+    assert!(Duration::from_millis((ended - exiting) as u64) < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the immediate exit shares Q42's existing drain bound: {}; {err}", exit_story(&dir, exiting, ended));
     let _ = std::fs::remove_dir_all(&dir);
 }
