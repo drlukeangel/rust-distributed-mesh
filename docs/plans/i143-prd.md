@@ -32,6 +32,7 @@ Gate defect (2026-10-17, **fixed 2026-10-18**, lead): `rdm-gate-at.sh`'s test-di
 - Each lane fact is a temp file created, written and fsynced, linked to its key, the temp unlinked, then the lane directory fsynced. Every fact a birth writes is a step receipt §5.2 needs durable before the birth answers, so none is needless.
 - [inferred] A birth appends its facts one at a time, each step waiting for its receipt, so a store's batch never holds two. Group commit (RED `b675fb4a`, GREEN `e35c407d`) merges nothing and is held, not landed. Its own fast gate was green with the same peak (310 waiters, 710 commits/s).
 - What a root fix can remove without moving a key, a format or the insert-and-fail is the temp name: a create and an unlink in the lane directory per fact. A fact can instead be written as an unnamed file (`O_TMPFILE`) and linked to its key, with the same two fsyncs.
+- This read's first land gate (`57131832`, on `de7d94f8`) was red on i148's `connections::` cells alone (tracing-subscriber: "tried to clone Id(57005), but no span exists with that ID"), routed to Codex. It is the third gate today with that red (`16a26f9e`, `b0af22c4`'s sampled gate).
 
 **The finish, in order (the lead, 2026-10-18; Luke: chaos second to last, then the certs, then chaos again).** Every landing through the land script, RED first, with its flame; a red read where it lives, never re-rolled.
 
