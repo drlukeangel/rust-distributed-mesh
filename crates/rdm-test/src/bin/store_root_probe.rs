@@ -23,7 +23,10 @@ fn listing(root: &Path) -> Result<BTreeSet<String>> {
 }
 
 fn wait(path: &Path, within: Duration, message: &str) -> Result<()> {
-    let end = Instant::now() + within;
+    wait_until(path, Instant::now() + within, message)
+}
+
+fn wait_until(path: &Path, end: Instant, message: &str) -> Result<()> {
     while !path.exists() {
         ensure!(Instant::now() < end, "{message}");
         std::thread::sleep(Duration::from_millis(1));
@@ -65,15 +68,16 @@ fn main() -> Result<()> {
             idle_until(&control.join("atomic"));
             wait(&root.join("reader-ready"), Duration::from_secs(10), "reader did not enter its observation")?;
             println!("before atomic replacements");
+            let atomic_until = Instant::now() + Duration::from_secs(10);
             for n in 0..REPLACEMENTS {
                 let started = Instant::now();
                 create(root, "replace.tmp", &vec![if n % 2 == 0 { b'B' } else { b'A' }; BYTES])?;
                 fs::write(control.join(format!("staged-{n}")), b"synced")?;
-                wait(&control.join(format!("read-before-{n}")), Duration::from_secs(10), "reader did not see the old value beside the staged replacement")?;
+                wait_until(&control.join(format!("read-before-{n}")), atomic_until, "reader did not see the old value beside the staged replacement")?;
                 fs::rename(root.join("replace.tmp"), root.join("atomic"))?;
                 directory.sync_all()?;
                 fs::write(control.join(format!("published-{n}")), b"synced")?;
-                wait(&control.join(format!("read-after-{n}")), Duration::from_secs(10), "reader did not see the complete published replacement")?;
+                wait_until(&control.join(format!("read-after-{n}")), atomic_until, "reader did not see the complete published replacement")?;
                 println!("atomic replacement {n}: file and directory synced, reader observed before/during/after, {} ms", started.elapsed().as_millis());
             }
             fs::write(root.join("done"), b"done")?;
@@ -107,6 +111,7 @@ fn main() -> Result<()> {
             let b = vec![b'B'; BYTES];
             ensure!(fs::read(root.join("atomic"))? == a, "the initial atomic value is coherent");
             fs::write(root.join("reader-ready"), b"ready")?;
+            let atomic_until = Instant::now() + Duration::from_secs(10);
             let mut reads = 0;
             let mut previous = &a;
             // A functional interleaving, rather than an unbounded read loop or
@@ -115,19 +120,19 @@ fn main() -> Result<()> {
             // and the new published value after its directory sync, in both directions.
             for n in 0..REPLACEMENTS {
                 let expected = if n % 2 == 0 { &b } else { &a };
-                wait(&control.join(format!("staged-{n}")), Duration::from_secs(10), "writer did not stage its synced replacement")?;
+                wait_until(&control.join(format!("staged-{n}")), atomic_until, "writer did not stage its synced replacement")?;
                 ensure!(fs::read(root.join("atomic"))? == *previous, "staging changed the published value");
                 ensure!(fs::read(root.join("replace.tmp"))? == *expected, "the staged file is not coherent across containers");
                 fs::write(control.join(format!("read-before-{n}")), b"old value complete")?;
                 let during = fs::read(root.join("atomic"))?;
                 ensure!(during == a || during == b, "torn replacement: {} bytes", during.len());
-                wait(&control.join(format!("published-{n}")), Duration::from_secs(10), "writer did not publish its synced replacement")?;
+                wait_until(&control.join(format!("published-{n}")), atomic_until, "writer did not publish its synced replacement")?;
                 ensure!(fs::read(root.join("atomic"))? == *expected, "the published replacement is not coherent");
                 fs::write(control.join(format!("read-after-{n}")), b"new value complete")?;
                 previous = expected;
                 reads += 3;
             }
-            wait(&root.join("done"), Duration::from_secs(10), "writer did not complete its replacements")?;
+            wait_until(&root.join("done"), atomic_until, "writer did not complete its replacements")?;
             ensure!(reads > 0, "the reader observed no replacements");
             ensure!(fs::read(root.join("atomic"))? == b, "the final atomic value is coherent");
             ensure!(!listing(root)?.contains("replace.tmp"), "the replacement temporary remains listed");
