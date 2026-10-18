@@ -42,7 +42,7 @@ use crate::model::{NodeId, PathName};
 use crate::node_self::StartFailed;
 use crate::topology_read::TopologyRead;
 use crate::wire::JoinAnswer;
-use rdm_core::{MemberStatus, MeshDigest};
+use rdm_core::MeshDigest;
 use rdm_transport::membership::Membership;
 use rdm_transport::{CancelToken, NodeRpcClient, NodeTarget};
 use rdm_core::topology::SourceVersion;
@@ -143,46 +143,6 @@ pub async fn reached_back(node: &str, client: &NodeRpcClient, key: &iroh::Public
     }
 }
 
-/// `JoinNode` with `digest`, each of `attempts` made to whom `to` names then: the launcher, or the
-/// admin whose call commanded the start last, reached back over that call. The answer and who gave
-/// it: `served_by` names the admin (the launcher's record names it at a first start).
-async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDigest) -> Result<(JoinAnswer, JoinThrough), StartFailed> {
-    let next = || {
-        let to = match to {
-            JoinTo::Launcher { target, endpoint, .. } => Ok((target.clone(), endpoint.fmt_short().to_string())),
-            JoinTo::Commander(commander) => Err(*commander.borrow()),
-        };
-        async move {
-            match to {
-                Ok(t) => Ok(t),
-                Err(key) => reached_back(node, client, &key).await.map(|t| (t, key.fmt_short().to_string())),
-            }
-        }
-    };
-    let (answer, target) = match crate::join::call_join_to(client, next, digest, JOIN_ATTEMPTS).await {
-        Ok(joined) => joined,
-        Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} was refused its join by {}: {why}", whom(to)) }),
-        Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} could not join through {}: unreached: {why}", whom(to)) }),
-    };
-    let (endpoint, name) = match (to, &target) {
-        (JoinTo::Launcher { endpoint, name, .. }, _) => (*endpoint, name.clone()),
-        (JoinTo::Commander(_), NodeTarget::Endpoint { endpoint_id, .. }) => match answer.served_by.parse::<PathName>() {
-            Ok(n) => (*endpoint_id, n),
-            Err(e) => return Err(StartFailed { step: "node.join", reason: format!("{node}: the join answer from endpoint {endpoint_id} names who answered as {:?}, which is no path.name: {e}", answer.served_by) }),
-        },
-        (JoinTo::Commander(_), other) => unreachable!("a commander is reached back over its call's endpoint, never {other:?}"),
-    };
-    Ok((answer, JoinThrough { target, endpoint, name, anchor: endpoint.fmt_short().to_string() }))
-}
-
-/// Whom a join goes to, in words.
-fn whom(to: &JoinTo) -> String {
-    match to {
-        JoinTo::Launcher { name, .. } => name.to_string(),
-        JoinTo::Commander(commander) => format!("the admin whose call commanded the start (endpoint {})", *commander.borrow()),
-    }
-}
-
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.
 pub type Spawn = Box<dyn FnOnce(BoxFut<()>) -> tokio::task::JoinHandle<()> + Send>;
 
@@ -255,10 +215,7 @@ pub trait AfterHook: Send + 'static {
 
 /// What a node kind plugs into `node.start`.
 #[async_trait::async_trait]
-pub trait StartNode: Send {
-    /// This kind's refusal of a start; a step's typed failure converts into it.
-    type Error: From<StartFailed> + Send;
-
+pub trait StartNode: super::node_mesh_join::MeshJoin {
     /// What this start knows before it begins.
     fn starting(&self) -> Starting;
 
@@ -268,15 +225,6 @@ pub trait StartNode: Send {
     /// Whom the join goes to; called inside the join step. A start after a stop answers
     /// [`JoinTo::Commander`], whatever the node kind.
     async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed>;
-
-    /// The digest the join presents; the start presents it Pending.
-    fn join_digest(&self) -> MeshDigest;
-
-    /// Enter the mesh channel holding the name the join handed (`None` with no authority), before
-    /// anything is published, and take what the join answered of the node's control state. `step` is
-    /// the channel step's span: the kind drops it when its channel part ends and records `mesh_id` and
-    /// `seeds` on it.
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Membership, Self::Error>;
 
     /// node.joined: the node is on its channel. The kind takes what the join answered of its control
     /// state (a node-admin records the Build floor here, at every start), brings up what it serves
@@ -295,64 +243,32 @@ pub trait StartNode: Send {
 /// refresh and the report, in that order, for `node` as it plugs into each step.
 pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(), N::Error> {
     let Starting { root, mut name, path, node_id, client, rafka_time } = node.starting();
-    // 1. The join: the answer's rafka-time and cert are taken before the node says anything.
-    let (through, joined) = match node.joining() {
+    // 1. and 2. node.mesh.join (node-mesh-join.md), the one primitive: the report, the answer's
+    //    rafka-time, cert and name taken before the node says anything, then the mesh channel holding
+    //    that name and the status frames the join answered: node.joined. With no authority, the
+    //    channel alone.
+    let channel = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-membership-joined", node = tracing::field::Empty, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
+    let (through, joined, membership) = match node.joining() {
         Joining::Authority { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_authority().await?;
-            let mut digest = node.join_digest();
-            digest.status = MemberStatus::Pending;
-            let mesh_id_str = digest.mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
-            let op_name = match kind {
+            let mesh_id = node.join_digest().mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
+            let operation = match kind {
                 StartKind::FirstStart => format!("node.create:{name}"),
                 StartKind::AfterStop => format!("node.start:{name}"),
             };
-            let joining_span = match kind {
-                StartKind::FirstStart => tracing::info_span!(
-                    parent: &step,
-                    "rdm.node.mesh.update.via-joining",
-                    node = %name,
-                    node_id = %node_id,
-                    mesh = %path.mesh,
-                    mesh_id = %mesh_id_str,
-                    authority = %label,
-                    operation = %op_name,
-                ),
-                StartKind::AfterStop => tracing::info_span!(
-                    "rdm.node.mesh.update.via-joining",
-                    node = %name,
-                    node_id = %node_id,
-                    mesh = %path.mesh,
-                    mesh_id = %mesh_id_str,
-                    authority = %label,
-                    operation = %op_name,
-                ),
-            };
-            let (answer, through) = join(&name, &client, &to, &digest).instrument(joining_span).await?;
-            // Who answered, as the join answer names it (node-start.md step 2), and the endpoint it
-            // answered on.
-            step.record("served_by", through.name.to_string().as_str());
-            step.record("endpoint", through.anchor.as_str());
-            // The name the answer hands (a join that hands none is refused, `crate::join::call_join`):
-            // the node holds it from the answer on, and every step from here is named by it.
-            if let Some(handed) = &answer.control.name {
-                name = handed.to_string();
-            }
-            crate::rafka_time::adopt_join_answer(&step, &rafka_time, &name, &answer);
-            step.record("installed", name.as_str());
-            drop(step);
-            (Ok((through, label)), Some(answer))
+            let report_parent = matches!(kind, StartKind::FirstStart).then(|| step.clone());
+            let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &path.mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, authority: &label, operation: &operation, report_parent, reported: step, channel };
+            let joined = super::node_mesh_join::node_mesh_join(node, call).await?;
+            name = joined.name;
+            (Ok((joined.through, label)), Some(joined.answer), joined.membership)
         }
-        Joining::None(why) => (Err(why), None),
+        Joining::None(why) => {
+            channel.record("node", name.as_str());
+            (Err(why), None, node.enter_channel(channel, None).await?)
+        }
     };
     let member_cert = joined.as_ref().map(|a| a.control.member_cert.clone());
-    // 2. The mesh channel, holding the name the join handed, and the status frames the join answered:
-    //    node.joined.
-    let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-membership-joined", node = %name, mesh_id = tracing::field::Empty, seeds = tracing::field::Empty);
-    let membership = node.enter_channel(step, joined.as_ref()).await?;
-    if let Some(answer) = &joined {
-        membership.learn_statuses(&answer.statuses);
-    }
     let parts = node.joined(&membership, through.as_ref().ok().map(|(t, _)| t), joined.as_ref()).await?;
     // 3. The hook, with no topology read.
     let authority = match &through {
@@ -540,8 +456,22 @@ pub struct FirstStart<E> {
 }
 
 #[async_trait::async_trait]
-impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
+impl<E: From<StartFailed> + Send + 'static> super::node_mesh_join::MeshJoin for FirstStart<E> {
     type Error = E;
+
+    fn join_digest(&self) -> MeshDigest {
+        self.digest.clone().expect("a first start that joins presents a digest")
+    }
+
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Membership, E> {
+        let (membership, next) = (self.enter.take().expect("the channel is entered once"))(step, joined.cloned()).await?;
+        self.joined = Some(next);
+        Ok(membership)
+    }
+}
+
+#[async_trait::async_trait]
+impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
 
     fn starting(&self) -> Starting {
         let s = self.starting.as_ref().expect("a first start is begun once");
@@ -557,16 +487,6 @@ impl<E: From<StartFailed> + Send + 'static> StartNode for FirstStart<E> {
 
     async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed> {
         (self.resolve.take().expect("the authority is resolved once"))()
-    }
-
-    fn join_digest(&self) -> MeshDigest {
-        self.digest.clone().expect("a first start that joins presents a digest")
-    }
-
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&JoinAnswer>) -> Result<Membership, E> {
-        let (membership, next) = (self.enter.take().expect("the channel is entered once"))(step, joined.cloned()).await?;
-        self.joined = Some(next);
-        Ok(membership)
     }
 
     async fn joined(&mut self, _: &Membership, through: Option<&JoinThrough>, _: Option<&JoinAnswer>) -> Result<HookParts, E> {

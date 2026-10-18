@@ -352,69 +352,16 @@ impl crate::node_self::Session for AdminSession {
 
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
         use rdm_core::status::WhichMesh;
-        use tracing::Instrument as _;
-        let mut digest = self.digest.lock().unwrap().clone();
-        digest.status = MemberStatus::Pending;
-        let me_name = digest.node.name.to_string();
+        // node.mesh.join (node-mesh-join.md), the one primitive: reported to the admin whose call
+        // commanded it, reached back over that call.
+        let name = self.digest.lock().unwrap().node.name.to_string();
         let Some(key) = spare else {
-            return Err(format!("{me_name}: commander-uncalled: JoinMesh came on no Node RPC call"));
+            return Err(format!("{name}: commander-uncalled: JoinMesh came on no Node RPC call"));
         };
-        let joining_span = tracing::info_span!(
-            "rdm.node.mesh.update.via-joining",
-            node = %me_name,
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            authority = %key.fmt_short(),
-            operation = %operation,
-        );
-        let client = self.client.clone();
-        let (answer, _) = crate::join::call_join_to(
-            &client,
-            || {
-                let (node, client) = (me_name.clone(), client.clone());
-                async move { crate::workflows::node_start::reached_back(&node, &client, &key).await.map(|t| (t, key.fmt_short().to_string())) }
-            },
-            &digest,
-            crate::workflows::node_start::JOIN_ATTEMPTS,
-        )
-        .instrument(joining_span)
-        .await
-        .map_err(|e| format!("{me_name}: {e}"))?;
-        {
-            let mut d = self.digest.lock().unwrap();
-            if let Some(n) = &answer.control.name {
-                self.membership.set_name(n.clone());
-                d.node.name = n.clone();
-            }
-            if let Some(c) = &answer.control.config {
-                self.membership.set_config(c.clone());
-                d.config = c.clone();
-            }
-        }
-        let installed = self.digest.lock().unwrap().node.name.to_string();
-        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &self.rafka_time, &installed, &answer);
-        self.membership.unpark().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-joined",
-            node = %installed,
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            which = WhichMesh::Own.name(),
-        )
-        .in_scope(|| tracing::info!("joined the mesh channel"));
-        self.backbone.unpark().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-joined",
-            node = %installed,
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            which = WhichMesh::Backbone.name(),
-        )
-        .in_scope(|| tracing::info!("joined the backbone channel"));
-        self.membership.learn_statuses(&answer.statuses);
+        let to = crate::workflows::node_start::JoinTo::Commander(tokio::sync::watch::channel(key).1);
+        let (mesh, mesh_id, authority) = (self.membership.mesh_name(), self.mesh_id.to_string(), key.fmt_short().to_string());
+        let call = crate::workflows::node_mesh_join::JoinCall { name, node_id: &self.node_id, mesh: &mesh, mesh_id: &mesh_id, client: &self.client, rafka_time: &self.rafka_time, to: &to, authority: &authority, operation, report_parent: None, reported: tracing::Span::none(), channel: tracing::Span::none() };
+        crate::workflows::node_mesh_join::node_mesh_join(&mut StandaloneJoin { session: self }, call).await.map_err(|f| f.reason)?;
         self.membership.wait_for_neighbour().await;
         let pending = self.digest.lock().unwrap().clone();
         let _ = self.membership.publish(&pending).await;
@@ -422,48 +369,11 @@ impl crate::node_self::Session for AdminSession {
     }
 }
 
-/// A node-admin's start after its stop, as it plugs into `node.start`: it rejoins the admin that
-/// commanded the start, takes the control state the join answers and runs its tasks again from
-/// where they were held.
-pub(crate) struct AdminAfterStop<'a> {
-    pub(crate) session: &'a AdminSession,
-    pub(crate) root: tracing::Span,
-    /// The endpoint key of the call that commanded the start last: the join goes back over that
-    /// call, and the admin that answers is the hook's accepting authority.
-    pub(crate) commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
-    /// The new cycle's token: the hook runs under it.
-    pub(crate) retire: Option<rdm_transport::CancelToken>,
-    /// The start's hold on this birth's connections rows, dropped once the handed name is held.
-    pub(crate) rows: Option<crate::connections_writer::RowsHeld>,
-    /// The start's operation: the node.started this cycle reports names it (node-status.md "Status report").
-    pub(crate) operation: rdm_core::status::DeclaredOperation,
-    progress: Option<crate::node_self::CommandProgress>,
-}
-
-#[async_trait::async_trait]
-impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
-    type Error = crate::node_self::StartFailed;
-
-    fn starting(&self) -> crate::workflows::node_start::Starting {
-        let s = self.session;
-        let held = s.digest.lock().unwrap().node.name.clone();
-        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.to_string(), path: held, node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
-    }
-
-    fn joining(&self) -> crate::workflows::node_start::Joining {
-        crate::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
-    }
-
-    async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
-        Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
-    }
-
-    fn join_digest(&self) -> MeshDigest {
-        self.session.digest.lock().unwrap().clone()
-    }
-
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
-        let s = self.session;
+impl AdminSession {
+    /// This node-admin's channel entry inside `node.mesh.join`, for its start and its standalone join
+    /// alike: its mesh, then the backbone.
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: &mut Option<crate::connections_writer::RowsHeld>) -> Membership {
+        let s = self;
         step.record("mesh_id", tracing::field::display(&s.mesh_id));
         if let Some(joined) = joined {
             // The row's name and config the join handed are held on this admin's digest and by its
@@ -480,7 +390,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 }
             }
             // Only now are its connections recorded: the join's names the handed name.
-            drop(self.rows.take());
+            drop(rows.take());
         }
         s.membership.unpark().await;
         tracing::info_span!(
@@ -503,7 +413,74 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         )
         .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
-        Ok(s.membership.clone())
+        s.membership.clone()
+    }
+}
+
+/// A node-admin's standalone `JoinMesh`, as it plugs into `node.mesh.join`.
+struct StandaloneJoin<'a> {
+    session: &'a AdminSession,
+}
+
+#[async_trait::async_trait]
+impl crate::workflows::node_mesh_join::MeshJoin for StandaloneJoin<'_> {
+    type Error = crate::node_self::StartFailed;
+
+    fn join_digest(&self) -> MeshDigest {
+        self.session.digest.lock().unwrap().clone()
+    }
+
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
+        Ok(self.session.enter_mesh(step, joined, &mut None).await)
+    }
+}
+
+/// A node-admin's start after its stop, as it plugs into `node.start`: it rejoins the admin that
+/// commanded the start, takes the control state the join answers and runs its tasks again from
+/// where they were held.
+pub(crate) struct AdminAfterStop<'a> {
+    pub(crate) session: &'a AdminSession,
+    pub(crate) root: tracing::Span,
+    /// The endpoint key of the call that commanded the start last: the join goes back over that
+    /// call, and the admin that answers is the hook's accepting authority.
+    pub(crate) commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
+    /// The new cycle's token: the hook runs under it.
+    pub(crate) retire: Option<rdm_transport::CancelToken>,
+    /// The start's hold on this birth's connections rows, dropped once the handed name is held.
+    pub(crate) rows: Option<crate::connections_writer::RowsHeld>,
+    /// The start's operation: the node.started this cycle reports names it (node-status.md "Status report").
+    pub(crate) operation: rdm_core::status::DeclaredOperation,
+    progress: Option<crate::node_self::CommandProgress>,
+}
+
+#[async_trait::async_trait]
+impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
+    type Error = crate::node_self::StartFailed;
+
+    fn join_digest(&self) -> MeshDigest {
+        self.session.digest.lock().unwrap().clone()
+    }
+
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
+        Ok(self.session.enter_mesh(step, joined, &mut self.rows).await)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
+
+    fn starting(&self) -> crate::workflows::node_start::Starting {
+        let s = self.session;
+        let held = s.digest.lock().unwrap().node.name.clone();
+        crate::workflows::node_start::Starting { root: self.root.clone(), name: held.to_string(), path: held, node_id: s.node_id.clone(), client: s.client.clone(), rafka_time: s.rafka_time.clone() }
+    }
+
+    fn joining(&self) -> crate::workflows::node_start::Joining {
+        crate::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
+    }
+
+    async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
+        Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
     async fn joined(&mut self, membership: &Membership, through: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {

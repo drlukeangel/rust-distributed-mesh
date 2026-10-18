@@ -777,49 +777,16 @@ impl crate::node_self::Session for NodeSession {
 
     async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
         use rdm_core::status::WhichMesh;
-        use tracing::Instrument as _;
-        let mut digest = self.membership.with_config(&self.digest);
-        digest.status = MemberStatus::Pending;
-        let me_name = digest.node.name.to_string();
+        // node.mesh.join (node-mesh-join.md), the one primitive: reported to the admin whose call
+        // commanded it, reached back over that call.
+        let name = self.membership.with_config(&self.digest).node.name.to_string();
         let Some(key) = spare else {
-            return Err(format!("{me_name}: commander-uncalled: JoinMesh came on no Node RPC call"));
+            return Err(format!("{name}: commander-uncalled: JoinMesh came on no Node RPC call"));
         };
-        let joining_span = tracing::info_span!(
-            "rdm.node.mesh.update.via-joining",
-            node = %me_name,
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            authority = %key.fmt_short(),
-            operation = %operation,
-        );
-        let client = self.client.clone();
-        let (answer, _) = crate::join::call_join_to(
-            &client,
-            || {
-                let (node, client) = (me_name.clone(), client.clone());
-                async move { crate::workflows::node_start::reached_back(&node, &client, &key).await.map(|t| (t, key.fmt_short().to_string())) }
-            },
-            &digest,
-            crate::workflows::node_start::JOIN_ATTEMPTS,
-        )
-        .instrument(joining_span)
-        .await
-        .map_err(|e| format!("{me_name}: {e}"))?;
-        install_handed(&self.membership, &answer.control);
-        let installed = self.membership.held_name(&self.name).to_string();
-        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &self.rafka_time, &installed, &answer);
-        self.membership.unpark().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-joined",
-            node = %installed,
-            node_id = %self.node_id,
-            mesh = %self.membership.mesh_name(),
-            mesh_id = %self.mesh_id,
-            which = WhichMesh::Own.name(),
-        )
-        .in_scope(|| tracing::info!("joined the mesh channel"));
-        self.membership.learn_statuses(&answer.statuses);
+        let to = crate::workflows::node_start::JoinTo::Commander(tokio::sync::watch::channel(key).1);
+        let (mesh, mesh_id, authority) = (self.membership.mesh_name(), self.mesh_id.to_string(), key.fmt_short().to_string());
+        let call = crate::workflows::node_mesh_join::JoinCall { name, node_id: &self.node_id, mesh: &mesh, mesh_id: &mesh_id, client: &self.client, rafka_time: &self.rafka_time, to: &to, authority: &authority, operation, report_parent: None, reported: tracing::Span::none(), channel: tracing::Span::none() };
+        crate::workflows::node_mesh_join::node_mesh_join(&mut StandaloneJoin { session: self }, call).await.map_err(|f| f.reason)?;
         self.membership.wait_for_neighbour().await;
         let mut pending = self.digest.clone();
         pending.status = MemberStatus::Pending;
@@ -829,6 +796,50 @@ impl crate::node_self::Session for NodeSession {
             *pub_slot = Some(spawn_publisher(&self.membership, &self.digest, &self.status, &self.server));
         }
         Ok(vec![WhichMesh::Own])
+    }
+}
+
+impl NodeSession {
+    /// This rpc node's channel entry inside `node.mesh.join`, for its start and its standalone join
+    /// alike: the row's name and config the join answer handed are held before the node re-enters its
+    /// topic or says anything (a node renamed while stopped publishes its row's name, R-JN1), and only
+    /// then are its connections recorded (`rows`), under the handed name.
+    async fn enter_mesh(&self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>, rows: Option<crate::connections_writer::RowsHeld>) -> Membership {
+        step.record("mesh_id", tracing::field::display(&self.mesh_id));
+        if let Some(joined) = joined {
+            install_handed(&self.membership, &joined.control);
+        }
+        drop(rows);
+        self.membership.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %self.membership.node_name(),
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = rdm_core::status::WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("joined the mesh channel"));
+        drop(step);
+        self.membership.clone()
+    }
+}
+
+/// An rpc node's standalone `JoinMesh`, as it plugs into `node.mesh.join`.
+struct StandaloneJoin<'a> {
+    session: &'a NodeSession,
+}
+
+#[async_trait::async_trait]
+impl crate::workflows::node_mesh_join::MeshJoin for StandaloneJoin<'_> {
+    type Error = crate::node_self::StartFailed;
+
+    fn join_digest(&self) -> MeshDigest {
+        self.session.membership.with_config(&self.session.digest)
+    }
+
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
+        Ok(self.session.enter_mesh(step, joined, None).await)
     }
 }
 
@@ -854,8 +865,20 @@ struct AfterStop<'a> {
 }
 
 #[async_trait::async_trait]
-impl crate::workflows::node_start::StartNode for AfterStop<'_> {
+impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
     type Error = crate::node_self::StartFailed;
+
+    fn join_digest(&self) -> MeshDigest {
+        self.held.clone()
+    }
+
+    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
+        Ok(self.session.enter_mesh(step, joined, self.rows.take()).await)
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::workflows::node_start::StartNode for AfterStop<'_> {
 
     fn starting(&self) -> crate::workflows::node_start::Starting {
         let s = self.session;
@@ -868,34 +891,6 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
 
     async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
         Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
-    }
-
-    fn join_digest(&self) -> MeshDigest {
-        self.held.clone()
-    }
-
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
-        let s = self.session;
-        step.record("mesh_id", tracing::field::display(&s.mesh_id));
-        // The row's name and config the join answer handed are held before the node re-enters its
-        // topic or says anything: a node renamed while stopped publishes its row's name (R-JN1).
-        if let Some(joined) = joined {
-            install_handed(&s.membership, &joined.control);
-        }
-        // Only now are its connections recorded: the join's names the handed name.
-        drop(self.rows.take());
-        s.membership.unpark().await;
-        tracing::info_span!(
-            "rdm.node.mesh.update.via-joined",
-            node = %s.membership.node_name(),
-            node_id = %s.node_id,
-            mesh = %s.membership.mesh_name(),
-            mesh_id = %s.mesh_id,
-            which = rdm_core::status::WhichMesh::Own.name(),
-        )
-        .in_scope(|| tracing::info!("joined the mesh channel"));
-        drop(step);
-        Ok(s.membership.clone())
     }
 
     async fn joined(
