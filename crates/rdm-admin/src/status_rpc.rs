@@ -297,6 +297,8 @@ pub use rdm_core::status::{declared_of_member, member_of_declared};
 /// What the service reads and writes: this admin's identity, its current view, what it applied,
 /// and the rows it writes.
 pub struct StatusAuthority {
+    /// This admin's own declaration and the application channels it holds.
+    pub app_channels: Option<rdm_transport::membership::Membership>,
     /// The fabric-seat takeover this admin holds because the store could not commit it, shared with
     /// its handover door; `fabric.get` surfaces it (elections §5).
     pub held_takeover: crate::fabric_handover::HeldTakeovers,
@@ -657,7 +659,20 @@ impl StatusAuthority {
                             Some(rounds) => rounds.planned_paths().await,
                             None => Err(format!("{me_name} holds no rounds yet: the current Build is not read")),
                         };
-                        crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), &planned, select).await
+                        {
+                            let mut answer = crate::views::nodes_answer_with_status(&me_name, &view, loads, &*self.nodes_storage, Some(&*self.status_storage), &planned, select).await;
+                            if let (Some(channels), StatusReply::Nodes { nodes }) = (&self.app_channels, &mut answer) {
+                                for n in nodes {
+                                    let sets = if n.node_id == self.node_id {
+                                        Some((channels.app_types(), channels.held_types()))
+                                    } else {
+                                        n.incarnation_id.as_ref().and_then(|inc| channels.member_app_types(&n.node_id, inc))
+                                    };
+                                    if let Some((types, held)) = sets { n.types = types; n.held = held; n.held_hash = rdm_core::app_types::hash(&n.held); }
+                                }
+                            }
+                            StatusReply::within_reply_bound(answer, "node.get")
+                        }
                     }
                     None => rdm_core::reply::status::not_ready(format!("{me_name} reads no digest book; {} is refused", req.op())),
                 };
@@ -1618,6 +1633,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
@@ -1682,6 +1698,7 @@ mod tests {
             nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone(), restarted.clone()],
         }));
         let authority = StatusAuthority {
+            app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
@@ -1845,6 +1862,7 @@ mod tests {
         }));
         let status: Arc<RacingPuts> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
@@ -1911,6 +1929,7 @@ mod tests {
     /// The status authority of the admin born as `me`, deciding over `view`.
     fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
+            app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
@@ -2181,7 +2200,7 @@ mod tests {
     }
 
     fn digest_of(n: &crate::model::Node, incarnation: IncarnationId) -> rdm_core::MeshDigest {
-        rdm_core::MeshDigest {
+        rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: rdm_core::MeshNode {
                 node_id: n.node_id.clone(),
@@ -2236,6 +2255,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,
@@ -2333,6 +2353,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
             command_frame_seam: None,

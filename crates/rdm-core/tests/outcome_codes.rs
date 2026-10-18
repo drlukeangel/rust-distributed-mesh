@@ -43,7 +43,7 @@ pub(crate) fn check<P: NodeProtocol>(reply: &P::Reply) {
     };
     assert_eq!(expected.len(), P::REPLY_VARIANTS as usize);
     let malformed = P::encode_reply(&P::malformed(rdm_core::outcome::MalformedKind::Corrupt)).unwrap()[0];
-    let n = if wire[0] == malformed { match wire[1] { 0 => 8, 1 => 3, 2 => 15, other => panic!("unknown malformed kind {other}") } } else { expected[wire[0] as usize] };
+    let n = if wire[0] == malformed { match wire[1] { 0 | 3 => 8, 1 => 3, 2 => 15, other => panic!("unknown malformed kind {other}") } } else { expected[wire[0] as usize] };
     let n = match P::OP {
         0x1B => match rdm_core::status::Status::decode_reply(&wire).unwrap() {
             StatusReply::RejectedNotAuthority { why: rdm_core::status::NotAuthority::SubjectUnknown { .. } } => 5,
@@ -181,7 +181,7 @@ fn tags_have_per_element_codes_and_the_served_call_is_ok() {
 
 pub(crate) fn check_malformed<P: NodeProtocol>() {
     use rdm_core::outcome::MalformedKind;
-    for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss)] {
+    for (kind, code) in [(MalformedKind::TooLarge, Code::ResourceExhausted), (MalformedKind::UnknownVariant, Code::InvalidArgument), (MalformedKind::Corrupt, Code::DataLoss), (MalformedKind::TypesOverCap, Code::ResourceExhausted)] {
         let value = P::malformed(kind);
         let decoded = P::decode_reply(&P::encode_reply(&value).unwrap()).unwrap();
         assert_eq!(P::classify_reply(&decoded).code(), code);

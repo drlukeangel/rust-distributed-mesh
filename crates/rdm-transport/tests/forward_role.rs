@@ -18,7 +18,7 @@ fn fabric() -> FabricId {
 }
 
 fn member(ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64, status: MemberStatus) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
         node: MeshNode {
             node_id: node_id.clone(),
@@ -80,9 +80,9 @@ fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
         let fab = fabric();
         let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
         let clock = rdm_transport::clock::os_clock;
-        let src_m = Membership::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![]).await.unwrap();
-        let admin_m = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![]).await.unwrap();
-        let rpc_m = Membership::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()]).await.unwrap();
+        let src_m = Membership::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![], &[]).await.unwrap();
+        let admin_m = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![], &[]).await.unwrap();
+        let rpc_m = Membership::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()], &[]).await.unwrap();
         let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
         src_bb.set_mesh_primary(true);

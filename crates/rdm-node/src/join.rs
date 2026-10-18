@@ -43,12 +43,19 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
 /// after a stop joins the call that commanded it last. A refusal by name ends it at once; an attempt
 /// `next` can name no target for is unanswered, its reason named. The answer, and the target that
 /// gave it.
-pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, attempts: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, next: F, digest: &MeshDigest, attempts: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
 {
-    let req = JoinRequest::JoinNode { digest: WireDigest::from(digest) };
+    call_join_to_types(client, next, digest, attempts, &[]).await
+}
+
+/// Join using this birth's immutable app declaration, retained across all attempts.
+pub async fn call_join_to_types<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, attempts: u32, types: &[String]) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+where F: FnMut() -> Fut, Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
+{
+    let req = JoinRequest::JoinNode { types: types.to_vec(), digest: WireDigest::from(digest) };
     let node = digest.node.name.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {

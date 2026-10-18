@@ -156,7 +156,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let endpoint_id = EndpointId(receipt_output(&view, "PrepareStorage").as_str().unwrap().to_string());
         let data_dir = data_root.join(format!("{name}-{node_id}"));
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
-        let digest = |incarnation: &IncarnationId| MeshDigest {
+        let digest = |incarnation: &IncarnationId| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: MeshNode {
                 node_id: node_id.clone(),
@@ -185,6 +185,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             me: "mesh1.admin.1".parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| Box::pin(async { Err("a refused join is never answered".to_string()) })),
+            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |_| {
                 count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
@@ -197,7 +198,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
                 t
             })),
         };
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { types: Vec::new(), digest: d.into() };
 
         let late = door.serve(endpoint_id.clone(), ask(&digest(&incarnation))).await;
         assert_eq!(

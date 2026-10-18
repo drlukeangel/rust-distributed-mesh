@@ -151,7 +151,7 @@ async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[
                 tags: Default::default(),
                 allocated: None,
                 renamed_from: None,
-                inherited_by: None,
+                app_types: None, inherited_by: None,
             })
             .await
             .unwrap()

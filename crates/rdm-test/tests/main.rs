@@ -288,3 +288,5 @@ async fn forward_gossip_probe(membership: &rdm_transport::membership::Membership
     };
     membership.forward(&frame.clone().authored(&author, 1, 1)).await
 }
+
+mod app_channels;

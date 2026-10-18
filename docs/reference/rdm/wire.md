@@ -565,6 +565,7 @@ A Join call.
 |---|---|---|---|---|---|
 | 0 | **`JoinNode`** |  |  | `op() = "join-node"` | The node reports its full digest, with the address it really bound. |
 | 0.0 | `digest` | `WireDigest` → [`WireDigest`](#t-rdm_core-wire-WireDigest) |  |  | The node's full digest. |
+| 0.1 | `types` | `Vec<String>` |  |  | The birth's immutable app type declaration. |
 
 <a id="t-rdm_core-join-JoinReply"></a>
 
@@ -2222,7 +2223,7 @@ serde: `deny_unknown_fields`
 
 ### `MalformedKind`
 
-`crates/rdm-core/src/outcome.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/outcome.rs` · enum · 4 variants · rdm-core
 
 How a request frame was malformed.
 
@@ -2231,6 +2232,7 @@ How a request frame was malformed.
 | 0 | **`TooLarge`** |  |  | Declared length over the protocol ceiling; body never read. |
 | 1 | **`UnknownVariant`** |  |  | A known op carrying an operation variant this build does not know. |
 | 2 | **`Corrupt`** |  |  | Undecodable bytes. |
+| 3 | **`TypesOverCap`** |  |  | App types exceed 256 entries or 8 KiB encoded. |
 
 <a id="t-rdm_core-digest-MemberStatus"></a>
 
@@ -2455,7 +2457,7 @@ serde: `rename_all = "kebab-case"`
 
 ### `NodeView`
 
-`crates/rdm-core/src/views.rs` · struct · 25 fields · rdm-core
+`crates/rdm-core/src/views.rs` · struct · 28 fields · rdm-core
 
 One node as the answering node-admin's view holds it (`node.get`).
 
@@ -2486,6 +2488,9 @@ One node as the answering node-admin's view holds it (`node.get`).
 | 22 | `data_dir_lost` | `Option<DataDirLost>` → [`DataDirLost`](#t-rdm_core-views-DataDirLost) | `default` | The durable `data-dir-lost` fact on this birth's status row (R-FM2), when the inherited |
 | 23 | `data_dir_unreadable` | `Option<DataDirUnreadable>` → [`DataDirUnreadable`](#t-rdm_core-views-DataDirUnreadable) | `default` | The durable `data-dir-unreadable` fact on this birth's status row (R-FM2), when the |
 | 24 | `os_stopped` | `Option<OsStopped>` → [`OsStopped`](#t-rdm_core-views-OsStopped) | `default` | The durable `os-stopped` fact on this birth's status row (R-PV1), when the provider inspected |
+| 25 | `types` | `std::collections::BTreeSet<String>` | `default` | This exact birth's immutable app declaration. |
+| 26 | `held` | `std::collections::BTreeSet<String>` | `default` | Types this birth joined, including members and peers on a node-admin. |
+| 27 | `held_hash` | `[u8; 32]` | `default` | Canonical held-set hash carried by this birth's digest. |
 
 <a id="t-rdm_core-status-NotAuthority"></a>
 
@@ -2956,7 +2961,7 @@ Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
 
 ### `WireDigest`
 
-`crates/rdm-core/src/wire.rs` · struct · 12 fields · rdm-core
+`crates/rdm-core/src/wire.rs` · struct · 13 fields · rdm-core
 
 A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published liveness
 
@@ -2974,6 +2979,7 @@ A `MeshDigest` as it travels in a gossip frame: position 2 is the self-published
 | 9 | `config` | `BTreeMap<String, String>` |  |  |
 | 10 | `load` | `Option<NodeLoad>` → [`NodeLoad`](#t-rdm_core-digest-NodeLoad) |  |  |
 | 11 | `gossip` | `Option<GossipStats>` → [`GossipStats`](#t-rdm_core-digest-GossipStats) |  |  |
+| 12 | `held_hash` | `[u8; 32]` |  |  |
 
 <a id="t-rdm_core-wire-WireLocator"></a>
 

@@ -154,6 +154,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
+        app_channels: None,
         held_takeover: Default::default(),
         declaration_seam: None,
             command_frame_seam: None,
@@ -1081,7 +1082,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let newcomer = birth("mesh1.rpc.3", NodeKind::RpcNode, "mesh1", false, false);
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tags".to_string(), "edge".to_string())].into();
         rig.nodes
-            .put_node_row(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None })
+            .put_node_row(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None })
             .await
             .unwrap()
             .unwrap();
@@ -1131,7 +1132,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "c".to_string()), ("tags".to_string(), "far".to_string())].into();
         let mp_rows = Arc::new(MemoryNodesStorage::default());
         mp_rows
-            .put_node_row(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None })
+            .put_node_row(&rdm_admin::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None })
             .await
             .unwrap()
             .unwrap();
@@ -1223,7 +1224,7 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
         (n.parked, n.status) = (true, NodeStatus::Leaving);
     }
-    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, inherited_by: None };
+    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
     rig.nodes.put_node_row(&row).await.unwrap().unwrap();
 }
 
@@ -1369,7 +1370,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         }
         let holder = NodeId::mint();
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        rig.nodes.put_node_row(&rdm_admin::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
+        rig.nodes.put_node_row(&rdm_admin::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(held, StatusReply::NameHeld { name: taken.to_string(), by: holder.clone() });
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -2003,6 +2004,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         let admin = admin.node.clone();
         async move {
             let authority = StatusAuthority {
+                app_channels: None,
                 held_takeover: Default::default(),
                 declaration_seam: None,
             command_frame_seam: None,
@@ -2096,7 +2098,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
 ///    second time.
 /// 3. Rollback (moving the stopped successor back to `mesh1.rpc.2.new` and moving the stopped
 ///    predecessor from `mesh1.rpc.2.old` back to `mesh1.rpc.2`) restores the predecessor's row at
-///    `mesh1.rpc.2` with `inherited_by: None` and restores the predecessor's tag-index entries under its
+///    `mesh1.rpc.2` with `app_types: None, inherited_by: None` and restores the predecessor's tag-index entries under its
 ///    original `node_id`.
 #[test]
 fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_predecessor_tag_index() {
@@ -2275,11 +2277,11 @@ fn a_progress_frame_delivered_twice_is_suppressed_and_the_record_is_written_once
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![]).await.unwrap();
+        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         membership.set_mesh_primary(true);
         let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
         let rpc = &b["rpc2"];
-        assert!(membership.book.record(rdm_core::MeshDigest {
+        assert!(membership.book.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,
@@ -2428,11 +2430,11 @@ fn a_lifecycle_progress_frame_replayed_after_a_lost_ack_is_recorded_once() {
         let fabric = FabricId::mint();
         let time = rdm_transport::clock::RafkaTime::unadopted();
         time.adopt(5_000_000);
-        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![]).await.unwrap();
+        let membership = rdm_transport::membership::Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time), vec![], &[]).await.unwrap();
         membership.set_mesh_primary(true);
         let (rig, b) = rig_with_book(Some(membership.book.clone())).await;
         let rpc = &b["rpc2"];
-        assert!(membership.book.record(rdm_core::MeshDigest {
+        assert!(membership.book.record(rdm_core::MeshDigest { held_hash: Default::default(),
             fabric_id: fabric,
             node: rdm_core::MeshNode { node_id: rpc.node.node_id.clone(), name: rpc.node.name.clone(), endpoint_id: EndpointId(rpc.key.public().to_string()), transport_addr: "127.0.0.1:20001".parse().unwrap(), incarnation: rpc.node.incarnation_id.clone().unwrap(), supersedes: None, runtime: None },
             status: rdm_core::MemberStatus::Pending, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: None, in_flight: None, config: Default::default(), load: None, gossip: None,

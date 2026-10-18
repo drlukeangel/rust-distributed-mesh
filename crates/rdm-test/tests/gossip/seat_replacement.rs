@@ -1,7 +1,7 @@
 //! Replacement seats are classified against installed records, atomically for a multi-seat row.
 use rdm_core::{FabricId, MeshId, NodeId, IncarnationId, Seat, SeatHolder, NodeKind, LifecycleOp};
 use rdm_core::seat::transfer::CommittedSeat;
-use rdm_transport::membership::{learn_addresses, mesh_topic, Frame, Membership};
+use rdm_transport::membership::{learn_addresses, mesh_channel, Frame, Membership};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
@@ -44,8 +44,8 @@ fn story(kind: Kind, story: Story) {
         learn_addresses(&receiver_ep, &[address.clone()]).unwrap();
         learn_addresses(&sender_ep, &[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut topic = gossip.subscribe(mesh_topic(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address]).await.unwrap();
+        let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
+        let receiver = Membership::join(&receiver_gossip, &receiver_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![address], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
 

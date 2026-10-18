@@ -127,7 +127,7 @@ fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
 
 /// The heartbeat `n`'s exact birth publishes: liveness only, no status (gossip.md §3.1).
 fn heartbeat(fabric_id: &FabricId, n: &Node) -> rdm_core::MeshDigest {
-    rdm_core::MeshDigest {
+    rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
         node: rdm_core::MeshNode {
             node_id: n.node_id.clone(),
@@ -194,7 +194,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![]).await.unwrap();
+                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
                 records.set_book(membership.book.clone());
                 records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap()), "mesh1".into(), b.name.clone(), b.node_id.clone());
@@ -222,6 +222,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rdm_admin::status_rpc::StatusAuthority {
+                    app_channels: None,
                     held_takeover: Default::default(),
                     declaration_seam: None,
             command_frame_seam: None,
@@ -340,6 +341,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let held_root = rdm_admin::store_root::StoreRoot::held_at(&dir, pad.clone());
                 let storage = Arc::new(FileStatusStorage::open(&held_root, "mesh1", a.incarnation_id.as_ref().unwrap()).await.unwrap());
                 let authority = rdm_admin::status_rpc::StatusAuthority {
+                    app_channels: None,
                     held_takeover: Default::default(), declaration_seam: None, command_frame_seam: None,
                     operation_effects: Default::default(), stopped: Default::default(),
                     me: a.name.clone(), node_id: a.node_id.clone(), fabric_id: fabric_id.clone(),
@@ -381,7 +383,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap()).await.unwrap();
                 let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
                 let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![]).await.unwrap();
+                let membership = Membership::join(&gossip, &ep, &fabric_id, "mesh1", &mesh_id, "mesh1.admin.2", Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
                 let records = Records::default();
                 records.set_book(membership.book.clone());
                 records.set_status(successor, "mesh1".into(), b.name.clone(), b.node_id.clone());

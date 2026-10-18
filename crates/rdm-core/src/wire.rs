@@ -56,6 +56,7 @@ pub struct WireDigest {
     config: BTreeMap<String, String>,
     load: Option<NodeLoad>,
     gossip: Option<GossipStats>,
+    held_hash: [u8; 32],
 }
 
 impl From<&MeshDigest> for WireDigest {
@@ -91,6 +92,7 @@ impl From<&MeshDigest> for WireDigest {
             config: d.config.clone(),
             load: d.load,
             gossip: d.gossip,
+            held_hash: d.held_hash,
         }
     }
 }
@@ -132,6 +134,7 @@ impl From<WireDigest> for MeshDigest {
             config: w.config,
             load: w.load,
             gossip: w.gossip,
+            held_hash: w.held_hash,
         }
     }
 }

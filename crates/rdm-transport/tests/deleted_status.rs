@@ -35,7 +35,7 @@ fn attr(sp: &Value, k: &str) -> String {
 }
 
 fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
         node: MeshNode {
             node_id: node_id.clone(),
@@ -108,9 +108,9 @@ fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_
         learn_addresses(&y_node.ep, &[p_addr.clone()]).unwrap();
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
-        let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![]).await.unwrap();
-        let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()]).await.unwrap();
-        let y = Membership::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr]).await.unwrap();
+        let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![], &[]).await.unwrap();
+        let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()], &[]).await.unwrap();
+        let y = Membership::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr], &[]).await.unwrap();
         p.set_author(&rdm_core::PublisherId { node: "mesh2.admin.2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() });
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         m.wait_for_neighbour().await;

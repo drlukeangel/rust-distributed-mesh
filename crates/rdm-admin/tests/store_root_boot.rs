@@ -353,7 +353,7 @@ impl Prepared {
                 tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
                 allocated: None,
                 renamed_from: None,
-                inherited_by: None,
+                app_types: None, inherited_by: None,
             };
             nodes.put_node_row(&row).await.unwrap().expect("mesh1.admin.1 is free");
             if history == History::ReadyForTraffic {

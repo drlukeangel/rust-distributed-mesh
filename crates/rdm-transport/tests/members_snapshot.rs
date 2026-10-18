@@ -18,7 +18,7 @@
 
 use iroh::protocol::Router;
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rdm_transport::membership::{backbone_topic, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
+use rdm_transport::membership::{backbone_channel, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
 use rdm_transport::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -42,7 +42,7 @@ fn fabric() -> FabricId {
 
 /// One member of `mesh` at `ordinal`; the NodeId is minted once per ordinal by the caller.
 fn member(mesh: &str, ordinal: u32, node_id: &NodeId, birth: &IncarnationId, seq: u64) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
         node: MeshNode {
             node_id: node_id.clone(),
@@ -446,13 +446,13 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         learn_addresses(&member_node.ep, &[fwd_addr.clone()]).unwrap();
         let fab = fabric();
         let (mesh1_id, mesh2_id) = (MeshId::mint(), MeshId::mint());
-        let src_m = Membership::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let fwd_m = Membership::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let mem_m = Membership::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()]).await.unwrap();
+        let src_m = Membership::join(&src_node.gossip, &src_node.ep, &fab, "mesh2", &mesh2_id, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd_m = Membership::join(&fwd_node.gossip, &fwd_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let mem_m = Membership::join(&member_node.gossip, &member_node.ep, &fab, "mesh1", &mesh1_id, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![fwd_addr.clone()], &[]).await.unwrap();
         let src_birth = IncarnationId::mint();
         let src_bb = Backbone::join(&src_node.gossip, &src_node.ep, &src_m, "mesh2", rdm_core::PublisherId { node: "mesh2.admin.1".to_string(), incarnation: src_birth.clone(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
         let fwd_bb = Backbone::join(&fwd_node.gossip, &fwd_node.ep, &fwd_m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![src_addr.clone()]).await.unwrap();
-        let _ = backbone_topic(&fab);
+        let _ = backbone_channel(&fab);
         src_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
         let remote = Mesh::new("mesh2", 40);

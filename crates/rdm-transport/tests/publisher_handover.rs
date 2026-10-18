@@ -31,7 +31,7 @@ fn attr(sp: &Value, k: &str) -> String {
 }
 
 fn digest(name: &str, port: u16) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
         node: MeshNode {
             node_id: NodeId::mint(),
@@ -126,9 +126,9 @@ fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_
         let mesh_id = MeshId::mint();
         let clock = rdm_transport::clock::os_clock;
         let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest("mesh1.admin.1", 41_001), digest("mesh1.admin.2", 41_002), digest("mesh1.rpc.1", 41_011), digest("mesh1.rpc.2", 41_012), digest("mesh1.rpc.3", 41_013), digest("mesh1.rpc.4", 41_014));
-        let m1 = Membership::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
-        let m2 = Membership::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()]).await.unwrap();
-        let m = Membership::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()]).await.unwrap();
+        let m1 = Membership::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![], &[]).await.unwrap();
+        let m2 = Membership::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()], &[]).await.unwrap();
+        let m = Membership::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()], &[]).await.unwrap();
         let bb1 = Backbone::join(&n1.gossip, &n1.ep, &m1, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: p1_d.node.incarnation.clone(), node_id: p1_d.node.node_id.clone() }, vec![]).await.unwrap();
         let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.2".to_string(), incarnation: p2_d.node.incarnation.clone(), node_id: p2_d.node.node_id.clone() }, vec![a1.clone()]).await.unwrap();
         m2.wait_for_neighbour().await;
@@ -259,8 +259,8 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let source_birth = digest("mesh2.admin.1", 42001);
         let forwarder_birth = digest("mesh1.admin.1", 42002);
         let author = PublisherId::from(&source_birth.node);
-        let src = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
-        let fwd = Membership::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let src = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh2", &source_mesh, "mesh2.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
+        let fwd = Membership::join(&forwarder.gossip, &forwarder.ep, &fabric(), "mesh1", &own_mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         // Deliberately a different exact birth at the author's descriptive path.
         let impostor = digest("mesh2.admin.1", 42003);
         assert_ne!(impostor.node.node_id, author.node_id);
@@ -269,7 +269,7 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         let fwd_bb = Backbone::join(&forwarder.gossip, &forwarder.ep, &fwd, "mesh1", PublisherId::from(&forwarder_birth.node), vec![source_addr]).await.unwrap();
         source_bb.set_mesh_primary(true);
         fwd_bb.set_mesh_primary(true);
-        let mut linked = source.gossip.subscribe(rdm_transport::membership::backbone_topic(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
+        let mut linked = source.gossip.subscribe(rdm_transport::membership::backbone_channel(&fabric()), vec![forwarder.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(20), linked.joined()).await.unwrap().unwrap();
         assert!(source_bb.publish(&src, vec![]).await);
         until("the forwarder to install the empty source", || fwd_bb.held_source("mesh2").is_some()).await;
@@ -277,14 +277,14 @@ fn an_empty_publication_retains_its_supplied_author_birth_everywhere() {
         assert_eq!(held_author, author, "receipt keeps the supplied author, not the same-name member");
 
         // This neighbour joins after the empty source installed: its baseline is a replayed full.
-        let mem = Membership::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![forwarder_addr]).await.unwrap();
+        let mem = Membership::join(&member.gossip, &member.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![forwarder_addr], &[]).await.unwrap();
         until("the new neighbour to install the forwarded replay", || mem.held_source_version("mesh2").is_some()).await;
         assert_eq!(mem.held_source_version("mesh2"), Some((author.clone(), version)));
         let own = digest("mesh1.rpc.1", 42004);
         let served = mem.held_topology(&own).into_iter().find(|s| s.mesh == "mesh2").unwrap();
         assert_eq!(served.publisher, author);
         assert!(served.digests.is_empty(), "the author is carried even without an author digest");
-        let read = Membership::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let read = Membership::join(&reader.gossip, &reader.ep, &fabric(), "mesh1", &own_mesh, "mesh1.rpc.2", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let chunk = rdm_transport::snapshot::Chunk { mesh: served.mesh, publisher: served.publisher, forwarded_by: None, topology_version: served.topology_version, snapshot_id: 1, chunk_index: 0, chunk_count: 1, digests: served.digests, in_flight: served.in_flight, departed: served.departed };
         assert!(matches!(read.take_read_chunk(chunk, "mesh1"), rdm_transport::snapshot::Taken::Installed(_)));
         assert_eq!(read.held_source_version("mesh2"), Some((author.clone(), version)), "a topology read retains the same exact author");
@@ -309,11 +309,11 @@ fn one_birth_uses_one_publication_counter_across_source_and_forwarded_fulls() {
         learn_addresses(&source.ep, &[addr_of(&probe.ep)]).unwrap();
         let mesh = MeshId::mint();
         let author = PublisherId { node: "mesh1.admin.1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
-        let membership = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![]).await.unwrap();
+        let membership = Membership::join(&source.gossip, &source.ep, &fabric(), "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![], &[]).await.unwrap();
         let backbone = Backbone::join(&source.gossip, &source.ep, &membership, "mesh1", author.clone(), vec![]).await.unwrap();
         backbone.set_mesh_primary(true);
-        let mut local = probe.gossip.subscribe(rdm_transport::membership::mesh_topic(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
-        let mut remote = probe.gossip.subscribe(rdm_transport::membership::backbone_topic(&fabric()), vec![source.ep.id()]).await.unwrap();
+        let mut local = probe.gossip.subscribe(rdm_transport::membership::mesh_channel(&fabric(), &mesh), vec![source.ep.id()]).await.unwrap();
+        let mut remote = probe.gossip.subscribe(rdm_transport::membership::backbone_channel(&fabric()), vec![source.ep.id()]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), local.joined()).await.unwrap().unwrap();
         tokio::time::timeout(Duration::from_secs(5), remote.joined()).await.unwrap().unwrap();
         let (_local_sender, mut local) = local.split(); let (_remote_sender, mut remote) = remote.split();

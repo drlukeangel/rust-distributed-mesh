@@ -6,6 +6,7 @@
 // gossip & membership modules
 pub mod chunking;
 pub mod envelope;
+pub mod gossip;
 pub(crate) mod forward_path;
 pub mod clock;
 pub(crate) mod discipline;

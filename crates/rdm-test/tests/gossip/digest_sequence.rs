@@ -59,7 +59,7 @@ impl Birth {
     }
 
     fn digest(&self, seq: u64, at_rafka_ms: u64, status: MemberStatus) -> MeshDigest {
-        MeshDigest {
+        MeshDigest { held_hash: Default::default(),
             fabric_id: self.fabric.clone(),
             node: MeshNode {
                 node_id: self.node_id.clone(),
@@ -170,7 +170,7 @@ fn digest_receiver_orders_same_birth_by_sequence_with_stalled_clock() {
         };
         let hand = Arc::new(HandClock::default());
         let me = "mesh1.rpc.1";
-        let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![]).await.unwrap();
+        let membership = Membership::join(&gossip, &endpoint, &fabric, "mesh1", &MeshId::mint(), me, hand.clone(), vec![], &[]).await.unwrap();
         let sender_id = NodeId::mint();
         let sender = Birth::first(&fabric, &sender_id);
         let mut stamped: Vec<Value> = Vec::new();

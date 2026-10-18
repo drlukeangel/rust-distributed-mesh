@@ -496,6 +496,25 @@ impl NodeRows {
         span.in_scope(|| tracing::info!("node.create: the claim is withdrawn"));
     }
 
+    /// Persist a birth's immutable declaration in its existing row before answering its join.
+    pub async fn declare_app_types(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<(), String> {
+        let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
+        let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
+            Claimed::Written { row, .. } | Claimed::HeldByNode(row) => row,
+        };
+        if let Some(held) = &row.app_types {
+            if held.incarnation == d.node.incarnation {
+                if held.types == types { return Ok(()); }
+                return Err("the exact birth already declared different app types".into());
+            }
+        }
+        row.app_types = Some(crate::storage::AppTypes { incarnation: d.node.incarnation.clone(), types });
+        self.storage.put_node_row(&row).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:?}"))?;
+        self.written.hold(&row);
+        tracing::info_span!("rdm.node_admin.node.update.via-types", node = %d.node.name, node_id = %d.node.node_id, incarnation = %d.node.incarnation, types = row.app_types.as_ref().unwrap().types.len()).in_scope(|| tracing::info!("the birth's declaration is recorded"));
+        Ok(())
+    }
+
     /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `path.name` (its `.old`
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
@@ -575,7 +594,7 @@ impl NodeRows {
                 let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{me}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know")));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, inherited_by: None };
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, app_types: self.written.row_of(node_id).and_then(|r| r.app_types), inherited_by: None };
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
@@ -800,7 +819,7 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
         span.record("seeded_from", p.node_id.as_str());
     }
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
-    let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, inherited_by: None };
+    let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, app_types: None, inherited_by: None };
     span.record("awaiting", "put-node-row");
     let put = storage.put_node_row(&row).await;
     push_awaited(&mut awaited, "put-node-row");
@@ -969,7 +988,8 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
             Err(why) => (Moved::ReleasePending { why }, held),
         });
     }
-    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), inherited_by: None };
+    let app_types = storage.node_row_at(from).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the source declaration could not be read: {e}")))?.filter(|r| r.node_id == record.node_id).and_then(|r| r.app_types);
+    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), app_types, inherited_by: None };
     storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
     // The new name is the node's: it lets go of the old key.
     match storage.release_node_row(from, &record.node_id).await {

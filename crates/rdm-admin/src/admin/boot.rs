@@ -471,7 +471,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
 
     // The mesh endpoint: gossip for membership and Build facts.
     // The transport is the one every node kind binds with (`rdm_transport::endpoint::transport_config`).
-    let alpns = vec![iroh_gossip::ALPN.to_vec(), rdm_transport::ALPN.to_vec()];
+    let mut alpns = vec![iroh_gossip::ALPN.to_vec(), rdm_transport::ALPN.to_vec()];
+    alpns.extend(wiring.alpns.iter().map(|(alpn, _)| alpn.clone()));
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-endpoint-bound", node = %name, requested = %mesh_addr, bound = tracing::field::Empty);
     let endpoint = rdm_transport::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), rdm_transport::endpoint::transport_config())
         .await
@@ -539,10 +540,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         .seal(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.add.via-alpn-registered", node = %name, alpns = "node-rpc,gossip");
-    let iroh_router = IrohRouter::builder(endpoint.clone())
+    let mut router_builder = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
-        .accept(rdm_transport::ALPN, rpc_server.clone())
-        .spawn();
+        .accept(rdm_transport::ALPN, rpc_server.clone());
+    for (alpn, handler) in std::mem::take(&mut wiring.alpns) { router_builder = router_builder.accept(alpn, handler); }
+    let iroh_router = router_builder.spawn();
     drop(step);
     tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-accept-loop-started", node = %name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
     let seed_addrs: Vec<EndpointAddr> = seeds
@@ -588,7 +590,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     };
     // This admin's first call after it binds: `JoinNode`, carrying its full digest with the
     // addresses it really bound, to the admin that deployed it.
-    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest {
+    let join_types = wiring.types.clone();
+    rdm_core::app_types::check(&join_types).map_err(|k| format!("app type declaration: {k:?}"))?;
+    let join_digest: Option<MeshDigest> = joins_through.as_ref().map(|(_, _, runtime)| MeshDigest { held_hash: rdm_core::app_types::hash(&join_types.iter().cloned().collect()),
         fabric_id: cfg.fabric_id.clone(),
         node: MeshNode {
             node_id: node_id.clone(),
@@ -668,9 +672,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // gossip, and the book keeps the newer copy.
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seed_addrs.len());
-                let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone())
+                let membership = Membership::join(&gossip, &endpoint, &cfg.fabric_id, &cfg.mesh, &mesh_id, &name.to_string(), clock.clone(), seed_addrs.clone(), &wiring.types.iter().map(String::as_str).collect::<Vec<_>>())
                     .await
                     .map_err(|e| format!("membership: {e}"))?;
+                membership.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
                 // The name this admin holds is its membership's (R12): its connections rows name it as their
                 // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
                 {
@@ -1016,6 +1021,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             {
                                 let records_for_ids = records.clone();
                                 let _ = authority.set(Arc::new(crate::status_rpc::StatusAuthority {
+                                    app_channels: Some(membership.clone()),
                                     held_takeover: held_takeover.clone(),
                                     declaration_seam: wiring.declaration_seam.clone(),
                                     command_frame_seam: wiring.command_frame_seam.clone(),
@@ -1265,7 +1271,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 .await
                                 .map_err(storage_err)?;
                             // Own digest, published on the membership cadence.
-                            let digest = Arc::new(Mutex::new(MeshDigest {
+                            let digest = Arc::new(Mutex::new(MeshDigest { held_hash: Default::default(),
                                 fabric_id: cfg.fabric_id.clone(),
                                 node: MeshNode {
                                     node_id: node_id.clone(),
@@ -1372,6 +1378,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 None => Err("this admin holds no view yet".to_string()),
                                             }
                                         })
+                                    }),
+                                    types: Arc::new({
+                                        let (membership, records) = (membership.clone(), records.clone());
+                                        move |d: MeshDigest, types: std::collections::BTreeSet<String>| {
+                                            let (membership, records) = (membership.clone(), records.clone());
+                                            Box::pin(async move {
+                                                membership.learn_app_types(d.node.node_id.clone(), d.node.incarnation.clone(), types.clone(), types.clone()).await.map_err(|e| e.to_string())?;
+                                                records.declare_app_types(&d, types).await
+                                            })
+                                        }
                                     }),
                                     install: Arc::new(move |d: &MeshDigest| {
                                         // The same effect hearing the digest on gossip has: where the key is, and the
@@ -1486,7 +1502,55 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
                                 })
                             };
-                            let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task];
+                            let app_channels_task = {
+                                let (membership, client, rows, me) = (membership.clone(), node_rpc.client.clone(), nodes_storage.clone(), node_id.clone());
+                                let park = park_gate.clone();
+                                tokio::spawn(async move {
+                                    let mut changes = membership.book.digest_changes();
+                                    let mut learned = std::collections::HashMap::new();
+                                    loop {
+                                        let turn = park.turn("app-channels").await;
+                                        changes.borrow_and_update();
+                                        let work = membership.book.all().into_iter().filter(|d| d.node.node_id != me).filter(|d| learned.get(&(d.node.node_id.clone(), d.node.incarnation.clone())) != Some(&d.held_hash));
+                                        let results = futures_util::future::join_all(work.map(|d| {
+                                            let (membership, client, rows) = (membership.clone(), client.clone(), rows.clone());
+                                            let span = tracing::info_span!("rdm.node_admin.node.update.via-types-read", node_id = %d.node.node_id, incarnation = %d.node.incarnation, subject = %d.node.name);
+                                            async move {
+                                                let birth = (d.node.node_id.clone(), d.node.incarnation.clone());
+                                                if d.node.name.kind == rdm_core::NodeKind::NodeAdmin {
+                                                    let req = rdm_core::status::StatusRequest::GetNodes { select: rdm_core::status::NodeSelect::Id(d.node.node_id.clone()) };
+                                                    let (out, _) = client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(d.node.node_id.clone()), &req, &rdm_transport::CallOptions::default()).await;
+                                                    if let Some(reply) = out.reply() {
+                                                        if let rdm_core::status::StatusReply::Nodes { nodes } = reply.value() {
+                                                            if let Some(n) = nodes.iter().find(|n| n.node_id == birth.0 && n.incarnation_id.as_ref() == Some(&birth.1)) {
+                                                                let hash = rdm_core::app_types::hash(&n.held);
+                                                                if hash == n.held_hash && n.types.is_subset(&n.held) {
+                                                                    if membership.learn_app_types(birth.0.clone(), birth.1.clone(), n.types.clone(), n.held.clone()).await.is_ok() {
+                                                                        tracing::info_span!("rdm.node_admin.node.update.via-held-types", node_id = %birth.0, incarnation = %birth.1, types = n.types.len(), held = n.held.len()).in_scope(|| tracing::info!("peer node.get supplied the joined types"));
+                                                                        return Some((birth, hash));
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                } else if let Ok(Some(row)) = rows.node_row_at(&d.node.name).await {
+                                                    if row.node_id == birth.0 {
+                                                        if let Some(t) = row.app_types.filter(|t| t.incarnation == birth.1) {
+                                                            let hash = rdm_core::app_types::hash(&t.types);
+                                                            if membership.learn_app_types(birth.0.clone(), birth.1.clone(), t.types.clone(), t.types).await.is_ok() { return Some((birth, hash)); }
+                                                        }
+                                                    }
+                                                }
+                                                None
+                                            }.instrument(span)
+                                        })).await;
+                                        learned.extend(results.into_iter().flatten());
+                                        drop(turn);
+                                        if changes.changed().await.is_err() { return; }
+                                    }
+                                })
+                            };
+                            let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task, app_channels_task];
                             tasks.extend(tasks_early);
                             // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
                             // primary recovered into its mesh from its durable map): connect to a local node, read its
@@ -2551,7 +2615,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
             })
         })
     };
-    let mut start = crate::workflows::node_start::FirstStart {
+    let mut start = crate::workflows::node_start::FirstStart { types: join_types,
         starting: Some(starting),
         joining: Some(joining),
         resolve: Some(resolve),

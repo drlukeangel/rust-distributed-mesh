@@ -209,6 +209,8 @@ pub struct JoinDoor {
     /// Install the reported address for the key: membership's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
+    /// Join and persist the declared app types before the birth is admitted.
+    pub types: Arc<dyn Fn(MeshDigest, std::collections::BTreeSet<String>) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>,
     /// Project the installed birth into the view this admin's status authority decides from, so the
     /// admitted birth is in that view when the join is answered: its first declaration finds its
     /// subject held.
@@ -229,7 +231,8 @@ impl JoinDoor {
     /// Answer a `JoinNode` from `peer`: verify the digest against what was deployed, install its
     /// address and answer with the admin's entry answer.
     pub async fn serve(&self, peer: EndpointId, req: JoinRequest) -> JoinReply {
-        let JoinRequest::JoinNode { digest } = req;
+        let JoinRequest::JoinNode { digest, types } = req;
+        if let Err(kind) = rdm_core::app_types::check(&types) { return rdm_core::reply::join::malformed(kind); }
         let d = MeshDigest::from(digest);
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-join",
@@ -246,13 +249,13 @@ impl JoinDoor {
             attempt = tracing::field::Empty,
             cert_len = tracing::field::Empty,
         );
-        self.decide(peer, d, span.clone()).instrument(span).await
+        self.decide(peer, d, types.into_iter().collect(), span.clone()).instrument(span).await
     }
 
     /// Decide a join on its digest against what was deployed. Nothing checks who is calling
     /// (node-rpc.md §14): the caller's endpoint names the call in its span, and the digest's
     /// endpoint is what the deployment verifies.
-    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, span: tracing::Span) -> JoinReply {
+    async fn decide(&self, peer: EndpointId, mut d: MeshDigest, types: std::collections::BTreeSet<String>, span: tracing::Span) -> JoinReply {
         span.record("caller", peer.0.as_str());
         match self.joins.standing(&d) {
             Standing::Mismatch(m) => {
@@ -277,7 +280,14 @@ impl JoinDoor {
                 // reconciled to its row, and another node's row there is refused by name.
                 let config = match (self.row)(d.node.name.clone()).await {
                     Ok(None) => None,
-                    Ok(Some(row)) if row.node_id == d.node.node_id => Some(row.config),
+                    Ok(Some(row)) if row.node_id == d.node.node_id => {
+                        if let Some(held) = row.app_types.as_ref().filter(|held| held.incarnation == d.node.incarnation) {
+                            if held.types != types {
+                                return rdm_core::reply::join::join_mismatch("types".into(), format!("{:?}", held.types), format!("{types:?}"));
+                            }
+                        }
+                        Some(row.config)
+                    },
                     Ok(Some(_)) if !held => None,
                     Ok(Some(row)) => {
                         span.record("outcome", "mismatch");
@@ -313,6 +323,9 @@ impl JoinDoor {
                     }
                 };
                 span.record("cert_len", cert.len() as u64);
+                if let Err(why) = (self.types)(d.clone(), types).await {
+                    return rdm_core::reply::join::not_ready(format!("{}: the app declaration could not be joined and recorded: {why}", self.me));
+                }
                 (self.install)(&d);
                 (self.known)().await;
                 self.joins.report(&d);
@@ -395,7 +408,7 @@ mod tests {
     }
 
     fn digest_of(d: &Deployed) -> MeshDigest {
-        MeshDigest {
+        MeshDigest { held_hash: Default::default(),
             fabric_id: rdm_core::FabricId::mint(),
             node: MeshNode {
                 node_id: d.node_id.clone(),

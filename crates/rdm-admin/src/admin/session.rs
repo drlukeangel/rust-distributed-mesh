@@ -426,6 +426,8 @@ struct StandaloneJoin<'a> {
 impl crate::workflows::node_mesh_join::MeshJoin for StandaloneJoin<'_> {
     type Error = crate::node_self::StartFailed;
 
+    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
+
     fn join_digest(&self) -> MeshDigest {
         self.session.digest.lock().unwrap().clone()
     }
@@ -456,6 +458,8 @@ pub(crate) struct AdminAfterStop<'a> {
 #[async_trait::async_trait]
 impl crate::workflows::node_mesh_join::MeshJoin for AdminAfterStop<'_> {
     type Error = crate::node_self::StartFailed;
+
+    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
 
     fn join_digest(&self) -> MeshDigest {
         self.session.digest.lock().unwrap().clone()

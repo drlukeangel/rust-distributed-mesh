@@ -327,7 +327,7 @@ fn no_json_on_the_wire_fails_a_json_codec_in_a_gossip_frame_path() {
     assert!(v.iter().any(|v| matches!(v, Violation::Token { file, token, .. } if file.ends_with("membership.rs") && token == "serde_json::to_vec")), "{v:?}");
 
     let envelope = Planted::of_tree();
-    envelope.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes()?, body(context, frame)?))", "serde_json::to_vec(&(context.attributes()?, body(context, frame)?))");
+    envelope.edit("crates/rdm-transport/src/envelope.rs", "wire::encode(&(context.attributes(dataschema)?, data))", "serde_json::to_vec(&(context.attributes(dataschema)?, data))");
     only(check(envelope.root()), Ratchet::NoJsonOnTheWire);
 
     // The Build topic too, and a direct postcard call beside the shared codec.

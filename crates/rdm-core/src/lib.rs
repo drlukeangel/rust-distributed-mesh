@@ -68,3 +68,6 @@ pub use protocol::{DecodeFailure, NodeProtocol};
 pub use publisher::PublisherId;
 pub use runtime::{RuntimeFact, RuntimeFactError, RuntimeLocator, RuntimeProvider};
 pub use seat::{Seat, SeatHolder};
+
+/// App type declaration bounds and held-set identity.
+pub mod app_types;

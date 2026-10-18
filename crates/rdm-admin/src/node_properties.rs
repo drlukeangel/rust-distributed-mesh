@@ -187,7 +187,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // Nothing to change writes nothing: a label carried is a key already put, one not carried a key
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
-    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by };
+    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by, app_types: door.written().row_of(node_id).and_then(|r| r.app_types) };
     match storage.put_node_row(&row).await {
         Ok(Ok(())) => {
             door.written().hold(&row);

@@ -90,7 +90,7 @@ fn deployed() -> Deployed {
 }
 
 fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
         node: MeshNode {
             node_id: d.node_id.clone(),
@@ -145,6 +145,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
                     })
                 })
             }),
+            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
@@ -157,7 +158,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         };
         let dep = deployed();
         let reported = joins.expect(dep.clone());
-        let ask = |d: &MeshDigest| JoinRequest::JoinNode { digest: d.into() };
+        let ask = |d: &MeshDigest| JoinRequest::JoinNode { types: Vec::new(), digest: d.into() };
         let peer = dep.endpoint_id.clone();
 
         let mut wrong_incarnation = digest_of(&dep, "127.0.0.1:34567");
@@ -217,6 +218,7 @@ fn door_over(joins: Arc<Joins>, log: Arc<Mutex<Vec<std::net::SocketAddr>>>, row:
                 })
             })
         }),
+        types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
         install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
         known: Arc::new(|| Box::pin(async {})),
         primary: Arc::new(|| Some("mesh1.admin.2".into())),
@@ -247,11 +249,11 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34569");
-        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.config.as_ref().and_then(|c| c.get("tier")).map(String::as_str), Some("gold"), "the held birth is handed its row's config: {answer:?}");
@@ -284,12 +286,12 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
     let result = cap.run(async {
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
         let door = door_over(joins.clone(), installed.clone(), row);
         let reported = joins.expect(dep.clone());
         let mut third = digest_of(&dep, "127.0.0.1:34570");
         third.node.name = "mesh1.rpc.7".parse().unwrap();
-        let refused = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&third).into() }).await;
+        let refused = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&third).into() }).await;
         match &refused {
             JoinReply::JoinMismatch { field, deployed, reported } => {
                 assert_eq!(field, "name", "{refused:?}");
@@ -301,7 +303,7 @@ fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refu
         assert!(reported.borrow().is_none(), "a refused join completes no report");
         let mut held = digest_of(&dep, "127.0.0.1:34570");
         held.node.name = "mesh1.rpc.1".parse().unwrap();
-        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&held).into() }).await;
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&held).into() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("the last accepted name is admitted: {joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.name.as_ref().map(|n| n.to_string()).as_deref(), Some("mesh1.rpc.1.old"), "the answer hands the row's name");
@@ -342,7 +344,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
             status: rdm_admin::model::NodeStatus::Deleted,
             config: [("tier".to_string(), "gold".to_string())].into_iter().collect(), tags: Default::default(), allocated: None,
             renamed_from: None,
-            inherited_by: None,
+            app_types: None, inherited_by: None,
         };
         let door = JoinDoor {
             me: "mesh1.admin.1".parse().unwrap(),
@@ -356,6 +358,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
                     })
                 })
             }),
+            types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             install: Arc::new(move |d| log.lock().unwrap().push(d.node.transport_addr)),
             known: Arc::new(|| Box::pin(async {})),
             primary: Arc::new(|| Some("mesh1.admin.2".into())),
@@ -371,7 +374,7 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         };
         let reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34568");
-        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("a first start is admitted under its create spec's name over its predecessor's row: {joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.config, None, "another node's row hands the first start no config: {answer:?}");
@@ -408,13 +411,13 @@ fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_
         let joins = Arc::new(Joins::default());
         let installed: Arc<Mutex<Vec<std::collections::BTreeMap<String, String>>>> = Arc::default();
         let log = installed.clone();
-        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: gold.clone(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
         let mut door = door_over(joins.clone(), Arc::default(), row);
         door.install = Arc::new(move |d| log.lock().unwrap().push(d.config.clone()));
         let _reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34570");
         assert!(good.config.is_empty(), "the first start reports no config of its own");
-        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { types: Vec::new(), digest: (&good).into() }).await;
         let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
         let answer = rdm_admin::wire::answer_from_wire(answer).expect("the answer decodes");
         assert_eq!(answer.control.config.as_ref(), Some(&gold), "the first start is handed its own row's config: {answer:?}");
@@ -426,4 +429,49 @@ fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_
     assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("1")), "{join}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// The bound is checked before any address, declaration or WaitForBind report is installed.
+#[test]
+fn a_join_over_the_types_bound_is_malformed_by_name_and_never_a_member() {
+    let cap = capture("app-types-bound");
+    cap.run(async {
+        let joins = Arc::new(Joins::default());
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let dep = deployed();
+        let reported = joins.expect(dep.clone());
+        let row = rdm_admin::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rdm_admin::model::NodeStatus::Pending, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None, app_types: None };
+        let mut door = door_over(joins, installed.clone(), row);
+        let declarations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        door.types = Arc::new({let declarations=declarations.clone(); move |_, _| {declarations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);Box::pin(async{Ok(())})}});
+        let digest = digest_of(&dep, "127.0.0.1:34567");
+        for types in [(0..257).map(|n|format!("app.kind.{n}")).collect(), vec!["x".repeat(8192)]] {
+            let answer = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&digest).into(), types }).await;
+            assert!(matches!(answer, JoinReply::Malformed { kind: rdm_core::outcome::MalformedKind::TypesOverCap }), "{answer:?}");
+            assert!(reported.borrow().is_none());
+            assert!(installed.lock().unwrap().is_empty());
+            assert_eq!(declarations.load(std::sync::atomic::Ordering::SeqCst),0);
+        }
+        let answer=door.serve(dep.endpoint_id, JoinRequest::JoinNode {digest: (&digest).into(),types:(0..256).map(|n|format!("app.kind.{n}")).collect()}).await;
+        assert!(matches!(answer,JoinReply::Joined{..}),"{answer:?}");
+        assert_eq!(declarations.load(std::sync::atomic::Ordering::SeqCst),1);
+        assert_eq!(installed.lock().unwrap().len(),1);
+        assert!(reported.borrow().is_some());
+    });
+}
+
+#[test]
+fn an_exact_birth_cannot_change_its_declared_types_on_a_repeated_join() {
+    let cap=capture("immutable-app-types");
+    cap.run(async {
+        let dep=deployed();let joins=Arc::new(Joins::default());let reported=joins.expect(dep.clone());
+        let installed=Arc::new(Mutex::new(Vec::new()));
+        let row=rdm_admin::storage::NodeRow{name:dep.name.clone(),node_id:dep.node_id.clone(),status:rdm_admin::model::NodeStatus::Pending,config:Default::default(),tags:Default::default(),allocated:None,renamed_from:None,inherited_by:None,app_types:Some(rdm_admin::storage::AppTypes{incarnation:dep.incarnation.clone(),types:["app.one".to_string()].into()})};
+        let door=door_over(joins,installed.clone(),row);
+        let digest=digest_of(&dep,"127.0.0.1:34567");
+        let changed=door.serve(dep.endpoint_id.clone(),JoinRequest::JoinNode{digest:(&digest).into(),types:vec!["app.two".into()]}).await;
+        assert!(matches!(changed,JoinReply::JoinMismatch{field,..}if field=="types"));assert!(installed.lock().unwrap().is_empty());assert!(reported.borrow().is_none());
+        let same=door.serve(dep.endpoint_id,JoinRequest::JoinNode{digest:(&digest).into(),types:vec!["app.one".into()]}).await;
+        assert!(matches!(same,JoinReply::Joined{..}));assert_eq!(installed.lock().unwrap().len(),1);
+    });
 }

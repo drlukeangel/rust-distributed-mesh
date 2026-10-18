@@ -23,6 +23,9 @@ pub trait MeshJoin: Send {
     /// The digest the report presents; the primitive presents it Pending.
     fn join_digest(&self) -> MeshDigest;
 
+    /// The immutable app declaration reported on every join of this birth.
+    fn join_types(&self) -> Vec<String> { Vec::new() }
+
     /// Enter the kind's channels holding the name the join handed (`None` with no authority), before
     /// anything is published, emitting `rdm.node.mesh.update.via-joined` per channel. `step` is the
     /// channel step's span: the kind drops it when its channel part ends.
@@ -80,7 +83,7 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
         Some(parent) => tracing::info_span!(parent: parent, "rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, authority = %authority, operation = %operation),
         None => tracing::info_span!("rdm.node.mesh.update.via-joining", node = %name, node_id = %node_id, mesh = %mesh, mesh_id = %mesh_id, authority = %authority, operation = %operation),
     };
-    let (answer, through) = join(&name, client, to, &digest).instrument(joining).await?;
+    let (answer, through) = join(&name, client, to, &digest, &node.join_types()).instrument(joining).await?;
     drop(report_parent);
     reported.record("served_by", through.name.to_string().as_str());
     reported.record("endpoint", through.anchor.as_str());
@@ -109,7 +112,7 @@ pub async fn node_mesh_join<J: MeshJoin + ?Sized>(node: &mut J, call: JoinCall<'
 /// `JoinNode` with `digest`, each of its attempts made to whom `to` names then: the launcher, or the
 /// admin whose call commanded the join last, reached back over that call. The answer and who gave
 /// it: `served_by` names the admin (the launcher's record names it at a first start).
-async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDigest) -> Result<(JoinAnswer, JoinThrough), StartFailed> {
+async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDigest, types: &[String]) -> Result<(JoinAnswer, JoinThrough), StartFailed> {
     let next = || {
         let to = match to {
             JoinTo::Launcher { target, endpoint, .. } => Ok((target.clone(), endpoint.fmt_short().to_string())),
@@ -122,7 +125,7 @@ async fn join(node: &str, client: &NodeRpcClient, to: &JoinTo, digest: &MeshDige
             }
         }
     };
-    let (answer, target) = match crate::join::call_join_to(client, next, digest, JOIN_ATTEMPTS).await {
+    let (answer, target) = match crate::join::call_join_to_types(client, next, digest, JOIN_ATTEMPTS, types).await {
         Ok(joined) => joined,
         Err(crate::join::JoinFailure::Refused(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} was refused its join by {}: {why}", whom(to)) }),
         Err(crate::join::JoinFailure::Unreached(why)) => return Err(StartFailed { step: "node.join", reason: format!("{node} could not join through {}: unreached: {why}", whom(to)) }),

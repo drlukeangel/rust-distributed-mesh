@@ -412,7 +412,7 @@ impl Rig {
                 let endpoint_id = EndpointId(storage.output.clone().unwrap().as_str().unwrap().to_string());
                 let data_dir = self.data_root.join(format!("{name}-{node_id}"));
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
-                let digest = MeshDigest {
+                let digest = MeshDigest { held_hash: Default::default(),
                     fabric_id: FabricId::mint(),
                     node: MeshNode { node_id, name: name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
                     status: MemberStatus::Pending,

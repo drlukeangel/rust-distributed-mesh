@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 fn member(fabric: &FabricId, name: &str, seq: u64) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
         node: MeshNode {
             node_id: NodeId::mint(),
@@ -56,7 +56,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
     let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None, authority: Default::default() };
@@ -101,7 +101,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
     let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
     let time = rdm_transport::clock::RafkaTime::unadopted();
     time.adopt(5_000_000);
-    let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![], &[]).await.unwrap();
     membership.set_mesh_primary(true);
 
     let member = member(&fabric, "mesh1.admin.2", 10);
@@ -126,6 +126,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         nodes: vec![me.clone(), subject.clone()],
     }));
     let authority = StatusAuthority {
+        app_channels: None,
         held_takeover: Default::default(),
         declaration_seam: None,
             command_frame_seam: None,

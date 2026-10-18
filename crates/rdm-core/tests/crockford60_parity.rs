@@ -43,7 +43,7 @@ fn every_rafka_minted_id_is_a_node_mesh_and_fabric_id_as_is() {
 #[test]
 fn a_membership_digest_carries_its_product_ids_exactly() {
     let (node_id, fabric_id) = (NodeId::mint(), FabricId::mint());
-    let d = MeshDigest {
+    let d = MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
         node: rdm_core::MeshNode {
             node_id: node_id.clone(),

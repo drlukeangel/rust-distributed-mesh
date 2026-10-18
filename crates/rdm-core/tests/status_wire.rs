@@ -141,8 +141,8 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
                 "2101",
                 "0b6d657368312e7270632e31", "01", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
                 "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64", "00", "00", "00",
-                // os_stopped None (appended, i144 e2)
-                "00",
+                // os_stopped None, then types and held lengths, and the fixed 32-byte held hash.
+                "00", "00", "00", "0000000000000000000000000000000000000000000000000000000000000000",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
@@ -274,7 +274,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView {
+    NodeView { types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: "mesh1.rpc.1".parse().unwrap(),
         kind: rdm_core::NodeKind::RpcNode,
         mesh: "mesh1".into(),
@@ -334,6 +334,7 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(MalformedKind::TooLarge, "00");
     golden(MalformedKind::UnknownVariant, "01");
     golden(MalformedKind::Corrupt, "02");
+    golden(MalformedKind::TypesOverCap, "03");
     golden(RetryOn::AuthorityChanged, "00");
     golden(RetryOn::TargetReachable { node_id: node() }, "010c303132333435363738396162");
     golden(RetryOn::AuthorityReady, "02");

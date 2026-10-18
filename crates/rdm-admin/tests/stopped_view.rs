@@ -26,7 +26,7 @@ const MP: &str = "mesh1.admin.1";
 const SUCCESSOR: &str = "mesh1.rpc.1.new";
 
 fn digest(fabric: &FabricId, name: &str, mesh_id: &MeshId) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
         node: MeshNode {
             node_id: NodeId::mint(),
@@ -74,7 +74,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
         let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &mesh1, MP, Arc::new(crate::adopted_time()), vec![]).await.unwrap();
+        let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &mesh1, MP, Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
         let own = digest(&fabric, MP, &mesh1);
         let succ = digest(&fabric, SUCCESSOR, &mesh1);
         let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", rdm_core::PublisherId { node: MP.to_string(), incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();
@@ -92,7 +92,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
 
         // The successor's row at its create spec's name, and the door its record changes take turns at.
         let rows = MemoryNodesStorage::default();
-        let row = NodeRow { name: succ.node.name.clone(), node_id: succ.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        let row = NodeRow { name: succ.node.name.clone(), node_id: succ.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
         rows.put_node_row(&row).await.unwrap().unwrap();
         let client = Arc::new(rdm_transport::NodeRpcClient::new(ep.clone(), Arc::new(rdm_transport::StaticResolver::new())).with_caller_system("rdm"));
         let configs = rdm_admin::node_config::NodeConfigs::new(client, Default::default(), Default::default());

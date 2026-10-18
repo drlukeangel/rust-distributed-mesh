@@ -136,7 +136,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rdm_core::Runtime
     let env = |k: &str| spec.env.get(k).cloned().unwrap_or_else(|| panic!("the launch names {k}"));
     let key_hex = std::fs::read_to_string(spec.data_dir.join("node-key")).expect("PrepareStorage wrote the node key");
     let key = iroh::SecretKey::from_bytes(&hex::decode(key_hex.trim()).unwrap().try_into().unwrap());
-    rdm_core::MeshDigest {
+    rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: rdm_core::FabricId::parse(&env("RDM_FABRIC_ID")).unwrap(),
         node: rdm_core::MeshNode {
             node_id: NodeId::parse(&env("RDM_NODE_ID")).unwrap(),

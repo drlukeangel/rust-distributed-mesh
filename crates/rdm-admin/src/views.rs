@@ -62,7 +62,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
-    NodeView {
+    NodeView { types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -138,18 +138,18 @@ async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -
 /// The tags of the birth `n`: those of its row, a point read of the row at its `path.name`; when the
 /// row there is another birth's, a point read of the row the node row's id index names. None when it
 /// holds no row.
-async fn tags_of(storage: &dyn NodesStorage, n: &Node) -> Result<BTreeSet<String>, ReadFailed> {
+async fn row_of(storage: &dyn NodesStorage, n: &Node) -> Result<Option<crate::storage::NodeRow>, ReadFailed> {
     let failed = |op: String, e: crate::record_store::StorageError| ReadFailed { source: format!("the nodes store's rows of {}", n.mesh), op, cause: e.to_string() };
     let at = storage.node_row_at(&n.name).await.map_err(|e| failed(format!("read of the row at {}", n.name), e))?;
     if let Some(row) = at.filter(|r| r.node_id == n.node_id) {
-        return Ok(row.tags);
+        return Ok(Some(row));
     }
-    let Some(name) = storage.node_row_name(&n.mesh, &n.node_id).await.map_err(|e| failed(format!("read of the id index entry of {} ({})", n.name, n.node_id), e))? else { return Ok(BTreeSet::new()) };
+    let Some(name) = storage.node_row_name(&n.mesh, &n.node_id).await.map_err(|e| failed(format!("read of the id index entry of {} ({})", n.name, n.node_id), e))? else { return Ok(None) };
     if name == n.name {
-        return Ok(BTreeSet::new());
+        return Ok(None);
     }
     let row = storage.node_row_at(&name).await.map_err(|e| failed(format!("read of the row at {name}"), e))?;
-    Ok(row.filter(|r| r.node_id == n.node_id).map(|r| r.tags).unwrap_or_default())
+    Ok(row.filter(|r| r.node_id == n.node_id))
 }
 
 async fn held_running_of(status_storage: Option<&dyn StatusStorage>, n: &Node) -> Option<HeldRunning> {
@@ -192,10 +192,16 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         })
         .collect();
     let read = births.iter().map(|n| async move {
-        let (tags, held_running, data_dir_lost, data_dir_unreadable) =
-            futures_util::join!(tags_of(storage, n), held_running_of(status_storage, n), data_dir_lost_of(status_storage, n), data_dir_unreadable_of(status_storage, n));
+        let (row, held_running, data_dir_lost, data_dir_unreadable) =
+            futures_util::join!(row_of(storage, n), held_running_of(status_storage, n), data_dir_lost_of(status_storage, n), data_dir_unreadable_of(status_storage, n));
         let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));
-        let mut v = node_view(n, load, gossip, tags?);
+        let row = row?;
+        let mut v = node_view(n, load, gossip, row.as_ref().map(|r| r.tags.clone()).unwrap_or_default());
+        if let Some(declared) = row.and_then(|r| r.app_types).filter(|t| Some(&t.incarnation) == n.incarnation_id.as_ref()) {
+            v.types = declared.types;
+            v.held = v.types.clone();
+        }
+        v.held_hash = rdm_core::app_types::hash(&v.held);
         v.held_running = held_running;
         v.data_dir_lost = data_dir_lost;
         v.data_dir_unreadable = data_dir_unreadable;

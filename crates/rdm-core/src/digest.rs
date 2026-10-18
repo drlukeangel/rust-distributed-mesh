@@ -116,6 +116,10 @@ pub struct MeshDigest {
     /// moves the postcard wire format again and gets the same review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gossip: Option<GossipStats>,
+    /// Hash of this birth's joined app types; the list is read with node.get.
+    #[serde(default)]
+    pub held_hash: [u8; 32],
+
 }
 
 /// One birth's view of its own mesh channel, sampled when it publishes its digest.

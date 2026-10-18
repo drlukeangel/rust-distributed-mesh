@@ -26,7 +26,7 @@ const FP: &str = "mesh3.admin.1";
 const LAST: &str = "mesh1.admin.1";
 
 fn digest(fabric: &FabricId, name: &str, mesh_id: &MeshId) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
         node: MeshNode {
             node_id: NodeId::mint(),
@@ -83,7 +83,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         let ep = rdm_transport::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
         let _router = iroh::protocol::Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-        let membership = Membership::join(&gossip, &ep, &fabric, "mesh3", &mesh3, FP, Arc::new(crate::adopted_time()), vec![]).await.unwrap();
+        let membership = Membership::join(&gossip, &ep, &fabric, "mesh3", &mesh3, FP, Arc::new(crate::adopted_time()), vec![], &[]).await.unwrap();
         let own = digest(&fabric, FP, &mesh3);
         let last = digest(&fabric, LAST, &mesh1);
         let backbone = Backbone::join(&gossip, &ep, &membership, "mesh3", rdm_core::PublisherId { node: FP.to_string(), incarnation: own.node.incarnation.clone(), node_id: own.node.node_id.clone() }, vec![]).await.unwrap();

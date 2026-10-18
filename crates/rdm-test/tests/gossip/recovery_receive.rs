@@ -3,7 +3,7 @@ use tracing::Instrument;
 
 use rdm_core::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PublisherId, Seat, SeatHolder};
 use rdm_core::seat::transfer::CommittedSeat;
-use rdm_transport::membership::{learn_addresses, mesh_topic, Frame, Membership, StatusEvent};
+use rdm_transport::membership::{learn_addresses, mesh_channel, Frame, Membership, StatusEvent};
 use rdm_transport::snapshot::{Chunk, Taken};
 use rdm_transport::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use std::{sync::{Arc, OnceLock}, time::Duration};
@@ -22,7 +22,7 @@ async fn send(sender: &iroh_gossip::api::GossipSender, receiver: &Membership, fr
     }).await.expect("the following frame proves this receipt finished");
 }
 fn birth(fabric: &FabricId, mesh: &MeshId, path: &str, ordinal: u16) -> MeshDigest {
-    MeshDigest { fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, config: Default::default(), load: None, gossip: None }
+    MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(iroh::SecretKey::generate().public().to_string()), transport_addr: format!("127.0.0.1:{}",12000+ordinal).parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 100, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh.clone()), in_flight: None, config: Default::default(), load: None, gossip: None }
 }
 fn operation(d: &MeshDigest, command: &str) -> LifecycleOp {
     LifecycleOp { build_id: "recovery-receive".into(), attempt: 1, operation: format!("node.{command}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
@@ -46,7 +46,7 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let publisher=PublisherId::from(&own.node);
         let author=rdm_transport::envelope::Birth::publisher(&fabric,&publisher);
         let time=rdm_transport::clock::RafkaTime::unadopted();time.adopt(5_000_000);
-        let server_membership=Membership::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![]).await.unwrap();
+        let server_membership=Membership::join(&server_gossip,&server_ep,&fabric,"mesh1",&mesh,"mesh1.admin.1",Arc::new(time.clone()),vec![], &[]).await.unwrap();
         let slot:rdm_node::topology_read::TopologySlot=Arc::new(OnceLock::new());
         let rpc=rdm_node::topology_read::serve(ServerBuilder::new(),slot.clone()).seal(ServedBirth{node_id:own.node.node_id.to_string(),incarnation:own.node.incarnation.to_string()}).unwrap();
         let _server_router=iroh::protocol::Router::builder(server_ep.clone()).accept(iroh_gossip::ALPN,server_gossip.clone()).accept(rdm_transport::ALPN,rpc).spawn();
@@ -55,8 +55,8 @@ fn a_real_topology_read_then_gossip_of_every_category_rolls_nothing_back() {
         let addr=iroh::EndpointAddr::new(server_ep.id()).with_ip_addr(server_addr);
         learn_addresses(&receiver_ep,&[addr.clone()]).unwrap();
         learn_addresses(&server_ep,&[iroh::EndpointAddr::new(receiver_ep.id()).with_ip_addr(receiver_ep.bound_sockets().into_iter().find(|a|a.is_ipv4()).unwrap())]).unwrap();
-        let mut topic=server_gossip.subscribe(mesh_topic(&fabric,&mesh),vec![]).await.unwrap();
-        let receiver=Membership::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,"mesh1.rpc.9",rdm_transport::clock::os_clock(),vec![addr]).await.unwrap();
+        let mut topic=server_gossip.subscribe(mesh_channel(&fabric,&mesh),vec![]).await.unwrap();
+        let receiver=Membership::join(&receiver_gossip,&receiver_ep,&fabric,"mesh1",&mesh,"mesh1.rpc.9",rdm_transport::clock::os_clock(),vec![addr], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5),topic.joined()).await.unwrap().unwrap();
         let (sender,_rx)=topic.split();
         let (restarted,started,deleted,holder)=(birth(&fabric,&mesh,"mesh1.rpc.1",1),birth(&fabric,&mesh,"mesh1.rpc.2",2),birth(&fabric,&mesh,"mesh1.rpc.3",3),birth(&fabric,&mesh,"mesh1.rpc.4",4));

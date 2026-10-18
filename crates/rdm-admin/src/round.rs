@@ -354,7 +354,7 @@ mod tests {
     }
 
     fn digest(p: &PathName, status: MemberStatus) -> MeshDigest {
-        MeshDigest {
+        MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::mint(),
             node: MeshNode {
                 node_id: crate::model::NodeId::mint(),

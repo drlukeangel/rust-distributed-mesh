@@ -12,7 +12,7 @@ fn fabric() -> FabricId {
 }
 
 fn digest(name: &str, port: u16) -> MeshDigest {
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: fabric(),
         node: MeshNode {
             node_id: NodeId::mint(),

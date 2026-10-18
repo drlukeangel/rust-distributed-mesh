@@ -1,9 +1,9 @@
 //! Hierarchical fabric membership over iroh-gossip (HyParView + Plumtree;
 //! never a hand-rolled delivery layer). rafka `gossip.md` §6:
 //!
-//! - each mesh has its own membership channel ([`mesh_topic`]); a member
+//! - each mesh has its own membership channel ([`mesh_channel`]); a member
 //!   publishes its [`MeshDigest`] there, and only there;
-//! - node-admins alone also join the fabric's backbone ([`backbone_topic`]),
+//! - node-admins alone also join the fabric's backbone ([`backbone_channel`]),
 //!   through every node-admin they know, whatever its mesh;
 //! - a mesh's admin primary publishes its mesh's members on the backbone; a
 //!   peer mesh's primary forwards those onto its own mesh channel; the fabric
@@ -43,12 +43,12 @@ pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(5);
 pub const MAX_FRAME: usize = crate::chunking::MAX_MESSAGE_BYTES;
 
 /// A mesh's membership channel.
-pub fn mesh_topic(fabric: &FabricId, mesh_id: &MeshId) -> TopicId {
+pub fn mesh_channel(fabric: &FabricId, mesh_id: &MeshId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-mesh-membership:{fabric}:{mesh_id}").as_bytes()).as_bytes())
 }
 
 /// The fabric's backbone: node-admins only.
-pub fn backbone_topic(fabric: &FabricId) -> TopicId {
+pub fn backbone_channel(fabric: &FabricId) -> TopicId {
     TopicId::from_bytes(*blake3::hash(format!("rafka-fabric-backbone:{fabric}").as_bytes()).as_bytes())
 }
 
@@ -2730,6 +2730,7 @@ impl View {
 /// A node's membership: its mesh channel and what it holds.
 #[derive(Clone)]
 pub struct Membership {
+    apps: Arc<crate::gossip::Hub>,
     mesh: Channel,
     view: View,
     fabric: FabricId,
@@ -2769,7 +2770,7 @@ impl Membership {
     /// Join `mesh`'s channel (`mesh_id` names it) through `seeds`, as `node`. `clock` is the
     /// Rafka-time the process composes: every timestamp this membership and its backbone put on a
     /// frame reads it.
-    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
+    pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>, types: &[&str]) -> Result<Self> {
         let view = View::new(mesh, node);
         let (forward_path, forward_rx) = ForwardPath::pair(view.forwarder.clone(), Arc::default());
         let (replay_view, replay_fabric, replay_clock, replay_forward_path) = (view.clone(), fabric.clone(), clock.clone(), forward_path.clone());
@@ -2827,7 +2828,8 @@ impl Membership {
                 let me_name = target_view.current_name();
                 held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name)
             });
-        let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, view.order.clone(), on_frame, targets, replay, Arc::default(), clock.clone()).await?;
+        let app_seeds = seeds.clone();
+        let channel = Channel::join(gossip, endpoint, mesh_channel(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, view.order.clone(), on_frame, targets, replay, Arc::default(), clock.clone()).await?;
         let sink_channel = channel.clone();
         let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
             let channel = sink_channel.clone();
@@ -2835,11 +2837,24 @@ impl Membership {
         });
         forward_path.spawn_sender(forward_rx, sink);
         let name = view.held_name.clone();
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
+        let apps = crate::gossip::Hub::new(gossip, fabric, channel.author.clone(), clock.clone(), types, &app_seeds).await?;
+        let me = Self { apps, mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
         me.watch_meshes();
         Ok(me)
     }
 
+    /// Join one declared or learned app type with one owned receiver.
+    pub async fn join_channel(&self, kind: &str) -> Result<crate::gossip::Channel, crate::gossip::ChannelError> { self.apps.join(kind).await }
+    /// This birth's immutable own app declaration.
+    pub fn app_types(&self) -> std::collections::BTreeSet<String> { self.apps.types() }
+    /// The monotonic set of app types this birth has joined.
+    pub fn held_types(&self) -> std::collections::BTreeSet<String> { self.apps.held() }
+    /// The hash carried by this birth's next digest.
+    pub fn held_hash(&self) -> [u8; 32] { self.apps.hash() }
+    /// Hold a verified member or peer's declaration and joined types; ordinary app declarations stay immutable.
+    pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> { self.apps.learn(node, incarnation, types, held).await }
+    /// The type metadata learned for one exact birth.
+    pub fn member_app_types(&self, node: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId) -> Option<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> { self.apps.member(node, incarnation) }
     /// This membership's fabric identity.
     pub fn fabric_id(&self) -> &FabricId { &self.fabric }
 
@@ -3021,6 +3036,7 @@ impl Membership {
         }
         *self.book.own.lock().unwrap() = Some(d.node.node_id.to_string());
         let mut d = self.with_config(d);
+        d.held_hash = self.apps.hash();
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
@@ -3081,6 +3097,7 @@ impl Membership {
     /// Leave this mesh's gossip topic: this node is a neighbour of no one on it and sends and hears
     /// nothing there until [`Membership::unpark`]. Resolves once the topic is left.
     pub async fn park(&self) {
+        self.apps.suspend().await;
         self.mesh.park().await;
     }
 
@@ -3088,6 +3105,9 @@ impl Membership {
     /// re-subscribed.
     pub async fn unpark(&self) {
         self.mesh.unpark().await;
+        if let Err(error) = self.apps.resume().await {
+            tracing::info_span!("rdm.mesh.channel.reject.via-subscribe", error = %error).in_scope(|| tracing::warn!("application channels could not rejoin"));
+        }
     }
 
     /// Resolves once this node's mesh channel has a gossip neighbour (at once when it has one). A node
@@ -3545,7 +3565,7 @@ impl Backbone {
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
             Arc::new(move || held_view(&book, |d| d.node.name.mesh != own_mesh && d.node.name.kind == rdm_core::NodeKind::NodeAdmin));
-        let channel = Channel::join(gossip, endpoint, backbone_topic(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, membership.mesh.book.clone(), membership.view.order.clone(), on_frame, targets, replay, membership.mesh.author.clone(), membership.clock.clone()).await?;
+        let channel = Channel::join(gossip, endpoint, backbone_channel(&membership.fabric), membership.fabric.as_str(), node, "backbone", seeds, membership.mesh.book.clone(), membership.view.order.clone(), on_frame, targets, replay, membership.mesh.author.clone(), membership.clock.clone()).await?;
         let me = Self {
             channel,
             mesh: mesh.to_string(),
@@ -5782,7 +5802,7 @@ mod tests {
     use rdm_core::{EndpointId, IncarnationId, MemberStatus, MeshNode, NodeId};
 
     fn digest(node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, at: u64) -> MeshDigest {
-        MeshDigest {
+        MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode {
                 node_id: node_id.clone(),
@@ -8122,7 +8142,7 @@ mod tests {
             replayed_during_stamp: Mutex::new(Vec::new()),
         });
         let clock: SharedClock = racing.clone();
-        let m = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![]).await.unwrap();
+        let m = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![], &[]).await.unwrap();
         let bb = Backbone::join(&gossip, &ep, &m, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: admin.node.incarnation.clone(), node_id: admin.node.node_id.clone() }, vec![]).await.unwrap();
         bb.set_mesh_primary(true);
         // Clear `full_due` after initial seat take so round 1 is a normal source full and round 2 is a delta.

@@ -180,7 +180,7 @@ fn install_handed(membership: &Membership, control: &crate::wire::JoinControl) {
 /// [`start_with_seams`] for an app that hydrates before Ready: `hydration` carries its
 /// `hydrate_before_ready` hook (and the gate its own server-side ops sit behind).
 pub async fn start_hydrating(launch: &Launch, hydration: crate::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
-    start_with_rafka_time_hydrating_and(launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, register).await
+    start_with_rafka_time_hydrating_and(launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, register, &[]).await
 }
 
 /// Bring the node up exactly as `launch` says.
@@ -269,7 +269,7 @@ pub async fn start_with_client(launch: &Launch, register: impl FnOnce(ServerBuil
 /// the resolver, the client, the connections writer and the held name.
 pub async fn start_with_seams(launch: &Launch, register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder) -> Result<RunningNode> {
     let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
-    start_with_rafka_time_hydrating_and(launch, rafka_time, crate::app_hydration::Hydration::none(), |s| s, None, register).await
+    start_with_rafka_time_hydrating_and(launch, rafka_time, crate::app_hydration::Hydration::none(), |s| s, None, register, &[]).await
 }
 
 /// Start a node with explicit `rafka_time`, `hydration`, storage decorator, optional rafka-time knob, and `register` callback.
@@ -280,9 +280,12 @@ pub async fn start_with_rafka_time_hydrating_and(
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
+    types: &[&str],
 ) -> Result<RunningNode> {
+    let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
+    rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
-    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, decorate_storage, knob_fn, register, &boot)).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, decorate_storage, knob_fn, register, app_types, &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
@@ -296,6 +299,7 @@ async fn start_booted(
     decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
+    app_types: Vec<String>,
     boot: &tracing::Span,
 ) -> Result<RunningNode> {
     // An ordinary node is admitted by the admin that launched it (`node-ready-for-traffic.md`
@@ -426,7 +430,7 @@ async fn start_booted(
         .collect();
     let name = launch.name.to_string();
     // This birth's digest as it reports it: the address is the one the bound endpoint holds.
-    let digest = MeshDigest {
+    let digest = MeshDigest { held_hash: rdm_core::app_types::hash(&app_types.iter().cloned().collect()),
         fabric_id: launch.fabric_id.clone(),
         node: MeshNode {
             node_id: launch.node_id.clone(),
@@ -476,6 +480,7 @@ async fn start_booted(
     let starting = crate::workflows::node_start::Starting { root: boot.clone(), name: name.clone(), path: launch.name.clone(), node_id: launch.node_id.clone(), client: client.clone(), rafka_time: rafka_time.clone() };
     let joining = crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() };
     let join_digest = digest.clone();
+    let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
         let (launch, boot, out, name) = (launch.clone(), boot.clone(), out.clone(), name.clone());
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(Membership, crate::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
@@ -487,7 +492,8 @@ async fn start_booted(
                 step.record("mesh_id", tracing::field::display(&mesh_id));
                 step.record("seeds", seeds.len());
 
-            let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
+            let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds, &app_types.iter().map(String::as_str).collect::<Vec<_>>()).await?;
+            membership.set_author(&rdm_core::PublisherId { node: name.clone(), node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone() });
             // The name this birth holds is its membership's (R12): its connections rows name it as their
             // source from here on, and every door names the node by it, whatever name the join hands it
             // or an `ApplyNodeName` gives it.
@@ -685,7 +691,7 @@ async fn start_booted(
             })
         })
     };
-    let mut start = crate::workflows::node_start::FirstStart {
+    let mut start = crate::workflows::node_start::FirstStart { types: join_types,
         starting: Some(starting),
         joining: Some(joining),
         resolve: Some(resolve),
@@ -834,6 +840,8 @@ struct StandaloneJoin<'a> {
 impl crate::workflows::node_mesh_join::MeshJoin for StandaloneJoin<'_> {
     type Error = crate::node_self::StartFailed;
 
+    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
+
     fn join_digest(&self) -> MeshDigest {
         self.session.membership.with_config(&self.session.digest)
     }
@@ -867,6 +875,8 @@ struct AfterStop<'a> {
 #[async_trait::async_trait]
 impl crate::workflows::node_mesh_join::MeshJoin for AfterStop<'_> {
     type Error = crate::node_self::StartFailed;
+
+    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
 
     fn join_digest(&self) -> MeshDigest {
         self.held.clone()

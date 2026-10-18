@@ -438,6 +438,8 @@ pub type HookStarted<E> = Box<dyn FnOnce(tokio::task::JoinHandle<()>) -> BoxFut<
 /// left, so a node kind that brings its runtime up while it starts (a node-admin hydrating its stores
 /// and entering the election) holds what it built from one step to the next.
 pub struct FirstStart<E> {
+    /// The immutable app types presented by the first join.
+    pub types: Vec<String>,
     /// What the start knows before it begins.
     pub starting: Option<Starting>,
     /// Whom it joins.
@@ -457,6 +459,8 @@ pub struct FirstStart<E> {
 #[async_trait::async_trait]
 impl<E: From<StartFailed> + Send + 'static> super::node_mesh_join::MeshJoin for FirstStart<E> {
     type Error = E;
+
+    fn join_types(&self) -> Vec<String> { self.types.clone() }
 
     fn join_digest(&self) -> MeshDigest {
         self.digest.clone().expect("a first start that joins presents a digest")

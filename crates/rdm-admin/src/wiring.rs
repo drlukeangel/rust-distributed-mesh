@@ -146,6 +146,10 @@ impl FabricHooks {
 /// The seams a node-admin executable passes to the admin.
 #[derive(Default)]
 pub struct Wiring {
+    /// The embedded app's own kinds, declared once for this admin birth.
+    pub types: Vec<String>,
+    /// Additional app protocols served on this admin's owned endpoint.
+    pub alpns: Vec<(Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>)>,
     /// The application hooks the fabric-primary calls. `sync_state` must be chosen.
     pub fabric_hooks: FabricHooks,
     /// The embedding's own action a node completes before it checks in to a commit-state or

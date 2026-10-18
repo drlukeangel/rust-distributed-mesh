@@ -14,7 +14,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 
 fn digest() -> rdm_core::MeshDigest {
     use rdm_core::*;
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
         node: MeshNode {
             node_id: NodeId::mint(),
@@ -44,11 +44,11 @@ fn digest() -> rdm_core::MeshDigest {
 #[test]
 fn a_join_request_and_its_digest_round_trip_through_postcard_with_every_field_present() {
     let d = digest();
-    let q = JoinRequest::JoinNode { digest: WireDigest::from(&d) };
+    let q = JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d) };
     let bytes = Join::encode_request(&q).unwrap();
     assert_eq!(bytes[0], 0x00, "variant 0");
     assert!(bytes.len() <= Join::MAX_REQUEST_FRAME_BYTES);
-    let JoinRequest::JoinNode { digest: back } = Join::decode_request(&bytes).unwrap();
+    let JoinRequest::JoinNode { digest: back, .. } = Join::decode_request(&bytes).unwrap();
     assert_eq!(rdm_core::MeshDigest::from(back), d);
 }
 
@@ -81,14 +81,15 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
 /// (u32 varints) and `frames_sent`, `frames_received` (u64 varints). A field added to the struct
 /// moves these bytes again.
 #[test]
-fn a_digest_wire_shape_ends_with_the_gossip_stats_positional_bytes() {
+fn a_join_keeps_gossip_positions_then_appends_the_held_hash_and_type_declaration() {
     use rdm_core::GossipStats;
     let mut d = digest();
-    let none = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d) }).unwrap();
-    assert_eq!(&none[none.len() - 2..], bytes("0000").as_slice(), "load absent, gossip absent");
+    let none = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d) }).unwrap();
+    assert_eq!(&none[none.len() - 35..none.len() - 33], bytes("0000").as_slice(), "load absent, gossip absent");
     d.gossip = Some(GossipStats { heard: 2, neighbours: 3, frames_sent: 300, frames_received: 5 });
-    let some = Join::encode_request(&JoinRequest::JoinNode { digest: WireDigest::from(&d) }).unwrap();
-    assert_eq!(&some[some.len() - 7..], bytes("00010203ac0205").as_slice());
-    let JoinRequest::JoinNode { digest: back } = Join::decode_request(&some).unwrap();
+    let some = Join::encode_request(&JoinRequest::JoinNode { types: Vec::new(), digest: WireDigest::from(&d) }).unwrap();
+    assert_eq!(&some[some.len() - 40..some.len() - 33], bytes("00010203ac0205").as_slice());
+    let JoinRequest::JoinNode { digest: back, .. } = Join::decode_request(&some).unwrap();
     assert_eq!(rdm_core::MeshDigest::from(back).gossip, d.gossip);
+    assert_eq!(&some[some.len()-33..], &[0;33], "held hash is 32 fixed bytes, then the empty types list");
 }

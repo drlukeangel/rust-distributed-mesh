@@ -120,7 +120,7 @@ mod tests {
     const MESH: &str = "mesh1";
 
     fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, status: MemberStatus, at: u64) -> MeshDigest {
-        MeshDigest {
+        MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode {
                 node_id: node_id.clone(),

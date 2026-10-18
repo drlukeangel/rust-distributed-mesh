@@ -555,7 +555,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         last_accepted_name: Some(name.clone()),
         held: true,
     };
-    let digest = rdm_core::MeshDigest {
+    let digest = rdm_core::MeshDigest { held_hash: Default::default(),
         fabric_id: template.fabric_id.clone(),
         node: rdm_core::MeshNode { node_id: node.node_id.clone(), name: name.clone(), endpoint_id: node.endpoint_id.clone().unwrap(), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: incarnation.clone(), supersedes: None, runtime: Some(runtime) },
         status: rdm_core::MemberStatus::Pending,

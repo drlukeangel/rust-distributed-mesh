@@ -196,6 +196,16 @@ pub struct NodeView {
     /// its exact runtime and the operating system holds it suspended.
     #[serde(default)]
     pub os_stopped: Option<OsStopped>,
+    /// This exact birth's immutable app declaration.
+    #[serde(default)]
+    pub types: std::collections::BTreeSet<String>,
+    /// Types this birth joined, including members and peers on a node-admin.
+    #[serde(default)]
+    pub held: std::collections::BTreeSet<String>,
+    /// Canonical held-set hash carried by this birth's digest.
+    #[serde(default)]
+    pub held_hash: [u8; 32],
+
 }
 
 impl NodeView {

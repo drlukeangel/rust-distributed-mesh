@@ -1,6 +1,6 @@
 //! Position 10 has one receive effect: refuse it, with no status, fact or seat installation.
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
-use rdm_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Backbone, Frame, Membership};
+use rdm_transport::membership::{backbone_channel, learn_addresses, mesh_channel, Backbone, Frame, Membership};
 use std::time::Duration;
 
 async fn endpoint() -> (iroh::Endpoint, iroh_gossip::net::Gossip, iroh::protocol::Router) {
@@ -26,16 +26,16 @@ fn receiver_refuses_position_ten_and_changes_no_status_or_seat() {
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         learn_addresses(&send_ep, &[iroh::EndpointAddr::new(recv_ep.id()).with_ip_addr(recv_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap())]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut mesh_topic = gossip.subscribe(mesh_topic(&fabric, &mesh), vec![]).await.unwrap();
-        let mut backbone_topic = gossip.subscribe(backbone_topic(&fabric), vec![]).await.unwrap();
-        let receiver = Membership::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![addr.clone()]).await.unwrap();
+        let mut mesh_channel = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
+        let mut backbone_channel = gossip.subscribe(backbone_channel(&fabric), vec![]).await.unwrap();
+        let receiver = Membership::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.admin.1", rdm_transport::clock::os_clock(), vec![addr.clone()], &[]).await.unwrap();
         let _backbone = Backbone::join(&recv_gossip, &recv_ep, &receiver, "mesh1", rdm_core::PublisherId { node: "mesh1.admin.1".to_string(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() }, vec![addr]).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), mesh_topic.joined()).await.unwrap().unwrap();
-        tokio::time::timeout(Duration::from_secs(5), backbone_topic.joined()).await.unwrap().unwrap();
-        let (mesh_sender, _mesh_rx) = mesh_topic.split();
-        let (backbone_sender, _backbone_rx) = backbone_topic.split();
+        tokio::time::timeout(Duration::from_secs(5), mesh_channel.joined()).await.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), backbone_channel.joined()).await.unwrap().unwrap();
+        let (mesh_sender, _mesh_rx) = mesh_channel.split();
+        let (backbone_sender, _backbone_rx) = backbone_channel.split();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
-        let digest = MeshDigest { fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
+        let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
         receiver.book.record(digest);
         assert!(receiver.book.started(&node_id, &incarnation));
         let holder = SeatHolder { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };

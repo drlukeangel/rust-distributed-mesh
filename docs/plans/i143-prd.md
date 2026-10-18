@@ -2460,6 +2460,8 @@ Page diffs (delegated ruling `R-FM2`):
 
 **LANDED `8bd6681d` (2026-10-17), land script, all fast-gate jobs concurrent, GREEN 211 s.** Combined with main `04667eed`; transport process controls 167/167, scenario main 187/187 (including all forty Direct/carried roots), rounds 8/8. Log `/home/admin/rust-distributed-mesh-deploy/s88-combined-land.log`; per-job evidence `gates-e7s3-8bd6681d.log.d/`. Q54's approved page line and exact-birth declared-state acquisition landed with s88. Release qualification and kill/recovery proof, current nonempty route flames and prior REDs remain recorded below. Q56's separately owned live Mesh-state acquisition and the expired-hold follow-on are not represented as resolved. i144's rebase notice is queued in `/home/admin/lane-queue/outbox/to-i144-q56.md`. Codex proceeds to i147 e5.
 
+Codex i147 e5: RED `9b590d24` / `c34b0148`; channel/admission/discovery implementation and focused controls are in e7s3, not landed. Current evidence and remaining consumer/gate/flame work: [i147 e5](i147-gossip-conformance-prd.md#e5--app-types-on-the-envelope-channel-event-received-luke-2026-10-17-thats-clean-im-into-it).
+
 
 Landing preflight `8a05b16a` found main advanced to `04667eed` (the stop/join primitives). It aborted on generated spans.md before any gate ran. Rebased manually, regenerated that document from the combined source, and repinned all consumer manifests to the resulting candidate. The two live controls above remain attributed to their actual pre-rebase source; the land gate verifies the combined source next.
 

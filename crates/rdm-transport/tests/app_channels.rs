@@ -45,6 +45,8 @@ async fn pair() -> (Node, Node, Channel, Channel, iroh_gossip::api::GossipSender
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
     let mut raw = a.gossip.subscribe(channel_id(&fabric, TYPE), vec![b.ep.id()]).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), raw.joined()).await.expect("the app-channel neighbour joins").unwrap();
+    let mut other = b.gossip.subscribe(channel_id(&fabric, TYPE), vec![a.ep.id()]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), other.joined()).await.expect("the publishing app-channel neighbour joins").unwrap();
     let (sender, receiver) = raw.split();
     (a, b, ca, cb, sender, receiver)
 }
@@ -165,4 +167,63 @@ async fn the_channel_surface_has_one_owned_receiver(mut channel: Channel, event:
     let (publisher, mut subscriber) = channel.split();
     let _: rdm_transport::gossip::Publisher = publisher;
     let _: Option<rdm_transport::gossip::Received> = subscriber.recv().await;
+}
+
+#[test]
+fn the_receive_span_parents_to_the_publishers_span_and_carries_no_data() {
+    if crate::own_process::delegated(module_path!(), "the_receive_span_parents_to_the_publishers_span_and_carries_no_data") { return; }
+    use tracing::Instrument;
+    let capture=rdm_transport::EvidenceCapture::start(&crate::evidence_dir(),"app-channel-trace").unwrap();
+    capture.run(4,async {
+        let (_a,_b,mut receiver,mut sender,raw,_events)=pair().await;
+        let author=tracing::info_span!("rdm.mesh.channel.update.via-author");
+        let context=author.in_scope(rdm_transport::current_traceparent).expect("author context");
+        sender.publish(event(7,b"secret-app-body-123".to_vec())).instrument(author.clone()).await.unwrap();
+        let got=receive(&mut receiver).await;
+        got.span.in_scope(||tracing::info!("application applies"));drop(got);drop(author);
+        // A malformed context is observed by name but does not discard the data.
+        let mut attrs:(Vec<(String,String)>,Vec<u8>)=postcard::from_bytes(&encoded(&_a,TYPE,"bad-context","bad-context",vec![42],false)).unwrap();
+        attrs.0.push(("traceparent".into(),"broken".into()));raw.broadcast(postcard::to_allocvec(&attrs).unwrap().into()).await.unwrap();
+        assert_eq!(receive(&mut sender).await.data.as_ref(),&[42]);
+        let spans=capture.spans().unwrap();
+        let received=spans.iter().find(|s|s["name"]=="rdm.mesh.membership.update.via-frame"&&s["attributes"]["subject"]=="org/proof/row").expect("received event span");
+        assert_eq!(received["trace_id"].as_str(),Some(&context[3..35]));
+        assert_eq!(received["parent_span_id"].as_str(),Some(&context[36..52]));
+        assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.update.via-context-dropped"));
+        assert!(!serde_json::to_string(&spans).unwrap().contains("secret-app-body-123"));
+    });
+}
+
+#[test]
+fn an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies() {
+    if crate::own_process::delegated(module_path!(), "an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies") { return; }
+    let capture=rdm_transport::EvidenceCapture::start(&crate::evidence_dir(),"app-channel-type").unwrap();
+    capture.run(4,async {
+        let (a,_b,_unused,mut receiver,raw,_events)=pair().await;
+        raw.broadcast(encoded(&a,"app.undeclared","wrong","wrong",vec![1],false).into()).await.unwrap();
+        raw.broadcast(encoded(&a,TYPE,"next","next",vec![2],false).into()).await.unwrap();
+        assert_eq!(receive(&mut receiver).await.subject,"next");
+        assert!(capture.spans().unwrap().iter().any(|s|s["name"]=="rdm.mesh.channel.reject.via-undeclared-type"));
+    });
+}
+
+/// Compile a positive control first, then reject each forbidden receiver ownership shape.
+#[test]
+fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {
+    let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let artifacts=std::env::var_os("I143_PREBUILT_ARTIFACTS").map(std::path::PathBuf::from).unwrap_or_else(||root.join("target/cells/artifacts.json"));
+    let records=std::fs::read_to_string(artifacts).unwrap();
+    let rlib=records.lines().filter_map(|l|serde_json::from_str::<serde_json::Value>(l).ok()).filter(|m|m["reason"]=="compiler-artifact"&&m["target"]["name"]=="rdm_transport").flat_map(|m|m["filenames"].as_array().cloned().unwrap_or_default()).filter_map(|v|v.as_str().map(str::to_string)).find(|f|f.ends_with(".rlib")).expect("the current build's transport library");
+    let dir=std::env::temp_dir().join(format!("channel-ownership-{}",NodeId::mint()));std::fs::create_dir_all(&dir).unwrap();
+    let compile=|body:&str| {
+        let source=dir.join("ownership.rs");std::fs::write(&source,format!("use rdm_transport::gossip::Channel; {body}")).unwrap();
+        std::process::Command::new("rustc").args(["--edition=2021","--crate-type=lib","--emit=metadata","--crate-name=ownership"]).arg(&source).arg("--out-dir").arg(&dir).arg("--extern").arg(format!("rdm_transport={rlib}")).arg("-L").arg(format!("dependency={}",std::path::Path::new(&rlib).parent().unwrap().display())).output().unwrap()
+    };
+    let good=compile("pub async fn valid(mut channel: Channel) { let _ = channel.recv().await; let (_, mut subscriber) = channel.split(); let _ = subscriber.recv().await; }");assert!(good.status.success(),"{}",String::from_utf8_lossy(&good.stderr));
+    for (body,code) in [
+        ("pub fn invalid(channel: Channel) { let _other = channel.clone(); }","E0599"),
+        ("pub async fn invalid(channel: &Channel) { let _ = channel.recv().await; }","E0596"),
+        ("pub fn invalid(channel: Channel) { let _ = channel.split(); let _ = channel.split(); }","E0382"),
+    ] {let result=compile(body);let error=String::from_utf8_lossy(&result.stderr);assert!(!result.status.success()&&error.contains(code),"{code}: {error}");}
+    std::fs::remove_dir_all(dir).unwrap();
 }

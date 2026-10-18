@@ -85,13 +85,13 @@ pub fn executable_name() -> Result<String> {
 /// The one node executable's run: the role is the node_type its launch names ([`Role::of`]), and
 /// the process runs it to completion as [`run`] does.
 pub async fn run_launched() -> Result<()> {
-    run(Role::of(&read_launch()?)).await
+    run(Role::of(&read_launch()?), &[]).await
 }
 
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
 /// the mesh transport stopping for good), then `node.connections.delete` and leave.
-pub async fn run(role: Role) -> Result<()> {
-    run_with(role, crate::app_hydration::Hydration::none(), |b| b).await
+pub async fn run(role: Role, types: &[&str]) -> Result<()> {
+    run_with(role, types, crate::app_hydration::Hydration::none(), |b| b).await
 }
 
 /// [`run`] for a product that hydrates before Ready: `hydration` carries its
@@ -99,6 +99,7 @@ pub async fn run(role: Role) -> Result<()> {
 /// it seals. A hook that fails after the node came up Pending ends the process by name.
 pub async fn run_with(
     role: Role,
+    types: &[&str],
     hydration: crate::app_hydration::Hydration,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
@@ -119,7 +120,7 @@ pub async fn run_with(
     }
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_hydrating(&launch, hydration, |b, _seams| serve_app(b))
+        let started = crate::node::start_with_rafka_time_hydrating_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, |b, _seams| serve_app(b), types)
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,
@@ -156,3 +157,6 @@ pub async fn run_with(
     }
     Ok(())
 }
+
+/// Declared app channels and events.
+pub use rdm_transport::gossip;

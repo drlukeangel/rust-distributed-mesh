@@ -426,6 +426,12 @@ impl Records {
         let _ = self.rows.set(rows);
     }
 
+    /// Record the immutable declaration through this mesh's existing node-row writer.
+    pub async fn declare_app_types(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<(), String> {
+        let rows = self.rows.get().ok_or_else(|| "this admin holds no node-row writer".to_string())?;
+        rows.declare_app_types(d, types).await
+    }
+
     /// The probe of what the provider holds recorded at a path (set once, at start).
     pub fn set_path_probe(&self, probe: Arc<dyn crate::seat_revision::PathProbe>) {
         let _ = self.path_probe.set(probe);

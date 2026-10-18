@@ -23,7 +23,7 @@ impl Birth {
         Self { fabric: fabric.clone(), node: publisher.node_id.clone(), incarnation: publisher.incarnation.clone() }
     }
 
-    fn uri(&self) -> String { format!("rdm://{}/{}/{}", self.fabric, self.node, self.incarnation) }
+    pub(crate) fn uri(&self) -> String { format!("rdm://{}/{}/{}", self.fabric, self.node, self.incarnation) }
 
     fn parse(uri: &str) -> Result<Self, WireError> {
         let parts: Vec<_> = uri.strip_prefix("rdm://").ok_or_else(|| invalid("source scheme"))?.split('/').collect();
@@ -69,6 +69,9 @@ pub const TYPES: [&str; 22] = [
     "rdm.fabric.traffic.opened", "rdm.node.stopped", "rdm.node.primary.updated", "rdm.node.primary.updating",
 ];
 
+/// The twenty-third RDM type, carried on an application channel only.
+pub const CHUNK_TYPE: &str = "rdm.gossip.chunk";
+
 /// A valid type refusal, before domain data decoding, or malformed context/data.
 #[derive(Debug)]
 pub enum DecodeError {
@@ -101,7 +104,7 @@ fn birth_parts(b: &Birth) -> Vec<String> { vec![b.fabric.to_string(), b.node.to_
 fn operation(op: &rdm_core::LifecycleOp) -> Vec<String> {
     vec![op.build_id.clone(), op.attempt.to_string(), op.operation.clone(), op.node_id.to_string(), op.incarnation.to_string()]
 }
-fn date(ms: u64) -> Result<String, WireError> {
+pub(crate) fn date(ms: u64) -> Result<String, WireError> {
     let t = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms.try_into().map_err(|_| invalid("time range"))?).ok_or_else(|| invalid("time range"))?;
     Ok(t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
@@ -189,11 +192,12 @@ impl Context {
         Self { id: format!("{kind}/{}", path(&identity)), source, kind, subject, sequence, time_ms, publication, traceparent: trace.traceparent, tracestate: trace.tracestate }
     }
 
-    fn attributes(&self) -> Result<Vec<(String, String)>, WireError> {
+    fn attributes(&self, dataschema: Option<&str>) -> Result<Vec<(String, String)>, WireError> {
         let mut a = vec![("specversion".into(), "1.0".into()), ("id".into(), self.id.clone()), ("source".into(), self.source.uri()), ("type".into(), self.kind.clone()), ("subject".into(), self.subject.clone())];
         if let Some(s) = &self.sequence { a.push(("sequence".into(), s.clone())); }
         a.push(("time".into(), date(self.time_ms)?));
         a.push(("datacontenttype".into(), "application/octet-stream".into()));
+        if let Some(schema) = dataschema { a.push(("dataschema".into(), schema.into())); }
         if let Some(parent) = &self.traceparent { a.push(("traceparent".into(), parent.clone())); }
         if let Some(state) = &self.tracestate { a.push(("tracestate".into(), state.clone())); }
         Ok(a)
@@ -205,7 +209,12 @@ impl Context {
 
 /// Encode one complete metadata-and-data message. The caller measures these exact bytes.
 pub fn encode(context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
-    wire::encode(&(context.attributes()?, body(context, frame)?))
+    encode_data(context, &body(context, frame)?, None)
+}
+
+/// The one binary binding for domain, application and chunk data.
+pub(crate) fn encode_data(context: &Context, data: &[u8], dataschema: Option<&str>) -> Result<Vec<u8>, WireError> {
+    wire::encode(&(context.attributes(dataschema)?, data))
 }
 
 fn body(context: &Context, frame: &Frame) -> Result<Vec<u8>, WireError> {
@@ -268,9 +277,21 @@ pub(crate) fn decode_received(bytes: &[u8]) -> Received {
     Received { trace, dropped, frame }
 }
 
-fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, dropped: &mut Vec<rdm_core::context::Dropped>) -> Result<Frame, DecodeError> {
-    if bytes.len() > crate::membership::MAX_FRAME { return Err(invalid("complete message exceeds MAX_FRAME").into()); }
-    let (pairs, mut data): (Vec<(String, String)>, Vec<u8>) = wire::decode(bytes)?;
+/// Validated binary-mode context; dispatchers select data only after this parse.
+pub(crate) struct Header {
+    pub source: Birth,
+    pub id: String,
+    pub kind: String,
+    pub subject: String,
+    pub time_ms: u64,
+    pub sequence: Option<String>,
+    pub dataschema: Option<String>,
+    pub data: Vec<u8>,
+}
+
+pub(crate) fn decode_header(bytes: &[u8], trace: &mut rdm_core::context::CallContext, dropped: &mut Vec<rdm_core::context::Dropped>, limit: usize) -> Result<Header, DecodeError> {
+    if bytes.len() > limit { return Err(invalid("complete message exceeds MAX_FRAME").into()); }
+    let (pairs, data): (Vec<(String, String)>, Vec<u8>) = wire::decode(bytes)?;
     // Trace values are sanitized separately: even an invalid String value cannot refuse data.
     let parent = pairs.iter().find(|(n, _)| n == "traceparent").map(|(_, v)| v.clone());
     let state = pairs.iter().find(|(n, _)| n == "tracestate").map(|(_, v)| v.clone());
@@ -290,6 +311,11 @@ fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, droppe
     let time_ms = date_ms(required("time")?)?;
     let sequence = a.get("sequence").cloned();
     if a.contains_key("sequencetype") { return Err(invalid("sequencetype must be unset in this binding").into()); }
+    Ok(Header { source, id, kind, subject, time_ms, sequence, dataschema: a.get("dataschema").cloned(), data })
+}
+
+fn decode_event(bytes: &[u8], trace: &mut rdm_core::context::CallContext, dropped: &mut Vec<rdm_core::context::Dropped>) -> Result<Frame, DecodeError> {
+    let Header { source, id, kind, subject, time_ms, sequence, mut data, .. } = decode_header(bytes, trace, dropped, crate::membership::MAX_FRAME)?;
     let index = TYPES.iter().position(|t| *t == kind);
     // Required context is checked before the named type outcome; no domain data is decoded.
     let Some(index) = index else { return Err(DecodeError::Unknown(kind)); };

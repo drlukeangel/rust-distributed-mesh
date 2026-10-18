@@ -91,6 +91,7 @@ async fn start_with_rafka_time_hydrating(
             };
             register(b, seams).carry::<crate::proof_store::ProofStore>()
         },
+        &[],
     )
     .await
 }

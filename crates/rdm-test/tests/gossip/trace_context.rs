@@ -1,6 +1,6 @@
 //! CloudEvents tracing is authored context, never a receive decision.
 use rdm_core::{FabricId, MeshId};
-use rdm_transport::membership::{Frame, Membership, mesh_topic, learn_addresses};
+use rdm_transport::membership::{Frame, Membership, mesh_channel, learn_addresses};
 use std::time::Duration;
 
 async fn held(receiver: &Membership, mesh: &str, stamp: u64) {
@@ -21,8 +21,8 @@ fn run(malformed: bool) {
         let addr = iroh::EndpointAddr::new(send_ep.id()).with_ip_addr(send_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap());
         learn_addresses(&recv_ep, &[addr.clone()]).unwrap();
         let (fabric, mesh) = (FabricId::mint(), MeshId::mint());
-        let mut topic = gossip.subscribe(mesh_topic(&fabric, &mesh), vec![]).await.unwrap();
-        let receiver = Membership::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr]).await.unwrap();
+        let mut topic = gossip.subscribe(mesh_channel(&fabric, &mesh), vec![]).await.unwrap();
+        let receiver = Membership::join(&recv_gossip, &recv_ep, &fabric, "mesh1", &mesh, "mesh1.rpc.1", rdm_transport::clock::os_clock(), vec![addr], &[]).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), topic.joined()).await.unwrap().unwrap();
         let (sender, _rx) = topic.split();
         let author = crate::gossip_author(&fabric);

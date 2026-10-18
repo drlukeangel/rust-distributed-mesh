@@ -40,6 +40,8 @@ pub enum JoinRequest {
     JoinNode {
         /// The node's full digest.
         digest: WireDigest,
+        /// The birth's immutable app type declaration.
+        types: Vec<String>,
     },
 }
 

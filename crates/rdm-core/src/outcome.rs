@@ -133,7 +133,7 @@ impl ReplyKind {
     /// The malformed kind retains its own standard code.
     pub const fn Malformed(kind: MalformedKind) -> Self {
         Self::new(match kind {
-            MalformedKind::TooLarge => Code::ResourceExhausted,
+            MalformedKind::TooLarge | MalformedKind::TypesOverCap => Code::ResourceExhausted,
             MalformedKind::UnknownVariant => Code::InvalidArgument,
             MalformedKind::Corrupt => Code::DataLoss,
         })
@@ -180,6 +180,8 @@ pub enum MalformedKind {
     UnknownVariant,
     /// Undecodable bytes.
     Corrupt,
+    /// App types exceed 256 entries or 8 KiB encoded.
+    TypesOverCap,
 }
 
 /// Why a call ended before its commit cut. The request provably never

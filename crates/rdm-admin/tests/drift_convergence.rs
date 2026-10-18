@@ -235,7 +235,7 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
     n.endpoint_id = Some(EndpointId(iroh::SecretKey::generate().public().to_string()));
     n.status = NodeStatus::ReadyForTraffic;
     let pid = world.add(path, n.node_id.as_str());
-    book.record(MeshDigest {
+    book.record(MeshDigest { held_hash: Default::default(),
         fabric_id: fabric_id.clone(),
         node: MeshNode {
             node_id: n.node_id.clone(),

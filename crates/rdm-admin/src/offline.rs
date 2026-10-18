@@ -1142,7 +1142,7 @@ pub(crate) mod tests {
     fn the_silent_set_marks_each_birth_at_its_last_receipt_plus_the_floor() {
         use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode};
         let floor = std::time::Duration::from_secs(3);
-        let digest = |name: &str| MeshDigest {
+        let digest = |name: &str| MeshDigest { held_hash: Default::default(),
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { node_id: crate::model::NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::ReadyForTraffic,

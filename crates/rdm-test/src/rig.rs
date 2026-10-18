@@ -106,6 +106,7 @@ impl NodeObserver for LiveMesh {
             me.is_primary = true;
             let fabric_id = self.membership.book.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
             let authority = rdm_admin::status_rpc::StatusAuthority {
+                app_channels: None,
                 held_takeover: Default::default(),
                 me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
                 declaration_seam: None, command_frame_seam: None, operation_effects: Default::default(), stopped: Default::default(),
@@ -427,7 +428,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
             vec![seed.clone()]
         }
     };
-    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds).await.unwrap();
+    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds, &[]).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let joins = Arc::new(rdm_admin::join::Joins::default());
@@ -436,7 +437,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
         let learner = membership.clone();
-        Arc::new(rdm_admin::join::JoinDoor {
+        Arc::new(rdm_admin::join::JoinDoor { types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             me: name.parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new({
@@ -546,7 +547,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
     // drain's completion and its start's join to the admin its membership book holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let admin_digest = rdm_core::digest::MeshDigest {
+    let admin_digest = rdm_core::digest::MeshDigest { held_hash: Default::default(),
         fabric_id: fabric.clone(),
         node: rdm_core::digest::MeshNode {
             node_id: admin_node_id.clone(),

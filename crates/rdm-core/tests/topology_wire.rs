@@ -20,7 +20,7 @@ fn publisher() -> PublisherId {
 
 fn digest() -> rdm_core::MeshDigest {
     use rdm_core::*;
-    MeshDigest {
+    MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::mint(),
         node: MeshNode {
             node_id: NodeId::mint(),
@@ -102,7 +102,7 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
 #[test]
 fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     use rdm_core::*;
-    let d = MeshDigest {
+    let d = MeshDigest { held_hash: Default::default(),
         fabric_id: FabricId::parse("1123456789ab").unwrap(),
         node: MeshNode {
             node_id: NodeId::parse("0123456789ab").unwrap(),
@@ -128,7 +128,7 @@ fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
     let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], departed: vec![] };
     let hex = "00 05 6d65736831 0161 0c 7972797a396a333033776435 0c 303132333435363738396162 03 09 00 01 01 \
         0c 313132333435363738396162 0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
-        01 00 07 09 00 00 00 00 00 00 \
+        01 00 07 09 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 \
         02 \
         00 00";
     assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
