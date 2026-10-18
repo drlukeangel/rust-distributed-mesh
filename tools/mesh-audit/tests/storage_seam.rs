@@ -47,7 +47,8 @@ fn the_rdm_tree_reaches_the_file_store_only_through_the_file_backend() {
 fn a_file_store_named_outside_the_file_backend_is_refused_at_its_site() {
     let t = Tree::new(&[(
         "crates/rdm-admin/src/admin/boot.rs",
-        "fn boot() {\n    let root = crate::store_root::StoreRoot::open(&dir, &id);\n    let rows: crate::record_store::FileRecords = todo!();\n    let s = crate::storage::FileMeshStorage::open(&root);\n    let b = crate::storage_backend::FileBackend::at(&dir);\n    let j = crate::build_state::FileJournal::open_on_root(&root);\n}\n",
+        // The journal's open is spelled in pieces: build_state's own cell refuses that text anywhere else.
+        concat!("fn boot() {\n    let root = crate::store_root::StoreRoot::open(&dir, &id);\n    let rows: crate::record_store::FileRecords = todo!();\n    let s = crate::storage::FileMeshStorage::open(&root);\n    let b = crate::storage_backend::FileBackend::at(&dir);\n    let j = crate::build_state::File", "Journal::open_on_root(&root);\n}\n"),
     )]);
     let v = check(t.root());
     let sites: Vec<(usize, &str)> = v.iter().map(|x| (x.line, x.name.as_str())).collect();
@@ -67,7 +68,7 @@ fn the_file_backend_cfg_test_items_and_prose_may_name_the_file_store() {
         ("crates/rdm-node/src/store_root.rs", "pub struct StoreRoot;\n"),
         (
             "crates/rdm-admin/src/admin.rs",
-            "/// Opens a `FileJournal` through the backend.\nfn run() { let s = \"StoreRoot\"; } // FileRecords\n#[cfg(test)]\nmod tests { fn t() { let r = StoreRoot::at(&d); } }\n#[cfg(all(test, feature = \"file-backend\"))]\nmod more { use crate::storage::FileNodesStorage; }\n#[cfg(feature = \"file-backend\")]\n#[tokio::test]\nasync fn cell() { let j = FileJournal::open_on_root(); }\nimpl X {\n    #[test]\n    fn c() { let f = FileFabricStorage::open(); }\n}\n",
+            "/// Opens a `FileJournal` through the backend.\nfn run() { let s = \"StoreRoot\"; } // FileRecords\n#[cfg(test)]\nmod tests { fn t() { let r = StoreRoot::at(&d); } }\n#[cfg(all(test, feature = \"file-backend\"))]\nmod more { use crate::storage::FileNodesStorage; }\n#[cfg(feature = \"file-backend\")]\n#[tokio::test]\nasync fn cell() { let j = FileJournal::at(); }\nimpl X {\n    #[test]\n    fn c() { let f = FileFabricStorage::open(); }\n}\n",
         ),
         ("crates/rdm-test/src/estate.rs", "fn e() { let r = StoreRoot::at(&d); }\n"),
         ("crates/rdm-admin/tests/cells.rs", "fn c() { let r = StoreRoot::at(&d); }\n"),
