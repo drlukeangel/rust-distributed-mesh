@@ -50,7 +50,13 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q67 | DevX (rafka-v2) | i141 U3 / rafka i144 writer lifecycle | may a committed seat move close the previous (seat, revision) writer while its process lives on | a (Luke, 2026-10-18): rafka's R9 gains one trigger, for seat writers only: the committed seat-move row that supersedes the (seat, revision), decided by the one writer of the seat-move sequence; a certified fact, never silence; the process's own writer stays under R9 unchanged; R8 untouched (the close is node-admin's op 69). b refused (a read-then-append race returns), c refused (stops a living member's own writes). The R9 line lands in rafka-v2 | asked and ruled 2026-10-18 |
 
-Next free number: **Q68**.
+| Q68 | reserved | i141 U3 | a 1b signature mismatch, if DevX hits one | — | reserved 2026-10-18 |
+
+| Q69 | DevX (rafka-v2) | i141 e4 | where a returning broker's re-sync runs: inside the pre-ready hook (RDM's hooks page) or after ready-for-traffic (rafka's broker-re-sync.md, Luke 2026-10-08) | b (Luke, 2026-10-18): rafka's ordering stands; the hook did not exist on 10-08 and the system org's topics already override routing for that broker, so clients never reach it; RDM's fabric-node-hooks.md drops its sentence that Rafka runs broker re-sync inside the hook; rafka's §3/§4 unchanged. With it (Luke): the hook is renamed `before_ready` (`Wiring.before_ready`, `BeforeReadyCtx`); "hydrate" named one use of a hook whose contract is the step before the ready report | asked and ruled 2026-10-18 |
+
+| Q70 | DevX (rafka-v2) | i141/i142 L2 | at RDM `1f105e30` rafka's Node RPC resolver has no peer incarnation (RDM's `ResolvedNode.incarnation` is required and fences the pool, receiver-gone and owed delivery); rafka's gossip digest carries none and the Node row is an async read | asked 2026-10-18; a recommended (rafka's digest gains the incarnation, appended, `durable format moved`, deleted by e11); a gossip-frame change in rafka, Luke's permission pending | asked 2026-10-18 |
+
+Next free number: **Q71**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
