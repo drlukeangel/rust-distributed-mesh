@@ -336,14 +336,14 @@ for line in open(sys.argv[1]):
         continue
     identity = row["package_id"]
     name = identity.rsplit("#", 1)[-1].split("@", 1)[0] if "@" in identity.rsplit("#", 1)[-1] else identity.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
-    if name != "rafka-admin-ui" or row["executable"] in seen:
+    if name not in ("rafka-admin-ui", "rshape-consumer") or row["executable"] in seen:
         continue
     seen.add(row["executable"])
     directory = shlex.quote(os.path.dirname(row["manifest_path"]))
     exe = shlex.quote(row["executable"])
-    print(f"demo-admin-ui-{row['target']['name']} sh:(cd {directory} && CARGO_MANIFEST_DIR={directory} {exe} -q)")
+    print(f"demo-{name}-{row['target']['name']} sh:(cd {directory} && CARGO_MANIFEST_DIR={directory} {exe} -q)")
 if not seen:
-    raise SystemExit("the consumer build produced no admin-ui test executables")
+    raise SystemExit("the consumer build produced no consumer or admin-ui test executables")
 PYUI
 fi
 echo "dep-rules run:dep-rules" >> $D/jobs

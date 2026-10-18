@@ -1136,7 +1136,7 @@ mod tests {
         let mut record = crate::model::Node::allocated(from.name.clone());
         record.node_id = from.node_id.clone();
         record.status = from.status;
-        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &from.name, &to.name).await.unwrap();
+        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), None, &from.name, &to.name).await.unwrap();
         assert_eq!(file.node_row_at(&from.name).await.unwrap(), None, "the old key is let go");
         assert_eq!(file.node_row_at(&to.name).await.unwrap(), Some(to.clone()), "the row the node held there is left as it is");
         assert_eq!(file.node_row_name("mesh1", &from.node_id).await.unwrap(), Some(to.name.clone()), "the row the node holds is named in the id index");

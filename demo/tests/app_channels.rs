@@ -1,0 +1,87 @@
+//! The independent consumer uses only public RDM surfaces for live/pull reconciliation and loss.
+use rdm_admin::admin::{start_with,AdminConfig,Running};
+use rdm_admin::wiring::{FabricHooks,Wiring};
+use rdm_core::{NodeId,IncarnationId};
+use rdm_core::catalog::OpOwner;
+use rdm_node::gossip::{Channel,Event};
+use rdm_test::hydrate_probe::{HydratePull,PullReply,PullRequest,Row};
+use std::{sync::{Arc,Mutex,atomic::{AtomicU32,Ordering}},time::Duration};
+const KIND:&str="demo.records";
+const LARGE:&str="demo.large-records";
+const BOUND:Duration=Duration::from_secs(60);
+fn config(dir:&std::path::Path)->AdminConfig {
+    AdminConfig::from_env(|k|match k {"RDM_DATA_DIR"|"RDM_STORE_DIR"|"RDM_BIN_DIR"=>Some(dir.display().to_string()),"RDM_NODE_ADMIN_API_BIND"=>Some("127.0.0.1:0".into()),"MESH_SPAWN_TYPE"=>Some("process".into()),_=>None}).unwrap()
+}
+fn event(row:&Row)->Event {Event{subject:"record/1".into(),sequence:Some(row.version),dataschema:Some("demo.row.v1".into()),data:postcard::to_allocvec(row).unwrap().into()}}
+fn order(row:&Row)->(u64,u64) {(row.value.split_once(':').unwrap().0.parse().unwrap(),row.version)}
+fn apply(held:&mut Option<Row>,row:Row) {if held.as_ref().is_none_or(|old|order(&row)>order(old)){*held=Some(row);}}
+async fn recv(channel:&mut Channel)->Row {let event=tokio::time::timeout(BOUND,channel.recv()).await.unwrap().unwrap();assert_eq!(event.dataschema.as_deref(),Some("demo.row.v1"));event.span.in_scope(||postcard::from_bytes(&event.data).unwrap())}
+async fn pull(client:&rdm_transport::NodeRpcClient,root:&NodeId)->Vec<Row> {
+    let(out,_)=client.call::<HydratePull>(&rdm_transport::NodeTarget::ExactNode(root.clone()),&PullRequest::Pull,&rdm_transport::CallOptions::default()).await;
+    let Some(reply)=out.reply() else{panic!("snapshot: {out:?}")};let PullReply::Rows{rows}=reply.value() else{panic!("{reply:?}")};rows.clone()
+}
+struct Actions { commits:AtomicU32,opens:AtomicU32,changed:tokio::sync::watch::Sender<u8> }
+#[async_trait::async_trait]
+impl rdm_node::rounds::RoundActions for Actions {
+    async fn commit_state(&self,_:&rdm_core::PathName)->Result<(),String>{self.commits.fetch_add(1,Ordering::SeqCst);self.changed.send_modify(|v|*v|=1);Ok(())}
+    async fn open_traffic(&self,_:&rdm_core::PathName)->Result<(),String>{self.opens.fetch_add(1,Ordering::SeqCst);self.changed.send_modify(|v|*v|=2);Ok(())}
+}
+async fn broker(root:&Running,dir:&std::path::Path,shared:&std::path::Path)->rdm_node::node::RunningNode {
+    let d=root.digest.lock().unwrap().clone();std::fs::create_dir_all(dir).unwrap();
+    let fact=rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("demo-app")).unwrap();fact.write_record(dir).unwrap();
+    let key=rdm_node::node::load_or_mint_key(dir).unwrap();
+    let launch=rdm_core::launch::Launch{fabric:config(shared).fabric,fabric_id:d.fabric_id.clone(),name:"mesh1.broker.1".parse().unwrap(),node_id:NodeId::mint(),incarnation:IncarnationId::mint(),supersedes:None,bind_addr:"127.0.0.1:0".parse().unwrap(),listeners:vec![],seeds:vec![(d.node.endpoint_id.0.clone(),d.node.transport_addr)],launcher:Some(rdm_core::launch::Launcher{name:d.node.name.clone(),node_id:d.node.node_id.clone(),incarnation:d.node.incarnation.clone()}),data_dir:dir.into(),store_dir:shared.into(),mesh_id:d.mesh_id.clone(),mesh_issuer:None,connections_delete_deadline:rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE};
+    let _=root.runner.joins.expect(rdm_admin::join::Deployed{name:launch.name.clone(),node_id:launch.node_id.clone(),incarnation:launch.incarnation.clone(),supersedes:None,endpoint_id:rdm_core::EndpointId(key.public().to_string()),runtime:fact,data_dir:dir.display().to_string(),last_accepted_name:None,held:false});
+    rdm_node::node::start_with_rafka_time_hydrating_and(&launch,rdm_transport::clock::RafkaTime::unadopted(),rdm_node::app_hydration::Hydration::none(),|s|s,None,|b,_|b,&[KIND,LARGE]).await.unwrap()
+}
+
+#[test]
+fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_round_actions() {
+    let dir=std::env::temp_dir().join(format!("demo-app-{}",NodeId::mint()));
+    let capture=rdm_transport::EvidenceCapture::start(&dir.join("evidence"),"demo-app-channels").unwrap();
+    capture.run(4,async {
+        let snapshot=Arc::new(Mutex::new(vec![Row{version:100,value:"1:snapshot".into()}]));
+        let (entered,mut entered_rx)=tokio::sync::watch::channel(0u64);let(release,_)=tokio::sync::watch::channel(false);
+        let serve={let snapshot=snapshot.clone();let release=release.clone();Box::new(move|b:rdm_transport::ServerBuilder|b.serve::<HydratePull,_,_>(OpOwner::Testkit,move|_,_|{let rows=snapshot.clone();let release=release.clone();let entered=entered.clone();async move{entered.send_modify(|n|*n+=1);let _=release.subscribe().wait_for(|v|*v).await;Ok(PullReply::Rows{rows:rows.lock().unwrap().clone()})}})) as rdm_admin::wiring::ServeApp};
+        let root_dir=dir.join("admin");let root=start_with(config(&root_dir),Wiring{serve_app:Some(serve),fabric_hooks:FabricHooks::no_app_work(),..Wiring::no_certs()}).await.unwrap();root.stop_reconciling();
+        assert!(root.membership.held_types().is_empty());
+        let node=broker(&root,&dir.join("broker"),&root_dir).await;
+        assert!(root.membership.app_types().is_empty());assert_eq!(root.membership.held_types(),[KIND.to_string(),LARGE.to_string()].into());assert_eq!(node.membership.held_types(),node.membership.app_types());
+        let sender=root.membership.join_channel(KIND).await.unwrap();let mut receiver=node.membership.join_channel(KIND).await.unwrap();
+        let large_sender=root.membership.join_channel(LARGE).await.unwrap();let mut large_receiver=node.membership.join_channel(LARGE).await.unwrap();
+        // Observe actual per-channel neighbour establishment; elapsed boot time proves nothing.
+        tokio::time::timeout(BOUND,async {loop {let spans=capture.spans().unwrap();if spans.iter().filter(|s|s["name"]=="rdm.mesh.channel.update.via-neighbour"&&s["attributes"]["event_type"]==KIND).count()>=2&&spans.iter().filter(|s|s["name"]=="rdm.mesh.channel.update.via-neighbour"&&s["attributes"]["event_type"]==LARGE).count()>=2 {break;}tokio::time::sleep(Duration::from_millis(10)).await;}}).await.unwrap();
+        let root_id=root.birth().node_id;
+        // A real directed pull is in flight when the lower-sequence write of another order arrives.
+        let client=node.node_rpc.client.clone();let target=root_id.clone();let pending=tokio::spawn(async move{pull(&client,&target).await});
+        tokio::time::timeout(BOUND,entered_rx.changed()).await.unwrap().unwrap();
+        let live=Row{version:1,value:"2:live".into()};sender.publish(event(&live)).await.unwrap();let mut held=None;apply(&mut held,recv(&mut receiver).await);
+        release.send_replace(true);for row in pending.await.unwrap(){apply(&mut held,row);}
+        assert_eq!(held,Some(live.clone()),"one comparator reconciles pull and live; order beats the higher sequence");
+        let mut reversed=None;for row in snapshot.lock().unwrap().clone(){apply(&mut reversed,row);}apply(&mut reversed,live);assert_eq!(reversed,held);
+        let mut lost=receiver.lost();let before=*lost.borrow();
+        for version in 2..4098 {sender.publish(event(&Row{version,value:"2:burst".into()})).await.unwrap();}
+        tokio::time::timeout(BOUND,lost.wait_for(|n|*n>before)).await.unwrap().unwrap();assert!(receiver.dropped()>0);
+        let healed=Row{version:1,value:"3:after-overflow".into()};*snapshot.lock().unwrap()=vec![healed.clone()];
+        tokio::time::timeout(BOUND,async {loop {let generation=*lost.borrow_and_update();for row in pull(&node.node_rpc.client,&root_id).await{apply(&mut held,row);}if generation==*lost.borrow(){break;}}}).await.unwrap();assert_eq!(held,Some(healed));
+        // The testkit drops one incoming part; publishing, assembly expiry and recovery stay public.
+        rdm_test::gossip_faults::drop_chunk_once(&node.membership,LARGE,1).await.unwrap();
+        let mut incomplete=large_receiver.lost();let generation=*incomplete.borrow();
+        large_sender.publish(event(&Row{version:2,value:format!("3:{}","x".repeat(9000))})).await.unwrap();
+        tokio::time::timeout(rdm_core::cadence::staleness_floor()+Duration::from_secs(2),incomplete.wait_for(|n|*n>generation)).await.unwrap().unwrap();assert_eq!(large_receiver.dropped(),0,"the loss is assembly expiry, not queue overflow");
+        let repaired=Row{version:1,value:"4:after-incomplete".into()};*snapshot.lock().unwrap()=vec![repaired.clone()];for row in pull(&node.node_rpc.client,&root_id).await{apply(&mut held,row);}assert_eq!(held,Some(repaired));
+        let complete=Row{version:2,value:format!("4:{}","y".repeat(9000))};large_sender.publish(event(&complete)).await.unwrap();assert_eq!(recv(&mut large_receiver).await,complete,"the one-shot cut removed itself");
+        // The ordinary broker's existing RoundActions seam runs before its directed check-in.
+        let actions=Arc::new(Actions{commits:AtomicU32::new(0),opens:AtomicU32::new(0),changed:tokio::sync::watch::channel(0).0});node.own.set_round_actions(actions.clone());let mut done=actions.changed.subscribe();
+        let birth=node.digest.node.clone();let build=NodeId::mint().to_string();
+        for (kind,bit) in [(rdm_node::rounds::RoundKind::StateCommit,1),(rdm_node::rounds::RoundKind::OpenTraffic,2)] {
+            let round=rdm_node::rounds::RoundKey{fabric_id:node.digest.fabric_id.clone(),build_id:build.clone(),attempt:1,kind};let req=kind.down(&round,birth.node_id.clone(),birth.incarnation.clone());
+            let(out,_)=root.node_rpc.client.call::<rdm_core::status::Status>(&rdm_transport::NodeTarget::ExactNode(birth.node_id.clone()),&req,&rdm_transport::CallOptions::default()).await;
+            assert!(matches!(out.reply().map(|r|r.value()),Some(rdm_core::status::StatusReply::Applied)),"{out:?}");
+            tokio::time::timeout(BOUND,done.wait_for(|n|n&bit!=0)).await.unwrap().unwrap();
+        }
+        assert_eq!(actions.commits.load(Ordering::SeqCst),1);assert_eq!(actions.opens.load(Ordering::SeqCst),1);
+        drop(sender);drop(receiver);drop(large_sender);drop(large_receiver);node.stop().await;root.leave().await;
+        let spans=capture.spans().unwrap();assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.membership.reject.via-chunk-incomplete"));assert!(spans.iter().any(|s|s["name"]=="rdm.mesh.channel.reject.via-queue-full"));
+    });
+}

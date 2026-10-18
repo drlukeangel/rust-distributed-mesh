@@ -2845,7 +2845,11 @@ impl Membership {
 
     /// Join one declared or learned app type with one owned receiver.
     pub async fn join_channel(&self, kind: &str) -> Result<crate::gossip::Channel, crate::gossip::ChannelError> { self.apps.join(kind).await }
-    /// This birth's immutable own app declaration.
+    /// Testkit-only one-shot incoming chunk loss, absent from production.
+    #[cfg(feature = "testkit-gossip")]
+    pub async fn drop_app_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> { self.apps.drop_chunk_once(kind, index).await }
+
+    /// This birth's immutable app declaration.
     pub fn app_types(&self) -> std::collections::BTreeSet<String> { self.apps.types() }
     /// The monotonic set of app types this birth has joined.
     pub fn held_types(&self) -> std::collections::BTreeSet<String> { self.apps.held() }

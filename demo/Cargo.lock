@@ -3084,6 +3084,8 @@ dependencies = [
 name = "rshape-consumer"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "postcard",
  "anyhow",
  "rdm-admin",
  "rdm-core",

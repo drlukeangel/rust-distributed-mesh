@@ -386,8 +386,8 @@ impl NodeRows {
         }
         let known = self.written.known_row(&*self.storage, &record.mesh, &record.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
         let from = known.as_ref().map_or_else(|| record.name.clone(), |r| r.name.clone());
-        let (config, tags) = known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (record.config.clone(), Default::default()));
-        match move_row(&*self.storage, &me, record, config, tags, &from, to).await {
+        let (config, tags, app_types) = known.map(|r| (r.config, r.tags, r.app_types)).unwrap_or_else(|| (record.config.clone(), Default::default(), None));
+        match move_row(&*self.storage, &me, record, config, tags, app_types, &from, to).await {
             Ok((_, Some(written))) => {
                 self.written.hold(&written);
                 Ok(written)
@@ -413,12 +413,13 @@ impl NodeRows {
         let pred_type = self.node_type_of(retained_id, retained);
         let known = self.written.known_row(&*self.storage, &successor.mesh, &successor.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
         let from = known.as_ref().map_or_else(|| successor.name.clone(), |r| r.name.clone());
+        let app_types = known.as_ref().and_then(|r| r.app_types.clone());
         let (config, tags) = if pred_row.inherited_by.as_ref() == Some(&successor.node_id) {
             known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (successor.config.clone(), Default::default()))
         } else {
             (pred_row.config.clone(), pred_row.tags.clone())
         };
-        let written = match move_row(&*self.storage, &me, successor, config, tags, &from, to).await {
+        let written = match move_row(&*self.storage, &me, successor, config, tags, app_types, &from, to).await {
             Ok((_, Some(row))) => {
                 self.written.hold(&row);
                 row
@@ -499,6 +500,8 @@ impl NodeRows {
     /// Persist a birth's immutable declaration in its existing row before answering its join.
     pub async fn declare_app_types(&self, d: &rdm_core::MeshDigest, types: std::collections::BTreeSet<String>) -> Result<(), String> {
         let me = self.writer_check(&d.node.name.mesh, &d.node.name).await.map_err(|e| e.to_string())?;
+        let configs = self.configs.as_ref().and_then(|slot| slot.get());
+        let _one = match configs { Some(door) => Some(door.one_at_a_time().await), None => None };
         let mut row = match self.put_seeded(&me, &d.node.name, &d.node.node_id, crate::admin::node_status(d.status), &d.config, None, ClaimFor::Create, &tracing::Span::current(), "declaration").await.map_err(|e| e.to_string())? {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => row,
         };
@@ -972,7 +975,7 @@ pub enum RenameRefused {
 /// [`Moved::ReleasePending`]: nothing is rolled back and no second row is written. The one writer of a
 /// rename (R13: `node.name.update` is one write path): `node.name.update` at the node's mesh-primary
 /// (`crate::node_name_update`) moves here. Answers what it did and the row written, if it wrote one.
-pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
+pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, app_types: Option<crate::storage::AppTypes>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
     if from == to {
         return Ok((Moved::Renamed, None));
     }
@@ -988,7 +991,6 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
             Err(why) => (Moved::ReleasePending { why }, held),
         });
     }
-    let app_types = storage.node_row_at(from).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the source declaration could not be read: {e}")))?.filter(|r| r.node_id == record.node_id).and_then(|r| r.app_types);
     let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), app_types, inherited_by: None };
     storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
     // The new name is the node's: it lets go of the old key.

@@ -211,6 +211,7 @@ async fn rename(
         };
         // A cutover's row carries the retained predecessor row's config and tags once; a repeated
         // cutover after the retained row already named this successor preserves the successor's own.
+        let app_types = known.as_ref().and_then(|r| r.app_types.clone());
         let own = || known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default()));
         let (config, tags) = match cutover {
             Some(c) => match retained_row(storage, me, c).await {
@@ -228,7 +229,7 @@ async fn rename(
             None => own(),
         };
         span.record("keys", config.len() as u64).record("tags", crate::node_rows::labels(&tags).as_str());
-        let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, &from, &to).await {
+        let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, app_types, &from, &to).await {
             Ok((m, written)) => {
                 if let Some(row) = &written {
                     door.written().hold(row);

@@ -29,8 +29,9 @@ libc = "0.2"
 
 [features]
 rig = []
-default = ["testkit-skew", "rig"]
+default = ["testkit-skew", "testkit-gossip", "rig"]
 testkit-skew = ["rdm-transport/testkit-skew"]
+testkit-gossip = ["rdm-transport/testkit-gossip"]
 
 [dev-dependencies]
 ctor = "0.2"

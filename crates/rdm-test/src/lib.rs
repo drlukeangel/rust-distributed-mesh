@@ -316,3 +316,7 @@ pub async fn run_proof_with(
     }
     Ok(())
 }
+
+/// Public qualification cuts for app-channel loss; absent without the testkit feature.
+#[cfg(feature = "testkit-gossip")]
+pub mod gossip_faults;

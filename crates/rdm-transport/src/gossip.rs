@@ -6,7 +6,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use iroh::EndpointAddr;
 use iroh_gossip::{api::{Event as GossipEvent, GossipSender}, net::Gossip, proto::TopicId};
-use std::{collections::{BTreeSet, HashMap, HashSet}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::Instant};
+use std::{collections::{BTreeSet, HashMap}, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}}, time::Instant};
 use tokio::sync::{mpsc, watch, Notify};
 
 const QUEUE: usize = 1024;
@@ -81,6 +81,8 @@ struct State {
     ids: Arc<AtomicU64>,
     id_nonce: [u8; 32],
     finished: watch::Sender<bool>,
+    #[cfg(feature = "testkit-gossip")]
+    chunk_cut: std::sync::atomic::AtomicUsize,
 }
 impl State {
     fn close(&self) { self.left.store(true, Ordering::Release); self.stop.notify_one(); }
@@ -208,6 +210,13 @@ impl Hub {
         if entry.0 != types { anyhow::bail!("the exact birth already declared different app types"); }
         entry.1.extend(held); Ok(())
     }
+    #[cfg(feature = "testkit-gossip")]
+    pub(crate) async fn drop_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(index < PARTS, "chunk index exceeds the sixteen-part limit");
+        anyhow::ensure!(self.held.lock().unwrap().contains(kind), "the type is not held");
+        let entry = self.ensure(kind).await?;
+        entry.state.chunk_cut.store(index, Ordering::Release); Ok(())
+    }
     pub(crate) async fn join(&self, kind: &str) -> Result<Channel, ChannelError> {
         if !self.held.lock().unwrap().contains(kind) {
             tracing::info_span!("rdm.mesh.channel.reject.via-undeclared-type", event_type = kind).in_scope(|| tracing::info!("the birth has not declared or learned this type"));
@@ -223,13 +232,16 @@ impl Hub {
         let channel = self.gossip.subscribe(channel_id(&self.fabric, kind), self.peers.clone()).await?;
         let (sender, mut stream) = channel.split();
         let (tx, rx) = mpsc::channel(QUEUE);
-        let state = Arc::new(State { sender: Mutex::new(Some(sender)), left: AtomicBool::new(false), stop: Notify::new(), dropped: AtomicU64::new(0), lost: watch::channel(0).0, kind: kind.into(), author: self.author.clone(), clock: self.clock.clone(), ids: self.ids.clone(), id_nonce: self.id_nonce, finished: watch::channel(false).0 });
+        let state = Arc::new(State { sender: Mutex::new(Some(sender)), left: AtomicBool::new(false), stop: Notify::new(), dropped: AtomicU64::new(0), lost: watch::channel(0).0, kind: kind.into(), author: self.author.clone(), clock: self.clock.clone(), ids: self.ids.clone(), id_nonce: self.id_nonce, finished: watch::channel(false).0, #[cfg(feature = "testkit-gossip")] chunk_cut: std::sync::atomic::AtomicUsize::new(usize::MAX) });
         let e = Arc::new(Entry { state: state.clone(), receiver: Mutex::new(Some(rx)) });
         entries.insert(kind.into(), e.clone());
         let fabric = self.fabric.clone();
         tokio::spawn(async move {
             let mut assemblies: HashMap<(Birth, String), Assembly> = HashMap::new();
-            let mut seen = HashSet::new();
+            // Use the substrate's message-id retention, rather than retaining every app write
+            // for the receiver's lifetime. Only complete event identities enter this hold.
+            let retention = iroh_gossip::proto::PlumtreeConfig::default().message_id_retention;
+            let mut seen = iroh_gossip::proto::util::TimeBoundCache::default();
             loop {
                 let next = assemblies.values().map(|a| a.deadline).min();
                 let expiry = async { match next { Some(at) => tokio::time::sleep_until(at.into()).await, None => std::future::pending().await } };
@@ -246,6 +258,11 @@ impl Hub {
                     },
                     item = stream.next() => item,
                 };
+                seen.expire_until(Instant::now().into());
+                if let Some(Ok(GossipEvent::NeighborUp(peer))) = &item {
+                    tracing::info_span!("rdm.mesh.channel.update.via-neighbour", event_type = %state.kind, peer = %peer).in_scope(|| tracing::info!("application channel neighbour joined"));
+                    continue;
+                }
                 let Some(Ok(GossipEvent::Received(message))) = item else { if item.is_none() { break; } continue; };
                 let mut trace = Default::default(); let mut dropped = Vec::new();
                 let header = crate::envelope::decode_header(&message.content, &mut trace, &mut dropped, MAX);
@@ -260,8 +277,13 @@ impl Hub {
                         if h.sequence.is_some() || h.dataschema.is_some() { continue; }
                         let Ok((i, n, bytes)) = wire::decode::<(u16, u16, Vec<u8>)>(&h.data) else { continue; };
                         if n == 0 || n as usize > PARTS || i >= n || h.id != format!("{}/{i}", h.subject) { continue; }
+                        #[cfg(feature = "testkit-gossip")]
+                        if state.chunk_cut.compare_exchange(i as usize, usize::MAX, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                            tracing::info_span!("rdm.testkit.channel.reject.via-chunk-cut", event_type = %state.kind, event_id = %h.subject, chunk_index = i).in_scope(|| tracing::info!("the armed testkit cut drops this one chunk"));
+                            continue;
+                        }
                         let key = (h.source.clone(), h.subject.clone());
-                        if seen.contains(&key) { continue; }
+                        if seen.contains_key(&event_identity(&key.0, &key.1)) { continue; }
                         let a = assemblies.entry(key.clone()).or_insert_with(|| Assembly { parts: vec![None; n as usize], deadline: Instant::now() + rdm_core::cadence::staleness_floor() });
                         if a.parts.len() != n as usize || a.parts[i as usize].as_ref().is_some_and(|old| *old != bytes) { continue; }
                         a.parts[i as usize] = Some(bytes);
@@ -280,7 +302,9 @@ impl Hub {
                         Some(s) if s.len() == 20 && s.bytes().all(|b| b.is_ascii_digit()) => match s.parse() { Ok(v) => Some(v), Err(_) => continue },
                         _ => continue,
                     };
-                    if !seen.insert((h.source.clone(), h.id.clone())) { continue; }
+                    let identity = event_identity(&h.source, &h.id);
+                    if seen.contains_key(&identity) { continue; }
+                    seen.insert(identity, (), (Instant::now() + retention).into());
                     let span = tracing::info_span!("rdm.mesh.membership.update.via-frame", r#type = %h.kind, subject = %h.subject, sequence = ?sequence, source = %h.source.uri(), bytes = h.data.len());
                     if let Some(parent) = trace.traceparent.as_deref() { crate::set_remote_parent(&span, parent, trace.tracestate.as_deref()); }
                     if !dropped.is_empty() { span.in_scope(|| tracing::info_span!("rdm.mesh.membership.update.via-context-dropped", context_dropped = %rdm_core::context::dropped_as_str(&dropped)).in_scope(|| tracing::info!("malformed tracing metadata dropped; the event continues"))); }
@@ -291,6 +315,9 @@ impl Hub {
         });
         Ok(e)
     }
+}
+fn event_identity(source: &Birth, id: &str) -> [u8;32] {
+    let mut hash = blake3::Hasher::new(); hash.update(source.uri().as_bytes()); hash.update(&[0]); hash.update(id.as_bytes()); *hash.finalize().as_bytes()
 }
 fn deliver(state: &State, tx: &mpsc::Sender<Received>, event: Received) {
     if let Err(mpsc::error::TrySendError::Full(event)) = tx.try_send(event) {
@@ -326,7 +353,7 @@ mod tests {
         let dir=std::env::temp_dir().join(format!("channel-queue-{}",rdm_core::NodeId::mint()));
         let capture=crate::EvidenceCapture::start(&dir,"channel-queue").unwrap();
         capture.run(1,async {
-            let state=State{sender:Mutex::new(None),left:AtomicBool::new(false),stop:Notify::new(),dropped:AtomicU64::new(0),lost:watch::channel(0).0,kind:"app.queue".into(),author:Default::default(),clock:crate::clock::os_clock(),ids:Arc::new(AtomicU64::new(1)),id_nonce:[0;32],finished:watch::channel(false).0};
+            let state=State{sender:Mutex::new(None),left:AtomicBool::new(false),stop:Notify::new(),dropped:AtomicU64::new(0),lost:watch::channel(0).0,kind:"app.queue".into(),author:Default::default(),clock:crate::clock::os_clock(),ids:Arc::new(AtomicU64::new(1)),id_nonce:[0;32],finished:watch::channel(false).0,#[cfg(feature="testkit-gossip")]chunk_cut:std::sync::atomic::AtomicUsize::new(usize::MAX)};
             let (tx,mut rx)=mpsc::channel(QUEUE);
             let birth=Birth{fabric:rdm_core::FabricId::mint(),node:rdm_core::NodeId::mint(),incarnation:rdm_core::IncarnationId::mint()};
             let event=|n:usize| Received{source:birth.clone(),subject:n.to_string(),sequence:Some(n as u64),dataschema:None,time_ms:1,data:Bytes::new(),span:tracing::info_span!("rdm.mesh.membership.update.via-frame",subject=n)};

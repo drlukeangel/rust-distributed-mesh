@@ -59,3 +59,7 @@ path = "src/bin/rshape_gateway.rs"
 [[bin]]
 name = "rshape-broker"
 path = "src/bin/rshape_broker.rs"
+
+[dev-dependencies]
+postcard = { version = "1", features = ["alloc"] }
+async-trait = "0.1"

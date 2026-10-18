@@ -42,6 +42,8 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 [features]
 # The test-only OS-clock skew (`clock::skew_os_clock_for_testkit`): enabled by the testkit alone.
 testkit-skew = []
+# One-shot chunk loss for public consumer qualification; absent from production builds.
+testkit-gossip = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "time"] }
