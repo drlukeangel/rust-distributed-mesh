@@ -1839,7 +1839,46 @@ mod tests {
         async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_exit_of(mesh, row).await
         }
-    }
+            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
+            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_held_running_of(mesh, row).await
+        }
+        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
+            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_os_stopped_of(mesh, row).await
+        }
+        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
+            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost_at(mesh, name).await
+        }
+        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_lost_of(mesh, row).await
+        }
+        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable_at(mesh, name).await
+        }
+        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+        }
+        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        }
+}
 
     /// CONTRACT (#3051, CLAUDE.md read-modify-write ban): two declarations of one birth decided
     /// against the same held state both put their row before either is committed. Whatever order

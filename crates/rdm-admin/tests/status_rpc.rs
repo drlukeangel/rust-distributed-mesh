@@ -640,6 +640,45 @@ impl StatusStorage for Refusing {
     async fn put_node_exit_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node_exit_of(mesh, row).await
     }
+    async fn node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeHeldRunningRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
+    }
+    async fn put_node_held_running_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeHeldRunningRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_held_running_of(mesh, row).await
+    }
+    async fn remove_node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
+    }
+    async fn node_os_stopped_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeOsStoppedRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
+    }
+    async fn put_node_os_stopped_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeOsStoppedRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_os_stopped_of(mesh, row).await
+    }
+    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<bool, rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::status_storage::NodeDataDirLostRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_lost_at(mesh, name).await
+    }
+    async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDataDirLostRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_data_dir_lost_of(mesh, row).await
+    }
+    async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+    }
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::status_storage::NodeDataDirUnreadableRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_data_dir_unreadable_at(mesh, name).await
+    }
+    async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeDataDirUnreadableRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+    }
+    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId, name: &rdm_admin::model::PathName) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+    }
 }
 
 /// CONTRACT (#2805, acceptance 9): a Mesh status or Fabric event is answered `Applied` only after

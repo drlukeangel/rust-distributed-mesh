@@ -1682,7 +1682,46 @@ mod tests {
             self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.put_node_exit_of(mesh, row).await
         }
-    }
+            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
+            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_held_running_of(mesh, row).await
+        }
+        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
+            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_os_stopped_of(mesh, row).await
+        }
+        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
+            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost_at(mesh, name).await
+        }
+        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_lost_of(mesh, row).await
+        }
+        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable_at(mesh, name).await
+        }
+        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+        }
+        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        }
+}
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
     /// durably"; the exit-proof row is a blind put of the birth's own key, offline.rs
@@ -3666,7 +3705,46 @@ mod tests {
         async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_exit_of(mesh, row).await
         }
-    }
+            async fn node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeHeldRunningRow>, crate::storage_error::StorageError> {
+            self.inner.node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_held_running_of(mesh, row).await
+        }
+        async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeOsStoppedRow>, crate::storage_error::StorageError> {
+            self.inner.node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_os_stopped_of(&self, mesh: &str, row: &crate::status_storage::NodeOsStoppedRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_os_stopped_of(mesh, row).await
+        }
+        async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<bool, crate::storage_error::StorageError> {
+            self.inner.remove_node_os_stopped_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_lost_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirLostRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_lost_at(mesh, name).await
+        }
+        async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirLostRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_lost_of(mesh, row).await
+        }
+        async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable_of(mesh, node_id, incarnation_id).await
+        }
+        async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &crate::model::PathName) -> Result<Option<crate::status_storage::NodeDataDirUnreadableRow>, crate::storage_error::StorageError> {
+            self.inner.node_data_dir_unreadable_at(mesh, name).await
+        }
+        async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &crate::status_storage::NodeDataDirUnreadableRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_data_dir_unreadable_of(mesh, row).await
+        }
+        async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId, name: &crate::model::PathName) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.remove_node_data_dir_unreadable_of(mesh, node_id, incarnation_id, name).await
+        }
+}
 
     /// CONTRACT (s41 land 4: no disk read under the view's write lock): an install reads the
     /// exit-proof rows of the births it projects before it takes the view's write lock, so a reader of

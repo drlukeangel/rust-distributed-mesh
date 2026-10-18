@@ -356,70 +356,44 @@ pub trait StatusStorage: Send + Sync {
     async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError>;
     /// The `held-running` row of the birth `(node_id, incarnation_id)` among the status rows of the
     /// mesh named `mesh` (this store's own or another's): a point read of its key (R-FM1).
-    async fn node_held_running_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
-        Ok(None)
-    }
+    async fn node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError>;
     /// A blind put of the `held-running` row `row` among the status rows of the mesh named `mesh` (R-FM1).
-    async fn put_node_held_running_of(&self, _mesh: &str, _row: &NodeHeldRunningRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError>;
     /// Remove the `held-running` row of the birth `(node_id, incarnation_id)` among the status rows
     /// of the mesh named `mesh` (R-FM1).
-    async fn remove_node_held_running_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError>;
     /// The `os-stopped` row of the birth `(node_id, incarnation_id)` among the status rows of the
     /// mesh named `mesh` (this store's own or another's): a point read of its key (R-PV1).
-    async fn node_os_stopped_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
-        Ok(None)
-    }
+    async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError>;
     /// A blind put of the `os-stopped` row `row` among the status rows of the mesh named `mesh` (R-PV1).
-    async fn put_node_os_stopped_of(&self, _mesh: &str, _row: &NodeOsStoppedRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError>;
     /// Remove the `os-stopped` row of the birth `(node_id, incarnation_id)` among the status rows of
     /// the mesh named `mesh` (R-PV1): `true` when this call removed a row that stood, so of two
     /// removers of one row exactly one is answered `true`.
-    async fn remove_node_os_stopped_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
-        Ok(false)
-    }
+    async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError>;
     /// The `data-dir-lost` row of the birth `(node_id, incarnation_id)` among the status rows of
     /// the mesh named `mesh` (R-FM2).
-    async fn node_data_dir_lost_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
-        Ok(None)
-    }
+    async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError>;
     /// The latest `data-dir-lost` row at the `path.name` `name` among the status rows of the mesh named
     /// `mesh`: a point read of the `path.name` index its put writes beside the birth's row, which a
     /// later birth at the same path.name (the one recovered over a fresh data dir) is answered from.
-    async fn node_data_dir_lost_at(&self, _mesh: &str, _name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
-        Ok(None)
-    }
+    async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError>;
     /// A blind put of the `data-dir-lost` row `row` among the status rows of the mesh named `mesh`
     /// (R-FM2), and of its `path.name` index entry.
-    async fn put_node_data_dir_lost_of(&self, _mesh: &str, _row: &NodeDataDirLostRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError>;
     /// The `data-dir-unreadable` row of the birth `(node_id, incarnation_id)` among the status rows
     /// of the mesh named `mesh` (R-FM2).
-    async fn node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
-        Ok(None)
-    }
+    async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError>;
     /// The `data-dir-unreadable` row at the `path.name` `name` among the status rows of the mesh named
     /// `mesh`: a point read of the `path.name` index its put writes beside the birth's row, which a
     /// birth the view no longer holds (deleted by its recovery, held unrecovered) is answered from.
-    async fn node_data_dir_unreadable_at(&self, _mesh: &str, _name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
-        Ok(None)
-    }
+    async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError>;
     /// A blind put of the `data-dir-unreadable` row `row` among the status rows of the mesh named
     /// `mesh` (R-FM2), and of its `path.name` index entry.
-    async fn put_node_data_dir_unreadable_of(&self, _mesh: &str, _row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError>;
     /// Remove the `data-dir-unreadable` row of the birth `(node_id, incarnation_id)` among the
     /// status rows of the mesh named `mesh` (R-FM2).
-    async fn remove_node_data_dir_unreadable_of(&self, _mesh: &str, _node_id: &NodeId, _incarnation_id: &IncarnationId, _name: &PathName) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError>;
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
