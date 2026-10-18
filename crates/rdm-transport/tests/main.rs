@@ -89,3 +89,4 @@ mod span_end_nonblocking;
 mod gossip_wire;
 
 mod app_channels;
+mod connections;

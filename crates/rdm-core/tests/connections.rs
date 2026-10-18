@@ -19,7 +19,7 @@ fn end(kind: NodeKind, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
     let recovery = (state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
-    NodeConnection { id: rdm_core::ConnectionId::mint(), source, destination, kind: ConnectionKind::Direct, state, carrier: None, recovery, reason: None, logged_at_ms: at }
+    NodeConnection { id: rdm_core::ConnectionId::mint(), source, destination, kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state, carrier: None, recovery, reason: None, logged_at_ms: at }
 }
 
 fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionEnd, at: u64) -> NodeConnection {
@@ -28,6 +28,7 @@ fn proxy(source: ConnectionEnd, carrier: ConnectionEnd, destination: ConnectionE
         source,
         destination,
         kind: ConnectionKind::Proxy,
+        alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(carrier),
         recovery: None,

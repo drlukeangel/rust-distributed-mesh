@@ -77,7 +77,11 @@ pub struct RunningNode {
     /// This node's connections projection: the owed declaration's carriers ([`declaration_route`]).
     held: Arc<Mutex<rdm_core::connections::ConnectionsHeld>>,
     declare_loop: tokio::task::JoinHandle<()>,
+    data_connections: rdm_transport::connections::ConnectionsRegistry,
 }
+
+/// Alias for [`RunningNode`] as named in the `i148` surface (`Node::connections`).
+pub type Node = RunningNode;
 
 /// Whether this process is parked (stopped by `stop-node`, not started again): the shutdown that
 /// follows deletes no connections, and only a live node runs its own stop on a signal.
@@ -86,6 +90,15 @@ pub fn stop_commanded() -> bool {
 }
 
 impl RunningNode {
+    /// Take the one [`rdm_transport::connections::Connections`] handle for `alpn` (`i148`).
+    ///
+    /// Returns [`rdm_transport::connections::ConnectError::UnregisteredAlpn`] when `alpn` was not
+    /// registered at bind, and [`rdm_transport::connections::ConnectError::AlreadyTaken`] on any
+    /// second call for the same `alpn`.
+    pub fn connections(&self, alpn: &[u8]) -> std::result::Result<rdm_transport::connections::Connections, rdm_transport::connections::ConnectError> {
+        self.data_connections.connections(alpn)
+    }
+
     /// Where this birth's `hydrate_before_ready` stands; `None` when no hook was registered.
     pub fn hydration(&self) -> Option<crate::app_hydration::HydrationHandle> {
         self.hydration.lock().unwrap().clone()
@@ -188,6 +201,25 @@ pub async fn start(launch: &Launch, register: impl FnOnce(ServerBuilder, Arc<rdm
     start_with_client(launch, |b, resolver, _client| register(b, resolver)).await
 }
 
+/// Bring the node up with the application data-plane `alpns` registered on its one endpoint.
+pub async fn start_with_alpns(
+    launch: &Launch,
+    alpns: &[rdm_transport::connections::Alpn],
+    register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
+) -> Result<RunningNode> {
+    start_with_rafka_time_hydrating_alpns_and(
+        launch,
+        rdm_transport::clock::RafkaTime::unadopted(),
+        crate::app_hydration::Hydration::none(),
+        |s| s,
+        None,
+        register,
+        &[],
+        alpns,
+    )
+    .await
+}
+
 /// The process seams a node's protocol registration callback receives.
 #[derive(Clone)]
 pub struct NodeSeams {
@@ -282,16 +314,33 @@ pub async fn start_with_rafka_time_hydrating_and(
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
     types: &[&str],
 ) -> Result<RunningNode> {
+    start_with_rafka_time_hydrating_alpns_and(launch, rafka_time, hydration, decorate_storage, knob_fn, register, types, &[]).await
+}
+
+/// [`start_with_rafka_time_hydrating_and`], also registering the application's data-plane `alpns`.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_with_rafka_time_hydrating_alpns_and(
+    launch: &Launch,
+    rafka_time: rdm_transport::clock::RafkaTime,
+    hydration: crate::app_hydration::Hydration,
+    decorate_storage: impl FnOnce(Arc<dyn crate::storage::ConnectionsStorage>) -> Arc<dyn crate::storage::ConnectionsStorage>,
+    knob_fn: Option<RafkaTimeKnobFn>,
+    register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
+    types: &[&str],
+    alpns: &[rdm_transport::connections::Alpn],
+) -> Result<RunningNode> {
     let app_types: Vec<String> = types.iter().map(|s| s.to_string()).collect();
     rdm_core::app_types::check(&app_types).map_err(|k| anyhow!("app type declaration: {k:?}"))?;
+    rdm_transport::connections::validate_alpns(alpns).map_err(|e| anyhow!("{e}"))?;
     let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
-    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, decorate_storage, knob_fn, register, app_types, &boot)).await;
+    let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, decorate_storage, knob_fn, register, app_types, alpns.to_vec(), &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
     }
     started
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_booted(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
@@ -300,6 +349,7 @@ async fn start_booted(
     knob_fn: Option<RafkaTimeKnobFn>,
     register: impl FnOnce(ServerBuilder, NodeSeams) -> ServerBuilder,
     app_types: Vec<String>,
+    alpns: Vec<rdm_transport::connections::Alpn>,
     boot: &tracing::Span,
 ) -> Result<RunningNode> {
     // An ordinary node is admitted by the admin that launched it (`node-ready-for-traffic.md`
@@ -328,9 +378,10 @@ async fn start_booted(
         deployment_id: runtime.deployment_id.clone(),
         incarnation: launch.incarnation.to_string(),
     });
-    // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
+    // One endpoint, one socket for the process: Node RPC, gossip and every registered app Alpn share it by ALPN.
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty);
-    let ep0 = rdm_transport::endpoint::bind(key.clone(), launch.bind_addr)
+    let alpn_names: Vec<Vec<u8>> = alpns.iter().map(|a| a.name.clone()).collect();
+    let ep0 = rdm_transport::endpoint::bind_with_alpns(key.clone(), launch.bind_addr, &alpn_names)
         .await
         .with_context(|| format!("the node cannot bind {}", launch.bind_addr))?;
     // The operating system assigned the port: the address the node reports is the one the bound
@@ -369,6 +420,14 @@ async fn start_booted(
     connections.held().lock().unwrap().set_membership(resolver.clone());
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
     drop(step);
+    let (data_connections, alpn_handlers) = rdm_transport::connections::ConnectionsRegistry::new(
+        ep0.clone(),
+        resolver.clone(),
+        connections.clone(),
+        &alpns,
+        Vec::new(),
+    )
+    .map_err(|e| anyhow!("{e}"))?;
     // The control plane: Node RPC is no connection (connections.md "Two planes, two words"), so its
     // dials and accepts write nothing to the connections log.
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,
@@ -420,7 +479,13 @@ async fn start_booted(
     let g = iroh_gossip::net::Gossip::builder().spawn(ep0.clone());
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.add.via-alpn-registered", node = %launch.name, alpns = "node-rpc,gossip");
-    let routers = vec![Router::builder(ep0.clone()).accept(rdm_transport::ALPN, server.clone()).accept(iroh_gossip::ALPN, g.clone()).spawn()];
+    let mut router_builder = Router::builder(ep0.clone())
+        .accept(rdm_transport::ALPN, server.clone())
+        .accept(iroh_gossip::ALPN, g.clone());
+    for (alpn_bytes, handler) in alpn_handlers {
+        router_builder = router_builder.accept(alpn_bytes, handler);
+    }
+    let routers = vec![router_builder.spawn()];
     drop(step);
     tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-accept-loop-started", node = %launch.name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
     let seeds: Vec<EndpointAddr> = launch
@@ -482,11 +547,12 @@ async fn start_booted(
     let join_digest = digest.clone();
     let join_types = app_types.clone();
     let enter: crate::workflows::node_start::EnterSeam<anyhow::Error> = {
-        let (launch, boot, out, name) = (launch.clone(), boot.clone(), out.clone(), name.clone());
+        let (launch, boot, out, name, data_connections) = (launch.clone(), boot.clone(), out.clone(), name.clone(), data_connections.clone());
         Box::new(move |step: tracing::Span, joined: Option<crate::wire::JoinAnswer>| -> crate::workflows::node_start::BoxFut<Result<(Membership, crate::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
                 let member_cert = joined.control.member_cert.clone();
+                data_connections.set_member_cert(member_cert.clone());
                 // The mesh's id names its channel; the launching admin writes it.
                 let mesh_id = launch.mesh_id.clone().ok_or_else(|| anyhow!("a node needs its mesh's id from its launch"))?;
                 step.record("mesh_id", tracing::field::display(&mesh_id));
@@ -574,6 +640,7 @@ async fn start_booted(
                             };
                             own.set_connections(connections.clone());
                             own.set_data_plane(data_plane.clone());
+                            own.set_data_connections(data_connections.clone());
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             let hydration_cell: Arc<Mutex<Option<crate::app_hydration::HydrationHandle>>> = Arc::default();
                             let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
@@ -682,7 +749,7 @@ async fn start_booted(
                                     knob: knob_fn.and_then(|f| f(&launch, &rafka_time, &boot)),
                                 }),
                             };
-                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell, hydrating: hydrating_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop });
+                            *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell, hydrating: hydrating_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections });
                             Ok::<_, anyhow::Error>((parts, None))
                         })
                     },

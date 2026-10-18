@@ -168,6 +168,7 @@ fn proxied_held(r: &Rig) -> (rdm_core::connections::ConnectionsHeld, rdm_core::P
         source: ConnectionEnd { name: own.clone(), node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()) },
         destination: end(&r.target.resolved),
         kind: ConnectionKind::Proxy,
+        alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(end(&r.carrier.resolved)),
         recovery: None,

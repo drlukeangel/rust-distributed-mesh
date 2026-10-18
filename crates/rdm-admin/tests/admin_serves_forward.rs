@@ -160,7 +160,7 @@ async fn a_status_call_carried_to_a_dead_target_names_the_admins_lost_edge() {
     let own = ConnectionEnd { name: r.admin.name.clone(), node_id: r.admin.node_id.clone(), incarnation: Some(r.admin.incarnation.clone()) };
     let destination = ConnectionEnd { name: dead_resolved.name.clone(), node_id: dead.node_id.clone(), incarnation: Some(dead.incarnation.clone()) };
     r.admin_connections
-        .record(NodeConnection { id: rdm_core::ConnectionId::mint(), source: own, destination, kind: ConnectionKind::Direct, state: ConnectionState::Disconnected, carrier: None, recovery: None, reason: Some("pooled connection broke".into()), logged_at_ms: 1 })
+        .record(NodeConnection { id: rdm_core::ConnectionId::mint(), source: own, destination, kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Disconnected, carrier: None, recovery: None, reason: Some("pooled connection broke".into()), logged_at_ms: 1 })
         .await
         .unwrap();
     let resolver = Arc::new(StaticResolver::new());

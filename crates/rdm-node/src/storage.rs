@@ -61,7 +61,7 @@ fn connection_key(i: &ConnectionIndex) -> String {
         rdm_core::connections::ConnectionKind::Direct => "direct",
         rdm_core::connections::ConnectionKind::Proxy => "proxy",
     };
-    format!("{}--{}--{kind}", i.source, i.destination)
+    format!("{}--{}--{}--{kind}", i.source, i.destination, hex::encode(&i.alpn))
 }
 
 /// `<store root>/connections/<node>/<source>--<destination>--<kind>.json` and its raw log

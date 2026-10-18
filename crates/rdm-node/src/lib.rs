@@ -7,7 +7,7 @@ pub use rdm_core::{certs, dto, model, names, status, NodeKind};
 pub use rdm_transport::{NodeRpcClient, ServerBuilder};
 pub use crate::node::{
     listen_for_stop, stop_commanded,
-    stop_requested, wait_for_signal, NodeSeams, RunningNode,
+    stop_requested, wait_for_signal, Node, NodeSeams, RunningNode,
 };
 
 pub mod app_hydration;
@@ -103,6 +103,17 @@ pub async fn run_with(
     hydration: crate::app_hydration::Hydration,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
+    run_with_alpns(role, types, &[], hydration, serve_app).await
+}
+
+/// [`run_with`], also registering the application's data-plane `alpns` on the process's one endpoint.
+pub async fn run_with_alpns(
+    role: Role,
+    types: &[&str],
+    alpns: &[rdm_transport::connections::Alpn],
+    hydration: crate::app_hydration::Hydration,
+    serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
+) -> Result<()> {
     crate::node::listen_for_stop();
     let executable = executable_name()?;
     let _telemetry = rdm_transport::init_evidence_telemetry(&executable);
@@ -120,7 +131,7 @@ pub async fn run_with(
     }
     let running = {
         use tracing::Instrument;
-        let started = crate::node::start_with_rafka_time_hydrating_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, |b, _seams| serve_app(b), types)
+        let started = crate::node::start_with_rafka_time_hydrating_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), hydration, |s| s, None, |b, _seams| serve_app(b), types, alpns)
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,
@@ -160,3 +171,6 @@ pub async fn run_with(
 
 /// Declared app channels and events.
 pub use rdm_transport::gossip;
+/// Data-plane connections over registered application ALPNs (`i148`).
+pub use rdm_transport::connections;
+

@@ -70,6 +70,9 @@ impl CurrentIncarnations for StaticIncarnations {
     }
 }
 
+/// The Node RPC control-plane ALPN, used as the default when a caller does not name an application ALPN.
+pub const ALPN: &[u8] = b"rafka-node-rpc/1";
+
 /// An entry's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConnectionState {
@@ -79,6 +82,8 @@ pub enum ConnectionState {
     Disconnected,
     /// This source failed to establish the Direct connection. Never proof the destination is dead.
     Failed,
+    /// An acceptor dropped an inbound connection at admission (connections.md §1.2). Never proof about the dialer.
+    Refused,
 }
 
 /// An entry's kind.
@@ -112,13 +117,15 @@ pub struct DirectRecovery {
     pub attempt_ordinal: u32,
 }
 
-/// What the projection keys an entry by: one pair has at most its Direct and its Proxy.
+/// What the projection keys an entry by: one `(source, destination, alpn)` has at most its Direct and its Proxy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ConnectionIndex {
     /// The source node's `path.name`.
     pub source: PathName,
     /// The destination node's `path.name`.
     pub destination: PathName,
+    /// The registered ALPN this connection carries (connections.md §3).
+    pub alpn: Vec<u8>,
     /// Whether the entry is the pair's Direct or its Proxy.
     pub kind: ConnectionKind,
 }
@@ -135,6 +142,9 @@ pub struct NodeConnection {
     pub destination: ConnectionEnd,
     /// Whether the entry is a Direct or a Proxy.
     pub kind: ConnectionKind,
+    /// The registered ALPN this connection carries; a row is one transport connection on one protocol (connections.md §2).
+    #[serde(default = "default_alpn")]
+    pub alpn: Vec<u8>,
     /// The state of the entry.
     pub state: ConnectionState,
     /// `Some` on a Proxy entry, `None` on a Direct one.
@@ -147,10 +157,19 @@ pub struct NodeConnection {
     pub logged_at_ms: u64,
 }
 
+fn default_alpn() -> Vec<u8> {
+    ALPN.to_vec()
+}
+
 impl NodeConnection {
     /// The index the entry is keyed by.
     pub fn index(&self) -> ConnectionIndex {
-        ConnectionIndex { source: self.source.name.clone(), destination: self.destination.name.clone(), kind: self.kind }
+        ConnectionIndex {
+            source: self.source.name.clone(),
+            destination: self.destination.name.clone(),
+            alpn: self.alpn.clone(),
+            kind: self.kind,
+        }
     }
 
     /// The only kind of entry the fleet-wide projection holds.
@@ -168,12 +187,16 @@ impl NodeConnection {
     /// Why this entry's shape is not one the model admits, or `None` when it is.
     pub(crate) fn shape_refusal(&self) -> Option<String> {
         let at = || format!("connection {}->{} ({:?}, {:?})", self.source.name, self.destination.name, self.kind, self.state);
+        if self.alpn.is_empty() {
+            return Some(format!("{}: an entry must name a non-empty alpn", at()));
+        }
         match (self.kind, self.state, self.carrier.is_some(), self.recovery.is_some()) {
             (ConnectionKind::Proxy, ConnectionState::Failed, _, _) => Some(format!("{}: Failed is a Direct state only", at())),
+            (ConnectionKind::Proxy, ConnectionState::Refused, _, _) => Some(format!("{}: Refused is a Direct state only", at())),
             (ConnectionKind::Direct, ConnectionState::Failed, _, false) => {
                 Some(format!("{}: a Direct Failed entry carries its recovery round and attempt ordinal", at()))
             }
-            (_, ConnectionState::Connected | ConnectionState::Disconnected, _, true) => {
+            (_, ConnectionState::Connected | ConnectionState::Disconnected | ConnectionState::Refused, _, true) => {
                 Some(format!("{}: only a Direct Failed entry carries a recovery", at()))
             }
             (ConnectionKind::Proxy, _, false, _) => Some(format!("{}: a Proxy entry names its carrier", at())),
@@ -191,17 +214,17 @@ struct Cell {
 }
 
 /// The held connections projection: active Direct facts fleet-wide, plus this node's own active
-/// Proxy per destination.
+/// Proxy per `(destination, alpn)`.
 #[derive(Debug, Default)]
 pub struct ConnectionsHeld {
     cells: HashMap<ConnectionIndex, Cell>,
     /// Set once the holder has every route (born full); until then it cannot answer absence.
     complete: bool,
     own_source: Option<PathName>,
-    own_proxies: HashMap<PathName, NodeConnection>,
-    /// This node's latest Direct entry per destination, whatever its state: what its reconnect
+    own_proxies: HashMap<(PathName, Vec<u8>), NodeConnection>,
+    /// This node's latest Direct entry per `(destination, alpn)`, whatever its state: what its reconnect
     /// series is reconstructed from.
-    own_directs: HashMap<PathName, NodeConnection>,
+    own_directs: HashMap<(PathName, Vec<u8>), NodeConnection>,
     /// Membership's current process birth per path; absent until the holder is given one.
     membership: Option<std::sync::Arc<dyn CurrentIncarnations>>,
 }
@@ -239,14 +262,14 @@ impl ConnectionsHeld {
                 return Err(ApplyRefusal::Stale { held: held.stamp, offered: stamp });
             }
         }
-        if entry.kind == ConnectionKind::Direct && self.own_source.as_ref() == Some(&entry.source.name) {
-            self.own_directs.insert(entry.destination.name.clone(), entry.clone());
+        if entry.kind == ConnectionKind::Direct && entry.state != ConnectionState::Refused && self.own_source.as_ref() == Some(&entry.source.name) {
+            self.own_directs.insert((entry.destination.name.clone(), entry.alpn.clone()), entry.clone());
         }
         if entry.kind == ConnectionKind::Proxy && self.own_source.as_ref() == Some(&entry.source.name) {
             if entry.state == ConnectionState::Connected {
-                self.own_proxies.insert(entry.destination.name.clone(), entry.clone());
+                self.own_proxies.insert((entry.destination.name.clone(), entry.alpn.clone()), entry.clone());
             } else {
-                self.own_proxies.remove(&entry.destination.name);
+                self.own_proxies.remove(&(entry.destination.name.clone(), entry.alpn.clone()));
             }
         }
         let active = entry.is_active_direct().then_some(entry);
@@ -301,59 +324,84 @@ impl ConnectionsHeld {
         self.complete
     }
 
-    /// This node's active Proxy to `destination`: `Some(None)` when it holds none, `None` when it
-    /// cannot answer (not complete, or no own source named).
+    /// This node's active Proxy to `destination` on the default ALPN: `Some(None)` when it holds
+    /// none, `None` when it cannot answer (not complete, or no own source named).
     pub(crate) fn own_proxy(&self, destination: &PathName) -> Option<Option<&NodeConnection>> {
+        self.own_proxy_for(destination, ALPN)
+    }
+
+    /// This node's active Proxy to `destination` on `alpn`: `Some(None)` when it holds none,
+    /// `None` when it cannot answer (not complete, or no own source named).
+    pub fn own_proxy_for(&self, destination: &PathName, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
         if !self.complete || self.own_source.is_none() {
             return None;
         }
-        Some(self.own_proxies.get(destination))
+        Some(self.own_proxies.get(&(destination.clone(), alpn.to_vec())))
     }
 
-    /// This node's latest Direct entry per destination, whatever its state, sorted by destination.
+    /// This node's latest Direct entry per `(destination, alpn)`, whatever its state, sorted by destination then ALPN.
     pub fn own_latest_directs(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> = self.own_directs.values().collect();
-        out.sort_by(|a, b| a.destination.name.cmp(&b.destination.name));
+        out.sort_by(|a, b| (&a.destination.name, &a.alpn).cmp(&(&b.destination.name, &b.alpn)));
         out
     }
 
     /// Every active Direct fact held, whatever its source, leaving out a fact that names a
-    /// superseded destination process; sorted by source then destination.
+    /// superseded destination process; sorted by source then destination then ALPN.
     pub fn active_directs(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> =
             self.cells.values().filter_map(|c| c.active.as_ref()).filter(|e| !self.names_superseded_destination(e)).collect();
-        out.sort_by(|a, b| (&a.source.name, &a.destination.name).cmp(&(&b.source.name, &b.destination.name)));
+        out.sort_by(|a, b| (&a.source.name, &a.destination.name, &a.alpn).cmp(&(&b.source.name, &b.destination.name, &b.alpn)));
         out
     }
 
-    /// This node's active Proxy entries, sorted by destination.
+    /// This node's active Proxy entries, sorted by destination then ALPN.
     pub fn own_active_proxies(&self) -> Vec<&NodeConnection> {
         let mut out: Vec<&NodeConnection> = self.own_proxies.values().collect();
-        out.sort_by(|a, b| a.destination.name.cmp(&b.destination.name));
+        out.sort_by(|a, b| (&a.destination.name, &a.alpn).cmp(&(&b.destination.name, &b.alpn)));
         out
     }
 
-    /// The active Direct fact `source -> destination`: `Some(None)` when none is held, `None` when
-    /// the holder is not complete.
+    /// The active Direct fact `source -> destination` on the default ALPN: `Some(None)` when none
+    /// is held, `None` when the holder is not complete.
     pub fn active_direct(&self, source: &PathName, destination: &PathName) -> Option<Option<&NodeConnection>> {
+        self.active_direct_for(source, destination, ALPN)
+    }
+
+    /// The active Direct fact `source -> destination` on `alpn`: `Some(None)` when none is held,
+    /// `None` when the holder is not complete.
+    pub fn active_direct_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> Option<Option<&NodeConnection>> {
         if !self.complete {
             return None;
         }
-        let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), kind: ConnectionKind::Direct };
+        let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
         Some(self.cells.get(&key).and_then(|c| c.active.as_ref()))
     }
 
-    /// Whether any Direct fact (active or not) `source -> destination` is held at all: the key
-    /// stands at a stamp. `false` when none was ever observed.
+    /// Whether any Direct fact (active or not) `source -> destination` on the default ALPN is held
+    /// at all: the key stands at a stamp. `false` when none was ever observed.
     pub fn holds_direct_fact(&self, source: &PathName, destination: &PathName) -> bool {
-        let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), kind: ConnectionKind::Direct };
+        self.holds_direct_fact_for(source, destination, ALPN)
+    }
+
+    /// Whether any Direct fact (active or not) `source -> destination` on `alpn` is held at all:
+    /// the key stands at a stamp. `false` when none was ever observed.
+    pub fn holds_direct_fact_for(&self, source: &PathName, destination: &PathName, alpn: &[u8]) -> bool {
+        let key = ConnectionIndex { source: source.clone(), destination: destination.clone(), alpn: alpn.to_vec(), kind: ConnectionKind::Direct };
         self.cells.contains_key(&key)
     }
 
-    /// Every active Direct fact whose destination is `destination`, sorted by source, leaving out
-    /// a fact that names a superseded destination process; `None` when the holder is not
-    /// complete.
+    /// Every active Direct fact on the default ALPN whose destination is `destination`, sorted by
+    /// source, leaving out a fact that names a superseded destination process; `None` when the
+    /// holder is not complete.
     pub fn active_directs_to(&self, destination: &PathName) -> Option<Vec<&NodeConnection>> {
+        self.active_directs_to_for(destination, ALPN)
+    }
+
+    /// Every active Direct fact on `alpn` whose destination is `destination`, sorted by source,
+    /// leaving out a fact that names a superseded destination process; `None` when the holder is
+    /// not complete.
+    pub fn active_directs_to_for(&self, destination: &PathName, alpn: &[u8]) -> Option<Vec<&NodeConnection>> {
         if !self.complete {
             return None;
         }
@@ -361,7 +409,7 @@ impl ConnectionsHeld {
             .cells
             .values()
             .filter_map(|c| c.active.as_ref())
-            .filter(|e| &e.destination.name == destination && !self.names_superseded_destination(e))
+            .filter(|e| &e.destination.name == destination && e.alpn.as_slice() == alpn && !self.names_superseded_destination(e))
             .collect();
         out.sort_by(|a, b| a.source.name.cmp(&b.source.name));
         Some(out)
@@ -457,12 +505,18 @@ pub fn proxy_invalid(held: &ConnectionsHeld, proxy: &NodeConnection) -> Option<&
     None
 }
 
-/// The route from `own` to `destination` under `policy`, over `held`: a valid own Proxy, else an
-/// active Direct, else a direct dial when no Direct fact was ever observed, else no route. Pure: the caller retires [`RouteResolution::retire`].
+/// The route from `own` to `destination` under `policy` on the default ALPN, over `held`: a valid
+/// own Proxy, else an active Direct, else a direct dial when no Direct fact was ever observed,
+/// else no route. Pure: the caller retires [`RouteResolution::retire`].
 pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, policy: CarrierPolicy) -> RouteResolution {
+    resolve_for(held, own, destination, ALPN, policy)
+}
+
+/// [`resolve`] on `alpn`.
+pub fn resolve_for(held: &ConnectionsHeld, own: &PathName, destination: &PathName, alpn: &[u8], policy: CarrierPolicy) -> RouteResolution {
     let mut retire = None;
     if let CarrierPolicy::Forwardable { carrier_kind } = policy {
-        if let Some(Some(proxy)) = held.own_proxy(destination) {
+        if let Some(Some(proxy)) = held.own_proxy_for(destination, alpn) {
             // A valid Proxy through a carrier kind this protocol does not allow is skipped, not
             // retired: another protocol may still travel over it.
             let kind_allowed = proxy.carrier.as_ref().is_some_and(|c| c.name.kind == carrier_kind);
@@ -476,14 +530,14 @@ pub fn resolve(held: &ConnectionsHeld, own: &PathName, destination: &PathName, p
             }
         }
     }
-    let route = match held.active_direct(own, destination) {
+    let route = match held.active_direct_for(own, destination, alpn) {
         // A Direct fact naming a destination process that is gone is no evidence about the
         // current one: the dial is the only thing to try.
         Some(Some(edge)) if held.names_superseded_destination(edge) => EffectiveRoute::Direct { known: false },
         Some(Some(_)) => EffectiveRoute::Direct { known: true },
         // No Direct fact was ever observed toward this destination: nothing says it is
         // unreachable, so the node calls it by its transport key and address (connections.md §7).
-        Some(None) if !held.holds_direct_fact(own, destination) => EffectiveRoute::Direct { known: false },
+        Some(None) if !held.holds_direct_fact_for(own, destination, alpn) => EffectiveRoute::Direct { known: false },
         // A Direct fact that stands but is not active (Failed or Disconnected): its reconnect
         // series owns the retry, and no new call dials over it.
         Some(None) => EffectiveRoute::NoActiveRoute,
@@ -501,22 +555,33 @@ pub struct CarrierChoice {
     pub edge: NodeConnection,
 }
 
-/// The carrier `own` forwards to `destination` through. Eligible carriers are nodes of the
-/// policy's kind holding an active Direct edge to the destination (this node excluded), each edge
-/// naming both processes, all naming the destination process the freshest such edge names. One is
-/// picked by `fnv1a(source, destination, destination incarnation) % len` over the path order:
-/// spread by source, never "freshest wins". `Ok(None)` when no such carrier exists; `Err` names
-/// why none can be chosen.
+/// The carrier `own` forwards to `destination` through on the default ALPN. Eligible carriers are
+/// nodes of the policy's kind holding an active Direct edge to the destination (this node
+/// excluded), each edge naming both processes, all naming the destination process the freshest
+/// such edge names. One is picked by `fnv1a(source, destination, destination incarnation) % len`
+/// over the path order: spread by source, never "freshest wins". `Ok(None)` when no such carrier
+/// exists; `Err` names why none can be chosen.
 pub fn select_carrier(
     held: &ConnectionsHeld,
     own: &PathName,
     destination: &PathName,
     policy: CarrierPolicy,
 ) -> Result<Option<CarrierChoice>, String> {
+    select_carrier_for(held, own, destination, ALPN, policy)
+}
+
+/// [`select_carrier`] on `alpn`.
+pub fn select_carrier_for(
+    held: &ConnectionsHeld,
+    own: &PathName,
+    destination: &PathName,
+    alpn: &[u8],
+    policy: CarrierPolicy,
+) -> Result<Option<CarrierChoice>, String> {
     let CarrierPolicy::Forwardable { carrier_kind } = policy else {
         return Err(format!("the protocol is not forwardable, so {destination} is never reached through a carrier"));
     };
-    let Some(edges) = held.active_directs_to(destination) else {
+    let Some(edges) = held.active_directs_to_for(destination, alpn) else {
         return Err(format!("the connections projection is not complete, so it does not hold every route to {destination}"));
     };
     let (named, blind): (Vec<&NodeConnection>, Vec<&NodeConnection>) = edges

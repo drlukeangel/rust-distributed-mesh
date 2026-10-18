@@ -1814,7 +1814,7 @@ Which of a birth's connections `node.connections.delete` cuts (R-CR3). Positiona
 
 ### `ConnectionState`
 
-`crates/rdm-core/src/connections.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/connections.rs` · enum · 4 variants · rdm-core
 
 An entry's state.
 
@@ -1823,6 +1823,7 @@ An entry's state.
 | 0 | **`Connected`** |  |  | The connection stands. |
 | 1 | **`Disconnected`** |  |  | The connection ended. |
 | 2 | **`Failed`** |  |  | This source failed to establish the Direct connection. Never proof the destination is dead. |
+| 3 | **`Refused`** |  |  | An acceptor dropped an inbound connection at admission (connections.md §1.2). Never proof about the dialer. |
 
 <a id="t-rdm_core-views-ConnectionView"></a>
 
@@ -2328,7 +2329,7 @@ One mesh as the answering node-admin's view holds it (`mesh.get`).
 
 ### `NodeConnection`
 
-`crates/rdm-core/src/connections.rs` · struct · 9 fields · rdm-core
+`crates/rdm-core/src/connections.rs` · struct · 10 fields · rdm-core
 
 One connection fact.
 
@@ -2338,11 +2339,12 @@ One connection fact.
 | 1 | `source` | `ConnectionEnd` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | The node that holds the connection. |
 | 2 | `destination` | `ConnectionEnd` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | The node it reaches. |
 | 3 | `kind` | `ConnectionKind` → [`ConnectionKind`](#t-rdm_core-connections-ConnectionKind) |  | Whether the entry is a Direct or a Proxy. |
-| 4 | `state` | `ConnectionState` → [`ConnectionState`](#t-rdm_core-connections-ConnectionState) |  | The state of the entry. |
-| 5 | `carrier` | `Option<ConnectionEnd>` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | `Some` on a Proxy entry, `None` on a Direct one. |
-| 6 | `recovery` | `Option<DirectRecovery>` → [`DirectRecovery`](#t-rdm_core-connections-DirectRecovery) |  | `Some` on a Direct `Failed` entry, `None` on every other. |
-| 7 | `reason` | `Option<String>` |  | Why a drop or a failure happened; `None` on a connect. |
-| 8 | `logged_at_ms` | `u64` |  | When the fact was written (ms). |
+| 4 | `alpn` | `Vec<u8>` | `default = "default_alpn"` | The registered ALPN this connection carries; a row is one transport connection on one protocol (connections.md §2). |
+| 5 | `state` | `ConnectionState` → [`ConnectionState`](#t-rdm_core-connections-ConnectionState) |  | The state of the entry. |
+| 6 | `carrier` | `Option<ConnectionEnd>` → [`ConnectionEnd`](#t-rdm_core-connections-ConnectionEnd) |  | `Some` on a Proxy entry, `None` on a Direct one. |
+| 7 | `recovery` | `Option<DirectRecovery>` → [`DirectRecovery`](#t-rdm_core-connections-DirectRecovery) |  | `Some` on a Direct `Failed` entry, `None` on every other. |
+| 8 | `reason` | `Option<String>` |  | Why a drop or a failure happened; `None` on a connect. |
+| 9 | `logged_at_ms` | `u64` |  | When the fact was written (ms). |
 
 <a id="t-rdm_core-ids-NodeId"></a>
 

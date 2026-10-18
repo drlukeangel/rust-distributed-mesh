@@ -113,11 +113,24 @@ pub fn next_failure(item: &ReconnectItem, reason: impl Into<String>, now_ms: u64
     }
 }
 
-/// The first Direct `Failed` entry of a new incident: a new round, ordinal 1. `previous` is the
-/// source's latest Direct entry to this destination, if any.
+/// The first Direct `Failed` entry of a new incident on the default ALPN (or `previous`'s ALPN): a
+/// new round, ordinal 1. `previous` is the source's latest Direct entry to this destination, if any.
 pub fn first_failure(
     source: ConnectionEnd,
     destination: ConnectionEnd,
+    previous: Option<&NodeConnection>,
+    reason: impl Into<String>,
+    now_ms: u64,
+) -> NodeConnection {
+    let alpn = previous.map_or_else(|| crate::connections::ALPN.to_vec(), |p| p.alpn.clone());
+    first_failure_for(source, destination, alpn, previous, reason, now_ms)
+}
+
+/// [`first_failure`] on `alpn`.
+pub fn first_failure_for(
+    source: ConnectionEnd,
+    destination: ConnectionEnd,
+    alpn: Vec<u8>,
     previous: Option<&NodeConnection>,
     reason: impl Into<String>,
     now_ms: u64,
@@ -128,6 +141,7 @@ pub fn first_failure(
         source,
         destination,
         kind: ConnectionKind::Direct,
+        alpn,
         state: ConnectionState::Failed,
         carrier: None,
         recovery: Some(DirectRecovery { recovery_round: round, attempt_ordinal: 1 }),
@@ -136,12 +150,12 @@ pub fn first_failure(
     }
 }
 
-/// The Proxy retirements this source owes now: each own active Proxy whose pair has an active
-/// Direct, as the `Proxy Disconnected(direct-restored)` entry to write at `now_ms`.
+/// The Proxy retirements this source owes now: each own active Proxy whose `(source, destination, alpn)`
+/// has an active Direct on that same ALPN, as the `Proxy Disconnected(direct-restored)` entry to write at `now_ms`.
 pub fn owed_retirements(held: &ConnectionsHeld, now_ms: u64) -> Vec<NodeConnection> {
     held.own_active_proxies()
         .into_iter()
-        .filter(|p| matches!(held.active_direct(&p.source.name, &p.destination.name), Some(Some(edge)) if !held.names_superseded_destination(edge)))
+        .filter(|p| matches!(held.active_direct_for(&p.source.name, &p.destination.name, &p.alpn), Some(Some(edge)) if !held.names_superseded_destination(edge)))
         .map(|p| NodeConnection {
             id: crate::ConnectionId::mint(),
             state: ConnectionState::Disconnected,

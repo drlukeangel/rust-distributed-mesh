@@ -292,6 +292,9 @@ pub struct NodeSelf {
     /// The process's connections writer: what this birth holds (R-CR1) and where the drops of a
     /// `node.connections.delete` are written; filled once the process holds it.
     connections: Mutex<Option<Arc<crate::connections_writer::ConnectionsWriter>>>,
+    /// The process's data-plane `ConnectionsRegistry`: `node.connections.delete` closes active
+    /// `Connection`s by their row id and blocks new connections under `All`.
+    data_connections: Mutex<Option<rdm_transport::connections::ConnectionsRegistry>>,
     /// What this birth completes before it checks in to a commit-state or open-traffic round.
     round_actions: Mutex<Arc<dyn crate::rounds::RoundActions>>,
     /// The rounds this birth took, by round, and how far it took each.
@@ -315,7 +318,7 @@ impl NodeSelf {
         connections_delete_deadline: Duration,
     ) -> Self {
         membership.set_author(&rdm_core::PublisherId { node: name.to_string(), node_id: node_id.clone(), incarnation: incarnation.clone() });
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), data_connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -352,6 +355,11 @@ impl NodeSelf {
     /// `node.connections.delete` writes its drops.
     pub fn set_connections(&self, connections: Arc<crate::connections_writer::ConnectionsWriter>) {
         *self.connections.lock().unwrap() = Some(connections);
+    }
+
+    /// This surface, holding the process's data-plane `ConnectionsRegistry`.
+    pub fn set_data_connections(&self, registry: rdm_transport::connections::ConnectionsRegistry) {
+        *self.data_connections.lock().unwrap() = Some(registry);
     }
 
     /// The connections this birth holds now (R-CR1), from its connections writer; refused by name
@@ -448,6 +456,12 @@ impl NodeSelf {
                 (routes, not_open)
             }
         };
+        let data_connections = self.data_connections.lock().unwrap().clone();
+        if let Some(reg) = &data_connections {
+            for route in &routes {
+                reg.close_by_id(&route.id, rdm_transport::connections::Closed::ConnectionsDeleted);
+            }
+        }
         // Each Direct entry closed is its data-plane connection closed, on that connection's own
         // span naming the entry (R-CR6: the pool's hard cut is the stop's transport cut alone); a
         // Proxy rides its carrier's Direct and only its route retires.
@@ -499,6 +513,9 @@ impl NodeSelf {
         if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
             data_plane.block_new_connections(format!("{} ({}): {cause}; it opens no new connection until its name apply resolves or it starts", self.held_name(), self.node_id));
         }
+        if let Some(reg) = self.data_connections.lock().unwrap().clone() {
+            reg.block_new_connections();
+        }
     }
 
     /// The apply of its row's name resolved at this birth: `Applied`, or `AlreadyApplied` for the
@@ -517,6 +534,9 @@ impl NodeSelf {
     fn admit_new_connections(&self) {
         if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
             data_plane.admit_new_connections();
+        }
+        if let Some(reg) = self.data_connections.lock().unwrap().clone() {
+            reg.unblock_new_connections();
         }
     }
 
@@ -1392,6 +1412,7 @@ pub fn connection_view(f: &NodeConnection) -> ConnectionView {
             ConnectionState::Connected => "connected",
             ConnectionState::Disconnected => "disconnected",
             ConnectionState::Failed => "failed",
+            ConnectionState::Refused => "refused",
         }
         .into(),
         carrier: f.carrier.as_ref().map(|c| c.name.to_string()),

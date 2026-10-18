@@ -459,6 +459,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
         source: seams.connections.own(),
         destination: end(&dest),
         kind: ConnectionKind::Proxy,
+        alpn: rdm_core::connections::ALPN.to_vec(),
         state: ConnectionState::Connected,
         carrier: Some(end(&via)),
         recovery: None,
@@ -493,7 +494,7 @@ mod tests {
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-        NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+        NodeConnection { id: rdm_core::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
     }
 
     /// CONTRACT: the door resolves a held Proxy under the carrier policy it is served with. A

@@ -1011,6 +1011,7 @@ mod tests {
             source: end("mesh1.admin.1"),
             destination: end("mesh1.rpc.1"),
             kind: ConnectionKind::Direct,
+            alpn: rdm_core::connections::ALPN.to_vec(),
             state,
             carrier: None,
             recovery: None,

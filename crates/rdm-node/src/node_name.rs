@@ -80,7 +80,7 @@ mod tests {
     fn a_node_takes_another_name_only_while_it_holds_no_connection() {
         let (new, bare): (PathName, PathName) = ("mesh1.rpc.1.new".parse().unwrap(), "mesh1.rpc.1".parse().unwrap());
         let end = |name: &str| ConnectionEnd { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: None };
-        let route = NodeConnection { id: ConnectionId::parse("3123456789ab").unwrap(), source: end("mesh1.rpc.1.new"), destination: end("mesh1.admin.1"), kind: ConnectionKind::Direct, state: ConnectionState::Connected, carrier: None, recovery: None, reason: None, logged_at_ms: 1 };
+        let route = NodeConnection { id: ConnectionId::parse("3123456789ab").unwrap(), source: end("mesh1.rpc.1.new"), destination: end("mesh1.admin.1"), kind: ConnectionKind::Direct, alpn: rdm_core::connections::ALPN.to_vec(), state: ConnectionState::Connected, carrier: None, recovery: None, reason: None, logged_at_ms: 1 };
         assert_eq!(decide(&bare, &bare, std::slice::from_ref(&route)), NameApply::AlreadyApplied);
         let busy = decide(&new, &bare, std::slice::from_ref(&route));
         assert_eq!(busy, NameApply::Busy { connections: vec![route.id.clone()], routes: vec!["mesh1.admin.1 (direct, entry 3123456789ab)".into()] });

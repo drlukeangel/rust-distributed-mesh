@@ -116,7 +116,7 @@ fn non_test(text: &str) -> &str {
     text.find("#[cfg(test)]").map(|i| &text[..i]).unwrap_or(text)
 }
 
-/// App ALPN registrations must consume the declaration owned by a typed Wiring parameter.
+/// App ALPN registrations must consume the declaration owned by a typed Wiring or Alpn parameter.
 /// Binding provenance is checked structurally, including local shadowing; a handler's arbitrary
 /// variable or iterator never becomes an allowed registration merely by its spelling.
 fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
@@ -124,6 +124,8 @@ fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
     #[derive(Default)]
     struct Sites {
         wiring: std::collections::BTreeSet<String>,
+        declared_alpns: std::collections::BTreeSet<String>,
+        registry_handlers: std::collections::BTreeSet<String>,
         alpns: std::collections::BTreeSet<String>,
         sites: std::collections::BTreeSet<(usize, String)>,
     }
@@ -137,29 +139,144 @@ fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
             _ => false,
         }
     }
+    fn alpn_elem_type(t: &syn::Type) -> bool {
+        match t {
+            syn::Type::Path(t) => t.path.segments.last().is_some_and(|s| s.ident == "Alpn"),
+            _ => false,
+        }
+    }
+    fn alpn_list_type(t: &syn::Type) -> bool {
+        match t {
+            syn::Type::Reference(t) => alpn_list_type(&t.elem),
+            syn::Type::Slice(s) => alpn_elem_type(&s.elem),
+            syn::Type::Path(t) => t.path.segments.last().is_some_and(|s| {
+                s.ident == "Vec"
+                    && matches!(&s.arguments, syn::PathArguments::AngleBracketed(a) if a.args.len() == 1 && matches!(a.args.first(), Some(syn::GenericArgument::Type(inner)) if alpn_elem_type(inner)))
+            }),
+            _ => false,
+        }
+    }
+    fn registry_call_uses_declared(
+        e: &syn::Expr,
+        declared: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        match e {
+            syn::Expr::Try(t) => registry_call_uses_declared(&t.expr, declared),
+            syn::Expr::MethodCall(m) if m.method == "map_err" => {
+                registry_call_uses_declared(&m.receiver, declared)
+            }
+            syn::Expr::Call(call) => {
+                let syn::Expr::Path(path) = &*call.func else { return false };
+                let segs: Vec<_> = path.path.segments.iter().map(|s| s.ident.to_string()).collect();
+                let is_registry_new = segs.len() >= 2
+                    && segs[segs.len() - 2] == "ConnectionsRegistry"
+                    && segs[segs.len() - 1] == "new";
+                if !is_registry_new {
+                    return false;
+                }
+                call.args.iter().any(|arg| match arg {
+                    syn::Expr::Reference(r) => match &*r.expr {
+                        syn::Expr::Path(p) => p
+                            .path
+                            .get_ident()
+                            .is_some_and(|id| declared.contains(&id.to_string())),
+                        _ => false,
+                    },
+                    syn::Expr::Path(p) => p
+                        .path
+                        .get_ident()
+                        .is_some_and(|id| declared.contains(&id.to_string())),
+                    _ => false,
+                })
+            }
+            _ => false,
+        }
+    }
     impl<'ast> Visit<'ast> for Sites {
         fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
-            let old = (std::mem::take(&mut self.wiring), std::mem::take(&mut self.alpns));
+            let old = (
+                std::mem::take(&mut self.wiring),
+                std::mem::take(&mut self.declared_alpns),
+                std::mem::take(&mut self.registry_handlers),
+                std::mem::take(&mut self.alpns),
+            );
             for arg in &f.sig.inputs {
                 if let syn::FnArg::Typed(arg) = arg {
-                    if wiring_type(&arg.ty) { if let Some(n) = binding(&arg.pat) { self.wiring.insert(n); } }
+                    if wiring_type(&arg.ty) {
+                        if let Some(n) = binding(&arg.pat) {
+                            self.wiring.insert(n);
+                        }
+                    } else if alpn_list_type(&arg.ty) {
+                        if let Some(n) = binding(&arg.pat) {
+                            self.declared_alpns.insert(n);
+                        }
+                    }
                 }
             }
             self.visit_block(&f.block);
-            (self.wiring, self.alpns) = old;
+            (
+                self.wiring,
+                self.declared_alpns,
+                self.registry_handlers,
+                self.alpns,
+            ) = old;
         }
         fn visit_block(&mut self, b: &'ast syn::Block) {
-            let old = (self.wiring.clone(), self.alpns.clone());
+            let old = (
+                self.wiring.clone(),
+                self.declared_alpns.clone(),
+                self.registry_handlers.clone(),
+                self.alpns.clone(),
+            );
             for stmt in &b.stmts {
                 self.visit_stmt(stmt);
                 if let syn::Stmt::Local(local) = stmt {
-                    if let Some(n) = binding(&local.pat) { self.wiring.remove(&n); self.alpns.remove(&n); }
+                    if let Some(n) = binding(&local.pat) {
+                        self.wiring.remove(&n);
+                        self.declared_alpns.remove(&n);
+                        self.registry_handlers.remove(&n);
+                        self.alpns.remove(&n);
+                    }
+                    if let syn::Pat::Tuple(pat) = &local.pat {
+                        for elem in &pat.elems {
+                            if let Some(n) = binding(elem) {
+                                self.wiring.remove(&n);
+                                self.declared_alpns.remove(&n);
+                                self.registry_handlers.remove(&n);
+                                self.alpns.remove(&n);
+                            }
+                        }
+                        if pat.elems.len() == 2 {
+                            if let Some(init) = &local.init {
+                                if registry_call_uses_declared(&init.expr, &self.declared_alpns) {
+                                    if let Some(handlers_name) = binding(&pat.elems[1]) {
+                                        self.registry_handlers.insert(handlers_name);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            (self.wiring, self.alpns) = old;
+            (
+                self.wiring,
+                self.declared_alpns,
+                self.registry_handlers,
+                self.alpns,
+            ) = old;
         }
         fn visit_expr_for_loop(&mut self, f: &'ast syn::ExprForLoop) {
             let declared = (|| {
+                let syn::Pat::Tuple(pat) = &*f.pat else { return None };
+                if pat.elems.len() != 2 { return None }
+                let first_binding = binding(pat.elems.first()?);
+                if let syn::Expr::Path(p) = &*f.expr {
+                    if let Some(id) = p.path.get_ident() {
+                        if self.registry_handlers.contains(&id.to_string()) {
+                            return first_binding;
+                        }
+                    }
+                }
                 let syn::Expr::Call(call) = &*f.expr else { return None };
                 let syn::Expr::Path(path) = &*call.func else { return None };
                 let names: Vec<_> = path.path.segments.iter().map(|s| s.ident.to_string()).collect();
@@ -171,9 +288,7 @@ fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
                 if field.member != syn::Member::Named(syn::Ident::new("alpns", proc_macro2::Span::call_site())) { return None }
                 let syn::Expr::Path(base) = &*field.base else { return None };
                 if !self.wiring.contains(&base.path.get_ident()?.to_string()) { return None }
-                let syn::Pat::Tuple(pat) = &*f.pat else { return None };
-                if pat.elems.len() != 2 { return None }
-                binding(pat.elems.first()?)
+                first_binding
             })();
             let old = self.alpns.clone();
             if let Some(n) = declared { self.alpns.insert(n); }
@@ -182,7 +297,13 @@ fn wiring_accepts(text: &str) -> std::collections::BTreeSet<(usize, String)> {
         }
         fn visit_expr_assign(&mut self, e: &'ast syn::ExprAssign) {
             if let syn::Expr::Path(p) = &*e.left {
-                if let Some(n) = p.path.get_ident() { self.alpns.remove(&n.to_string()); self.wiring.remove(&n.to_string()); }
+                if let Some(n) = p.path.get_ident() {
+                    let s = n.to_string();
+                    self.alpns.remove(&s);
+                    self.wiring.remove(&s);
+                    self.declared_alpns.remove(&s);
+                    self.registry_handlers.remove(&s);
+                }
             }
             syn::visit::visit_expr_assign(self, e);
         }

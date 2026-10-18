@@ -28,9 +28,20 @@ pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
 /// share it by ALPN. A request names its target in the first section of its framing;
 /// the socket decides nothing and there is never a second one.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
+    bind_with_alpns(secret, addr, &[]).await
+}
+
+/// [`bind`], also registering each application ALPN in `app_alpns` on the process's one endpoint.
+pub async fn bind_with_alpns(secret: SecretKey, addr: SocketAddr, app_alpns: &[Vec<u8>]) -> Result<Endpoint> {
+    let mut alpns = vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()];
+    for a in app_alpns {
+        if !alpns.iter().any(|existing| existing == a) {
+            alpns.push(a.clone());
+        }
+    }
     let builder = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
-        .alpns(vec![crate::ALPN.to_vec(), iroh_gossip::ALPN.to_vec()])
+        .alpns(alpns)
         .relay_mode(RelayMode::Disabled)
         .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         // One explicit address, no relay, no portmapper: there is no default route to learn and no

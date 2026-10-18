@@ -62,7 +62,7 @@ serde: `rename_all = "snake_case"`
 
 ### `ConnectionState`
 
-`crates/rdm-core/src/connections.rs` · enum · 3 variants · rdm-core
+`crates/rdm-core/src/connections.rs` · enum · 4 variants · rdm-core
 
 An entry's state.
 
@@ -71,6 +71,7 @@ An entry's state.
 | 0 | **`Connected`** | `Connected` |  |  | The connection stands. |
 | 1 | **`Disconnected`** | `Disconnected` |  |  | The connection ended. |
 | 2 | **`Failed`** | `Failed` |  |  | This source failed to establish the Direct connection. Never proof the destination is dead. |
+| 3 | **`Refused`** | `Refused` |  |  | An acceptor dropped an inbound connection at admission (connections.md §1.2). Never proof about the dialer. |
 
 <a id="t-rdm_admin-deployment-provider-DeploymentStatus"></a>
 

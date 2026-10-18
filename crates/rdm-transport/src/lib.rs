@@ -22,6 +22,7 @@ pub mod wire;
 // node-rpc modules & re-exports
 pub mod admission;
 pub mod client;
+pub mod connections;
 pub mod delivery;
 pub mod endpoint;
 pub mod forward;
