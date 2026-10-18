@@ -232,4 +232,14 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             .any(|(name, _, _)| name == "rdm.node_admin.node.update.via-held-types"),
         "a changed backbone hash drove a peer node.get, not a digest list"
     );
+    assert!(
+        !cap.spans
+            .0
+            .lock()
+            .unwrap()
+            .values()
+            .any(|(name, _, _)| name == "rdm.mesh.membership.reject.via-inconsistent"),
+        "GetTopology and Frame::Members carry the same held_hash at the same (publisher, topology_version)"
+    );
 }
+

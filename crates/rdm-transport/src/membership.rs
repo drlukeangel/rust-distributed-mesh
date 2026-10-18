@@ -2860,12 +2860,18 @@ impl Membership {
         anyhow::ensure!(d.fabric_id == self.fabric, "app declaration belongs to another fabric");
         self.mesh.register(d);
         let peer = gossip_addr(d).map(|a| a.id);
-        self.apps.learn(d.node.node_id.clone(), d.node.incarnation.clone(), types, held, peer).await
+        self.apps.learn(d.node.node_id.clone(), d.node.incarnation.clone(), types, held, peer).await?;
+        self.book.set_own_held_hash(self.apps.hash());
+        Ok(())
     }
     /// Learn metadata from an exact birth already held in the membership book.
-    pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> { let d = self.book.get(node.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
+    pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
+        let d = self.book.get(node.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
         let peer = d.as_ref().and_then(gossip_addr).map(|a| a.id);
-        self.apps.learn(node, incarnation, types, held, peer).await }
+        self.apps.learn(node, incarnation, types, held, peer).await?;
+        self.book.set_own_held_hash(self.apps.hash());
+        Ok(())
+    }
     /// The type metadata learned for one exact birth.
     pub fn member_app_types(&self, node: &rdm_core::NodeId, incarnation: &rdm_core::IncarnationId) -> Option<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> { self.apps.member(node, incarnation) }
     /// This membership's fabric identity.
@@ -3050,7 +3056,6 @@ impl Membership {
         }
         *self.book.own.lock().unwrap() = Some(d.node.node_id.to_string());
         let mut d = self.with_config(d);
-        d.held_hash = self.apps.hash();
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
         // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
@@ -3085,7 +3090,8 @@ impl Membership {
         self.name.lock().unwrap().clone().unwrap_or_else(|| birth.clone())
     }
 
-    /// `d` as this birth reports it: with the config and the name it was told, when it was told them.
+    /// `d` as this birth reports it: with the config and the name it was told, when it was told them,
+    /// and the held app-type hash.
     pub fn with_config(&self, d: &MeshDigest) -> MeshDigest {
         let mut d = d.clone();
         if let Some(c) = self.config.lock().unwrap().as_ref() {
@@ -3094,6 +3100,7 @@ impl Membership {
         if let Some(n) = self.name.lock().unwrap().as_ref() {
             d.node.name = n.clone();
         }
+        d.held_hash = self.apps.hash();
         d
     }
 
@@ -5475,7 +5482,7 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || held.held_hash != d.held_hash || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
         inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
         drop(inner);
         if heard_changed {
@@ -5486,6 +5493,24 @@ impl DigestBook {
         }
         self.digests.send_modify(|v| *v += 1);
         true
+    }
+
+    pub(crate) fn set_own_held_hash(&self, held_hash: [u8; 32]) {
+        let Some(own) = self.own.lock().unwrap().clone() else { return };
+        let changed = {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some((d, _, _)) = inner.get_mut(&own) {
+                let moved = d.held_hash != held_hash;
+                d.held_hash = held_hash;
+                moved
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.heard.send_modify(|v| *v += 1);
+            self.digests.send_modify(|v| *v += 1);
+        }
     }
 
     /// Hold `d` as forwarded by its mesh's primary, which only forwards a

@@ -1271,7 +1271,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 .await
                                 .map_err(storage_err)?;
                             // Own digest, published on the membership cadence.
-                            let digest = Arc::new(Mutex::new(MeshDigest { held_hash: Default::default(),
+                            let digest = Arc::new(Mutex::new(MeshDigest { held_hash: membership.held_hash(),
                                 fabric_id: cfg.fabric_id.clone(),
                                 node: MeshNode {
                                     node_id: node_id.clone(),
@@ -1444,7 +1444,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     let (book, records) = (book.clone(), records.clone());
                                     Arc::new(move |h: &rdm_core::SeatHolder| incumbency_of(&book, &records).lost.contains(&h.incarnation))
                                 };
-                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own.lock().unwrap().clone()), rafka_time.clone()).with_stored(stored).with_gone(gone)));
+                                let own_membership = membership.clone();
+                                let _ = topology_slot.set(Arc::new(crate::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_membership.with_config(&own.lock().unwrap())), rafka_time.clone()).with_stored(stored).with_gone(gone)));
                             }
                             // Each birth's exact runtime, the moment this admin first holds the birth: its own keyed row,
                             // a blind put (a successor fabric primary proves an exit from it).

@@ -547,7 +547,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
     // drain's completion and its start's join to the admin its membership book holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-    let admin_digest = rdm_core::digest::MeshDigest { held_hash: Default::default(),
+    let admin_digest = rdm_core::digest::MeshDigest { held_hash: membership.held_hash(),
         fabric_id: fabric.clone(),
         node: rdm_core::digest::MeshNode {
             node_id: admin_node_id.clone(),
@@ -602,7 +602,8 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         (None, None)
     };
     let _ = own_digest_slot.set(admin_digest.clone());
-    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
+    let own_membership = membership.clone();
+    let _ = topology_slot.set(Arc::new(rdm_admin::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_membership.with_config(own_digest_slot.get().expect("the admin digest is set before a read is served"))), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
         observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },

@@ -316,13 +316,27 @@ impl Birth {
     }
 }
 
-/// Resolves once `admin` has taken a check-in named `completion` of `attempt` from the birth.
-async fn checked_in(admin: &crate::common::AdminSide, completion: &str, attempt: u32) {
+/// Resolves once `admin` has taken a check-in named `completion` of `attempt` from the birth and
+/// the birth's completion call has received its reply.
+async fn checked_in(admin: &crate::common::AdminSide, spans: &crate::common::Spans, completion: &str, attempt: u32) {
     let mut held = admin.observer.check_ins.subscribe();
     tokio::time::timeout(Duration::from_secs(20), held.wait_for(|reqs| reqs.iter().any(|r| r.op() == completion && rdm_admin::fabric_state::RoundOp::of(r).is_some_and(|o| o.attempt == attempt))))
         .await
         .unwrap_or_else(|_| panic!("{} never took a {completion} check-in of attempt {attempt}", admin.launcher.name))
         .expect("the check-ins are held by the admin side");
+    let attempt_str = attempt.to_string();
+    let commander = admin.launcher.node_id.as_str();
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        spans.recorded("rdm.node_admin.status.update.via-completion-call", |c| {
+            c.get("completion").map(String::as_str) == Some(completion)
+                && c.get("attempt").map(String::as_str) == Some(attempt_str.as_str())
+                && c.get("commander").map(String::as_str) == Some(commander)
+                && c.get("answer").map(String::as_str) == Some("applied")
+        }),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the birth's {completion} check-in call to {} never completed", admin.launcher.name));
 }
 
 /// CONTRACT: a fabric round is scoped to the accepted Build and attempt, never to the node-admin
@@ -371,17 +385,17 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
         birth.seat(&admin2, 2).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::AlreadyApplied, "the same round from the new seat holder is the round already taken");
         actions.gate.send_replace(true);
-        checked_in(&birth.admin, "state-committed", 1).await;
-        checked_in(&admin2, "state-committed", 1).await;
+        checked_in(&birth.admin, &spans, "state-committed", 1).await;
+        checked_in(&admin2, &spans, "state-committed", 1).await;
         assert_eq!(actions.runs(), 1, "the commit-state action runs once for the round, whoever commands it");
 
         // open-traffic: the action is stored before the seat moves; the new holder is checked in at once.
         birth.seat(&birth.admin, 3).await;
         assert_eq!(birth.round_from(&birth.admin, RoundKind::OpenTraffic, 1).await, StatusReply::Applied);
-        checked_in(&birth.admin, "traffic-opened", 1).await;
+        checked_in(&birth.admin, &spans, "traffic-opened", 1).await;
         birth.seat(&admin2, 4).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::OpenTraffic, 1).await, StatusReply::AlreadyApplied, "a stored round from the new seat holder is the round already taken");
-        checked_in(&admin2, "traffic-opened", 1).await;
+        checked_in(&admin2, &spans, "traffic-opened", 1).await;
         assert_eq!(actions.runs(), 2, "one action per round: commit-state once and open-traffic once");
         for round in ["commit-state", "open-traffic"] {
             let acted = |a: &str| spans_named(&spans, "rdm.node_admin.fabric.update.via-member-round").into_iter().filter(|f| f.get("round").map(String::as_str) == Some(round) && f.get("acted").map(String::as_str) == Some(a)).count();
@@ -447,7 +461,7 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
         // The birth's seat book names admin1; admin2, which took the seat, commands the round.
         birth.seat(&birth.admin, 1).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted, whoever sends it");
-        checked_in(&admin2, "state-committed", 1).await;
+        checked_in(&admin2, &spans, "state-committed", 1).await;
         let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
         assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's seat book names");
         // The completion call's span closes once its reply is back at the birth, after admin2 took it.
@@ -655,7 +669,7 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
         assert!(admin3.observer.check_ins.borrow().is_empty(), "nothing is sent to admin3 before the seat names it");
         // The seat names admin3: the check-in is owed to it and made there.
         birth.seat(&admin3, 3).await;
-        checked_in(&admin3, "state-committed", 1).await;
+        checked_in(&admin3, &spans, "state-committed", 1).await;
         let retargeted = spans_named(&spans, "rdm.node_admin.status.update.via-completion-retargeted");
         assert!(
             retargeted.iter().any(|r| r.get("from").map(String::as_str) == Some(gone_id.as_str()) && r.get("to") == Some(&next_id) && r.get("why").is_some_and(|w| w.ends_with(": UNAVAILABLE"))),
