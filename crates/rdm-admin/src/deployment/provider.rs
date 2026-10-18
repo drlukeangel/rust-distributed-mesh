@@ -501,6 +501,26 @@ mod tests {
         }
     }
 
+    /// CONTRACT (`held-runtimes/1`, a durable format: the launcher's build writes it, the launched
+    /// admin's build reads it): the hand-off in a launched node-admin's data dir is
+    /// `held-runtimes.json`, exactly `{"format": "held-runtimes/1", "rows": [<runtime row>...]}`, read
+    /// back to the rows written; a data dir with none hands over no rows; a hand-off of another format
+    /// is refused by name, naming the format it holds and the one this build reads. Must NOT happen: a
+    /// hand-off this build cannot read answered as no rows.
+    #[tokio::test]
+    async fn the_held_runtimes_hand_off_is_held_runtimes_1_and_another_format_is_refused_by_name() {
+        let dir = crate::test_support::tempdir("held-runtimes");
+        assert_eq!(held_runtimes_in(&dir).await.unwrap(), Vec::new(), "a data dir with no hand-off holds no rows");
+        let rows = vec![crate::storage::RuntimeRow { node_id: crate::model::NodeId::mint(), name: "mesh1.rpc.1".parse().unwrap(), incarnation_id: crate::model::IncarnationId::mint(), runtime: fact("process:host-a"), data_dir: Some("/data/mesh1.rpc.1".into()) }];
+        write_held_runtimes(&dir, &rows).await.unwrap();
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(HELD_RUNTIMES_FILE)).unwrap()).unwrap();
+        assert_eq!(written, serde_json::json!({ "format": "held-runtimes/1", "rows": serde_json::to_value(&rows).unwrap() }), "the hand-off's shape");
+        assert_eq!(held_runtimes_in(&dir).await.unwrap(), rows, "the launched admin reads the rows its launcher wrote");
+        std::fs::write(dir.join(HELD_RUNTIMES_FILE), br#"{"format":"held-runtimes/2","rows":[]}"#).unwrap();
+        let refused = held_runtimes_in(&dir).await.unwrap_err();
+        assert!(refused.contains("held-runtimes/2") && refused.contains("held-runtimes/1"), "refused naming both formats: {refused}");
+    }
+
     #[test]
     fn a_published_runtime_is_adopted_only_within_its_provider_and_control_domain() {
         let launcher_pool = RemotePool("pool-a");
