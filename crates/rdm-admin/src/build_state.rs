@@ -1945,8 +1945,8 @@ impl FileJournal {
     /// Open the Build lanes on the fabric's shared `root` for an admin of `own_mesh`, written by the
     /// process born as `writer` (R-BI6): `fabric/builds/` (the fabric-primary's) and every
     /// `meshes/<mesh>/builds/` (each mesh-primary's) are read when this admin holds the corresponding
-    /// seat, and writes before the fabric's first state-commit are held in `root`'s scratchpad. A
-    /// root holding the retired journal file is refused by name.
+    /// seat, and each fact is written to the root when it is committed, before the fabric's first
+    /// state-commit too (Q61). A root holding the retired journal file is refused by name.
     pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &crate::model::IncarnationId) -> Result<Self, BuildStateError> {
         let dir = root.dir().to_path_buf();
         crate::record_store::blocking_io(move || refuse_journal_file(&dir)).await?;
@@ -2031,16 +2031,9 @@ impl FileJournal {
     }
 
     /// Set how this journal reads whether this birth holds the fabric and mesh seats (set once at boot):
-    /// `gate` gates the scratchpad publication of `fabric/builds` at state-commit (R14 item 2),
     /// `holds_fabric` routes fabric-lane executor receipts and reads `fabric/builds/` when `true`,
     /// and `holds_mesh` reads `meshes/<own_mesh>/builds/` when `true`.
-    pub fn set_fabric_seat(
-        &self,
-        gate: crate::record_store::PublishGate,
-        holds_fabric: Arc<dyn Fn() -> bool + Send + Sync>,
-        holds_mesh: Arc<dyn Fn() -> bool + Send + Sync>,
-    ) {
-        self.lanes.set_fabric_gate(gate);
+    pub fn set_fabric_seat(&self, holds_fabric: Arc<dyn Fn() -> bool + Send + Sync>, holds_mesh: Arc<dyn Fn() -> bool + Send + Sync>) {
         let _ = self.holds_fabric_seat.set(holds_fabric);
         let _ = self.holds_mesh_seat.set(holds_mesh);
     }
@@ -3626,7 +3619,6 @@ mod tests {
         let m_seat = crate::admin::mesh_seat_source(&book, &records, booting_me.clone(), &booting_name, "mesh1");
         let j_unseated = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), "mesh1", &writer()).await.unwrap();
         j_unseated.set_fabric_seat(
-            std::sync::Arc::new(|| Ok(())),
             std::sync::Arc::new(move || matches!((f_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
             std::sync::Arc::new(move || matches!((m_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
         );

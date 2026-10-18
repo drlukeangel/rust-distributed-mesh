@@ -344,7 +344,8 @@ async fn ready_under(estate: &Estate, build: &str) {
 /// step 2; node-identity-and-state.md §2.7, The write; node-admin-lifecycle.md §7; R14 item 9): while
 /// the fabric is held in state-sync, every node of a two-mesh fabric up and ready (the fabric-primary,
 /// the other mesh's primary and a member in each mesh), the fabric's store root holds only the
-/// acknowledged declared-state rows (Q54); every other row stays in its writer's scratchpad. The state-commit round publishes it: each node's
+/// acknowledged declared-state rows (Q54) and the Build's committed facts, its lanes' keys and the
+/// meshes' attempt claims (Q61, build.md §5.2); every other row stays in its writer's scratchpad. The state-commit round publishes it: each node's
 /// commit-state action writes what it holds before its check-in (the fabric-primary the Fabric row,
 /// each mesh primary its Mesh row and its members' Node rows, a node the connections rows it holds). After
 /// that first state-commit the store exists: a node born later writes straight to it, and the next
@@ -369,8 +370,8 @@ async fn ready_under(estate: &Estate, build: &str) {
 /// build.create door answers, so no `fabric.get` after the answer pairs the second Build with the
 /// ready-for-traffic the first Build's climb reached, and the second Build climbs its own rounds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_store_root_holds_only_acknowledged_declarations_until_state_commit_publishes_other_rows() {
-    let test = "the_store_root_holds_only_acknowledged_declarations_until_state_commit_publishes_other_rows";
+async fn the_store_root_holds_only_acknowledged_declarations_and_build_facts_until_state_commit_publishes_other_rows() {
+    let test = "the_store_root_holds_only_acknowledged_declarations_and_build_facts_until_state_commit_publishes_other_rows";
     let mut estate = estate_with(test, "hold").await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
     let root = estate.fabric_store_root();
@@ -393,7 +394,11 @@ async fn the_store_root_holds_only_acknowledged_declarations_until_state_commit_
         format!("status/{mesh}/declared/{}--{}--ReadyForTraffic.json", s(&n["node_id"]), s(&n["incarnation_id"]))
     }).collect();
     declarations.sort();
-    assert_eq!(before, declarations, "Q54: only the four exact births' acknowledged declarations reach {} before state-commit; every other row stays held", root.display());
+    // Q61: a committed Build fact stands on the root when it is committed: the lanes' keys and the
+    // meshes' attempt claims are there before state-commit, beside the declarations.
+    let (build_facts, rows): (Vec<String>, Vec<String>) = before.iter().cloned().partition(|r| r.starts_with("fabric/builds/") || (r.starts_with("meshes/") && (r.contains("/builds/") || r.contains("/claims/"))));
+    assert!(build_facts.iter().any(|r| r.starts_with("fabric/builds/")), "Q61: the two-mesh Build's committed facts stand on {} before state-commit: {before:#?}", root.display());
+    assert_eq!(rows, declarations, "Q54: of every other row, only the four exact births' acknowledged declarations reach {} before state-commit; the rest stay held", root.display());
     // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
     // `<store_dir>/fabrics/fabric1`, and is held in the fabric-primary's scratchpad like every row.
     let name_claim = root.parent().expect("the store root sits under the store_dir").join(rdm_admin::store_root::FABRIC_NAMES).join("fabric1.json");
@@ -407,7 +412,7 @@ async fn the_store_root_holds_only_acknowledged_declarations_until_state_commit_
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
     assert!(holds("fabric/identity.json"), "the fabric-primary published the Fabric row: {after:#?}");
-    assert!(holds("fabric/builds/"), "the fabric-primary published the Build journal under fabric/builds/ (R-BI6): {after:#?}");
+    assert!(holds("fabric/builds/"), "the fabric-primary's Build journal stands under fabric/builds/ (R-BI6): {after:#?}");
     // The per-seat rows under `fabric/seats` go (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C2: "the leadership view is folded from the
     // transfer rows"): under fabric/ the fabric-primary holds its identity row and its `fabric/builds/`

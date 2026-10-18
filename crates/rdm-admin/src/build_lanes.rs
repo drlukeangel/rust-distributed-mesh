@@ -11,7 +11,7 @@
 //! reader reconstructs the lane from its keys in order, each revision up to its seal, never past it.
 
 use crate::build_state::BuildFact;
-use crate::record_store::{FileRecords, PublishGate, StorageError};
+use crate::record_store::{FileRecords, StorageError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -170,9 +170,6 @@ struct RevRead {
 pub struct Lanes {
     root: crate::store_root::StoreRoot,
     writer: crate::model::IncarnationId,
-    /// The gate the fabric lane's held facts are published through at the fabric's first
-    /// state-commit: only while this process holds the fabric seat (R14 item 2).
-    fabric_gate: std::sync::OnceLock<PublishGate>,
     revs: std::sync::Mutex<BTreeMap<(LaneId, u64), Rev>>,
 }
 
@@ -185,17 +182,7 @@ impl std::fmt::Debug for Lanes {
 impl Lanes {
     /// The lanes on `root`, written by the process born as `writer`.
     pub fn new(root: crate::store_root::StoreRoot, writer: crate::model::IncarnationId) -> Self {
-        Self { root, writer, fabric_gate: std::sync::OnceLock::new(), revs: std::sync::Mutex::new(BTreeMap::new()) }
-    }
-
-    /// The gate the fabric lane's held facts are published through (set once).
-    pub fn set_fabric_gate(&self, gate: PublishGate) {
-        let _ = self.fabric_gate.set(gate.clone());
-        for ((lane, _), rev) in self.revs.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            if *lane == LaneId::Fabric {
-                rev.store.set_publish_gate(gate.clone());
-            }
-        }
+        Self { root, writer, revs: std::sync::Mutex::new(BTreeMap::new()) }
     }
 
     fn held(&self, lane: &LaneId, revision: u64) -> Option<Rev> {
@@ -211,12 +198,9 @@ impl Lanes {
         if let Some(r) = self.held(lane, revision) {
             return Ok(r);
         }
-        let store = self.root.records(&lane.dir(&self.root), &rev_dir(revision), &self.writer).await?;
-        if *lane == LaneId::Fabric {
-            if let Some(gate) = self.fabric_gate.get() {
-                store.set_publish_gate(gate.clone());
-            }
-        }
+        // A Build fact is durable on the root when it is committed, before the fabric's first
+        // state-commit too (Q61, build.md §5.2): a lane is never held in the scratchpad.
+        let store = FileRecords::open(&lane.dir(&self.root), &rev_dir(revision), &self.writer).await?;
         let opened = Rev { store, next: 1, sealed: None };
         let mut revs = self.revs.lock().unwrap_or_else(|e| e.into_inner());
         Ok(revs.entry((lane.clone(), revision)).or_insert(opened).clone())

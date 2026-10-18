@@ -92,7 +92,9 @@ impl MeshClaims {
         if let Some(s) = stores.get(mesh) {
             return Ok(Some(s.clone()));
         }
-        let s = root.records(&root.meshes(mesh), "claims", writer).await?;
+        // An attempt claim is a Build fact, durable on the root when it is taken, before the
+        // fabric's first state-commit too (Q61, build.md §5.2).
+        let s = FileRecords::open(&root.meshes(mesh), "claims", writer).await?;
         stores.insert(mesh.to_string(), s.clone());
         Ok(Some(s))
     }

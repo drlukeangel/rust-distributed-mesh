@@ -791,20 +791,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                         // (before the hierarchy loop seats this birth) holds the accepted Build and preserves stored MeshIds.
                         let _ = journal.current_build().await;
                     }
-                    let seat = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
-                    let seat_for_holds = seat.clone();
-                    let gate = Arc::new(move || match (seat.read)() {
-                        crate::fabric_builds::SeatRecord::Moved { by, to } => Err(format!(
-                            "fabric-primary seat: {by}; the holder is {}",
-                            to.as_deref().unwrap_or("a birth whose path.name is not known here")
-                        )),
-                        crate::fabric_builds::SeatRecord::Open { .. } => Ok(()),
-                    });
+                    let seat_for_holds = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
                     // One fact gets one source (R-BI6): the seat record held in `membership.book.seats`.
                     let holds_fabric = Arc::new(move || matches!((seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
                     let mesh_seat_for_holds = mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh);
                     let holds_mesh = Arc::new(move || matches!((mesh_seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
-                    journal.set_fabric_seat(gate, holds_fabric, holds_mesh);
+                    journal.set_fabric_seat(holds_fabric, holds_mesh);
                     // Each lane is written under the revision of its seat's record this birth holds
                     // (Q28, Q35): the fabric seat's for `fabric/builds/`, a mesh's primary seat's for
                     // `meshes/<mesh>/builds/`.
