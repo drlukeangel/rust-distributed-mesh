@@ -21,6 +21,18 @@ proof → export) is last and the lead's.
 
 Gate defect (2026-10-17, **fixed 2026-10-18**, lead): `rdm-gate-at.sh`'s test-discovery check refused any binary whose test count dropped, with no allowance for cells deleted with their code (i146 e3's linger cells). A landing now names each removed cell in a commit body, one per line, `removed: <module>::<cell>` (the name `--list` prints; the fn name alone also matches), read from `origin/main..HEAD`; only those may leave discovery (`[discovery] removed by name`), and the workspace total may fall by exactly that many. Checked on fixtures: an unnamed drop still refuses. 
 
+**The gate's storm, read (2026-10-18, dev; one bounded read).** Every journal-space wait of a fast gate falls in one minute, the first after discovery, when the stems start together. On main `de7d94f8` that minute was 15:16:47 to 15:17:52, sampled every 2 s: up to 308 threads in `jbd2_log_wait_for_space` and 653 journal commits/s; there were none for the rest of the gate.
+- In that minute 425 nodes were born (222 `rafka-rpc-node`, 124 `rafka-node-admin`, 79 `faulted-node-admin`) and 15 842 files were created:
+  - 6 386 Build lane facts (40%, about 15 per birth); 2 261 logs; 1 865 other data-dir files; 1 240 Node rows; 975 status rows;
+  - 847 evidence span files; 467 node keys; 460 runtime records; 388 deployment records; 243 seat moves; the rest under 110 each.
+- One `accepted_topology` estate, traced with `strace` (about seven births over 37 s):
+  - 48 fsyncs, 30 of them its 15 lane facts (two each: the fact's temp file and the lane directory);
+  - 155 files created, 49 directories made, 52 links, 30 renames and 365 unlinks (280 of them its teardown);
+  - 2.55 MB written, 2.03 MB of it evidence spans.
+- Each lane fact is a temp file created, written and fsynced, linked to its key, the temp unlinked, then the lane directory fsynced. Every fact a birth writes is a step receipt §5.2 needs durable before the birth answers, so none is needless.
+- [inferred] A birth appends its facts one at a time, each step waiting for its receipt, so a store's batch never holds two. Group commit (RED `b675fb4a`, GREEN `e35c407d`) merges nothing and is held, not landed. Its own fast gate was green with the same peak (310 waiters, 710 commits/s).
+- What a root fix can remove without moving a key, a format or the insert-and-fail is the temp name: a create and an unlink in the lane directory per fact. A fact can instead be written as an unnamed file (`O_TMPFILE`) and linked to its key, with the same two fsyncs.
+
 **The finish, in order (the lead, 2026-10-18; Luke: chaos second to last, then the certs, then chaos again).** Every landing through the land script, RED first, with its flame; a red read where it lives, never re-rolled.
 
 1. **The code epics, in parallel, now.** Dev (e4s8): the `fabric_primary.rs:204` acceptance wait (i144 e6: reproduce under gate concurrency with the journal-turn span, name the wait, fix the root); then every i146 e3 row built and not landed (the `78bd4dc5` red tree and the owner seats the e3 row lists), landed one at a time; i144 e2's four R21 cells stay release-only and are proven in step 2. Codex (e7s3): i148 e1 the surface and Direct → e2 the route and the spliced Proxy → e3 reconnect moves, one landing each, the API names Luke's to object to; i148's demo acceptance (its PRD's table) runs in the pinned demo consumer through RDM's public API and closes the epic. Lead: the records, the rulings (next free Q60), and the release run below the moment step 1 has no open landing.
