@@ -673,9 +673,12 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             // The store root's layout (Q28 A, Q35 x): the Build lanes' keys and formats, the fabric's
             // seat moves and the in-flight row, frozen byte for byte by one cell; a layout that moves
             // moves them together (`durable format moved`).
-            require(root, "crates/rdm-admin/src/build_lanes.rs", &["pub const FACT_FORMAT: &str = \"build-fact/1\";", "pub const SEAL_FORMAT: &str = \"lane-seal/1\";", "format!(\"{REV_PREFIX}{revision:020}\")", "format!(\"{seq:020}\")", "fn the_store_layout_is_frozen_byte_for_byte"], ratchet, &mut out);
+            require(root, "crates/rdm-admin/src/build_lanes.rs", &["pub const FACT_FORMAT: &str = \"build-fact/1\";", "pub const SEAL_FORMAT: &str = \"lane-seal/1\";", "fn the_store_layout_is_frozen_byte_for_byte"], ratchet, &mut out);
+            // The lane key's revision and sequence, as a `LaneKey` writes them (the storage boundary's
+            // type, every backend's key).
+            require(root, "crates/rdm-admin/src/build_state.rs", &["pub(crate) const REV_PREFIX: &str = \"rev-\";", "format!(\"{REV_PREFIX}{revision:020}\")", "format!(\"{seq:020}\")"], ratchet, &mut out);
             require(root, "crates/rdm-admin/src/fabric_storage.rs", &["pub const SEAT_MOVES_DIR: &str = \"seat-moves\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "format!(\"{t:020}\")"], ratchet, &mut out);
-            require(root, "crates/rdm-admin/src/mesh_claims.rs", &["const FORMAT: &str = \"mesh-in-flight/2\";"], ratchet, &mut out);
+            require(root, "crates/rdm-admin/src/storage.rs", &["const IN_FLIGHT_FORMAT: &str = \"mesh-in-flight/2\";", "const IN_FLIGHT: &str = \"in-flight\";"], ratchet, &mut out);
         }
         Ratchet::PrimaryUpdateResealIsAtomic => {
             require(root, "crates/rdm-core/src/handover.rs", &["const REQUEST_VARIANTS: u32 = 4;", "const REPLY_VARIANTS: u32 = 18;", "code: crate::outcome::Code"], ratchet, &mut out);

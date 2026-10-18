@@ -3598,8 +3598,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&retired);
     }
 
-    /// PRD §1.4 / §7: no test, and no code outside this module, opens a Build
-    /// journal; the one exception is store_root_boot's preparation of a store root before
+    /// PRD §1.4 / §7: no test, and no code outside this module and the file backend's construction
+    /// (`storage_backend.rs`), opens a Build journal; the one exception is store_root_boot's
+    /// preparation of a store root before
     /// an admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
     /// root through the storage adapters, with no previous process"): it writes the
     /// accepted Build the admin then reloads, and decides nothing from it.
@@ -3615,7 +3616,7 @@ mod tests {
                     if !p.ends_with("target") {
                         stack.push(p);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rdm-admin/src/admin.rs") && !p.ends_with("rdm-admin/src/admin/boot.rs") && !p.ends_with("rdm-admin/tests/store_root_boot.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rdm-admin/src/storage_backend.rs") && !p.ends_with("rdm-admin/tests/store_root_boot.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
                     if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") {
                         offenders.push(p);
@@ -3623,7 +3624,7 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "only build_state.rs, the admin's own boot and store_root_boot's prepared store root may open a journal: {offenders:?}");
+        assert!(offenders.is_empty(), "only build_state.rs, the file backend's construction and store_root_boot's prepared store root may open a journal: {offenders:?}");
     }
 
     /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.

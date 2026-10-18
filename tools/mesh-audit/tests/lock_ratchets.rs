@@ -466,7 +466,7 @@ fn store_layout_reseal_refuses_a_moved_format_a_moved_key_or_a_lost_golden() {
     t.edit("crates/rdm-admin/src/fabric_storage.rs", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/1\";", "pub const SEAT_MOVE_FORMAT: &str = \"seat-move/2\";");
     only(check(t.root()), Ratchet::StoreLayoutResealIsAtomic);
     let k = Planted::of_tree();
-    k.edit("crates/rdm-admin/src/build_lanes.rs", "format!(\"{seq:020}\")", "format!(\"{seq:016}\")");
+    k.edit("crates/rdm-admin/src/build_state.rs", "format!(\"{seq:020}\")", "format!(\"{seq:016}\")");
     only(check(k.root()), Ratchet::StoreLayoutResealIsAtomic);
     let f = Planted::of_tree();
     f.edit("crates/rdm-admin/src/build_lanes.rs", "fn the_store_layout_is_frozen_byte_for_byte", "fn changed_store_layout_cell");
