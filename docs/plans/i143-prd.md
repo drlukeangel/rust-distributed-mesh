@@ -19,7 +19,7 @@ proof → export) is last and the lead's.
 | e10.s2 | one green SHA, the import manifest, the parity scan, the export gate | **sequential tail**, after every row above | lead | — |
 | e11.s12 | the seeded soaks and the container proof on that SHA | after e10.s2's SHA; the container proof needs s88 | lead, with the dev | — |
 
-Order: (1) Q47 lands (Codex); e6.1 → e6.2 → e6 item 3 → i146 e3 owners (dev); s75 → s88 → s69 and the rafka-v2 `epoch` rename (Codex), all in parallel with the dev. (2) One release run at the resulting SHA (lead); s89's remaining
+Gate defect (2026-10-17): `rdm-gate-at.sh`'s test-discovery check refuses any binary whose test count drops, with no allowance for cells deleted with their code (i146 e3's linger cells); a landing must be able to name removed cells (`removed: <stem>::<cell>` in the commit body, checked against the drop) instead of padding the count. Lead, `scripts/`. Order: (1) Q47 lands (Codex); e6.1 → e6.2 → e6 item 3 → i146 e3 owners (dev); s75 → s88 → s69 and the rafka-v2 `epoch` rename (Codex), all in parallel with the dev. (2) One release run at the resulting SHA (lead); s89's remaining
 reds read and fixed, split as above. (3) The fast gate and the release suite green on one SHA → e10.s2 → e11.s12.
 i145 lands after that (post-chaos). Every landing still goes through the land script, RED first, with its flame.
 

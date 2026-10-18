@@ -462,6 +462,8 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
 
 - **Q51 = A (Luke, 2026-10-17; `docs/plans/rulings/i144-q51-lost-mesh-seat-after-takeover.md`).** One takeover row moves the fabric seat and the lost mesh's primary seat; the lost birth's row is `Deleted { exit_proof: takeover { revision } }`; the fabric-primary writes that mesh's rows until the re-born admin takes the vacant seat; four page lines land with the code; durable format moved (optional holder). Dev, lane e4s8, e6 item 3.
 
+- **e6 landed (dev, 2026-10-17):** e6.1 `2f10e419`, e6.2 `afff4d44`, e6.3 (R-FM2 fabric lane, Q51) `8b0e58d0`; all on green gates. Tracking issue #3129 stays open for i146's release-suite run.
+
 ## Verification
 
 - [ ] Seed assertion (§ Seed spec) green in both mods at gate cadence; traces cited in e1's row.

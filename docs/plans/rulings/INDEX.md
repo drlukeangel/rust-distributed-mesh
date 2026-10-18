@@ -24,7 +24,7 @@ packet takes the next free number here before it is written; a collision is renu
 | Q52 | Dev | i146 e3 | the owed declaration keeps its carried route in one Owed call | B | landed `0ef6c700` |
 | Q53 | Codex | i143 s88 | the successor's status fold published Pending over Ready | A, fix the root | ruled 2026-10-17 |
 | Q54 | Codex | i143 s88 | an Applied declared-state row is durable before state-commit | A recommended | **awaiting Luke** |
-| Q55 | Dev | i146 e3 | a signal stop is node.stop's own steps; Draining and the linger go | x | landed `0ef6c700` |
+| Q55 | Dev | i146 e3 | a signal stop is node.stop's own steps; Draining and the linger go | x | landed `0ef6c700`; the declared value becomes `Stopped` (node-stop.md step 4) in the dev's next landing |
 
 Next free number: **Q56**.
 
