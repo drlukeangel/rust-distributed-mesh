@@ -1,7 +1,7 @@
 # i147 — gossip conformance: no stale frame undoes a newer fact, no required fact is lost to arrival order
 
 **Status:** approved 2026-10-16 (Luke, Q17 of the i144/i146 stream, arm A on the a1 architect's shape).
-e1–e4 landed; Luke accepted the e2 batch at 7d00bb2e. e5 (app types on the envelope): implementation read started after s88 landed; Q57 asks the admin Wiring/initial-held interpretation before app code. **Tracking issue:** [drlukeangel/rafka-v2#3130](https://github.com/drlukeangel/rafka-v2/issues/3130). **Record:** this file; every state or
+e1–e4 landed; Luke accepted the e2 batch at 7d00bb2e. e5 (app types on the envelope): Q57 ruled x; executable RED started after rebase on the corrected page. **Tracking issue:** [drlukeangel/rafka-v2#3130](https://github.com/drlukeangel/rafka-v2/issues/3130). **Record:** this file; every state or
 remaining-work update goes in an epic's row below. **Owner:** the i143 lead; an RDM engineer in a pool
 lane. **Separate from i146:** gossip stays best-effort (gossip.md §7, R-NS2); this unit fixes what
 receivers do with the frames they receive. No global counter, no acknowledgements, no reliable-gossip
@@ -390,7 +390,7 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 
 #### e5 — app types on the envelope: `Channel`, `Event`, `Received` (Luke, 2026-10-17: "that's clean, I'm into it")
 
-**Read / [Q57](proposal/i147-q57-admin-type-input.md), 2026-10-17.** s88 landed `8bd6681d`, concurrent gate GREEN 211 s; the i144 rebase notice is queued. The page makes node-admin's own types empty and held the members/peers union, while review item 5 supplies its declared types through Wiring. Q57 makes the initial-subscription admission explicit, with exact proposed page lines and baseline boot evidence. No app code or RED result is claimed, and no architecture page is edited.
+**Q57 ruled x; RED begins, 2026-10-17.** Rebased on main `96b1febb`, including §8's correction `7304c9b2`: node-admin's own app types come through Wiring, join before hydration, and seed held alongside members and peers. The first two executable RED cells exercise the directed/wire seams without changing runtime: JoinNode must retain its appended type declaration, and a digest must preserve only the 32-byte held-set hash through wire receipt and projection. The test request is built independently from the protocol's serializer. No implementation, golden update or bounds change precedes this RED run.
 
 
 - **Goal → gap.** Rafka links iroh-gossip itself (six crates), builds a raw `GossipSender` per

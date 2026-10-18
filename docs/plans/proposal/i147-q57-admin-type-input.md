@@ -1,3 +1,5 @@
+**Q57: x — Luke, 2026-10-17. A node-admin's types is its app's own kinds through Wiring, joined before hydration; held is types plus members plus peers. Page corrected on main `7304c9b2`.**
+
 # Q57 — node-admin's Wiring type input and its initially held channels
 
 Asked 2026-10-17. e5 read only; no app-channel implementation or RED is claimed. s88/Q53/Q54 landed `8bd6681d` through the land script (concurrent gate GREEN, 211 s).
