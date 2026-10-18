@@ -262,7 +262,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let signer = std::mem::take(&mut wiring.certs).resolve().map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?;
     let issuer = Arc::new(crate::certs::CertIssuer::new(signer, rafka_time.clone()));
     let key_file = cfg.data_dir.join("node-key");
-    let key_held = crate::record_store::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
+    let key_held = crate::blocking::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
     let step = if key_held {
         tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-identity-loaded")
     } else {
@@ -278,7 +278,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // the inherited data dir, at the same path.name, in the same Mesh and Fabric, holding the same Builds
     // (fabric-recovery.md; R-SB1). Every store's temp files carry this process's incarnation, decided
     // here, before any store opens: the launch's, else a new one.
-    let storage_err = |e: crate::record_store::StorageError| e.to_string();
+    let storage_err = |e: crate::storage_error::StorageError| e.to_string();
     let incarnation = cfg.launch.as_ref().map(|l| l.incarnation.clone()).unwrap_or_else(IncarnationId::mint);
     if let (None, Ok(p)) = (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
         crate::store_root::qualify(p.provider).map_err(|e| format!("refusing to start: {e}"))?;

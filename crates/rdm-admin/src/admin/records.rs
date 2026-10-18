@@ -212,10 +212,10 @@ impl AdminConfig {
 
 /// The node's transport key in its data dir (minted on first use).
 /// The node key in `data_dir`, minted and written there when none is: read and written on the
-/// blocking pool (`record_store::blocking_io`), so no worker thread waits on the disk.
+/// blocking pool (`blocking::blocking_io`), so no worker thread waits on the disk.
 pub(crate) async fn load_or_mint_key(data_dir: &Path) -> Result<SecretKey, String> {
     let data_dir = data_dir.to_path_buf();
-    crate::record_store::blocking_io(move || {
+    crate::blocking::blocking_io(move || {
         std::fs::create_dir_all(&data_dir).map_err(|e| format!("{}: {e}", data_dir.display()))?;
         let path = data_dir.join("node-key");
         // A key never written is minted; one that cannot be read is an error, never replaced.

@@ -1864,7 +1864,7 @@ pub struct FileJournal {
     turn_lane_ns: std::sync::atomic::AtomicU64,
     /// The blocking calls of the holder of `writer` (a turn or a reader's sync), from its lane calls:
     /// how many, how long they queued for a blocking thread, how long they ran.
-    holder_io: Mutex<Option<crate::record_store::IoTime>>,
+    holder_io: Mutex<Option<crate::blocking::IoTime>>,
     /// The facts the holder of `writer` read from the lanes.
     holder_facts: std::sync::atomic::AtomicU64,
     /// What the last holder of `writer` did with it, written when it let it go: what a turn that
@@ -1937,7 +1937,7 @@ impl std::fmt::Debug for FileJournal {
     }
 }
 
-fn lane_io(e: crate::record_store::StorageError) -> BuildStateError {
+fn lane_io(e: crate::storage_error::StorageError) -> BuildStateError {
     BuildStateError::Io(e.to_string())
 }
 
@@ -1949,7 +1949,7 @@ impl FileJournal {
     /// state-commit too (Q61). A root holding the retired journal file is refused by name.
     pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_mesh: &str, writer: &crate::model::IncarnationId) -> Result<Self, BuildStateError> {
         let dir = root.dir().to_path_buf();
-        crate::record_store::blocking_io(move || refuse_journal_file(&dir)).await?;
+        crate::blocking::blocking_io(move || refuse_journal_file(&dir)).await?;
         Ok(Self {
             lanes: crate::build_lanes::Lanes::new(root.clone(), writer.clone()),
             root_dir: root.dir().to_path_buf(),
@@ -2004,7 +2004,7 @@ impl FileJournal {
 
     /// The holder of `writer` begins: its lane calls' blocking I/O and the facts it reads are its own.
     fn hold_begins(&self) {
-        *self.holder_io.lock().unwrap() = Some(crate::record_store::IoTime::default());
+        *self.holder_io.lock().unwrap() = Some(crate::blocking::IoTime::default());
         self.holder_facts.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -2023,7 +2023,7 @@ impl FileJournal {
         let at = std::time::Instant::now();
         let io = self.holder_io.lock().unwrap().clone();
         let out = match io {
-            Some(io) => crate::record_store::io_time_with(io, call).await,
+            Some(io) => crate::blocking::io_time_with(io, call).await,
             None => call.await,
         };
         self.turn_lane_ns.fetch_add(at.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -2091,7 +2091,7 @@ impl FileJournal {
         if self.is_fabric_primary() {
             let meshes = self.root_dir.join("meshes");
             let mut lanes = vec![crate::build_lanes::LaneId::Fabric];
-            let mut found = crate::record_store::blocking_io(move || -> Result<Vec<String>, BuildStateError> {
+            let mut found = crate::blocking::blocking_io(move || -> Result<Vec<String>, BuildStateError> {
                 match std::fs::read_dir(&meshes) {
                     Ok(entries) => Ok(entries.flatten().filter(|e| e.path().join("builds").is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect()),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -2245,7 +2245,7 @@ impl FileJournal {
     /// that is void is released and the take made again; a row of this attempt naming another key is
     /// moved to `row`'s.
     async fn take_in_flight(&self, claims: &crate::mesh_claims::MeshClaims, mesh: &str, row: &crate::mesh_claims::InFlight) -> Result<crate::mesh_claims::Taken, BuildStateError> {
-        let io = |e: crate::record_store::StorageError| BuildStateError::Io(format!("mesh {mesh}'s in-flight row: {e}"));
+        let io = |e: crate::storage_error::StorageError| BuildStateError::Io(format!("mesh {mesh}'s in-flight row: {e}"));
         match claims.take(mesh, row).await.map_err(io)? {
             crate::mesh_claims::Taken::Won => {
                 claims.repoint(mesh, row).await.map_err(io)?;

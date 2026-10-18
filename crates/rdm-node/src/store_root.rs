@@ -25,7 +25,8 @@
 //! fact, Q61, build.md §5.2).
 
 use crate::model::{FabricId, IncarnationId, PathName};
-use crate::record_store::{FileRecords, Scratchpad, StorageError};
+use crate::record_store::{FileRecords, Scratchpad};
+use crate::storage_error::StorageError;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

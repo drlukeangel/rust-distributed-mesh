@@ -1,5 +1,5 @@
 //! Functional: a deployment pipeline step's span says where its blocking disk time went. A step whose
-//! work runs blocking calls on tokio's blocking pool (`record_store::blocking_io`: a key minted, a
+//! work runs blocking calls on tokio's blocking pool (`blocking::blocking_io`: a key minted, a
 //! record written and read back) names on its own `rdm.node_admin.deployment.update.via-step` span
 //! how many it ran (`io_calls`), how long they waited for a blocking thread (`io_queued_ms`) and how
 //! long they ran on it (`io_ms`). A step that took seconds says which of the two it was, never only

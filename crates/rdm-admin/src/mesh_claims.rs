@@ -16,7 +16,8 @@
 //! broadcast on the Build topic only after the take won, exactly as before.
 
 use crate::build::BuildId;
-use crate::record_store::{FileRecords, StorageError};
+use crate::record_store::FileRecords;
+use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

@@ -22,7 +22,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     let _telemetry = rdm_transport::init_evidence_telemetry(service);
     // The bootstrap admin hashes every bound executable here: on the blocking pool, never a worker
     // of the runtime (Q30).
-    let cfg = match crate::record_store::blocking_io(|| AdminConfig::from_env(|k| std::env::var(k).ok())).await {
+    let cfg = match crate::blocking::blocking_io(|| AdminConfig::from_env(|k| std::env::var(k).ok())).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{service}: refusing to start: {e}");

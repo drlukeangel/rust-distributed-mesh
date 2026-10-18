@@ -139,7 +139,7 @@ async fn tagged(me: &PathName, storage: &dyn NodesStorage, filter: &TagFilter) -
 /// row there is another birth's, a point read of the row the node row's id index names. None when it
 /// holds no row.
 async fn row_of(storage: &dyn NodesStorage, n: &Node) -> Result<Option<crate::storage::NodeRow>, ReadFailed> {
-    let failed = |op: String, e: crate::record_store::StorageError| ReadFailed { source: format!("the nodes store's rows of {}", n.mesh), op, cause: e.to_string() };
+    let failed = |op: String, e: crate::storage_error::StorageError| ReadFailed { source: format!("the nodes store's rows of {}", n.mesh), op, cause: e.to_string() };
     let at = storage.node_row_at(&n.name).await.map_err(|e| failed(format!("read of the row at {}", n.name), e))?;
     if let Some(row) = at.filter(|r| r.node_id == n.node_id) {
         return Ok(Some(row));
@@ -313,8 +313,8 @@ pub async fn nodes_answer_with_status(me: &PathName, view: &Topology, loads: &Lo
         }
     };
     // What the read's store calls took (the blocking pool's queue and run).
-    let io = crate::record_store::IoTime::default();
-    let reply = crate::record_store::io_time_with(io.clone(), tracing::Instrument::instrument(read, span.clone())).await;
+    let io = crate::blocking::IoTime::default();
+    let reply = crate::blocking::io_time_with(io.clone(), tracing::Instrument::instrument(read, span.clone())).await;
     span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
     span.record("outcome", reply.name());
     match &reply {

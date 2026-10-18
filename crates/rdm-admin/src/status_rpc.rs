@@ -1781,26 +1781,26 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::status_storage::StatusStorage for RacingPuts {
-        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_status(row).await
         }
-        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, crate::record_store::StorageError> {
+        async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, crate::storage_error::StorageError> {
             self.inner.mesh_statuses().await
         }
-        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_fabric_event(row).await
         }
-        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
             self.inner.fabric_events().await
         }
-        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::storage_error::StorageError> {
             self.inner.fabric_events_of(mesh).await
         }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::record_store::StorageError> { self.inner.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::record_store::StorageError> { self.inner.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::record_store::StorageError> { self.inner.remove_node_operation(row).await }
+        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.put_node_operation(row).await }
+        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.inner.node_operations().await }
+        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
 
-        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_declared(row).await?;
             match row.state {
                 NodeState::Stopped => self.ready_landed.notified().await,
@@ -1809,34 +1809,34 @@ mod tests {
             }
             Ok(())
         }
-        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::record_store::StorageError> {
+        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node_declared(node_id, incarnation_id).await
         }
-        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
+        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::storage_error::StorageError> {
             self.inner.node_declared().await
         }
-        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_silence(row).await
         }
-        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
+        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::storage_error::StorageError> {
             self.inner.node_silences().await
         }
-        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_exit(row).await
         }
-        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
             self.inner.node_exit(node_id, incarnation_id).await
         }
-        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::record_store::StorageError> {
+        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::storage_error::StorageError> {
             self.inner.mesh_status_held_of(mesh, row).await
         }
-        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_mesh_status_of(mesh, row).await
         }
-        async fn node_exit_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+        async fn node_exit_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::storage_error::StorageError> {
             self.inner.node_exit_of(mesh, node_id, incarnation_id).await
         }
-        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_exit_of(mesh, row).await
         }
     }

@@ -20,7 +20,8 @@
 use async_trait::async_trait;
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId};
 pub use rdm_client::NameHeld;
-use crate::record_store::{FileRecords, StorageError};
+use crate::record_store::FileRecords;
+use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -648,7 +649,7 @@ impl MeshNodes {
             None => {
                 let dir = self.base.join("tags").join(label);
                 let look = dir.clone();
-                let exists = crate::record_store::blocking_io(move || look.try_exists()).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
+                let exists = crate::blocking::blocking_io(move || look.try_exists()).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
                 if !exists {
                     return Ok(Vec::new());
                 }
@@ -865,7 +866,7 @@ impl FileNodesStorage {
     /// Every mesh that holds rows on the shared root, by name.
     async fn meshes_on_root(&self) -> Result<Vec<String>, StorageError> {
         let dir = self.root.dir().join("nodes");
-        crate::record_store::blocking_io(move || match std::fs::read_dir(&dir) {
+        crate::blocking::blocking_io(move || match std::fs::read_dir(&dir) {
             Ok(entries) => {
                 let mut names: Vec<String> = entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
                 names.sort();
@@ -1378,7 +1379,7 @@ mod tests {
 
     /// CONTRACT: a point read of a node row never waits on the disk on a runtime worker (the
     /// defect class that froze node-admins on 10-08: a worker blocked on the disk): it runs on the
-    /// blocking pool, as the row's write does (`record_store::blocking_io`). The row write runs
+    /// blocking pool, as the row's write does (`blocking::blocking_io`). The row write runs
     /// inline on every view install, the join door's among them, after this read of the key.
     /// The cell: a row file that is a FIFO holds the read until a writer comes; the runtime's only
     /// thread keeps running meanwhile, and the read answers the row.

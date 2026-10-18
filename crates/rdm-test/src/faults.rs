@@ -194,7 +194,7 @@ mod tests {
 
 use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
-use rdm_node::record_store::StorageError;
+use rdm_node::storage_error::StorageError;
 use rdm_node::storage::ConnectionsStorage;
 use std::sync::atomic::{AtomicU32, Ordering};
 

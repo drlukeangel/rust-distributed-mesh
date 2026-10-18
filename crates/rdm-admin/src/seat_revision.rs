@@ -118,11 +118,11 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
 }
 
 /// The data dirs under `data_root` recorded for `path` (`<path>-<node id>`). Read on the blocking
-/// pool (`record_store::blocking_io`); a root or entry that cannot be read is an error naming it,
+/// pool (`blocking::blocking_io`); a root or entry that cannot be read is an error naming it,
 /// never an empty answer.
 pub(crate) async fn recorded_dirs(data_root: &std::path::Path, path: &PathName) -> Result<Vec<std::path::PathBuf>, String> {
     let (root, prefix) = (data_root.to_path_buf(), format!("{path}-"));
-    crate::record_store::blocking_io(move || {
+    crate::blocking::blocking_io(move || {
         let named = |e: std::io::Error| format!("{}: {e}", root.display());
         let mut out = Vec::new();
         for entry in std::fs::read_dir(&root).map_err(named)? {
@@ -140,7 +140,7 @@ pub(crate) async fn recorded_dirs(data_root: &std::path::Path, path: &PathName) 
 /// that cannot be read is an error naming the file.
 pub(crate) async fn runtime_record(dir: &std::path::Path) -> Result<Option<rdm_core::RuntimeFact>, String> {
     let dir = dir.to_path_buf();
-    crate::record_store::blocking_io(move || rdm_core::RuntimeFact::read_record(&dir).transpose()).await
+    crate::blocking::blocking_io(move || rdm_core::RuntimeFact::read_record(&dir).transpose()).await
 }
 
 #[cfg(test)]

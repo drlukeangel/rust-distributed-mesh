@@ -14,7 +14,8 @@
 //! what it has applied (`status_rpc::SeatFold`).
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeStatus, PathName};
-use crate::record_store::{FileRecords, StorageError};
+use crate::record_store::FileRecords;
+use crate::storage_error::StorageError;
 use async_trait::async_trait;
 use rdm_core::status::{MeshState, NodeState};
 use serde::{Deserialize, Serialize};

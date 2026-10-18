@@ -5,55 +5,11 @@
 //! stored with its format tag; a file this build does not recognise (another format, or not a
 //! record at all) is refused by name, never read as a value.
 
+use crate::blocking::blocking_io;
+use crate::storage_error::StorageError;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-
-/// Why a storage read or write failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StorageError {
-    /// The file could not be read or written.
-    Io {
-        /// The file.
-        file: String,
-        /// Why it failed.
-        reason: String,
-    },
-    /// A write refused because this store's writer gave up its authority (a seat transfer's
-    /// cut-off, R14 item 4): it never reached the disk.
-    CutOff {
-        /// The file.
-        file: String,
-        /// The cut-off's reason.
-        reason: String,
-    },
-    /// A write refused because this writer does not hold the seat that writes the row (R14 item 2:
-    /// the writers are exactly the writer ladder): it never reached the disk.
-    NotSeatHolder {
-        /// The file.
-        file: String,
-        /// The seat and what the committed seat record says of this writer.
-        reason: String,
-    },
-    /// A file this build does not recognise: refused, never read as a value.
-    Unrecognised {
-        /// The file.
-        file: String,
-        /// Why it is not recognised.
-        reason: String,
-    },
-}
-
-impl std::fmt::Display for StorageError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io { file, reason } => write!(f, "{file}: {reason}"),
-            Self::CutOff { file, reason } => write!(f, "{file}: this store's writes are cut off: {reason}"),
-            Self::NotSeatHolder { file, reason } => write!(f, "{file}: this writer does not hold the seat that writes it: {reason}"),
-            Self::Unrecognised { file, reason } => write!(f, "{file} is not a record this build recognises: {reason}"),
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 struct Stored<T> {
@@ -905,102 +861,6 @@ fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool
     }
 }
 
-/// Run `f`, a blocking disk call (a write that ends in an fsync, a read, a directory made or looked
-/// at), on tokio's blocking pool. No
-/// worker thread waits on the disk, and no lock a worker could block on is held across it: a
-/// journal commit that takes seconds delays only the caller awaiting it. Inside [`io_time`] the call
-/// adds what it took to that work's [`IoTime`]: the wait from its issue until a blocking thread began
-/// it, and its run on that thread, including while the call is still queued or running if the caller
-/// awaiting it is cancelled.
-pub async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    let slot = std::sync::Arc::new(std::sync::Mutex::new(CallTiming {
-        issued: std::time::Instant::now(),
-        began: None,
-        finished: None,
-    }));
-    let _ = IO_TIME.try_with(|t| t.register(slot.clone()));
-    let slot_run = slot.clone();
-    let run = tokio::task::spawn_blocking(move || {
-        slot_run.lock().unwrap().began = Some(std::time::Instant::now());
-        let v = f();
-        slot_run.lock().unwrap().finished = Some(std::time::Instant::now());
-        v
-    });
-    match run.await {
-        Ok(v) => v,
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-        Err(e) => panic!("a blocking disk call was cancelled: {e}"),
-    }
-}
-
-tokio::task_local! {
-    /// The blocking time of the work [`io_time`] runs.
-    static IO_TIME: IoTime;
-}
-
-#[derive(Debug)]
-struct CallTiming {
-    issued: std::time::Instant,
-    began: Option<std::time::Instant>,
-    finished: Option<std::time::Instant>,
-}
-
-/// What the [`blocking_io`] calls of one piece of work took: how many there were, how long they
-/// waited for a blocking thread, and how long they ran on one. Shared with [`io_time_with`] so a
-/// step cancelled while a blocking call is still queued or running still records its count and time.
-#[derive(Debug, Default, Clone)]
-pub struct IoTime {
-    calls: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<std::sync::Mutex<CallTiming>>>>>,
-}
-
-impl IoTime {
-    fn register(&self, slot: std::sync::Arc<std::sync::Mutex<CallTiming>>) {
-        self.calls.lock().unwrap().push(slot);
-    }
-
-    fn totals(&self) -> (u64, std::time::Duration, std::time::Duration) {
-        let now = std::time::Instant::now();
-        let list = self.calls.lock().unwrap();
-        let mut queued = std::time::Duration::ZERO;
-        let mut ran = std::time::Duration::ZERO;
-        for slot in list.iter() {
-            let s = slot.lock().unwrap();
-            match (s.began, s.finished) {
-                (None, _) => queued += now.saturating_duration_since(s.issued),
-                (Some(b), None) => {
-                    queued += b.saturating_duration_since(s.issued);
-                    ran += now.saturating_duration_since(b);
-                }
-                (Some(b), Some(f)) => {
-                    queued += b.saturating_duration_since(s.issued);
-                    ran += f.saturating_duration_since(b);
-                }
-            }
-        }
-        (list.len() as u64, queued, ran)
-    }
-
-    /// How many blocking calls the work made (completed or in flight).
-    pub fn calls(&self) -> u64 {
-        self.calls.lock().unwrap().len() as u64
-    }
-
-    /// How long they waited, from issue, for a blocking thread to begin them, in milliseconds.
-    pub fn queued_ms(&self) -> u64 {
-        self.totals().1.as_millis() as u64
-    }
-
-    /// How long they ran on a blocking thread, in milliseconds.
-    pub fn ran_ms(&self) -> u64 {
-        self.totals().2.as_millis() as u64
-    }
-}
-
-/// Run `work`, recording its [`blocking_io`] calls into `io`, awaited on this task.
-pub async fn io_time_with<F: std::future::Future>(io: IoTime, work: F) -> F::Output {
-    IO_TIME.scope(io, work).await
-}
-
 
 #[cfg(test)]
 pub(crate) fn tempdir(tag: &str) -> PathBuf {
@@ -1090,6 +950,7 @@ pub(crate) fn op_waits_on_the_blocking_pool<S: Send + 'static, T: Send + 'static
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocking::{io_time_with, IoTime};
 
     /// A current-thread runtime whose blocking pool has one thread: a disk job queued behind a
     /// parked one stays issued and unfinished until the test releases the parked one.

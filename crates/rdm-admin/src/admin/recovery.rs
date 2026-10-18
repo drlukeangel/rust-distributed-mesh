@@ -858,7 +858,7 @@ mod hold_gate_tests {
 mod os_stopped_clear_tests {
     use super::*;
     use crate::model::{IncarnationId, MeshId, NodeId};
-    use crate::record_store::StorageError;
+    use crate::storage_error::StorageError;
     use crate::status_storage::*;
     use rdm_core::status::MeshState;
     use std::collections::HashMap;
@@ -884,9 +884,9 @@ mod os_stopped_clear_tests {
         async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
             self.0.fabric_events_of(mesh).await
         }
-        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::record_store::StorageError> { self.0.put_node_operation(row).await }
-        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::record_store::StorageError> { self.0.node_operations().await }
-        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::record_store::StorageError> { self.0.remove_node_operation(row).await }
+        async fn put_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.0.put_node_operation(row).await }
+        async fn node_operations(&self) -> Result<Vec<crate::status_storage::NodeOperationRow>, crate::storage_error::StorageError> { self.0.node_operations().await }
+        async fn remove_node_operation(&self, row: &crate::status_storage::NodeOperationRow) -> Result<(), crate::storage_error::StorageError> { self.0.remove_node_operation(row).await }
 
         async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
             self.0.put_node_declared(row).await

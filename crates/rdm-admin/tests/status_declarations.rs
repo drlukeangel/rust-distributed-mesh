@@ -73,49 +73,49 @@ struct Rows {
 
 #[async_trait::async_trait]
 impl NodesStorage for Rows {
-    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_runtime(row).await
     }
-    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::record_store::StorageError> {
+    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.runtimes().await
     }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::record_store::StorageError> {
+    async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.runtime(node_id, incarnation).await
     }
-    async fn own(&self) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_admin::record_store::StorageError> {
+    async fn own(&self) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
         self.inner.own().await
     }
-    async fn put_own(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_own(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_own(record).await
     }
-    async fn contacts(&self) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::record_store::StorageError> {
+    async fn contacts(&self) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
         self.inner.contacts().await
     }
-    async fn put_contact(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_contact(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_contact(record).await
     }
-    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn remove_contact(&self, mesh: &str, node_id: &NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.remove_contact(mesh, node_id).await
     }
-    async fn put_node_row(&self, row: &rdm_admin::storage::NodeRow) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::record_store::StorageError> {
+    async fn put_node_row(&self, row: &rdm_admin::storage::NodeRow) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
         self.inner.put_node_row(row).await
     }
-    async fn node_row_at(&self, name: &PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::record_store::StorageError> {
+    async fn node_row_at(&self, name: &PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_row_at(name).await
     }
-    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, rdm_admin::record_store::StorageError> {
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<PathName>, rdm_admin::storage_error::StorageError> {
         self.inner.node_row_name(mesh, node_id).await
     }
-    async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, rdm_admin::record_store::StorageError> {
+    async fn hold_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, rdm_admin::storage_error::StorageError> {
         self.inner.hold_node_row(name, holder).await
     }
-    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, rdm_admin::record_store::StorageError> {
+    async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, rdm_admin::storage_error::StorageError> {
         if self.refuse_release.swap(false, Ordering::SeqCst) {
-            return Err(rdm_admin::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() });
+            return Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() });
         }
         self.inner.release_node_row(name, holder).await
     }
-    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::record_store::StorageError> {
+    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
         self.inner.tagged(label).await
     }
 }
@@ -654,46 +654,46 @@ struct RefusingRows(MemoryNodesStorage);
 
 #[async_trait::async_trait]
 impl NodesStorage for RefusingRows {
-    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_runtime(&self, row: &rdm_admin::storage::RuntimeRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.put_runtime(row).await
     }
-    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::record_store::StorageError> {
+    async fn runtimes(&self) -> Result<Vec<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.0.runtimes().await
     }
-    async fn runtime(&self, node_id: &NodeId, incarnation: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::record_store::StorageError> {
+    async fn runtime(&self, node_id: &NodeId, incarnation: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::storage::RuntimeRow>, rdm_admin::storage_error::StorageError> {
         self.0.runtime(node_id, incarnation).await
     }
-    async fn own(&self) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_admin::record_store::StorageError> {
+    async fn own(&self) -> Result<Option<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
         self.0.own().await
     }
-    async fn put_own(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_own(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.put_own(record).await
     }
-    async fn contacts(&self) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::record_store::StorageError> {
+    async fn contacts(&self) -> Result<Vec<rdm_admin::storage::NodeRecord>, rdm_admin::storage_error::StorageError> {
         self.0.contacts().await
     }
-    async fn put_contact(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_contact(&self, record: &rdm_admin::storage::NodeRecord) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.put_contact(record).await
     }
-    async fn remove_contact(&self, mesh: &str, node_id: &rdm_core::NodeId) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn remove_contact(&self, mesh: &str, node_id: &rdm_core::NodeId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.remove_contact(mesh, node_id).await
     }
-    async fn put_node_row(&self, row: &rdm_admin::storage::NodeRow) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::record_store::StorageError> {
-        Err(rdm_admin::record_store::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
+    async fn put_node_row(&self, row: &rdm_admin::storage::NodeRow) -> Result<Result<(), rdm_admin::storage::NameHeld>, rdm_admin::storage_error::StorageError> {
+        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{}", row.name), reason: "disk refused the write".into() })
     }
-    async fn node_row_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::record_store::StorageError> {
+    async fn node_row_at(&self, name: &rdm_admin::model::PathName) -> Result<Option<rdm_admin::storage::NodeRow>, rdm_admin::storage_error::StorageError> {
         self.0.node_row_at(name).await
     }
-    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rdm_admin::model::PathName>, rdm_admin::record_store::StorageError> {
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rdm_admin::model::PathName>, rdm_admin::storage_error::StorageError> {
         self.0.node_row_name(mesh, node_id).await
     }
-    async fn hold_node_row(&self, name: &rdm_admin::model::PathName, _holder: &NodeId) -> Result<bool, rdm_admin::record_store::StorageError> {
-        Err(rdm_admin::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the hold".into() })
+    async fn hold_node_row(&self, name: &rdm_admin::model::PathName, _holder: &NodeId) -> Result<bool, rdm_admin::storage_error::StorageError> {
+        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the hold".into() })
     }
-    async fn release_node_row(&self, name: &rdm_admin::model::PathName, _holder: &rdm_admin::model::NodeId) -> Result<bool, rdm_admin::record_store::StorageError> {
-        Err(rdm_admin::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
+    async fn release_node_row(&self, name: &rdm_admin::model::PathName, _holder: &rdm_admin::model::NodeId) -> Result<bool, rdm_admin::storage_error::StorageError> {
+        Err(rdm_admin::storage_error::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }
-    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::record_store::StorageError> {
+    async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rdm_admin::storage_error::StorageError> {
         self.0.tagged(label).await
     }
 }

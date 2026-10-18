@@ -313,22 +313,22 @@ struct RefusingIndex {
 
 #[async_trait::async_trait]
 impl ConnectionsStorage for RefusingIndex {
-    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rdm_admin::storage_error::StorageError> {
         if self.refuse.fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
-            return Err(rdm_admin::record_store::StorageError::Io { file: "connections index".into(), reason: "refused by the cell".into() });
+            return Err(rdm_admin::storage_error::StorageError::Io { file: "connections index".into(), reason: "refused by the cell".into() });
         }
         self.inner.put_connection(fact).await
     }
-    async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::record_store::StorageError> {
+    async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.inner.connections().await
     }
-    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.remove_connection(index).await
     }
-    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.append_history(fact).await
     }
-    async fn history(&self) -> Result<Vec<NodeConnection>, rdm_admin::record_store::StorageError> {
+    async fn history(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.inner.history().await
     }
 }
@@ -404,20 +404,20 @@ struct SlowIndex(Arc<dyn ConnectionsStorage>);
 
 #[async_trait::async_trait]
 impl ConnectionsStorage for SlowIndex {
-    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rdm_admin::storage_error::StorageError> {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         self.0.put_connection(fact).await
     }
-    async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::record_store::StorageError> {
+    async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.0.connections().await
     }
-    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.remove_connection(index).await
     }
-    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.append_history(fact).await
     }
-    async fn history(&self) -> Result<Vec<NodeConnection>, rdm_admin::record_store::StorageError> {
+    async fn history(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.0.history().await
     }
 }
@@ -510,22 +510,22 @@ struct SlowFirstPut(rdm_admin::storage::MemoryConnectionsStorage);
 
 #[async_trait::async_trait]
 impl ConnectionsStorage for SlowFirstPut {
-    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_connection(&self, fact: &NodeConnection) -> Result<(), rdm_admin::storage_error::StorageError> {
         if fact.reason.as_deref() == Some("refused 0") {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
         self.0.put_connection(fact).await
     }
-    async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::record_store::StorageError> {
+    async fn connections(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.0.connections().await
     }
-    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn remove_connection(&self, index: &rdm_core::connections::ConnectionIndex) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.remove_connection(index).await
     }
-    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn append_history(&self, fact: &NodeConnection) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.0.append_history(fact).await
     }
-    async fn history(&self) -> Result<Vec<NodeConnection>, rdm_admin::record_store::StorageError> {
+    async fn history(&self) -> Result<Vec<NodeConnection>, rdm_admin::storage_error::StorageError> {
         self.0.history().await
     }
 }

@@ -259,7 +259,7 @@ pub enum MoveCommit {
 }
 
 /// Why a `fabric.storage` read or write failed.
-pub use crate::record_store::StorageError as FabricStorageError;
+pub use crate::storage_error::StorageError as FabricStorageError;
 
 /// node-admin's Fabric control state: each kind of row written on its own and never read back to be
 /// written again.
@@ -438,7 +438,7 @@ impl FileFabricStorage {
         refuse_retired(&own_data_dir.join(RETIRED_SEATS_DIR), &format!("the per-seat row format {RETIRED_SEAT_FORMAT} is retired: the leadership view is folded from the fabric's seat moves under {SEAT_MOVES_DIR}/")).await?;
         refuse_retired(&own_data_dir.join(RETIRED_HANDOVERS_DIR), &format!("the handover stage format {RETIRED_HANDOVER_FORMAT} is retired: node.fabric-primary.update is one seat move under {SEAT_MOVES_DIR}/")).await?;
         let meshes = own_data_dir.join("meshes");
-        let transfer_dirs = crate::record_store::blocking_io(move || -> Vec<std::path::PathBuf> {
+        let transfer_dirs = crate::blocking::blocking_io(move || -> Vec<std::path::PathBuf> {
             let mut dirs: Vec<std::path::PathBuf> = std::fs::read_dir(&meshes).map(|e| e.flatten().map(|e| e.path().join(REFUSED_TRANSFERS_DIR)).filter(|d| d.is_dir()).collect()).unwrap_or_default();
             dirs.sort();
             dirs
@@ -602,7 +602,7 @@ impl MoveStore {
 
 #[async_trait]
 impl crate::record_store::HeldStore for MoveStore {
-    async fn publish(&self) -> Result<crate::record_store::StorePublished, crate::record_store::StorageError> {
+    async fn publish(&self) -> Result<crate::record_store::StorePublished, crate::storage_error::StorageError> {
         let mut log = self.log.lock().await;
         let Some(rows) = self.held.lock().unwrap().take() else {
             return Ok(crate::record_store::StorePublished { store: SEAT_MOVES_DIR.into(), ..Default::default() });
@@ -619,7 +619,7 @@ impl crate::record_store::HeldStore for MoveStore {
                 }
                 let t = log.next;
                 if self.records.insert(&move_key(t), SEAT_MOVE_FORMAT, &row).await? {
-                    log.take(t, row.clone()).map_err(|reason| crate::record_store::StorageError::Unrecognised { file: format!("{SEAT_MOVES_DIR}/{}.json", move_key(t)), reason })?;
+                    log.take(t, row.clone()).map_err(|reason| crate::storage_error::StorageError::Unrecognised { file: format!("{SEAT_MOVES_DIR}/{}.json", move_key(t)), reason })?;
                     done.written += 1;
                     break;
                 }
@@ -661,7 +661,7 @@ fn move_key(t: u64) -> String {
 /// the handover stages, proposal Part C2). An empty or absent directory holds no row.
 async fn refuse_retired(dir: &std::path::Path, reason: &str) -> Result<(), FabricStorageError> {
     let (dir, reason) = (dir.to_path_buf(), reason.to_string());
-    crate::record_store::blocking_io(move || {
+    crate::blocking::blocking_io(move || {
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),

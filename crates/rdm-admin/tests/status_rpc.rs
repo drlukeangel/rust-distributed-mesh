@@ -572,9 +572,9 @@ impl Refusing {
     fn refusing() -> Arc<Self> {
         Arc::new(Self { inner: MemoryStatusStorage::default(), refuse: std::sync::atomic::AtomicBool::new(true) })
     }
-    fn check(&self) -> Result<(), rdm_admin::record_store::StorageError> {
+    fn check(&self) -> Result<(), rdm_admin::storage_error::StorageError> {
         if self.refuse.load(Ordering::SeqCst) {
-            return Err(rdm_admin::record_store::StorageError::Io { file: "status/refused.json".into(), reason: "the disk refused the put".into() });
+            return Err(rdm_admin::storage_error::StorageError::Io { file: "status/refused.json".into(), reason: "the disk refused the put".into() });
         }
         Ok(())
     }
@@ -582,62 +582,62 @@ impl Refusing {
 
 #[async_trait::async_trait]
 impl StatusStorage for Refusing {
-    async fn put_mesh_status(&self, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_mesh_status(&self, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check()?;
         self.inner.put_mesh_status(row).await
     }
-    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, rdm_admin::record_store::StorageError> {
+    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, MeshState>, rdm_admin::storage_error::StorageError> {
         self.inner.mesh_statuses().await
     }
-    async fn put_fabric_event(&self, row: &rdm_admin::status_storage::FabricEventRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_fabric_event(&self, row: &rdm_admin::status_storage::FabricEventRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check()?;
         self.inner.put_fabric_event(row).await
     }
-    async fn fabric_events(&self) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::record_store::StorageError> {
+    async fn fabric_events(&self) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
         self.inner.fabric_events().await
     }
-    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::record_store::StorageError> {
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::FabricEventRow>, rdm_admin::storage_error::StorageError> {
         self.inner.fabric_events_of(mesh).await
     }
-    async fn put_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::record_store::StorageError> { self.inner.put_node_operation(row).await }
-    async fn node_operations(&self) -> Result<Vec<rdm_admin::status_storage::NodeOperationRow>, rdm_admin::record_store::StorageError> { self.inner.node_operations().await }
-    async fn remove_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::record_store::StorageError> { self.inner.remove_node_operation(row).await }
+    async fn put_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> { self.inner.put_node_operation(row).await }
+    async fn node_operations(&self) -> Result<Vec<rdm_admin::status_storage::NodeOperationRow>, rdm_admin::storage_error::StorageError> { self.inner.node_operations().await }
+    async fn remove_node_operation(&self, row: &rdm_admin::status_storage::NodeOperationRow) -> Result<(), rdm_admin::storage_error::StorageError> { self.inner.remove_node_operation(row).await }
 
-    async fn put_node_declared(&self, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_node_declared(&self, row: &rdm_admin::status_storage::NodeDeclaredRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check()?;
         self.inner.put_node_declared(row).await
     }
-    async fn remove_node_declared(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn remove_node_declared(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check()?;
         self.inner.remove_node_declared(node_id, incarnation_id).await
     }
-    async fn node_declared(&self) -> Result<Vec<rdm_admin::status_storage::NodeDeclaredRow>, rdm_admin::record_store::StorageError> {
+    async fn node_declared(&self) -> Result<Vec<rdm_admin::status_storage::NodeDeclaredRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_declared().await
     }
-    async fn put_node_silence(&self, row: &rdm_admin::status_storage::NodeSilenceRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_node_silence(&self, row: &rdm_admin::status_storage::NodeSilenceRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check()?;
         self.inner.put_node_silence(row).await
     }
-    async fn node_silences(&self) -> Result<Vec<rdm_admin::status_storage::NodeSilenceRow>, rdm_admin::record_store::StorageError> {
+    async fn node_silences(&self) -> Result<Vec<rdm_admin::status_storage::NodeSilenceRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_silences().await
     }
-    async fn put_node_exit(&self, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_node_exit(&self, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.check()?;
         self.inner.put_node_exit(row).await
     }
-    async fn node_exit(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::record_store::StorageError> {
+    async fn node_exit(&self, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_exit(node_id, incarnation_id).await
     }
-    async fn mesh_status_held_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<bool, rdm_admin::record_store::StorageError> {
+    async fn mesh_status_held_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<bool, rdm_admin::storage_error::StorageError> {
         self.inner.mesh_status_held_of(mesh, row).await
     }
-    async fn put_mesh_status_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_mesh_status_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshStatusRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_mesh_status_of(mesh, row).await
     }
-    async fn node_exit_of(&self, mesh: &str, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::record_store::StorageError> {
+    async fn node_exit_of(&self, mesh: &str, node_id: &rdm_core::NodeId, incarnation_id: &rdm_core::IncarnationId) -> Result<Option<rdm_admin::status_storage::NodeExitRow>, rdm_admin::storage_error::StorageError> {
         self.inner.node_exit_of(mesh, node_id, incarnation_id).await
     }
-    async fn put_node_exit_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::record_store::StorageError> {
+    async fn put_node_exit_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeExitRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node_exit_of(mesh, row).await
     }
 }

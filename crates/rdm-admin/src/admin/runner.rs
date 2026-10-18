@@ -1242,7 +1242,7 @@ pub(crate) async fn resolve_bound(bindings: &rdm_core::binding::Validated, kind:
     let span = tracing::info_span!("rdm.node_admin.deployment.resolve.via-executable-hash", launch_id = kind.name(), elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
     let started = std::time::Instant::now();
     let bound = bindings.clone();
-    let resolved = crate::record_store::blocking_io(move || bound.resolve(kind)).await;
+    let resolved = crate::blocking::blocking_io(move || bound.resolve(kind)).await;
     span.record("elapsed_ms", started.elapsed().as_millis() as u64);
     span.record("outcome", if resolved.is_ok() { "hashed" } else { "refused" });
     span.in_scope(|| tracing::info!("the bound executable's bytes are hashed against its binding"));

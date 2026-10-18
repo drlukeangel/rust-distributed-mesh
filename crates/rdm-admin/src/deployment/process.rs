@@ -439,10 +439,10 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         self.domain.clone()
     }
 
-    /// The data dir, logs, records and the fork run on the blocking pool (`record_store::blocking_io`).
+    /// The data dir, logs, records and the fork run on the blocking pool (`blocking::blocking_io`).
     async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
         let (owned, children, failpoints) = (spec.clone(), self.children.clone(), self.failpoints.clone());
-        let (pid, start) = crate::record_store::blocking_io(move || spawn_on_disk(&owned, &children, &failpoints)).await?;
+        let (pid, start) = crate::blocking::blocking_io(move || spawn_on_disk(&owned, &children, &failpoints)).await?;
         // The pipeline registers this exact handle and makes its runtime fact
         // available to the birth (`MakeRuntimeFactAvailableToBirth`).
         Ok(self.handle(spec.deployment_id.clone(), pid, start))
@@ -504,10 +504,10 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         }
     }
 
-    /// The deployment record and /proc are read on the blocking pool (`record_store::blocking_io`).
+    /// The deployment record and /proc are read on the blocking pool (`blocking::blocking_io`).
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
         let owned = spec.clone();
-        Ok(match crate::record_store::blocking_io(move || find_on_disk(&owned)).await? {
+        Ok(match crate::blocking::blocking_io(move || find_on_disk(&owned)).await? {
             OnDisk::Running(pid, start) => Found::Running(self.handle(spec.deployment_id.clone(), pid, start)),
             OnDisk::Exited => Found::Exited,
             OnDisk::NeverLaunched => Found::NeverLaunched,
@@ -536,7 +536,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
         #[cfg(unix)]
         {
             let start = handle.start;
-            match crate::record_store::blocking_io(move || exact_group(PROC, pid, start)).await {
+            match crate::blocking::blocking_io(move || exact_group(PROC, pid, start)).await {
                 Group::Running => DeploymentStatus::Running,
                 Group::OsStopped => DeploymentStatus::OsStopped,
                 Group::Unreadable => DeploymentStatus::Unknown,
@@ -562,13 +562,13 @@ impl ProcessDeploymentProvider {
 
     /// Still running: a child of ours not yet seen to exit, or the live
     /// process `start` names (an adopted runtime).
-    /// /proc is read on the blocking pool (`record_store::blocking_io`).
+    /// /proc is read on the blocking pool (`blocking::blocking_io`).
     async fn running(&self, pid: u32, start: Option<u64>) -> bool {
         let child = self.children.lock().unwrap().get(&pid).filter(|l| start.is_none() || l.start == start).map(|l| l.exit.is_none());
         match child {
             Some(running) => running,
             #[cfg(unix)]
-            None => crate::record_store::blocking_io(move || is(pid, start)).await,
+            None => crate::blocking::blocking_io(move || is(pid, start)).await,
             #[cfg(not(unix))]
             None => false,
         }

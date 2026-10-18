@@ -1895,7 +1895,7 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
         let row = MeshStatusRow { mesh_id: rdm_admin::model::MeshId::mint(), state: rdm_core::status::MeshState::ReadyForTraffic };
         stores.apply(WriteCutOff::Set { reason: "node.primary.update:b1:node.stop:mesh1.admin.1".into(), mesh_seat: true, fabric_seat: false }).await;
         match stores.status.put_mesh_status(&row).await {
-            Err(rdm_admin::record_store::StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.primary.update:b1:node.stop:mesh1.admin.1"), "{reason}"),
+            Err(rdm_admin::storage_error::StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.primary.update:b1:node.stop:mesh1.admin.1"), "{reason}"),
             other => panic!("a status write after the moving seat's cut-off: {other:?}"),
         }
         stores.apply(WriteCutOff::Lift).await;

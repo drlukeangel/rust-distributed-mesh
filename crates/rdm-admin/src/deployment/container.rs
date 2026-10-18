@@ -457,7 +457,7 @@ impl ContainerDeploymentProvider {
             Ok(state) => state,
             Err(e) if inspect_says_absent(&e) => {
                 let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
-                return match crate::record_store::blocking_io(move || recorded_launch(&dir, &deployment)).await.map_err(named)? {
+                return match crate::blocking::blocking_io(move || recorded_launch(&dir, &deployment)).await.map_err(named)? {
                     true => Ok(Found::Exited),
                     false => Ok(Found::NeverLaunched),
                 };
@@ -516,12 +516,12 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         let admin = spec.node.kind == rdm_core::NodeKind::NodeAdmin;
         let disk = {
             let (data_dir, env) = (spec.data_dir.clone(), spec.env.clone());
-            crate::record_store::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
+            crate::blocking::blocking_io(move || launch_disk(&data_dir, admin, &env)).await.map_err(err)?
         };
         // Which launch the container realises, durable before the container exists, so one that runs
         // always has its record and a later `find` knows the launch ran once the container is removed.
         let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
-        crate::record_store::blocking_io(move || record_launch(&dir, &deployment)).await.map_err(err)?;
+        crate::blocking::blocking_io(move || record_launch(&dir, &deployment)).await.map_err(err)?;
         let name = container_name(spec);
         let data = spec.data_dir.display().to_string();
         let mut args: Vec<String> = vec![
@@ -629,7 +629,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             }
             let file = dir.join("container.log");
             let written = file.clone();
-            crate::record_store::blocking_io(move || std::fs::write(&written, [&logs.stdout[..], &logs.stderr[..]].concat()))
+            crate::blocking::blocking_io(move || std::fs::write(&written, [&logs.stdout[..], &logs.stderr[..]].concat()))
                 .await
                 .map_err(|e| err(format!("the container's logs cannot be kept at {}: {e}", file.display())))?;
         }

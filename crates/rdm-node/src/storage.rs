@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
 
 use crate::model::{IncarnationId, PathName};
-use crate::record_store::{FileRecords, StorageError};
+use crate::record_store::FileRecords;
+use crate::storage_error::StorageError;
 
 // ---------------------------------------------------------------- connections.storage
 
@@ -97,7 +98,7 @@ impl HistoryLog {
     async fn append_to_file(&self, lines: Vec<Vec<u8>>) -> Result<(), StorageError> {
         use std::io::Write as _;
         let path = self.path.clone();
-        crate::record_store::blocking_io(move || {
+        crate::blocking::blocking_io(move || {
             let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
             let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(io)?;
             for line in &lines {
@@ -180,7 +181,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
             .map(|r| (r.index(), r))
             .collect();
         let connections_root = self.2.clone();
-        let disk_rows = crate::record_store::blocking_io(move || {
+        let disk_rows = crate::blocking::blocking_io(move || {
             let mut rows = Vec::new();
             let node_dirs = match std::fs::read_dir(&connections_root) {
                 Ok(entries) => entries,
@@ -243,7 +244,7 @@ impl ConnectionsStorage for FileConnectionsStorage {
         let _g = self.1.append.lock().await;
         let held = self.1.held.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let file = path.clone();
-        let mut text = match crate::record_store::blocking_io(move || std::fs::read_to_string(&file)).await {
+        let mut text = match crate::blocking::blocking_io(move || std::fs::read_to_string(&file)).await {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),

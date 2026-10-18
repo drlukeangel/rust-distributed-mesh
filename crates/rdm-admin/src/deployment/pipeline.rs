@@ -325,10 +325,10 @@ impl CurrentRuntimeAdoption {
 
     /// [`Self::begin`], for a process that runs in a container of the container runtime whose
     /// control domain is `container_domain`: its runtime is that container, by immutable id.
-    /// Its receipts are written on the blocking pool (`record_store::blocking_io`).
+    /// Its receipts are written on the blocking pool (`blocking::blocking_io`).
     pub async fn begin_in(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
         let (node, data_dir, deployment_id) = (node.clone(), data_dir.to_path_buf(), deployment_id.clone());
-        crate::record_store::blocking_io(move || Self::begin_on_disk(&node, &data_dir, &deployment_id, container_domain)).await
+        crate::blocking::blocking_io(move || Self::begin_on_disk(&node, &data_dir, &deployment_id, container_domain)).await
     }
 
     fn begin_on_disk(node: &PathName, data_dir: &std::path::Path, deployment_id: &DeploymentId, container_domain: Option<String>) -> Result<Self, PipelineError> {
@@ -376,9 +376,9 @@ impl CurrentRuntimeAdoption {
 
     /// `PublishRuntimeFactAndCurrentRuntimeMetadata`: `publish` puts the fact
     /// and this data dir into the projection membership publishes.
-    /// Its receipt is written on the blocking pool (`record_store::blocking_io`).
+    /// Its receipt is written on the blocking pool (`blocking::blocking_io`).
     pub async fn publish(self, publish: impl FnOnce(&RuntimeFact, String) + Send + 'static) -> Result<RuntimeFact, PipelineError> {
-        crate::record_store::blocking_io(move || self.publish_on_disk(publish)).await
+        crate::blocking::blocking_io(move || self.publish_on_disk(publish)).await
     }
 
     fn publish_on_disk(mut self, publish: impl FnOnce(&RuntimeFact, String)) -> Result<RuntimeFact, PipelineError> {
@@ -430,10 +430,10 @@ impl CurrentRuntimeAdoption {
 
 /// The Day-0 adoption steps `data_dir` holds no `Complete` receipt for.
 /// `Err` names the receipts file when it cannot be read or parsed.
-/// Read on the blocking pool (`record_store::blocking_io`).
+/// Read on the blocking pool (`blocking::blocking_io`).
 pub(crate) async fn adoption_missing(data_dir: &std::path::Path) -> Result<Vec<&'static str>, String> {
     let file = data_dir.join(ADOPTION_RECEIPTS);
-    let receipts: Vec<AdoptionReceipt> = crate::record_store::blocking_io(move || match std::fs::read(&file) {
+    let receipts: Vec<AdoptionReceipt> = crate::blocking::blocking_io(move || match std::fs::read(&file) {
         Ok(b) => serde_json::from_slice(&b).map_err(|e| format!("{}: {e}", file.display())),
         // No receipt written: no step of the adoption is complete.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -1247,7 +1247,7 @@ impl DeploymentPipeline<'_> {
         struct StepGuard {
             span: tracing::Span,
             started: Instant,
-            io: crate::record_store::IoTime,
+            io: crate::blocking::IoTime,
             done: bool,
         }
         impl Drop for StepGuard {
@@ -1265,9 +1265,9 @@ impl DeploymentPipeline<'_> {
                 }
             }
         }
-        let io = crate::record_store::IoTime::default();
+        let io = crate::blocking::IoTime::default();
         let mut guard = StepGuard { span: span.clone(), started, io: io.clone(), done: false };
-        let r = crate::record_store::io_time_with(io.clone(), work.instrument(span.clone())).await;
+        let r = crate::blocking::io_time_with(io.clone(), work.instrument(span.clone())).await;
         guard.done = true;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
         if io.calls() > 0 {
@@ -1558,7 +1558,7 @@ impl DeploymentPipeline<'_> {
             let inherited_key = if inherits {
                 step_span.record("awaiting", "transport-key");
                 let dir = data_dir.clone();
-                let k = crate::record_store::blocking_io(move || load_transport_key(&dir)).await?;
+                let k = crate::blocking::blocking_io(move || load_transport_key(&dir)).await?;
                 done_awaits.push("transport-key");
                 step_span.record("awaited", done_awaits.join(",").as_str());
                 Some(k)
@@ -1726,8 +1726,8 @@ impl DeploymentPipeline<'_> {
         self.step(run, CreateStep::MakeRuntimeFactAvailableToBirth.name(), async {
             let f = exact()?;
             let (written, dir) = (f.clone(), data_dir.clone());
-            // Written and read back on the blocking pool (`record_store::blocking_io`).
-            let back = crate::record_store::blocking_io(move || written.write_record(&dir).map(|()| RuntimeFact::read_record(&dir))).await.map_err(|e| format!("{}: {e}", req.node))?;
+            // Written and read back on the blocking pool (`blocking::blocking_io`).
+            let back = crate::blocking::blocking_io(move || written.write_record(&dir).map(|()| RuntimeFact::read_record(&dir))).await.map_err(|e| format!("{}: {e}", req.node))?;
             match back {
                 Some(Ok(back)) if back == f => Ok(RuntimeEvidence::of(&f)),
                 Some(Ok(_)) => Err(format!("{}: {} reads back another runtime", req.node, data_dir.display())),
@@ -2425,7 +2425,7 @@ impl DeploymentPipeline<'_> {
             let exited_pid = handle.pid;
             let started = Instant::now();
             loop {
-                held = crate::record_store::blocking_io(move || {
+                held = crate::blocking::blocking_io(move || {
                     let mut still = Vec::with_capacity(held.len());
                     for h in held {
                         if !super::endpoint::released_by(h.1, h.2, exited_pid).map_err(|e| format!("cannot prove {} {} released: {e}", h.0, h.1))? {
@@ -2441,7 +2441,7 @@ impl DeploymentPipeline<'_> {
                 }
                 if Instant::now() >= until {
                     let elapsed = started.elapsed();
-                    let names = crate::record_store::blocking_io(move || {
+                    let names = crate::blocking::blocking_io(move || {
                         held.iter()
                             .map(|h| {
                                 let who = super::endpoint::port_holder(h.1, h.2).unwrap_or_else(|e| format!("holder unknown: {e}"));

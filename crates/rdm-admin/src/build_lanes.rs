@@ -11,7 +11,8 @@
 //! reader reconstructs the lane from its keys in order, each revision up to its seal, never past it.
 
 use crate::build_state::BuildFact;
-use crate::record_store::{FileRecords, StorageError};
+use crate::record_store::FileRecords;
+use crate::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -210,7 +211,7 @@ impl Lanes {
     async fn revisions(&self, lane: &LaneId) -> Result<Vec<u64>, StorageError> {
         let dir = lane.dir(&self.root);
         let opened: Vec<u64> = self.revs.lock().unwrap_or_else(|e| e.into_inner()).keys().filter(|(l, _)| l == lane).map(|(_, r)| *r).collect();
-        let mut found = crate::record_store::blocking_io(move || -> Result<Vec<u64>, StorageError> {
+        let mut found = crate::blocking::blocking_io(move || -> Result<Vec<u64>, StorageError> {
             let entries = match std::fs::read_dir(&dir) {
                 Ok(e) => e,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -521,8 +522,8 @@ mod tests {
                 appended += 1;
                 assert!(matches!(writer.append(&lane, 3, &fact(appended)).await.unwrap(), Appended::At(_)));
             }
-            let io = crate::record_store::IoTime::default();
-            let read = crate::record_store::io_time_with(io.clone(), reader.read_new(&lane)).await.unwrap();
+            let io = crate::blocking::IoTime::default();
+            let read = crate::blocking::io_time_with(io.clone(), reader.read_new(&lane)).await.unwrap();
             assert_eq!(read.len(), 40, "every fact appended since the last read is read");
             assert_eq!(io.calls(), round, "a read of one revision's run of 40 facts: {} blocking calls", io.calls());
         }
