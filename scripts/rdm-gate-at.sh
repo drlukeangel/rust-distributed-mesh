@@ -365,6 +365,9 @@ PYUI
 fi
 echo "dep-rules run:dep-rules" >> $D/jobs
 echo "address-lookup run:address-lookup" >> $D/jobs
+# i143 1b: no product source reaches the file store past the file backend (the release gate's
+# workspace-check compiles the same seam without the feature).
+echo "storage-seam run:storage-seam" >> $D/jobs
 
 one(){
     name=$1; shift; what="$*"; log=$D/$name.log; s=$(date +%s)

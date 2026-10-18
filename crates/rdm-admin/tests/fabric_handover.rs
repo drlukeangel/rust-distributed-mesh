@@ -1726,7 +1726,7 @@ fn a_commanded_update_whose_new_holders_process_is_gone_after_the_row_answers_th
 /// transfer.
 #[test]
 fn a_restore_of_the_mesh_seat_gives_back_the_mesh_rows_and_not_the_fabric_record() {
-    use rdm_admin::fabric_handover::SeatStores;
+    use rdm_admin::storage_backend::SeatStores;
     use rdm_admin::status_storage::{MeshStatusRow, StatusStorage as _};
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
@@ -1882,7 +1882,8 @@ async fn the_holders_build_decisions_are_held_while_it_writes_the_seat_row() {
 /// by name, naming the transfer; a lift gives the writes back.
 #[test]
 fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
-    use rdm_admin::fabric_handover::{SeatStores, WriteCutOff};
+    use rdm_admin::fabric_handover::WriteCutOff;
+    use rdm_admin::storage_backend::SeatStores;
     use rdm_admin::status_storage::{MeshStatusRow, StatusStorage};
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
@@ -1918,7 +1919,7 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
 /// mesh.delete it precedes refuses delete-mesh on its own Leaving row.
 #[test]
 fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
-    use rdm_admin::fabric_handover::SeatStores;
+    use rdm_admin::storage_backend::SeatStores;
     use rdm_admin::status_storage::{MeshStatusRow, StatusStorage as _};
     use rdm_admin::storage::MeshStorage as _;
     use rdm_core::status::MeshState;
@@ -1957,7 +1958,8 @@ fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
 /// kept and read in place of the store root, or written there after the seat row.
 #[test]
 fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
-    use rdm_admin::fabric_handover::{SeatStores, WriteCutOff};
+    use rdm_admin::fabric_handover::WriteCutOff;
+    use rdm_admin::storage_backend::SeatStores;
     use rdm_admin::fabric_storage::FabricStorage as _;
     use rdm_admin::status_storage::{MeshStatusRow, StatusStorage};
     use rdm_admin::storage::MeshStorage as _;
@@ -2009,7 +2011,8 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
 /// primary kept after the fabric seat moved, read in place of the store root or written there.
 #[test]
 fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_primary_of_another_mesh() {
-    use rdm_admin::fabric_handover::{SeatStores, WriteCutOff};
+    use rdm_admin::fabric_handover::WriteCutOff;
+    use rdm_admin::storage_backend::SeatStores;
     use rdm_admin::status_storage::{MeshStatusRow, StatusStorage as _};
     use rdm_admin::storage::{NodeRow, NodesStorage as _};
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();

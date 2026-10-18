@@ -70,7 +70,7 @@ pub async fn start_with_seams(
 /// it (the memory estate's), one process's memory.
 fn node_backend() -> Arc<dyn rdm_node::storage_backend::NodeStorageBackend> {
     #[cfg(feature = "file-backend")]
-    return Arc::new(rdm_node::storage_backend::FileNodeBackend);
+    return rdm_node::storage_backend::file_node_backend();
     #[cfg(not(feature = "file-backend"))]
     return Arc::new(rdm_node::storage_backend::MemoryNodeBackend);
 }

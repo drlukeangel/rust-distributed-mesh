@@ -8,5 +8,3 @@ pub use crate::fabric_handover::{
     update_operation, CutOffWrites, HandoverDoor, ProjectView, SourceFailure,
     UpdateLocks, UpdateMemo, WriteCutOff,
 };
-#[cfg(feature = "file-backend")]
-pub use crate::fabric_handover::SeatStores;

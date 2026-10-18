@@ -230,10 +230,10 @@ pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
 }
 
 /// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built
-/// from, on RDM standalone's storage backend ([`crate::storage_backend::FileBackend`]).
+/// from, on RDM standalone's storage backend ([`crate::storage_backend::file_backend`]).
 #[cfg(feature = "file-backend")]
 pub async fn start_with(cfg: AdminConfig, wiring: crate::wiring::Wiring) -> Result<Running, String> {
-    let storage = Arc::new(crate::storage_backend::FileBackend::at(cfg.store_dir.clone()));
+    let storage = crate::storage_backend::file_backend(cfg.store_dir.clone());
     start_on(cfg, wiring, storage).await
 }
 

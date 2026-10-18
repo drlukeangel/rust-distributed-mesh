@@ -9,5 +9,3 @@ pub use crate::fabric_rounds::{FabricRounds, NoScratchpad, RoundActions};
 pub use crate::fabric_rounds::StorePublication;
 pub use crate::fabric_state::{FabricState, FirstReady};
 pub use crate::fabric_storage::{FabricClaim, FabricIdentity, FabricStorage, MemoryFabricStorage};
-#[cfg(feature = "file-backend")]
-pub use crate::fabric_storage::FileFabricStorage;

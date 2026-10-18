@@ -125,7 +125,7 @@ pub async fn run_with_alpns(
     hydration: crate::app_hydration::Hydration,
     serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder,
 ) -> Result<()> {
-    run_on(role, std::sync::Arc::new(crate::storage_backend::FileNodeBackend), types, alpns, hydration, serve_app).await
+    run_on(role, crate::storage_backend::file_node_backend(), types, alpns, hydration, serve_app).await
 }
 
 /// [`run_with_alpns`] on `storage`: the node's connections rows and its commit-state action are the

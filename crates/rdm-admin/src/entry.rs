@@ -19,7 +19,7 @@ pub async fn run(service: &str) {
 /// called once with the configuration the environment produced, inside the runtime, before the
 /// admin starts.
 pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring) {
-    run_on(service, |cfg| std::sync::Arc::new(crate::storage_backend::FileBackend::at(cfg.store_dir.clone())), wiring).await
+    run_on(service, |cfg| crate::storage_backend::file_backend(cfg.store_dir.clone()), wiring).await
 }
 
 /// [`run_with`] on the backend `storage` makes from the configuration: every durable read and write

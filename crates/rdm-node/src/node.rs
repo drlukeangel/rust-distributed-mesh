@@ -342,7 +342,7 @@ pub async fn start_with_rafka_time_hydrating_alpns_and(
     types: &[&str],
     alpns: &[rdm_transport::connections::Alpn],
 ) -> Result<RunningNode> {
-    start_on(launch, Arc::new(crate::storage_backend::FileNodeBackend), rafka_time, hydration, decorate_storage, knob_fn, register, types, alpns).await
+    start_on(launch, crate::storage_backend::file_node_backend(), rafka_time, hydration, decorate_storage, knob_fn, register, types, alpns).await
 }
 
 /// [`start_with_rafka_time_hydrating_alpns_and`] on `storage`: the node's connections rows and its

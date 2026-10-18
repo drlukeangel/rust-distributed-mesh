@@ -49,6 +49,12 @@ impl NodeStorageBackend for FileNodeBackend {
     }
 }
 
+#[cfg(feature = "file-backend")]
+/// RDM standalone's node storage backend: the one a node's `start` variants and `run` construct.
+pub fn file_node_backend() -> Arc<dyn NodeStorageBackend> {
+    Arc::new(FileNodeBackend)
+}
+
 /// One process's rows: the node's connections held in memory, gone with its process, and nothing
 /// held for a later publication.
 #[derive(Debug, Default, Clone, Copy)]
