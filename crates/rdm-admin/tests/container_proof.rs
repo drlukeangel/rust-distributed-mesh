@@ -259,7 +259,7 @@ async fn containers_share_a_store_root_with_exclusive_inserts_atomic_replacement
     store_phase(&actors, &control, "reverse read and listing", Some("reverse"), &["writer-complete"]).await;
     let reads: usize = std::fs::read_to_string(control.join("reads")).unwrap().parse().unwrap();
     assert!(reads > 0, "the reader observed concurrent whole-file replacements");
-    println!("64 atomic 128 KiB replacements, file/directory fsync, {reads} whole-file reads, coherent insert/refusal/read/listing in both directions");
+    println!("3 atomic 128 KiB replacements, file/directory fsync, {reads} published whole-file reads, coherent insert/refusal/read/listing in both directions");
     assert_eq!(std::fs::read(store.join("created")).unwrap(), b"first");
     assert_eq!(std::fs::read(store.join("atomic")).unwrap(), vec![b'B'; 131072]);
     assert!(rdm_admin::store_root::qualify(rdm_admin::model::ProviderKind::Container).is_ok(), "the proven container provider is admitted at boot");
