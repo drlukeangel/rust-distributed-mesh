@@ -129,7 +129,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
     let launched = Launched(store_dir.clone());
     let started = std::time::Instant::now();
     rt.block_on(async {
-        let running = start_on(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, Arc::new(MemoryBackend)).await.expect("the Day-0 admin comes up on the memory backend");
+        let running = start_on(cfg, Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }, Arc::new(MemoryBackend::new())).await.expect("the Day-0 admin comes up on the memory backend");
         let me = running.digest.lock().unwrap().clone();
         tokio::time::timeout(WRONG, async {
             while !running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rdm_admin::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary) {

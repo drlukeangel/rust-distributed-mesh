@@ -1,6 +1,6 @@
 //! `mesh.storage`, `nodes.storage` and `connections.storage`: node-admin control state behind
 //! storage boundaries, beside `fabric.storage` (`crate::fabric_storage`) and `builds.storage`
-//! (`crate::build_state::FileJournal`).
+//! (`crate::build_state::LaneJournal`).
 //!
 //! Each boundary is a trait with a memory implementation (runs that need no restart survival) and
 //! a file implementation in the admin's own data dir (`crate::record_store`: one record per file,
@@ -158,8 +158,8 @@ pub trait MeshStorage: Send + Sync {
 /// A mesh store held in memory: the Mesh rows at their names, and each mesh's in-flight row.
 #[derive(Debug, Default)]
 pub struct MemoryMeshStorage {
-    rows: Mutex<BTreeMap<String, MeshRecord>>,
-    in_flight: Mutex<BTreeMap<String, InFlight>>,
+    rows: std::sync::Arc<Mutex<BTreeMap<String, MeshRecord>>>,
+    in_flight: std::sync::Arc<Mutex<BTreeMap<String, InFlight>>>,
     /// The mesh-primary seat's cut-off its Mesh row writes read.
     cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
 }
@@ -168,6 +168,11 @@ impl MemoryMeshStorage {
     /// An empty store whose Mesh row writes are cut off by `cut_off` (the mesh-primary seat's scope).
     pub fn cut_off_by(cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
         Self { cut_off, ..Self::default() }
+    }
+
+    /// Another admin's view of this store's rows, its Mesh row writes cut off by `cut_off`.
+    pub fn view(&self, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
+        Self { rows: self.rows.clone(), in_flight: self.in_flight.clone(), cut_off }
     }
 }
 
@@ -586,14 +591,14 @@ fn claim_against(held: Option<&NodeRow>, row: &NodeRow) -> Result<(), NameHeld> 
 /// A nodes store held in memory.
 #[derive(Debug, Default)]
 pub struct MemoryNodesStorage {
-    runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
-    own: Mutex<Option<NodeRecord>>,
-    contacts: Mutex<BTreeMap<NodeId, NodeRecord>>,
-    rows: Mutex<BTreeMap<String, NodeRow>>,
+    /// The admin's own rows (the file backend's data dir): the runtimes it started and its own row.
+    local: std::sync::Arc<LocalNodeRows>,
+    contacts: std::sync::Arc<Mutex<BTreeMap<NodeId, NodeRecord>>>,
+    rows: std::sync::Arc<Mutex<BTreeMap<String, NodeRow>>>,
     /// The node row's id index: each node's row's `path.name`, kept with `rows` under its lock.
-    ids: Mutex<BTreeMap<NodeId, PathName>>,
+    ids: std::sync::Arc<Mutex<BTreeMap<NodeId, PathName>>>,
     /// The node row's tags index: per label, the nodes carrying it, kept with `rows` under its lock.
-    tags: Mutex<BTreeMap<String, BTreeSet<NodeId>>>,
+    tags: std::sync::Arc<Mutex<BTreeMap<String, BTreeSet<NodeId>>>>,
     /// The mesh of the admin whose store this is: its rows are the mesh-primary seat's to write,
     /// every other mesh's the fabric-primary seat's.
     own_mesh: String,
@@ -601,11 +606,31 @@ pub struct MemoryNodesStorage {
     cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>,
 }
 
+/// One admin's own node rows in a memory store: what the file backend keeps in its data dir.
+#[derive(Debug, Default)]
+pub struct LocalNodeRows {
+    runtimes: Mutex<BTreeMap<String, RuntimeRow>>,
+    own: Mutex<Option<NodeRecord>>,
+}
+
+impl LocalNodeRows {
+    /// The admin's own row, when one was put.
+    pub fn own(&self) -> Option<NodeRecord> {
+        self.own.lock().unwrap().clone()
+    }
+}
+
 impl MemoryNodesStorage {
     /// An empty store of an admin of `own_mesh`, whose node row and contact writes are cut off by
     /// `cut_off`.
     pub fn of_mesh(own_mesh: &str, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
         Self { own_mesh: own_mesh.to_string(), cut_off, ..Self::default() }
+    }
+
+    /// Another admin's view of this store's shared rows (node rows, their indexes, contacts): an admin
+    /// of `own_mesh` whose own rows are `local`, its writes cut off by `cut_off`.
+    pub fn view(&self, own_mesh: &str, local: std::sync::Arc<LocalNodeRows>, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
+        Self { local, contacts: self.contacts.clone(), rows: self.rows.clone(), ids: self.ids.clone(), tags: self.tags.clone(), own_mesh: own_mesh.to_string(), cut_off }
     }
 
     /// A write of a row of `mesh` to `file`: refused while the seat that writes it is cut off.
@@ -643,20 +668,20 @@ fn index_put(ids: &mut BTreeMap<NodeId, PathName>, previous: Option<&NodeRow>, r
 #[async_trait]
 impl NodesStorage for MemoryNodesStorage {
     async fn put_runtime(&self, row: &RuntimeRow) -> Result<(), StorageError> {
-        self.runtimes.lock().unwrap().insert(row.key(), row.clone());
+        self.local.runtimes.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
     }
     async fn runtimes(&self) -> Result<Vec<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().values().cloned().collect())
+        Ok(self.local.runtimes.lock().unwrap().values().cloned().collect())
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
+        Ok(self.local.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
-        Ok(self.own.lock().unwrap().clone())
+        Ok(self.local.own.lock().unwrap().clone())
     }
     async fn put_own(&self, record: &NodeRecord) -> Result<(), StorageError> {
-        *self.own.lock().unwrap() = Some(record.clone());
+        *self.local.own.lock().unwrap() = Some(record.clone());
         Ok(())
     }
     async fn contacts(&self) -> Result<Vec<NodeRecord>, StorageError> {

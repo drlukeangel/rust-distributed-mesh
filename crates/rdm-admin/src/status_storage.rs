@@ -407,36 +407,31 @@ fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId,
     out
 }
 
-/// A status store held in memory.
+/// One mesh's status rows in a memory store.
+#[derive(Debug, Default)]
+struct MeshRows {
+    meshes: Vec<MeshStatusRow>,
+    events: Vec<FabricEventRow>,
+    declared: std::collections::BTreeMap<String, NodeDeclaredRow>,
+    operations: std::collections::BTreeMap<String, NodeOperationRow>,
+    silences: std::collections::BTreeMap<String, NodeSilenceRow>,
+    exits: std::collections::BTreeMap<String, NodeExitRow>,
+    held_running: std::collections::BTreeMap<String, NodeHeldRunningRow>,
+    os_stopped: std::collections::BTreeMap<String, NodeOsStoppedRow>,
+    data_dir_lost: std::collections::BTreeMap<String, NodeDataDirLostRow>,
+    data_dir_unreadable: std::collections::BTreeMap<String, NodeDataDirUnreadableRow>,
+    /// The `path.name` index of the data-dir-lost rows: the latest row at each path.name.
+    data_dir_lost_at: std::collections::BTreeMap<String, NodeDataDirLostRow>,
+    /// The `path.name` index of the data-dir-unreadable rows.
+    data_dir_unreadable_at: std::collections::BTreeMap<String, NodeDataDirUnreadableRow>,
+}
+
+/// A status store held in memory: every mesh's status rows, keyed by the mesh, shared by every admin
+/// that opens the one memory store ([`Self::view`]). An admin's own rows are its own mesh's; a store
+/// that names no mesh of its own (a fixture's) also finds its own rows in a read of a named mesh.
 #[derive(Debug, Default)]
 pub struct MemoryStatusStorage {
-    meshes: Mutex<Vec<MeshStatusRow>>,
-    events: Mutex<Vec<FabricEventRow>>,
-    declared: Mutex<std::collections::BTreeMap<String, NodeDeclaredRow>>,
-    operations: Mutex<std::collections::BTreeMap<String, NodeOperationRow>>,
-    silences: Mutex<std::collections::BTreeMap<String, NodeSilenceRow>>,
-    exits: Mutex<std::collections::BTreeMap<String, NodeExitRow>>,
-    /// The Mesh status rows of each mesh named through the `_of` puts: a store held in memory names
-    /// no mesh of its own, so every named mesh keeps its own rows, and a read of a named mesh's rows
-    /// also finds this store's own (their keys, a mesh id or an exact birth, are fabric-unique).
-    meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
-    /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
-    exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
-    /// The held-running rows of each mesh named through the `_of` reads and puts, by row key.
-    held_running_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeHeldRunningRow>>>,
-    /// The os-stopped rows of each mesh named through the `_of` reads and puts, by row key.
-    os_stopped_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeOsStoppedRow>>>,
-    /// The data-dir-lost rows of each mesh named through the `_of` reads and puts, by row key.
-    data_dir_lost_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
-    /// The data-dir-unreadable rows of each mesh named through the `_of` reads and puts, by row key.
-    data_dir_unreadable_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirUnreadableRow>>>,
-    /// The `path.name` index of each mesh's data-dir-lost rows: the latest row at each path.name.
-    data_dir_lost_at: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
-    /// The `path.name` index of each mesh's data-dir-unreadable rows.
-    data_dir_unreadable_at: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirUnreadableRow>>>,
-    /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
-    /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
-    events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
+    rows: std::sync::Arc<Mutex<std::collections::BTreeMap<String, MeshRows>>>,
     /// The mesh of the admin whose store this is: its rows are the mesh-primary seat's to write,
     /// every other mesh's the fabric-primary seat's.
     own_mesh: String,
@@ -450,6 +445,12 @@ impl MemoryStatusStorage {
         Self { own_mesh: own_mesh.to_string(), cut_off, ..Self::default() }
     }
 
+    /// Another admin's view of this store's rows: an admin of `own_mesh`, its writes cut off by
+    /// `cut_off`.
+    pub fn view(&self, own_mesh: &str, cut_off: std::sync::Arc<crate::fabric_handover::SeatCutOff>) -> Self {
+        Self { rows: self.rows.clone(), own_mesh: own_mesh.to_string(), cut_off }
+    }
+
     /// A write to this store's own `store`: refused while the mesh-primary seat's writes are cut off.
     fn own_write(&self, store: &str) -> Result<(), StorageError> {
         self.cut_off.mesh_write(|| format!("status/{}/{store}", self.own_mesh))
@@ -461,15 +462,32 @@ impl MemoryStatusStorage {
         self.cut_off.mesh_row_write(&self.own_mesh, mesh, || format!("status/{mesh}/{store}"))
     }
 
+    /// `f` over `mesh`'s rows, under the store's lock.
+    fn of<T>(&self, mesh: &str, f: impl FnOnce(&mut MeshRows) -> T) -> T {
+        f(self.rows.lock().unwrap().entry(mesh.to_string()).or_default())
+    }
+
+    /// `f` over this store's own rows.
+    fn own<T>(&self, f: impl FnOnce(&mut MeshRows) -> T) -> T {
+        self.of(&self.own_mesh.clone(), f)
+    }
+
+    /// `read` of `mesh`'s rows, then, for a store that names no mesh of its own, of its own rows.
+    fn read_of<T>(&self, mesh: &str, read: impl Fn(&MeshRows) -> Option<T>) -> Option<T> {
+        let rows = self.rows.lock().unwrap();
+        let named = rows.get(mesh).and_then(&read);
+        named.or_else(|| if self.own_mesh.is_empty() { rows.get("").and_then(&read) } else { None })
+    }
+
     /// Keep `row` among the status rows of the mesh named `mesh`, as that mesh's writer puts its own
-    /// (the fabric-primary's ready-for-traffic row among its mesh's rows): another mesh's rows on the
-    /// store root, read by name, never listed as this store's own.
+    /// (the fabric-primary's ready-for-traffic row among its mesh's rows): another mesh's rows, read by
+    /// name, never listed as this store's own.
     pub fn put_fabric_event_of(&self, mesh: &str, row: &FabricEventRow) {
-        let mut named = self.events_named.lock().unwrap();
-        let rows = named.entry(mesh.to_string()).or_default();
-        if !rows.contains(row) {
-            rows.push(row.clone());
-        }
+        self.of(mesh, |r| {
+            if !r.events.contains(row) {
+                r.events.push(row.clone());
+            }
+        })
     }
 }
 
@@ -477,169 +495,169 @@ impl MemoryStatusStorage {
 impl StatusStorage for MemoryStatusStorage {
     async fn put_mesh_status(&self, row: &MeshStatusRow) -> Result<(), StorageError> {
         self.own_write("meshes")?;
-        let mut m = self.meshes.lock().unwrap();
-        if !m.contains(row) {
-            m.push(row.clone());
-        }
+        self.own(|r| {
+            if !r.meshes.contains(row) {
+                r.meshes.push(row.clone());
+            }
+        });
         Ok(())
     }
     async fn mesh_statuses(&self) -> Result<HashMap<MeshId, MeshState>, StorageError> {
-        Ok(fold_meshes(self.meshes.lock().unwrap().clone()))
+        Ok(fold_meshes(self.own(|r| r.meshes.clone())))
     }
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError> {
         self.own_write("fabric")?;
-        let mut e = self.events.lock().unwrap();
-        if !e.contains(row) {
-            e.push(row.clone());
-        }
+        self.own(|r| {
+            if !r.events.contains(row) {
+                r.events.push(row.clone());
+            }
+        });
         Ok(())
     }
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
-        Ok(self.events.lock().unwrap().clone())
+        Ok(self.own(|r| r.events.clone()))
     }
     async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
-        // A store held in memory names no mesh of its own: a named mesh's rows, and this store's own.
-        let mut rows = self.events_named.lock().unwrap().get(mesh).cloned().unwrap_or_default();
-        for row in self.events.lock().unwrap().iter() {
-            if !rows.contains(row) {
-                rows.push(row.clone());
+        let mut rows = self.of(mesh, |r| r.events.clone());
+        if self.own_mesh.is_empty() {
+            for row in self.own(|r| r.events.clone()) {
+                if !rows.contains(&row) {
+                    rows.push(row);
+                }
             }
         }
         Ok(rows)
     }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
         self.own_write("declared")?;
-        self.declared.lock().unwrap().insert(row.key(), row.clone());
+        self.own(|r| r.declared.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         self.own_write("declared")?;
-        let mut d = self.declared.lock().unwrap();
-        for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
-            d.remove(&k);
-        }
+        self.own(|r| {
+            for k in NodeDeclaredRow::keys_of_birth(node_id, incarnation_id) {
+                r.declared.remove(&k);
+            }
+        });
         Ok(())
     }
     async fn node_declared(&self) -> Result<Vec<NodeDeclaredRow>, StorageError> {
-        Ok(self.declared.lock().unwrap().values().cloned().collect())
+        Ok(self.own(|r| r.declared.values().cloned().collect()))
     }
     async fn put_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
         self.own_write("operations")?;
-        self.operations.lock().unwrap().insert(row.key(), row.clone());
+        self.own(|r| r.operations.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn node_operations(&self) -> Result<Vec<NodeOperationRow>, StorageError> {
-        Ok(self.operations.lock().unwrap().values().cloned().collect())
+        Ok(self.own(|r| r.operations.values().cloned().collect()))
     }
     async fn remove_node_operation(&self, row: &NodeOperationRow) -> Result<(), StorageError> {
         self.own_write("operations")?;
-        self.operations.lock().unwrap().remove(&row.key());
+        self.own(|r| r.operations.remove(&row.key()));
         Ok(())
     }
     async fn put_node_silence(&self, row: &NodeSilenceRow) -> Result<(), StorageError> {
         self.own_write("silence")?;
-        self.silences.lock().unwrap().insert(row.key(), row.clone());
+        self.own(|r| r.silences.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn node_silences(&self) -> Result<Vec<NodeSilenceRow>, StorageError> {
-        Ok(self.silences.lock().unwrap().values().cloned().collect())
+        Ok(self.own(|r| r.silences.values().cloned().collect()))
     }
     async fn put_node_exit(&self, row: &NodeExitRow) -> Result<(), StorageError> {
         self.own_write("exits")?;
-        self.exits.lock().unwrap().insert(row.key(), row.clone());
+        self.own(|r| r.exits.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
-        Ok(self.exits.lock().unwrap().get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned())
+        Ok(self.own(|r| r.exits.get(&NodeExitRow::key_of(node_id, incarnation_id)).cloned()))
     }
     async fn mesh_status_held_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError> {
-        Ok(self.meshes_named.lock().unwrap().get(mesh).is_some_and(|rows| rows.contains(row)) || self.meshes.lock().unwrap().contains(row))
+        Ok(self.read_of(mesh, |r| r.meshes.contains(row).then_some(())).is_some())
     }
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError> {
         self.row_write(mesh, "meshes")?;
-        let mut named = self.meshes_named.lock().unwrap();
-        let rows = named.entry(mesh.to_string()).or_default();
-        if !rows.contains(row) {
-            rows.push(row.clone());
-        }
+        self.of(mesh, |r| {
+            if !r.meshes.contains(row) {
+                r.meshes.push(row.clone());
+            }
+        });
         Ok(())
     }
     async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeExitRow>, StorageError> {
         let key = NodeExitRow::key_of(node_id, incarnation_id);
-        let named = self.exits_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned());
-        Ok(named.or_else(|| self.exits.lock().unwrap().get(&key).cloned()))
+        Ok(self.read_of(mesh, |r| r.exits.get(&key).cloned()))
     }
     async fn put_node_exit_of(&self, mesh: &str, row: &NodeExitRow) -> Result<(), StorageError> {
         self.row_write(mesh, "exits")?;
-        self.exits_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        self.of(mesh, |r| r.exits.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeHeldRunningRow>, StorageError> {
         let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
-        Ok(self.held_running_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+        Ok(self.of(mesh, |r| r.held_running.get(&key).cloned()))
     }
     async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
         self.row_write(mesh, "held-running")?;
-        self.held_running_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        self.of(mesh, |r| r.held_running.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         self.row_write(mesh, "held-running")?;
-        let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
-        if let Some(rows) = self.held_running_named.lock().unwrap().get_mut(mesh) {
-            rows.remove(&key);
-        }
+        self.of(mesh, |r| r.held_running.remove(&NodeHeldRunningRow::key_of(node_id, incarnation_id)));
         Ok(())
     }
     async fn node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeOsStoppedRow>, StorageError> {
         let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
-        Ok(self.os_stopped_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+        Ok(self.of(mesh, |r| r.os_stopped.get(&key).cloned()))
     }
     async fn put_node_os_stopped_of(&self, mesh: &str, row: &NodeOsStoppedRow) -> Result<(), StorageError> {
         self.row_write(mesh, "os-stopped")?;
-        self.os_stopped_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        self.of(mesh, |r| r.os_stopped.insert(row.key(), row.clone()));
         Ok(())
     }
     async fn remove_node_os_stopped_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<bool, StorageError> {
         self.row_write(mesh, "os-stopped")?;
-        let key = NodeOsStoppedRow::key_of(node_id, incarnation_id);
-        Ok(self.os_stopped_named.lock().unwrap().get_mut(mesh).and_then(|rows| rows.remove(&key)).is_some())
+        Ok(self.of(mesh, |r| r.os_stopped.remove(&NodeOsStoppedRow::key_of(node_id, incarnation_id))).is_some())
     }
     async fn node_data_dir_lost_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirLostRow>, StorageError> {
         let key = NodeDataDirLostRow::key_of(node_id, incarnation_id);
-        Ok(self.data_dir_lost_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+        Ok(self.of(mesh, |r| r.data_dir_lost.get(&key).cloned()))
     }
     async fn node_data_dir_lost_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirLostRow>, StorageError> {
-        Ok(self.data_dir_lost_at.lock().unwrap().get(mesh).and_then(|rows| rows.get(&name.to_string()).cloned()))
+        Ok(self.of(mesh, |r| r.data_dir_lost_at.get(&name.to_string()).cloned()))
     }
     async fn put_node_data_dir_lost_of(&self, mesh: &str, row: &NodeDataDirLostRow) -> Result<(), StorageError> {
         self.row_write(mesh, "data-dir-lost")?;
-        self.data_dir_lost_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
-        self.data_dir_lost_at.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.name.to_string(), row.clone());
+        self.of(mesh, |r| {
+            r.data_dir_lost.insert(row.key(), row.clone());
+            r.data_dir_lost_at.insert(row.name.to_string(), row.clone());
+        });
         Ok(())
     }
     async fn node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
         let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
-        Ok(self.data_dir_unreadable_named.lock().unwrap().get(mesh).and_then(|rows| rows.get(&key).cloned()))
+        Ok(self.of(mesh, |r| r.data_dir_unreadable.get(&key).cloned()))
     }
     async fn node_data_dir_unreadable_at(&self, mesh: &str, name: &PathName) -> Result<Option<NodeDataDirUnreadableRow>, StorageError> {
-        Ok(self.data_dir_unreadable_at.lock().unwrap().get(mesh).and_then(|rows| rows.get(&name.to_string()).cloned()))
+        Ok(self.of(mesh, |r| r.data_dir_unreadable_at.get(&name.to_string()).cloned()))
     }
     async fn put_node_data_dir_unreadable_of(&self, mesh: &str, row: &NodeDataDirUnreadableRow) -> Result<(), StorageError> {
         self.row_write(mesh, "data-dir-unreadable")?;
-        self.data_dir_unreadable_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
-        self.data_dir_unreadable_at.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.name.to_string(), row.clone());
+        self.of(mesh, |r| {
+            r.data_dir_unreadable.insert(row.key(), row.clone());
+            r.data_dir_unreadable_at.insert(row.name.to_string(), row.clone());
+        });
         Ok(())
     }
     async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError> {
         self.row_write(mesh, "data-dir-unreadable")?;
-        let key = NodeDataDirUnreadableRow::key_of(node_id, incarnation_id);
-        if let Some(rows) = self.data_dir_unreadable_named.lock().unwrap().get_mut(mesh) {
-            rows.remove(&key);
-        }
-        if let Some(rows) = self.data_dir_unreadable_at.lock().unwrap().get_mut(mesh) {
-            rows.remove(&name.to_string());
-        }
+        self.of(mesh, |r| {
+            r.data_dir_unreadable.remove(&NodeDataDirUnreadableRow::key_of(node_id, incarnation_id));
+            r.data_dir_unreadable_at.remove(&name.to_string());
+        });
         Ok(())
     }
 }

@@ -111,7 +111,7 @@ impl StorageBackend for FileBackend {
         let fabric = Arc::new(crate::fabric_storage::FileFabricStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let meshes = Arc::new(crate::storage::FileMeshStorage::open(&root, &scope.writer).await.map_err(storage_err)?);
         let nodes = Arc::new(crate::storage::FileNodesStorage::open(&scope.data_dir, &root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
-        let builds = Arc::new(crate::build_state::FileJournal::open_on_root(&root, &scope.data_dir, &scope.own_mesh, &scope.writer).await.map_err(|e| e.to_string())?);
+        let builds = Arc::new(crate::build_state::LaneJournal::open_on_root(&root, &scope.data_dir, &scope.own_mesh, &scope.writer).await.map_err(|e| e.to_string())?);
         let status = Arc::new(crate::status_storage::FileStatusStorage::open(&root, &scope.own_mesh, &scope.writer).await.map_err(storage_err)?);
         let cut_off_writes = Arc::new(SeatStores { mesh: meshes.clone(), nodes: nodes.clone(), fabric: fabric.clone(), status: status.clone() }).cut_off_writes();
         let connections: OpenConnections = {
@@ -272,11 +272,36 @@ impl SeatStores {
     }
 }
 
-/// One process's rows: every boundary held in memory, written by this admin alone and gone with its
-/// process. An admin on it is never started on an inherited root. A seat transfer cuts off the
-/// moving seats' writes and the journal refuses a stale seat's facts by name, as on the file backend.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct MemoryBackend;
+/// One process's memory store: every boundary's rows held in memory, gone with the process. Every
+/// admin that opens it ([`StorageBackend::open`]) is one writer of the one store, as every admin
+/// that opens a store dir is on the file backend: the Fabric, Mesh, node, status and connections rows
+/// and the Build lanes are shared; its own row, its runtimes and its attempts' contexts are its own;
+/// a seat transfer cuts off the moving seats' writes, and the journal refuses a stale seat's facts by
+/// name, as on the file backend.
+#[derive(Default)]
+pub struct MemoryBackend {
+    fabric: crate::fabric_storage::MemoryFabricStorage,
+    meshes: crate::storage::MemoryMeshStorage,
+    nodes: crate::storage::MemoryNodesStorage,
+    status: crate::status_storage::MemoryStatusStorage,
+    lanes: Arc<crate::build_lanes::MemoryLaneKeys>,
+    /// Each node's connections rows, by its `path.name`.
+    connections: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Arc<crate::storage::MemoryConnectionsStorage>>>>,
+    /// Each admin's own rows, by its data dir.
+    local: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<crate::storage::LocalNodeRows>>>,
+}
+
+impl MemoryBackend {
+    /// An empty memory store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The own rows of the admin whose data dir is `data_dir`.
+    fn local(&self, data_dir: &Path) -> Arc<crate::storage::LocalNodeRows> {
+        self.local.lock().unwrap_or_else(|e| e.into_inner()).entry(data_dir.to_path_buf()).or_default().clone()
+    }
+}
 
 #[async_trait]
 impl StorageBackend for MemoryBackend {
@@ -287,16 +312,14 @@ impl StorageBackend for MemoryBackend {
         }
     }
 
-    /// A memory admin's data dir holds no row: every start is a new admin's.
-    async fn own_row(&self, _data_dir: &Path, _writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
-        Ok(None)
+    async fn own_row(&self, data_dir: &Path, _writer: &IncarnationId) -> Result<Option<NodeRecord>, StorageError> {
+        Ok(self.local(data_dir).own())
     }
 
     async fn open(&self, scope: &StorageScope, embedding: Option<Arc<dyn RoundActions>>) -> Result<StorageBoundaries, String> {
-        // One cut-off every memory store reads at its writes: a seat transfer cuts off the moving
-        // seats' scopes and refuses each later write by name, as the file stores do.
+        // This admin's cut-off, which every memory store it opened reads at its writes: a seat
+        // transfer cuts off the moving seats' scopes and refuses each later write by name.
         let cut_off = Arc::new(crate::fabric_handover::SeatCutOff::default());
-        let connections: OpenConnections = Arc::new(|_name: PathName| Box::pin(async { Ok(Arc::new(crate::storage::MemoryConnectionsStorage::default()) as Arc<dyn ConnectionsStorage>) }));
         let cut_off_writes: CutOffWrites = {
             let cut_off = cut_off.clone();
             Arc::new(move |c| {
@@ -304,13 +327,20 @@ impl StorageBackend for MemoryBackend {
                 Box::pin(async {})
             })
         };
+        let connections: OpenConnections = {
+            let held = self.connections.clone();
+            Arc::new(move |name: PathName| {
+                let rows = held.lock().unwrap_or_else(|e| e.into_inner()).entry(name.to_string()).or_default().clone();
+                Box::pin(async move { Ok(rows as Arc<dyn ConnectionsStorage>) })
+            })
+        };
         Ok(StorageBoundaries {
-            fabric: Arc::new(crate::fabric_storage::MemoryFabricStorage::cut_off_by(cut_off.clone())),
-            meshes: Arc::new(crate::storage::MemoryMeshStorage::cut_off_by(cut_off.clone())),
-            nodes: Arc::new(crate::storage::MemoryNodesStorage::of_mesh(&scope.own_mesh, cut_off.clone())),
-            status: Arc::new(crate::status_storage::MemoryStatusStorage::of_mesh(&scope.own_mesh, cut_off)),
+            fabric: Arc::new(self.fabric.view(cut_off.clone())),
+            meshes: Arc::new(self.meshes.view(cut_off.clone())),
+            nodes: Arc::new(self.nodes.view(&scope.own_mesh, self.local(&scope.data_dir), cut_off.clone())),
+            status: Arc::new(self.status.view(&scope.own_mesh, cut_off)),
             connections,
-            builds: Arc::new(crate::build_state::MemoryBuildStateAdapter::of_mesh(&scope.own_mesh)),
+            builds: Arc::new(crate::build_state::LaneJournal::in_memory(self.lanes.clone(), &scope.own_mesh)),
             // Nothing is held for a later publication: the embedding's actions alone, or none.
             round_actions: embedding.unwrap_or_else(|| Arc::new(crate::fabric_rounds::NoScratchpad)),
             cut_off_writes,
@@ -326,7 +356,7 @@ mod tests {
     use crate::fabric_storage::FabricIdentity;
     use crate::model::{MeshId, NodeId};
     use crate::status_storage::NodeExitRow;
-    use crate::storage::{MeshRecord, NodeRow};
+    use crate::storage::{MeshRecord, NodeRecord, NodeRow};
 
     fn row(name: &str) -> NodeRow {
         NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }
@@ -363,6 +393,49 @@ mod tests {
         assert!(b.fabric.claim_identity(&identity).await.unwrap().is_ok(), "the Fabric identity is written once lifted");
     }
 
+    /// CONTRACT (Q66: "MemoryBackend::new() holding one store's shared rows"): a memory backend is one
+    /// store, and two admins that open it (mesh1's and mesh2's) are two writers of it, as two admins
+    /// on one store dir are: the Mesh row, the node row, the in-flight row, a mesh's status row and the
+    /// Build fact one writes, the other reads; each admin's own row is its own, read back by the
+    /// backend from its data dir, and its own status rows are its own mesh's. Must NOT happen: an
+    /// admin of a memory store reading only the rows it wrote itself.
+    #[tokio::test]
+    async fn two_admins_opening_one_memory_store_are_two_writers_of_one_store() {
+        let store = MemoryBackend::new();
+        let (a_dir, b_dir, fabric_id) = (PathBuf::from("/admin-a"), PathBuf::from("/admin-b"), FabricId::mint());
+        let a = store.open(&StorageScope { data_dir: a_dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() }, None).await.unwrap_or_else(|e| panic!("{e}"));
+        let b = store.open(&StorageScope { data_dir: b_dir.clone(), fabric_id: fabric_id.clone(), own_mesh: "mesh2".into(), writer: IncarnationId::mint() }, None).await.unwrap_or_else(|e| panic!("{e}"));
+
+        let mesh2 = MeshRecord { mesh_id: MeshId::mint(), name: "mesh2".into(), dead: false };
+        assert!(a.meshes.claim_mesh(&mesh2).await.unwrap().is_ok());
+        assert_eq!(b.meshes.mesh("mesh2").await.unwrap(), Some(mesh2), "the Mesh row one writes, the other reads");
+        assert!(a.nodes.put_node_row(&row("mesh1.rpc.1")).await.unwrap().is_ok());
+        assert!(b.nodes.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().is_some(), "the node row one writes, the other reads");
+        let held = crate::mesh_claims::InFlight { build_id: crate::build::BuildId::mint(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), lane_key: None };
+        assert_eq!(a.meshes.take_in_flight("mesh2", &held).await.unwrap(), crate::mesh_claims::Taken::Won);
+        assert_eq!(b.meshes.in_flight("mesh2").await.unwrap(), Some(held), "the in-flight row one takes, the other reads");
+
+        let e = exit("mesh1.rpc.1");
+        a.status.put_node_exit(&e).await.unwrap();
+        assert_eq!(b.status.node_exit_of("mesh1", &e.node_id, &e.incarnation_id).await.unwrap(), Some(e.clone()), "mesh1's own status row, read by name");
+        assert_eq!(b.status.node_exit(&e.node_id, &e.incarnation_id).await.unwrap(), None, "mesh2's own status rows hold none of mesh1's");
+
+        let accepted = crate::build_state::BuildAccepted {
+            build_id: crate::build::BuildId::mint(),
+            topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", MeshId::mint()),
+            submitted_change: None,
+            submitted_at_ms: 1,
+        };
+        a.builds.publish_accepted(&accepted).await.unwrap();
+        assert!(b.builds.facts().await.unwrap().iter().any(|f| matches!(f, crate::build_state::BuildFact::Accepted(x) if x.build_id == accepted.build_id)), "the Build fact one writes to its lane, the other reads");
+
+        let own = NodeRecord { node_id: NodeId::mint(), fabric_id, name: "mesh1.admin.1".parse().unwrap(), mesh_id: MeshId::mint(), incarnation_id: IncarnationId::mint(), endpoint_id: crate::model::EndpointId("a".repeat(64)), transport_addr: "127.0.0.1:1".parse().unwrap(), listeners: Vec::new() };
+        a.nodes.put_own(&own).await.unwrap();
+        assert_eq!(store.own_row(&a_dir, &IncarnationId::mint()).await.unwrap(), Some(own), "the admin's own row, read from its data dir");
+        assert_eq!(store.own_row(&b_dir, &IncarnationId::mint()).await.unwrap(), None, "another admin's data dir holds none");
+        assert_eq!(b.nodes.own().await.unwrap(), None, "each admin's own row is its own");
+    }
+
     fn scope(data_dir: PathBuf) -> StorageScope {
         StorageScope { data_dir, fabric_id: FabricId::mint(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() }
     }
@@ -375,7 +448,7 @@ mod tests {
     /// longer authorizes reaching a memory store.
     #[tokio::test]
     async fn the_memory_backend_cuts_off_a_moving_seats_writes_as_the_file_backend_does() {
-        a_moving_seats_writes_are_refused_by_name_until_lifted(&MemoryBackend, &scope(std::env::temp_dir().join(format!("memory-backend-{}", NodeId::mint())))).await;
+        a_moving_seats_writes_are_refused_by_name_until_lifted(&MemoryBackend::new(), &scope(std::env::temp_dir().join(format!("memory-backend-{}", NodeId::mint())))).await;
         #[cfg(feature = "file-backend")]
         {
             let store = crate::test_support::tempdir("file-backend-store");

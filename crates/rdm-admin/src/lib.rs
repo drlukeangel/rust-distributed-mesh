@@ -23,7 +23,6 @@ pub mod build_run;
 pub mod build_facts_read;
 pub mod fabric_handover;
 pub mod hydrate;
-#[cfg(feature = "file-backend")]
 pub mod build_lanes;
 pub mod build_state;
 pub mod deployment;

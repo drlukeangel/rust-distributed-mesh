@@ -360,7 +360,7 @@ impl Prepared {
                 let status = rdm_admin::status_storage::FileStatusStorage::open(&root, "mesh1", &incarnation).await.unwrap();
                 status.put_fabric_event(&rdm_admin::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
             }
-            let journal = rdm_admin::build_state::FileJournal::open_on_root(&root, &data_dir, "mesh1", &incarnation).await.unwrap();
+            let journal = rdm_admin::build_state::LaneJournal::open_on_root(&root, &data_dir, "mesh1", &incarnation).await.unwrap();
             let accepted = rdm_admin::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rdm_admin::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
