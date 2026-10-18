@@ -40,7 +40,9 @@ packet takes the next free number here before it is written; a collision is renu
 
 | Q62 | Codex | i148 demo | the demo's faults through the public API: pre-Opened control-stream faults and per-ALPN Direct loss; the source's held Direct graph | x: the fleet-wide active Direct graph is read from the connections store (connections.md §4.1, §3.2), an e2 defect fixed, nothing fed by hand; the faults are testkit seams behind the fault door, as `gossip_faults` (i147 e5), never a product hook; the packet Codex files at `../proposal/i148-q62-demo-faults-through-the-public-api.md` | asked and ruled 2026-10-18 (the lead) |
 
-Next free number: **Q63**.
+| Q63 | DevX (rafka-v2) | i141/i142 U1 | rafka-v2 cannot take RDM `b0af22c4` while keeping its `/mnt/e` iroh: `Builder::network_monitor` and `Endpoint::replace_direct_addrs` are only in RDM's forks, and cargo allows one iroh | a: rafka's `[patch]` entries resolve iroh, iroh-base, iroh-gossip, netwatch and noq to RDM's exact fork revs; `/mnt/e` leaves rafka's build; the fix inventory (rafka-local fix → fork commit) in the i142 row; proven by a mesh birth through rafka-v2's gate and a flame; the crate rename lands first, the pins second | asked and ruled 2026-10-18 (Luke, relayed by the lead) |
+
+Next free number: **Q64**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
