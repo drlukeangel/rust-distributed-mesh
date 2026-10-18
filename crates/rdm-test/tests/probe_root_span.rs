@@ -51,10 +51,23 @@ fn failure_context(out: &std::process::Output, evidence: &std::path::Path, run: 
     format!("{run}: status={:?}; trace={traces:?}; evidence_dir={}; listing={listing:#?}; stdout={}; stderr={}", out.status, evidence.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
+/// `(unwritten, handed)` when the probe's exit drain ended its evidence flush at its bound and named
+/// its loss on stderr.
+fn named_loss(stderr: &str) -> Option<(usize, usize)> {
+    let line = stderr.lines().find(|l| l.contains("the evidence flush ended at its bound"))?;
+    let (_, tail) = line.split_once("): ")?;
+    let mut words = tail.split_whitespace();
+    let unwritten = words.next()?.parse().ok()?;
+    let handed = words.nth(1)?.parse().ok()?;
+    Some((unwritten, handed))
+}
+
 /// CONTRACT: forty probe invocations (twenty direct, twenty carried through a gateway), each a real Get against a live proof-store node (the call
 /// dials, opens a stream, reads a reply), each leave their `via-probe` root span in their own span
-/// file, in one trace with the call's spans. What must NOT happen: a run whose file holds the call's
-/// spans and not their root.
+/// file, in one trace with the call's spans, or end their exit's evidence flush at its bound with the
+/// loss named whole (i146 Q42; Luke 2026-10-17: the bound is the contract, a named, bounded loss).
+/// What must NOT happen: a run whose file holds the call's spans and not their root with no loss
+/// named.
 #[test]
 fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
     let cap = crate::common::capture("forty_probe_runs_direct_and_carried_each_export_their_root_span");
@@ -141,13 +154,19 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             assert_eq!(fresh.len(), 1, "one invocation leaves one span file; {}", context());
             let spans = std::fs::read_to_string(&fresh[0]).unwrap_or_else(|e| panic!("the span file could not be read: {e}; {}", context()));
             if !spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
-                missing.push(format!("{} spans, no root; {}", spans.lines().count(), context()));
+                let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
+                match named_loss(&String::from_utf8_lossy(&out.stderr)) {
+                    Some((unwritten, handed)) if unwritten > 0 && written + unwritten >= handed => {
+                        println!("run {run}: the exit's evidence flush ended at its bound, {written} written and {unwritten} named unwritten of {handed} handed");
+                    }
+                    _ => missing.push(format!("{written} spans, no root, no loss named whole; {}", context())),
+                }
             }
         }
         served.shutdown().await;
         let _ = std::fs::remove_dir_all(&evidence);
         let _ = std::fs::remove_dir_all(&data);
-        assert!(missing.is_empty(), "runs whose span file holds the call's spans and not their root: {missing:?}");
+        assert!(missing.is_empty(), "runs whose span file holds the call's spans and not their root, with no loss named: {missing:?}");
     })
 }
 

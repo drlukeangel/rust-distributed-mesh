@@ -187,7 +187,9 @@ fn an_evidence_file_whose_open_blocks_at_the_exit_ends_the_exit_flush_at_its_bou
 }
 
 /// Q42's second exit shape: the process has no earlier export to open its evidence file. Its one
-/// application span ends immediately before the drain, which must create and write the file.
+/// application span ends immediately before the drain, which must create and write the file, or end
+/// at its bound with the loss named whole (Luke 2026-10-17: the bound is the contract, a named,
+/// bounded loss).
 #[test]
 fn a_process_that_emits_one_span_and_exits_immediately_leaves_its_span_file() {
     if std::env::var(CHILD).is_ok() {
@@ -196,7 +198,13 @@ fn a_process_that_emits_one_span_and_exits_immediately_leaves_its_span_file() {
     let (_, err, ended, dir) = run_child("immediate", &[]);
     let exiting: u128 = err.lines().find_map(|l| l.strip_prefix("EXITING_AT_MS=")).and_then(|v| v.trim().parse().ok()).expect("the child reached its exit");
     let spans = evidence_of(&dir);
-    assert_eq!(spans.lines().filter(|line| line.contains("rdm.test.telemetry.update.via-last-span")).count(), 1, "the first flush creates the file and writes its one application span: {err}");
+    match named_loss(&err) {
+        None => assert_eq!(spans.lines().filter(|line| line.contains("rdm.test.telemetry.update.via-last-span")).count(), 1, "the first flush creates the file and writes its one application span: {err}"),
+        Some((unwritten, handed)) => {
+            let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
+            assert!(unwritten > 0 && written + unwritten >= handed, "a bounded loss is named whole: {written} written and {unwritten} named unwritten of {handed} handed; stderr {err}");
+        }
+    }
     assert!(Duration::from_millis((ended - exiting) as u64) < EXIT_FLUSH_BOUND + Duration::from_millis(500), "the immediate exit shares Q42's existing drain bound: {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
