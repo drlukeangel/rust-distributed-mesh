@@ -8,7 +8,7 @@ use rdm_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Valid
 use rdm_client::LaunchKind as NodeKind;
 use rdm_client::{birth_of_line, MeshNode, BIRTH_LINE};
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -1139,31 +1139,94 @@ pub struct ProbeHandle {
 }
 
 impl ProbeHandle {
-    /// One probe invocation entered at the node-admin birth `admin`. `Err` names an invocation that
-    /// printed no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
-    pub fn run(&self, admin: &MeshNode, args: &[&str]) -> Result<Value, String> {
+    fn command(&self, admin: &MeshNode, args: &[&str]) -> Result<Command, String> {
         let birth = serde_json::to_string(admin).map_err(|e| format!("the birth of {} does not serialize: {e}", admin.name))?;
         let mut cmd = Command::new(binary("rafka-rpc-probe"));
         cmd.arg("--admin-birth").arg(birth).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
-        if let Some(gw) = &self.bind {
-            cmd.env("RDM_PROBE_BIND", gw);
-        }
-        let out = cmd.output().map_err(|e| format!("run rafka-rpc-probe: {e}"))?;
-        let line = String::from_utf8_lossy(&out.stdout);
-        let v: Value = serde_json::from_str(line.trim()).map_err(|e| format!("probe {args:?} printed no JSON ({e}): {line} / {}", String::from_utf8_lossy(&out.stderr)))?;
-        // A probe that did not exit cleanly says how, so its missing evidence has a reason on record.
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let entry = if out.status.success() && !stderr.contains("panicked") {
-            json!({ "args": args, "result": v })
+        if let Some(gw) = &self.bind { cmd.env("RDM_PROBE_BIND", gw); }
+        Ok(cmd)
+    }
+
+    fn record(&self, args: impl serde::Serialize, value: &Value, status: &std::process::ExitStatus, stderr: &str) -> Result<(), String> {
+        let entry = if status.success() && !stderr.contains("panicked") && !stderr.contains("flush ended at its bound") {
+            json!({ "args": args, "result": value })
         } else {
-            json!({ "args": args, "result": v, "exit": out.status.code(), "signal": std::os::unix::process::ExitStatusExt::signal(&out.status), "stderr_tail": stderr.chars().rev().take(1200).collect::<Vec<_>>().into_iter().rev().collect::<String>() })
+            json!({ "args": args, "result": value, "exit": status.code(), "signal": std::os::unix::process::ExitStatusExt::signal(status), "stderr_tail": stderr.chars().rev().take(1200).collect::<Vec<_>>().into_iter().rev().collect::<String>() })
         };
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.artifacts.join("rpc-ledger.jsonl")).map_err(|e| e.to_string())?;
-        // Concurrent probes append one complete record per write.
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(self.artifacts.join("rpc-ledger.jsonl")).map_err(|e| e.to_string())?;
         let mut record = serde_json::to_vec(&entry).map_err(|e| e.to_string())?;
         record.push(b'\n');
-        f.write_all(&record).map_err(|e| e.to_string())?;
-        Ok(v)
+        file.write_all(&record).map_err(|e| e.to_string())
+    }
+
+    /// One probe invocation, including its endpoint close, exit and evidence flush.
+    pub fn run(&self, admin: &MeshNode, args: &[&str]) -> Result<Value, String> {
+        let out = self.command(admin, args)?.output().map_err(|e| format!("run rafka-rpc-probe: {e}"))?;
+        let line = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let value = serde_json::from_str(line.trim()).map_err(|e| format!("probe {args:?} printed no JSON ({e}): {line} / {stderr}"))?;
+        self.record(args, &value, &out.status, &stderr)?;
+        Ok(value)
+    }
+
+    /// Observe the real probe's answer when printed, retaining ownership of its
+    /// process. The caller must finish it to check its exit and keep the evidence;
+    /// dropping the observation kills and reaps an unfinished probe.
+    pub fn observe(&self, admin: &MeshNode, args: &[&str]) -> Result<ProbeObservation, String> {
+        let mut child = self.command(admin, args)?.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut error = child.stderr.take().unwrap();
+        let stderr = std::thread::spawn(move || { let mut text = String::new(); let _ = error.read_to_string(&mut text); text });
+        let mut line = String::new();
+        let parsed = output.read_line(&mut line).map_err(|e| e.to_string()).and_then(|_| serde_json::from_str(&line).map_err(|e| e.to_string()));
+        let answer = match parsed {
+            Ok(answer) => answer,
+            Err(error) => {
+                let _ = child.kill();
+                let status = child.wait();
+                return Err(format!("probe {args:?} printed no JSON ({error}): {line}; status={status:?}; stderr={}", stderr.join().unwrap_or_default()));
+            }
+        };
+        let stdout = std::thread::spawn(move || { let mut text = String::new(); let _ = output.read_to_string(&mut text); text });
+        Ok(ProbeObservation { handle: self.clone(), args: args.iter().map(|s| s.to_string()).collect(), answer, child: Some(child), stdout: Some(stdout), stderr: Some(stderr) })
+    }
+}
+
+/// A probe's observed JSON answer and the process still owed its exit check.
+/// Transport shutdown and evidence flushing do not change the call's outcome.
+pub struct ProbeObservation {
+    handle: ProbeHandle,
+    args: Vec<String>,
+    answer: Value,
+    child: Option<Child>,
+    stdout: Option<std::thread::JoinHandle<String>>,
+    stderr: Option<std::thread::JoinHandle<String>>,
+}
+
+impl ProbeObservation {
+    /// The answer already printed by the real probe process.
+    pub fn answer(&self) -> &Value { &self.answer }
+
+    /// Reap the probe, record its status and evidence errors, and require a clean
+    /// exit. A successful-looking JSON answer never substitutes for that check.
+    pub fn finish(mut self) -> Result<Value, String> {
+        let mut child = self.child.take().unwrap();
+        let status = child.wait().map_err(|e| format!("wait for probe {:?}: {e}", self.args))?;
+        let stdout = self.stdout.take().unwrap().join().map_err(|_| "probe stdout reader panicked".to_string())?;
+        let stderr = self.stderr.take().unwrap().join().map_err(|_| "probe stderr reader panicked".to_string())?;
+        self.handle.record(&self.args, &self.answer, &status, &stderr)?;
+        if !status.success() || stderr.contains("panicked") || !stdout.trim().is_empty() {
+            return Err(format!("probe {:?}: status={status:?}; answer={}; extra stdout={stdout}; stderr={stderr}", self.args, self.answer));
+        }
+        Ok(self.answer.clone())
+    }
+}
+
+impl Drop for ProbeObservation {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() { let _ = child.kill(); let _ = child.wait(); }
+        if let Some(reader) = self.stdout.take() { let _ = reader.join(); }
+        if let Some(reader) = self.stderr.take() { let _ = reader.join(); }
     }
 }
 

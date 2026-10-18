@@ -70,13 +70,17 @@ fn node_in<'a>(nodes: &'a [Value], name: &str) -> Option<&'a Value> {
 }
 
 /// The three legs to one exact node: Direct, ViaPeer through `carrier`, and NoActiveRoute.
-async fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
+fn route_calls(target_id: &str, carrier: &str) -> [(&'static str, Vec<String>); 3] {
     let exact = format!("exact:{target_id}");
-    let calls = [
+    [
         ("direct", vec!["get".to_string(), "--target".into(), exact.clone(), "--key".into(), "iso".into()]),
         ("via_peer", vec!["get".to_string(), "--target".into(), exact.clone(), "--via".into(), format!("path:{carrier}"), "--key".into(), "iso".into()]),
         ("no_active_route", vec!["get".to_string(), "--target".into(), exact, "--no-route".into(), "--key".into(), "iso".into()]),
-    ];
+    ]
+}
+
+async fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
+    let calls = route_calls(target_id, carrier);
     let probe = estate.probe_handle();
     let birth = estate.entry_birth();
     tokio::task::spawn_blocking(move || {
@@ -89,6 +93,25 @@ async fn legs(estate: &Estate, target_id: &str, carrier: &str) -> Value {
         }
         Value::Object(replies)
     }).await.expect("the route sample completed")
+}
+
+/// The same real probe calls and sequence, with their outcome read before the
+/// endpoint close and exit. Every retained process is finished after the cut.
+async fn observed_legs(estate: &Estate, target_id: &str, carrier: &str) -> (Value, Vec<rdm_test::estate::ProbeObservation>) {
+    let calls = route_calls(target_id, carrier);
+    let probe = estate.probe_handle();
+    let birth = estate.entry_birth();
+    tokio::task::spawn_blocking(move || {
+        let mut replies = serde_json::Map::new();
+        let mut processes = Vec::new();
+        for (leg, args) in calls {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            let observed = probe.observe(&birth, &args).expect("the real route probe prints its answer");
+            replies.insert(leg.to_string(), observed.answer().clone());
+            processes.push(observed);
+        }
+        (Value::Object(replies), processes)
+    }).await.expect("the route observations complete")
 }
 
 /// A leg reduced to what must be stable while the silence holds: the typed outcome and the leg.
@@ -384,14 +407,19 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
             }
             own_views
         };
-        let (l, provider, nodes_now, own_views) = tokio::join!(legs(&estate, &target_id, &carrier), provider, observed(observer.clone()), own);
+        let ((l, processes), provider, nodes_now, own_views) = tokio::join!(observed_legs(&estate, &target_id, &carrier), provider, observed(observer.clone()), own);
         let (inspected, rules) = provider.expect("the exact provider and filter observations complete");
         let marker = silence_marker(&inspected, &rules, &nodes_now, &l);
         let sample = json!({"legs": l, "containers": inspected, "rules": rules, "own_views": own_views, "view": isolated_names.iter().map(|n| json!({"node": n, "status": node_in(&nodes_now, n).map(|x| x["status"].clone())})).collect::<Vec<_>>()});
-        (marker, sample)
+        (marker, sample, processes)
     };
     let (first, second, third) = tokio::join!(observe(), observe(), observe());
-    let (reads, silence): (Vec<_>, Vec<_>) = [first, second, third].into_iter().unzip();
+    let (mut reads, mut silence, mut processes) = (Vec::new(), Vec::new(), Vec::new());
+    for (marker, sample, pending) in [first, second, third] {
+        reads.push(marker);
+        silence.push(sample);
+        processes.extend(pending);
+    }
     // These independent last reads all belong to the held observation, not a
     // sequence of extra RPCs after the route samples have completed.
     let last_provider = {
@@ -420,6 +448,11 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     // The heal. A deadline release also runs if an observation has not returned.
     let _ = lift_now.send(());
     let (healed_at, actual_silence, completed) = lift.join().expect("the cut's release completed");
+    // An observation is the call's outcome. Its process still must close its
+    // endpoint, flush evidence and exit successfully before this cell can pass.
+    tokio::task::spawn_blocking(move || {
+        for process in processes { process.finish().expect("the observed route probe exits cleanly and records its evidence"); }
+    }).await.expect("the observed probes are reaped");
     std::fs::write(dir.join("held-observations.json"), serde_json::to_vec_pretty(&json!({
         "planned_silence_ms": planned_silence.as_millis(), "hold_ms": hold.as_millis(),
         "actual_silence_ms": actual_silence.as_millis(), "observations_completed_before_release": completed,

@@ -289,25 +289,25 @@ fn reply(r: &ProofReply) -> Value {
     v
 }
 
-async fn run(a: Args) -> Result<Value, String> {
+async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     let target = target(&a.target)?;
     if a.op == "nodes" {
         let (client, _) = enter(&a.admin_birth).await?;
         let nodes = views_of(&client, &a.admin_birth.name).await;
         client.endpoint().close().await;
-        return nodes.map(|nodes| json!({"outcome": "Reply", "nodes": nodes}));
+        return nodes.map(|nodes| (json!({"outcome": "Reply", "nodes": nodes}), None));
     }
     if a.op == "resolve" {
-        return run_resolve(&a, &target).await;
+        return run_resolve(&a, &target).await.map(|value| (value, None));
     }
     if a.op == "declare" {
-        return run_declare(&a, &target).await;
+        return run_declare(&a, &target).await.map(|value| (value, None));
     }
     if a.op == "topology" {
-        return run_topology(&a, &target).await;
+        return run_topology(&a, &target).await.map(|value| (value, None));
     }
     if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport") {
-        return run_originate(&a, &target).await;
+        return run_originate(&a, &target).await.map(|value| (value, None));
     }
     let req = request(&a)?;
     let (client, resolver) = enter(&a.admin_birth).await?;
@@ -336,16 +336,16 @@ async fn run(a: Args) -> Result<Value, String> {
             Err(f) => (rdm_core::outcome::PreCommit::begin(<ProofStore as rdm_core::protocol::NodeProtocol>::OP).not_sent(rdm_core::outcome::NotSentReason::Resolve(f)), route.token()),
         },
     };
-    // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
-    // process ungracefully and its span file is lost (a call that never left the resolver is the case).
-    client.endpoint().close().await;
-    Ok(match &out {
+    // The reply is observable as soon as the call ends. The caller still owns
+    // this endpoint and closes it before the runtime and telemetry guard end.
+    let value = match &out {
         RpcOutcome::Reply(r) => json!({"outcome": out.name(), "route": leg, "reply": reply(r.value())}),
         RpcOutcome::NotSent(n) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", n.reason())}),
         RpcOutcome::Indeterminate(i) => json!({"outcome": out.name(), "route": leg, "reason": format!("{:?}", i.reason())}),
         RpcOutcome::Unserved(u) => json!({"outcome": out.name(), "route": leg, "reason": format!("{u:?}")}),
         RpcOutcome::RejectedStale(r) => json!({"outcome": out.name(), "route": leg, "target_node_id": r.target_node_id()}),
-    })
+    };
+    Ok((value, Some(client.endpoint().clone())))
 }
 
 /// A refusal keeps its evidence: the process returns its exit status from `main`, so the telemetry
@@ -380,13 +380,14 @@ async fn probe() -> std::process::ExitCode {
         run(args).instrument(span.clone()).await
     };
     match out {
-        Ok(mut v) => {
+        Ok((mut v, endpoint)) => {
             // The invocation's trace, named by the probe itself: a scenario reads it here, never from the
             // span file, whose root is exported only when its last descendant has closed.
             if let Some(tp) = span.in_scope(rdm_transport::current_traceparent) {
                 v["traceparent"] = json!(tp);
             }
             println!("{v}");
+            if let Some(endpoint) = endpoint { endpoint.close().await; }
             std::process::ExitCode::SUCCESS
         }
         Err(e) => {
