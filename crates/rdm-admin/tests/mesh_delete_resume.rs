@@ -85,6 +85,7 @@ impl Capture {
                     "span_id": s.span_context.span_id().to_string(),
                     "parent_span_id": s.parent_span_id.to_string(),
                     "start_ns": s.start_time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0),
+                    "end_ns": s.end_time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0),
                     "attributes": attributes,
                 })
             })
