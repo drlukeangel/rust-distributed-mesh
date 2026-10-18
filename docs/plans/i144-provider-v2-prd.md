@@ -494,6 +494,12 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
     - That is the exit contract Luke ruled on 2026-10-17 (i146 Q42, recorded in `i146-owed-messages-prd.md`): "the bound is the contract; a named, bounded loss is right". The cell asserted the root's presence with no named-loss arm.
     - Gate 2's `telemetry_exit::a_process_that_emits_one_span_and_exits_immediately_leaves_its_span_file` red (9 of 9 spans unconfirmed at the 2 s bound) was the same assertion.
     - Both cells now hold a run to the contract, as the collector-down cell already does: the span in the file, or the loss named whole (unwritten > 0, written + unwritten ≥ handed). A missing root with no loss named stays the defect. Green: `probe_root_span::` 2/2, `telemetry_exit::` 4/4.
+  - Its sixth gate (`187441f1`) was red on `admin_start_declares::a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again` (`admin_start_declares.rs:164`): `StartFailed { step: "node.rafka-time", reason: "mesh1.admin.2 could not read rafka-time from mesh1.admin.1: refused: the target holds no mesh mesh1" }`.
+    - Not Q56's: e6.3's own gate (`6f873636`, no Q56) failed it with the same message, as did this landing's second gate. It is i146 e3's cell, owned by this dev.
+    - The refusal is the topology read's `UnknownMesh` (`rdm-node` `topology_read.rs:154`): the root's `held_topology` holds no source of its own mesh. The stored map never adds a node's own mesh, and the version-0 own source is added only while `view.primary` is set (`membership.rs` `held_topology`).
+    - A batch of 30 isolated runs (6 at a time) was 30/30 green. In a green run the stop ends at 0.241 s, the start begins at 0.256 s, and the root serves the read at 0.270 s with no cut-off span.
+    - No gate red of this cell has been readable: the gate's evidence keeper (`scripts/keep-gate-evidence.py`) kept the scenario artifacts but not a testkit cell's span directory (`target/i143-testkit/<cell>`). This landing makes the keeper keep each failed cell's directory. The next red of this cell is read from its own spans, and only then is a mechanism named.
+    - `record_store.rs:896`'s cancelled-call panic appeared again in this child's teardown, after the `:164` assertion (third sighting; sized above).
 
 ## Verification
 
