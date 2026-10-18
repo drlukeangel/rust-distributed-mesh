@@ -2458,6 +2458,9 @@ Page diffs (delegated ruling `R-FM2`):
 
 ### State
 
+**Corrected candidate: both live silence/flame controls GREEN together (43.82 s).** Cuts 16225 ms / 16178 ms, plan 23000 and hold 30000 unchanged; every value, exact birth, provider, routing and named-span check stands. Current raw evidence is `kept/s88-current-runtime-green/wire/`, current results beside it; `route-flames/` holds 820 imported spans and nonempty queried traces (`s88-current-runtime-flames.log`). Examples: [Direct refusal](http://localhost:16686/trace/c598becb1e0d211bdb6a9e05362b69c8), [ViaPeer refusal](http://localhost:16686/trace/6ba0a53c3af22bad556c63600b10066f), [NoActiveRoute](http://localhost:16686/trace/b99c2de839c70536ddbf0b8f02d956f0). First invocation omitted `MESH_SPAWN_TYPE=container` and was refused immediately at :273 before any scenario; its log `s88-current-runtime-silence-controls.log` is retained separately from the actual container proof `s88-current-runtime-container-silence-controls.log`. No failed scenario was rerolled unchanged. The land script now verifies the changed probe runtime and exact Q54 row assertion concurrently.
+
+
 Probe startup correction `aa1d3dac` and the Q54 rounds assertion `edc2ab08`: all three controls GREEN together, 7.28 s (`s88-probe-runtime-and-rounds-controls.log`), including all forty Direct/carried probe roots. Syscall observation of the same refused-argument invocation records 21 created threads before, 1 after (the log writer), with identical Refused JSON and exit 2; both `s88-probe-workers-{before,after}.log` are retained. This proves unnecessary startup workers were removed, not that the concurrent export failure is resolved. Next: the two live silence/flame cells, then the concurrent land gate on this changed source.
 
 

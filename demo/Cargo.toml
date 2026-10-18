@@ -17,14 +17,14 @@ description = "Business-empty R-shape consumer: four node entry points composed 
 members = ["admin-ui"]
 
 [dependencies]
-rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "049deddafb5996275da0ab228dc122bc0473012f" }
-rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "049deddafb5996275da0ab228dc122bc0473012f" }
-rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "049deddafb5996275da0ab228dc122bc0473012f" }
+rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "0d7e46af38859a8fcee39729865c4dcfb770eabe" }
+rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "0d7e46af38859a8fcee39729865c4dcfb770eabe" }
+rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "0d7e46af38859a8fcee39729865c4dcfb770eabe" }
 # The carrier policy this shape declares for the originate door (a gateway carries).
-rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "049deddafb5996275da0ab228dc122bc0473012f" }
+rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "0d7e46af38859a8fcee39729865c4dcfb770eabe" }
 # Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "049deddafb5996275da0ab228dc122bc0473012f" }
+rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "0d7e46af38859a8fcee39729865c4dcfb770eabe" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"
