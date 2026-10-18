@@ -24,7 +24,7 @@ packet takes the next free number here before it is written; a collision is renu
 | Q52 | Dev | i146 e3 | the owed declaration keeps its carried route in one Owed call | B | landed `0ef6c700` |
 | Q53 | Codex | i143 s88 | the successor's status fold published Pending over Ready | A, fix the root | ruled 2026-10-17 |
 | Q54 | Codex | i143 s88 | an Applied declared-state row is durable before state-commit | A | implemented on Codex branch; acquisition controls green |
-| Q55 | Dev | i146 e3 | a signal stop is node.stop's own steps; Draining and the linger go | x | landed `0ef6c700`; the declared value becomes `Stopped` (node-stop.md step 4) in the dev's next landing |
+| Q55 | Dev | i146 e3 | a signal stop is node.stop's own steps; Draining and the linger go | x | landed `0ef6c700`; `Stopped` declared and node.stop one workflow for command and signal `9e977175`; node.mesh.join one primitive `8668cdd8` |
 
 
 | Q56 | Codex → Dev | i143 s88 | acquisition of held Mesh state after the pre-commit writer ends | assigned to i144 by Q54 | read packet on Codex branch |
