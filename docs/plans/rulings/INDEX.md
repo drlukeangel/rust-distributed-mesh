@@ -36,10 +36,10 @@ packet takes the next free number here before it is written; a collision is renu
 | Q59 | Codex | i147 e5 | app declaration before the Day-0 writer is Ready ([packet](../proposal/i147-q59-join-declaration-before-ready.md)) | x ([ruling](i147-q59-join-declaration-before-ready.md)): the Day-0 admin holds the declaration at the Join and writes it with its first write after it takes the seat; no new writer | asked 2026-10-18 as Q58, renumbered; ruled 2026-10-18 (Luke); built and landed with e5 |
 
 | Q60 | Dev | i146 e2 | a process exit is held by its evidence thread's file creation: what Q42's bound holds ([packet](../proposal/i146-q60-exit-held-by-a-threads-filesystem-call.md)) | C ([ruling](i146-q60-exit-flush-bound.md)): the bound holds the node's code; the cells record the kernel teardown unbounded; `drain` names renamed | asked 2026-10-18; ruled 2026-10-18 (Luke) |
-| Q61 | Dev | i146 | before the first state-commit, a Build fact durable on the shared root when committed, or held in the scratchpad ([packet](../proposal/i146-q61-build-facts-before-state-commit.md)) | — | asked 2026-10-18 |
+| Q61 | Dev | i146 | before the first state-commit, a Build fact durable on the shared root when committed, or held in the scratchpad ([packet](../proposal/i146-q61-build-facts-before-state-commit.md)) | A ([ruling](i146-q61-build-facts-before-state-commit.md)): durable on the root when committed, before state-commit included; the publish gate goes, the seal stays, R-BI6's cell turns | asked 2026-10-18; ruled 2026-10-18 (arch, relayed by Luke) |
 
 Next free number: **Q61**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
-`i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
+`i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
 R-series (R-MSG1, R-RX1…, R-FM1/2, R-CT1, R14).
