@@ -1686,14 +1686,14 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
 #[async_trait]
 impl LocalBuildLog for FileJournal {
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
-        let mut w = self.writer.lock().await;
+        let mut w = self.turn("derive_on_every_fact").await;
         let _ = self.sync(&w).await;
         derive(&snapshot(&self.log));
         w.0 = Some(derive);
     }
 
     async fn absorb_facts(&self, facts: &[BuildFact]) {
-        let w = self.writer.lock().await;
+        let w = self.turn("absorb_facts").await;
         let _ = self.sync(&w).await;
         let held = snapshot(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
@@ -1861,6 +1861,14 @@ pub struct FileJournal {
     /// The time the holding turn spent in the lane store's own calls (its reads, appends, seals and
     /// the seals it owes), in nanoseconds: what its span names apart from its wait.
     turn_lane_ns: std::sync::atomic::AtomicU64,
+    /// The blocking calls of the holder of `writer` (a turn or a reader's sync), from its lane calls:
+    /// how many, how long they queued for a blocking thread, how long they ran.
+    holder_io: Mutex<Option<crate::record_store::IoTime>>,
+    /// The facts the holder of `writer` read from the lanes.
+    holder_facts: std::sync::atomic::AtomicU64,
+    /// What the last holder of `writer` did with it, written when it let it go: what a turn that
+    /// waited names as the holder it waited behind.
+    released: Mutex<Option<String>>,
 }
 
 /// One writer's turn of a [`FileJournal`], on its own span
@@ -1882,11 +1890,42 @@ impl std::ops::Deref for Turn<'_> {
     }
 }
 
+/// A reader's sync holding the writer, named as its holder until it ends ([`FileJournal::sync_for_read`]).
+struct ReadHolder<'a> {
+    journal: &'a FileJournal,
+    op: &'static str,
+    began: std::time::Instant,
+}
+
+impl<'a> ReadHolder<'a> {
+    fn name(journal: &'a FileJournal, op: &'static str) -> Self {
+        *journal.turn_of.lock().unwrap() = Some((op, std::time::Instant::now()));
+        journal.hold_begins();
+        Self { journal, op, began: std::time::Instant::now() }
+    }
+}
+
+impl Drop for ReadHolder<'_> {
+    fn drop(&mut self) {
+        self.journal.hold_ends(self.op, self.began.elapsed());
+        *self.journal.turn_of.lock().unwrap() = None;
+    }
+}
+
+impl std::ops::DerefMut for Turn<'_> {
+    fn deref_mut(&mut self) -> &mut Derived {
+        &mut self.guard
+    }
+}
+
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
         let lane_ns = self.journal.turn_lane_ns.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let op = (*self.journal.turn_of.lock().unwrap()).map(|(op, _)| op).unwrap_or_default();
+        let (calls, queued, ran, facts) = self.journal.hold_ends(op, self.began.elapsed());
         *self.journal.turn_of.lock().unwrap() = None;
         self.span.record("held_ms", self.began.elapsed().as_millis() as u64).record("lane_ms", lane_ns / 1_000_000);
+        self.span.record("io_calls", calls).record("io_queued_ms", queued).record("io_ms", ran).record("facts_read", facts);
     }
 }
 
@@ -1922,6 +1961,9 @@ impl FileJournal {
             writer: tokio::sync::Mutex::new(Derived::default()),
             turn_of: Mutex::new(None),
             turn_lane_ns: std::sync::atomic::AtomicU64::new(0),
+            holder_io: Mutex::new(None),
+            holder_facts: std::sync::atomic::AtomicU64::new(0),
+            released: Mutex::new(None),
         })
     }
 
@@ -1929,19 +1971,59 @@ impl FileJournal {
     async fn turn(&self, op: &'static str) -> Turn<'_> {
         use tracing::Instrument;
         let held_by = (*self.turn_of.lock().unwrap()).map(|(holder, since)| format!("{holder} ({} ms in)", since.elapsed().as_millis())).unwrap_or_default();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-journal-turn", op, held_by = %held_by, waited_ms = tracing::field::Empty, held_ms = tracing::field::Empty, lane_ms = tracing::field::Empty, "otel.kind" = "internal");
+        let span = tracing::info_span!(
+            "rdm.node_admin.build.update.via-journal-turn",
+            op,
+            held_by = %held_by,
+            waited_ms = tracing::field::Empty,
+            waited_behind = tracing::field::Empty,
+            held_ms = tracing::field::Empty,
+            lane_ms = tracing::field::Empty,
+            io_calls = tracing::field::Empty,
+            io_queued_ms = tracing::field::Empty,
+            io_ms = tracing::field::Empty,
+            facts_read = tracing::field::Empty,
+            "otel.kind" = "internal"
+        );
         let asked = std::time::Instant::now();
         let guard = self.writer.lock().instrument(span.clone()).await;
-        span.record("waited_ms", asked.elapsed().as_millis() as u64);
+        let waited = asked.elapsed();
+        span.record("waited_ms", waited.as_millis() as u64);
+        if waited.as_millis() > 0 {
+            if let Some(behind) = self.released.lock().unwrap().clone() {
+                span.record("waited_behind", behind.as_str());
+            }
+        }
         *self.turn_of.lock().unwrap() = Some((op, std::time::Instant::now()));
         self.turn_lane_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.hold_begins();
         Turn { guard, journal: self, span, began: std::time::Instant::now() }
+    }
+
+    /// The holder of `writer` begins: its lane calls' blocking I/O and the facts it reads are its own.
+    fn hold_begins(&self) {
+        *self.holder_io.lock().unwrap() = Some(crate::record_store::IoTime::default());
+        self.holder_facts.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The holder `op` lets `writer` go after `held`: what it did is what a turn waiting behind it names.
+    /// Returns its blocking calls, their queue and run time in ms, and the facts it read.
+    fn hold_ends(&self, op: &str, held: std::time::Duration) -> (u64, u64, u64, u64) {
+        let io = self.holder_io.lock().unwrap().take().unwrap_or_default();
+        let facts = self.holder_facts.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let (calls, queued, ran) = (io.calls(), io.queued_ms(), io.ran_ms());
+        *self.released.lock().unwrap() = Some(format!("{op} held {} ms: {calls} lane calls, queued {queued} ms, ran {ran} ms, {facts} facts read", held.as_millis()));
+        (calls, queued, ran, facts)
     }
 
     /// `call`, one of the lane store's own, its time counted to the holding turn ([`Turn`]).
     async fn lane<T>(&self, call: impl std::future::Future<Output = T>) -> T {
         let at = std::time::Instant::now();
-        let out = call.await;
+        let io = self.holder_io.lock().unwrap().clone();
+        let out = match io {
+            Some(io) => crate::record_store::io_time_with(io, call).await,
+            None => call.await,
+        };
         self.turn_lane_ns.fetch_add(at.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         out
     }
@@ -2038,6 +2120,7 @@ impl FileJournal {
         if read.is_empty() {
             return;
         }
+        self.holder_facts.fetch_add(read.len() as u64, std::sync::atomic::Ordering::Relaxed);
         let held = snapshot(&self.log);
         let mut new: Vec<BuildFact> = Vec::new();
         for (key, f) in read {
@@ -2066,8 +2149,10 @@ impl FileJournal {
     }
 
     /// Sync from the store root when no push is mid-derivation: a reader never waits behind a writer.
-    async fn sync_for_read(&self) -> Result<(), BuildStateError> {
+    /// While it holds the writer, `op` (the reader) is the holder a waiting turn names.
+    async fn sync_for_read(&self, op: &'static str) -> Result<(), BuildStateError> {
         if let Ok(w) = self.writer.try_lock() {
+            let _holder = ReadHolder::name(self, op);
             self.sync(&w).await?;
         }
         Ok(())
@@ -2246,22 +2331,22 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("read_build").await?;
         read_own(&self.log, build_id)
     }
 
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("current_build").await?;
         Ok(current_build(&self.log))
     }
 
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("newest_accepted_at_ms").await?;
         Ok(newest_accepted_at_ms(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("list_active").await?;
         Ok(active(&snapshot(&self.log)))
     }
 
@@ -2377,27 +2462,27 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("facts").await?;
         Ok(snapshot(&self.log).as_ref().clone())
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("recovery_of").await?;
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("mesh_deleted_of").await?;
         Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
     }
 
     async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<FailedTerminate>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("terminate_failures_of").await?;
         Ok(self.log.lock().unwrap().terminate_failures_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
-        self.sync_for_read().await?;
+        self.sync_for_read("exits_owed").await?;
         Ok(self.log.lock().unwrap().exits_owed(build_id, mesh))
     }
 
@@ -3645,6 +3730,46 @@ mod tests {
         assert!(waiter.get("held_by").is_some_and(|h| h.starts_with("publish_accepted (")), "the waiting turn names the turn holding the writer: {waiter:?}");
         assert!(ms(&holder, "held_ms") >= 100 && ms(&holder, "waited_ms") < 100, "the holding turn names its hold, not a wait: {holder:?}");
         assert_eq!(ms(&holder, "lane_ms"), 0, "a turn that made no lane call names none: {holder:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (the Build journal's read path; i144 e6, `fabric_primary.rs:204`): a read of the journal
+    /// reads the lanes from the store root without holding the writer, so a writer's turn never waits
+    /// behind a reader's lane I/O. With the blocking pool's one thread held, a reader's sync is queued on
+    /// the disk; a writer's turn begun then takes the writer at once and names no holder. Must NOT
+    /// happen: a writer's turn whose `held_by` names a reader, or a reader holding the writer across the
+    /// disk.
+    #[test]
+    fn a_writers_turn_never_waits_behind_a_readers_lane_io() {
+        let dir = tmp();
+        let capture = crate::span_capture::Capture::new("journal-read-holds-no-writer");
+        let setup = {
+            let dir = dir.clone();
+            Box::pin(async move {
+                let j = Arc::new(open_at(&dir).await.unwrap());
+                j.publish_accepted(&intent("b1")).await.unwrap();
+                j
+            })
+        };
+        // The cell's runtime runs on this thread: every span of the journal is the capture's.
+        tracing::dispatcher::with_default(&capture.dispatch, || {
+            crate::record_store::op_waits_on_the_blocking_pool(setup, |j: Arc<FileJournal>| {
+                Box::pin(async move {
+                    // The reader runs first: its sync's first disk call queues behind the held thread.
+                    let reader = tokio::spawn({
+                        let j = j.clone();
+                        async move { j.current_build().await.unwrap() }
+                    });
+                    tokio::task::yield_now().await;
+                    j.publish_accepted(&intent("b2")).await.unwrap();
+                    reader.await.unwrap();
+                })
+            })
+        });
+        let turns = capture.named("rdm.node_admin.build.update.via-journal-turn");
+        let writes: Vec<_> = turns.iter().filter(|t| t.attributes.get("op").map(String::as_str) == Some("publish_accepted")).map(|t| t.attributes.clone()).collect();
+        assert_eq!(writes.len(), 2, "the setup's acceptance and the one begun beside the reader: {turns:?}");
+        assert!(writes.iter().all(|w| w.get("held_by").map(String::as_str) == Some("")), "no writer's turn waited behind a reader: {writes:#?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
