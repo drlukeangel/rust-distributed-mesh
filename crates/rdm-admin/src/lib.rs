@@ -63,6 +63,7 @@ pub(crate) mod status_declare;
 pub mod status_rpc;
 #[cfg(test)]
 pub(crate) mod span_capture;
+pub use rdm_node::connection_reconnect;
 pub use rdm_node::connections_writer;
 pub mod storage;
 pub use rdm_node::store_root;

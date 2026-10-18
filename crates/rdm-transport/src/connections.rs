@@ -249,6 +249,9 @@ pub trait ConnectionsSink: Send + Sync {
     async fn record_row(&self, row: NodeConnection) -> Result<NodeConnection, String>;
     /// Write `Disconnected` drop rows for `routes` with `reason`.
     async fn record_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<ConnectionId>;
+    /// Notify the sink that an inbound Direct connection from `peer` on `alpn` was admitted
+    /// (`connections.md` §9.4, §10, §13 G: a recovery trigger, never a Direct row).
+    fn accepted(&self, _peer: &Birth, _alpn: &[u8]) {}
 }
 
 /// An in-memory [`ConnectionsSink`] for standalone transport tests that do not boot a full `rdm-node`.
@@ -449,6 +452,7 @@ struct ActiveEntry {
     conn: iroh::endpoint::Connection,
     closed_tx: watch::Sender<Option<Closed>>,
     row: Option<NodeConnection>,
+    _keep_alive: Option<Arc<ConnectionInner>>,
 }
 
 /// The node's registry of registered data-plane [`Alpn`]s and their active connections.
@@ -531,6 +535,43 @@ impl ConnectionsRegistry {
     /// Update the member cert bytes presented on outbound dials.
     pub fn set_member_cert(&self, cert: Vec<u8>) {
         *self.inner.member_cert.lock().unwrap() = cert;
+    }
+
+    /// Whether `alpn` is registered on this registry.
+    pub fn has_alpn(&self, alpn: &[u8]) -> bool {
+        self.inner.slots.lock().unwrap().contains_key(alpn)
+    }
+
+    /// Perform one bounded direct transport connection attempt on `alpn` toward `destination`
+    /// (`connections.md` §9.5 step 3). On success, `Direct Connected` is recorded through the
+    /// sink; on failure, the series' next `Direct Failed` row is recorded through the sink.
+    pub async fn probe_direct(&self, destination: &Birth, alpn: &[u8]) -> Result<Connection, ConnectError> {
+        if self.inner.deleted.load(Ordering::SeqCst) {
+            return Err(ConnectError::Deleted);
+        }
+        let slot_alpn = {
+            let slots = self.inner.slots.lock().unwrap();
+            let Some(slot) = slots.get(alpn) else {
+                return Err(ConnectError::UnregisteredAlpn {
+                    alpn: alpn.to_vec(),
+                });
+            };
+            slot.alpn.clone()
+        };
+        let dialer = Dialer {
+            alpn: slot_alpn,
+            registry: self.clone(),
+        };
+        let caller_span = tracing::Span::current();
+        let traceparent = crate::traceparent_of(&caller_span);
+        let own = self.inner.sink.own_birth();
+        let conn = dialer
+            .open_direct(&own, destination, &caller_span, traceparent)
+            .await?;
+        if let Some(entry) = self.inner.active.lock().unwrap().get_mut(conn.id()) {
+            entry._keep_alive = Some(conn.inner.clone());
+        }
+        Ok(conn)
     }
 
     /// Take the one [`Connections`] handle for `alpn`.
@@ -683,7 +724,15 @@ impl ConnectionsRegistry {
             .active
             .lock()
             .unwrap()
-            .insert(id.clone(), ActiveEntry { conn: conn.clone(), closed_tx, row: row.clone() });
+            .insert(
+                id.clone(),
+                ActiveEntry {
+                    conn: conn.clone(),
+                    closed_tx,
+                    row: row.clone(),
+                    _keep_alive: None,
+                },
+            );
         if let Some(r) = row {
             if r.kind == CoreKind::Proxy {
                 let reg = self.clone();
@@ -835,6 +884,7 @@ impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
                 if write_control_msg(&mut ctrl_send, &ControlAnswer::Opened { peer: own_now }).await.is_err() {
                     return Ok(());
                 }
+                self.registry.inner.sink.accepted(&origin, &self.alpn.name);
                 let (closed_tx, closed_rx) = watch::channel(None);
                 self.registry
                     .register_active(id.clone(), connection.clone(), closed_tx, None);
@@ -1648,7 +1698,12 @@ impl Dialer {
             AdmitVerdict::Admitted => {}
         }
 
-        let row_id = ConnectionId::mint();
+        let row_id = match held_proxy {
+            Some(p) if !self.registry.inner.active.lock().unwrap().contains_key(&p.id) => {
+                p.id.clone()
+            }
+            _ => ConnectionId::mint(),
+        };
         let intent = ControlIntent::Tunnel {
             id: row_id.clone(),
             origin: own.clone(),
@@ -1703,26 +1758,33 @@ impl Dialer {
                         found: peer.incarnation,
                     });
                 }
-                let row = NodeConnection {
-                    id: row_id.clone(),
-                    source: own.to_end(),
-                    destination: destination.to_end(),
-                    kind: CoreKind::Proxy,
-                    alpn: self.alpn.name.clone(),
-                    state: ConnectionState::Connected,
-                    carrier: Some(carrier.to_end()),
-                    recovery: None,
-                    reason: None,
-                    logged_at_ms: 0,
+                let recorded = match held_proxy {
+                    Some(existing) => NodeConnection {
+                        id: row_id.clone(),
+                        ..existing.clone()
+                    },
+                    None => {
+                        let row = NodeConnection {
+                            id: row_id.clone(),
+                            source: own.to_end(),
+                            destination: destination.to_end(),
+                            kind: CoreKind::Proxy,
+                            alpn: self.alpn.name.clone(),
+                            state: ConnectionState::Connected,
+                            carrier: Some(carrier.to_end()),
+                            recovery: None,
+                            reason: None,
+                            logged_at_ms: 0,
+                        };
+                        self.registry
+                            .inner
+                            .sink
+                            .record_row(row)
+                            .instrument(tunnel_span.clone())
+                            .await
+                            .map_err(|reason| ConnectError::NotSent { reason })?
+                    }
                 };
-                let recorded = self
-                    .registry
-                    .inner
-                    .sink
-                    .record_row(row)
-                    .instrument(tunnel_span.clone())
-                    .await
-                    .map_err(|reason| ConnectError::NotSent { reason })?;
                 tunnel_span.record("entry", recorded.id.to_string().as_str());
                 tunnel_span.record("kind", "proxy");
                 tunnel_span.record("state", "connected");

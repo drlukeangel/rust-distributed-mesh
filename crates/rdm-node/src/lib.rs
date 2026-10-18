@@ -11,6 +11,7 @@ pub use crate::node::{
 };
 
 pub mod app_hydration;
+pub mod connection_reconnect;
 pub mod connections_writer;
 pub mod held_name;
 pub mod join;

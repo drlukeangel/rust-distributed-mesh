@@ -441,7 +441,7 @@ async fn start_booted(
     // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
     // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
     // observation. The task ends with the process.
-    let recovery_dial: crate::connections_writer::RecoveryDial = {
+    let recovery_dial: crate::connection_reconnect::RecoveryDial = {
         let data_plane = data_plane.clone();
         Arc::new(move |destination: rdm_core::connections::ConnectionEnd| {
             let data_plane = data_plane.clone();
@@ -452,7 +452,8 @@ async fn start_booted(
             })
         })
     };
-    let _reconciler = connections.spawn_reconciler(crate::connections_writer::RECONCILER_TICK, Some(recovery_dial));
+    let alpn_dial = crate::connection_reconnect::registry_recovery_dial(&data_connections, Some(recovery_dial));
+    let _reconciler = crate::connection_reconnect::spawn_alpn_reconciler(&connections, crate::connection_reconnect::RECONCILER_TICK, alpn_dial);
     // The status kick (node-identity-and-state.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
     // The name this birth holds, read per call by every door that names it: its launch's until it joins.

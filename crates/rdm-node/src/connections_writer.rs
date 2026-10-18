@@ -29,34 +29,13 @@
 //! longer holds is dropped undialled (§9.5 step 1).
 
 use crate::storage::ConnectionsStorage;
+pub use crate::connection_reconnect::{RECONCILER_TICK, RecoveryAttempt, RecoveryDial};
 use rdm_core::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rdm_core::reconnect::{first_failure, next_due, owed_retirements};
-use rdm_core::{IncarnationId, NodeId, PathName};
-use std::collections::HashMap;
+use rdm_core::reconnect::{first_failure, owed_retirements};
+use rdm_core::{IncarnationId, PathName};
 use rdm_transport::{ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-/// How often the reconciler looks at what is owed without a wake: an owed Proxy retirement whose
-/// write was refused is attempted again, and a pending recovery attempt whose backoff has ended is
-/// dialled.
-pub const RECONCILER_TICK: Duration = Duration::from_millis(500);
-
-/// One direct dial of this node's own data plane toward an exact destination birth
-/// (connections.md §9.5 step 3), answering the call outcome's name for the attempt's span. The
-/// fact reaches the writer through the data-plane client's observer (Direct Connected or Failed,
-/// `origin=dial`), never through the reconciler.
-pub type RecoveryDial = Arc<dyn Fn(ConnectionEnd) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> + Send + Sync>;
-
-/// One pending direct-recovery attempt (connections.md §9.4): toward an exact destination birth,
-/// due at `due_ms` on the local clock.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecoveryAttempt {
-    /// The destination birth the attempt dials.
-    pub destination: ConnectionEnd,
-    /// When the attempt is due.
-    pub due_ms: u64,
-}
 
 /// Writes the connection facts of one source node and holds the projection they build.
 #[derive(Clone)]
@@ -110,12 +89,8 @@ struct Inner {
     /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
     /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
     write_gate: Arc<tokio::sync::Mutex<()>>,
-    /// The pending direct-recovery attempts (connections.md §9.4, Q7): at most one per destination
-    /// birth, armed by a latest Direct Failed row or by an accept from that birth while this node
-    /// reaches it through its Proxy.
-    recovery: Mutex<HashMap<(NodeId, IncarnationId, Vec<u8>), Pending>>,
-    /// Wakes the reconciler once an accept armed an attempt: one stored wake however many accepts.
-    wake: tokio::sync::Notify,
+    /// Per-node reconnect scheduler state (`crate::connection_reconnect`).
+    reconnect: crate::connection_reconnect::ReconnectState,
 }
 
 /// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
@@ -144,36 +119,6 @@ pub struct HeldConnections {
 
 fn open_routes(held: &ConnectionsHeld) -> Vec<NodeConnection> {
     held.own_latest_directs().into_iter().filter(|e| e.state == ConnectionState::Connected).chain(held.own_active_proxies()).cloned().collect()
-}
-
-/// One pending recovery attempt: the destination birth, its ALPN, and the trace of the accept that armed it
-/// (its dial's span is a child of that accept's wake).
-#[derive(Clone)]
-struct Pending {
-    destination: ConnectionEnd,
-    alpn: Vec<u8>,
-    traceparent: Option<String>,
-}
-
-/// What one reconciler pass does with a pending recovery attempt.
-enum Step {
-    /// Its backoff has not ended.
-    Wait,
-    /// Spent undialled, for the named reason.
-    Spent(&'static str),
-    /// Dial it: due at the instant, scheduled from the latest Direct row named (if any).
-    Dial(u64, Option<rdm_core::ConnectionId>),
-}
-
-/// When an attempt toward `destination` on `alpn` is due, and the latest Direct row it is scheduled from: the
-/// series' backoff from this node's latest Direct Failed row toward that birth (connections.md
-/// §9.3), else at once.
-fn recovery_due(held: &ConnectionsHeld, destination: &ConnectionEnd, alpn: &[u8]) -> (u64, Option<rdm_core::ConnectionId>) {
-    match held.own_latest_directs().into_iter().find(|d| d.destination.name == destination.name && d.alpn.as_slice() == alpn) {
-        Some(row) if (&row.destination.node_id, &row.destination.incarnation) == (&destination.node_id, &destination.incarnation) => (next_due(row).unwrap_or(0), Some(row.id.clone())),
-        Some(row) => (0, Some(row.id.clone())),
-        None => (0, None),
-    }
 }
 
 fn kind_name(k: ConnectionKind) -> &'static str {
@@ -208,8 +153,7 @@ impl ConnectionsWriter {
             idle: tokio::sync::Notify::new(),
             queue,
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
-            recovery: Mutex::new(HashMap::new()),
-            wake: tokio::sync::Notify::new(),
+            reconnect: crate::connection_reconnect::ReconnectState::default(),
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
@@ -516,137 +460,39 @@ impl ConnectionsWriter {
         self.settle_owed().await
     }
 
+    pub(crate) fn reconnect_state(&self) -> &crate::connection_reconnect::ReconnectState {
+        &self.inner.reconnect
+    }
+
+    pub(crate) fn runtime_handle(&self) -> &tokio::runtime::Handle {
+        &self.inner.runtime
+    }
+
     /// The node's one connections reconciler (connections.md §9.4, §10): each `every`, or at once
     /// when an accept armed an attempt, it attempts every owed retirement again and dials every
     /// pending recovery attempt whose backoff has ended through `dial`, this node's own data plane
     /// (none on a node with no data plane). Derived from the rows each time; the task ends with
     /// the runtime.
     pub fn spawn_reconciler(&self, every: Duration, dial: Option<RecoveryDial>) -> tokio::task::JoinHandle<()> {
-        let w = self.clone();
-        self.inner.runtime.spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(every) => {}
-                    _ = w.inner.wake.notified() => {}
-                }
-                if !w.owed().is_empty() {
-                    let _ = w.settle_owed().await;
-                }
-                if let Some(dial) = &dial {
-                    w.recover(dial).await;
-                }
-            }
-        })
+        crate::connection_reconnect::spawn_reconciler(self, every, dial)
     }
 
     /// The pending recovery attempts, each with when it is due.
     pub fn recovery_pending(&self) -> Vec<RecoveryAttempt> {
-        let pending: Vec<(ConnectionEnd, Vec<u8>)> = self.inner.recovery.lock().unwrap().values().map(|p| (p.destination.clone(), p.alpn.clone())).collect();
-        let held = self.inner.held.lock().unwrap();
-        pending.into_iter().map(|(destination, alpn)| RecoveryAttempt { due_ms: recovery_due(&held, &destination, &alpn).0, destination }).collect()
-    }
-
-    /// One pass over the pending recovery attempts (connections.md §9.5): an attempt whose birth
-    /// is gone, or toward which a Direct is Connected, is spent undialled; one whose backoff has
-    /// not ended waits; the rest are dialled once each. A dial's fact is the data-plane client's
-    /// observation; once it has landed, a Failed row reschedules the attempt from its own backoff,
-    /// a Connected one spends it, and a dial that produced no fact spends it by name.
-    async fn recover(&self, dial: &RecoveryDial) {
-        let pending: Vec<((NodeId, IncarnationId, Vec<u8>), Pending)> = self.inner.recovery.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        for (key, Pending { destination, alpn, traceparent }) in pending {
-            let source = self.own().name;
-            let step = {
-                let held = self.inner.held.lock().unwrap();
-                if held.end_superseded(&destination) == Some(true) {
-                    Step::Spent("destination-superseded")
-                } else if matches!(held.active_direct_for(&source, &destination.name, &alpn), Some(Some(edge)) if edge.destination.incarnation == destination.incarnation) {
-                    Step::Spent("direct-connected")
-                } else {
-                    let (due_ms, basis) = recovery_due(&held, &destination, &alpn);
-                    if local_now_ms() < due_ms { Step::Wait } else { Step::Dial(due_ms, basis) }
-                }
-            };
-            match step {
-                Step::Wait => {}
-                Step::Spent(reason) => self.spend(&key, &source, &destination, reason),
-                Step::Dial(due_ms, basis) => {
-                    let span = tracing::info_span!(
-                        "rdm.node_admin.connection.create.via-recovery-dial",
-                        source = %source,
-                        destination = %destination.name,
-                        destination_node_id = %destination.node_id,
-                        destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
-                        due_ms,
-                        outcome = tracing::field::Empty,
-                        fact = tracing::field::Empty,
-                        entry = tracing::field::Empty,
-                    );
-                    if let Some(tp) = &traceparent {
-                        rdm_transport::set_parent(&span, tp);
-                    }
-                    let outcome = tracing::Instrument::instrument(dial(destination.clone()), span.clone()).await;
-                    self.observations_landed().await;
-                    let latest = self.latest_direct_for(&destination, &alpn);
-                    span.record("outcome", outcome.as_str());
-                    let fact = latest.as_ref().filter(|r| Some(&r.id) != basis.as_ref());
-                    span.record("fact", fact.map_or("none", |r| state_name(r.state)));
-                    if let Some(r) = fact {
-                        span.record("entry", r.id.to_string().as_str());
-                    }
-                    span.in_scope(|| tracing::info!("this node dialled its own connection toward the destination birth"));
-                    match latest {
-                        Some(r) if Some(&r.id) != basis.as_ref() && r.state == ConnectionState::Connected => self.spend(&key, &source, &destination, "direct-connected"),
-                        Some(r) if Some(&r.id) != basis.as_ref() => {
-                            if let Some(p) = self.inner.recovery.lock().unwrap().get_mut(&key) {
-                                p.traceparent = None;
-                            }
-                        }
-                        _ => self.spend(&key, &source, &destination, "no-fact"),
-                    }
-                }
-            }
-        }
+        crate::connection_reconnect::recovery_pending(self)
     }
 
     /// Arm the one pending recovery attempt per `(destination, destination_incarnation, alpn)` from each
-    /// own latest Direct Failed row in `held` (connections.md §9.4, §9.5, Q7). A series for a
-    /// superseded birth at the same path is replaced by the current birth's series.
+    /// own latest Direct Failed row in `held` (connections.md §9.4, §9.5, Q7).
     fn sync_recovery(&self) {
-        let directs: Vec<NodeConnection> = {
-            let held = self.inner.held.lock().unwrap();
-            held.own_latest_directs()
-                .into_iter()
-                .filter(|r| held.end_superseded(&r.destination) != Some(true))
-                .cloned()
-                .collect()
-        };
-        let mut recovery = self.inner.recovery.lock().unwrap();
-        for row in directs {
-            if row.state == ConnectionState::Failed && row.recovery.is_some() {
-                if let Some(inc) = row.destination.incarnation.clone() {
-                    recovery.retain(|(id, i, a), p| p.destination.name != row.destination.name || a != &row.alpn || (id == &row.destination.node_id && i == &inc));
-                    recovery.entry((row.destination.node_id.clone(), inc, row.alpn.clone())).or_insert_with(|| Pending {
-                        destination: row.destination.clone(),
-                        alpn: row.alpn.clone(),
-                        traceparent: None,
-                    });
-                }
-            }
-        }
+        crate::connection_reconnect::sync_recovery(self);
     }
 
-    /// Spend the pending attempt `key` undialled, naming why.
-    fn spend(&self, key: &(NodeId, IncarnationId, Vec<u8>), source: &PathName, destination: &ConnectionEnd, reason: &'static str) {
-        self.inner.recovery.lock().unwrap().remove(key);
-        tracing::info_span!(
-            "rdm.node_admin.connection.remove.via-recovery-attempt",
-            source = %source,
-            destination = %destination.name,
-            destination_node_id = %destination.node_id,
-            destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
-            reason,
-        )
-        .in_scope(|| tracing::info!("the pending recovery attempt is spent"));
+    /// An accept on `alpn` from `peer` (connections.md §9.4, §10, §13 G): writes nothing (R-CN1),
+    /// and if `peer` is the exact birth this node's own active Proxy on `alpn` names, arms or
+    /// coalesces the one recovery attempt and wakes the reconciler.
+    pub fn accepted_on_alpn(&self, peer: &rdm_transport::connections::Birth, alpn: &[u8]) {
+        crate::connection_reconnect::accepted_on_alpn(self, peer, alpn, &peer.node_id.to_string());
     }
 
     /// A strictly increasing stamp for this writer's rows.
@@ -779,49 +625,7 @@ impl rdm_transport::AcceptTrigger for ConnectionsWriter {
     /// the reconciler; from another birth at that path it arms nothing, by name; from a node this
     /// node reaches by no Proxy it is an accept like any other.
     fn accepted(&self, node: &ResolvedNode) {
-        let destination = end_of(node);
-        let (source, proxied) = {
-            let held = self.inner.held.lock().unwrap();
-            let Some(proxy) = held.own_active_proxies().into_iter().find(|p| p.destination.name == destination.name) else { return };
-            let direct = matches!(held.active_direct_for(&proxy.source.name, &destination.name, &proxy.alpn), Some(Some(_)));
-            (proxy.source.name.clone(), (proxy.destination.clone(), proxy.alpn.clone(), direct))
-        };
-        let (named, alpn, direct) = proxied;
-        let key = (destination.node_id.clone(), node.incarnation.clone(), alpn.clone());
-        let span = tracing::info_span!(
-            "rdm.node_admin.connection.update.via-accept-trigger",
-            source = %source,
-            destination = %destination.name,
-            destination_node_id = %destination.node_id,
-            destination_incarnation = %node.incarnation,
-            proxy_destination_node_id = %named.node_id,
-            proxy_destination_incarnation = %named.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
-            peer = %node.endpoint_id.fmt_short(),
-            outcome = tracing::field::Empty,
-        );
-        let outcome = if (&named.node_id, &named.incarnation) != (&destination.node_id, &destination.incarnation) {
-            "another-birth"
-        } else if direct {
-            "direct-connected"
-        } else {
-            match self.inner.recovery.lock().unwrap().entry(key) {
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    if e.get().traceparent.is_none() {
-                        e.get_mut().traceparent = rdm_transport::traceparent_of(&span);
-                    }
-                    "coalesced"
-                }
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(Pending { destination: destination.clone(), alpn, traceparent: rdm_transport::traceparent_of(&span) });
-                    "pending"
-                }
-            }
-        };
-        span.record("outcome", outcome);
-        span.in_scope(|| tracing::info!("an accept from the destination: a recovery trigger for this node's own dial, never a Direct entry"));
-        if matches!(outcome, "pending" | "coalesced") {
-            self.inner.wake.notify_one();
-        }
+        crate::connection_reconnect::accepted_resolved(self, node);
     }
 }
 
@@ -872,6 +676,10 @@ impl rdm_transport::connections::ConnectionsSink for ConnectionsWriter {
 
     async fn record_drops(&self, routes: &[NodeConnection], reason: &str) -> Vec<rdm_core::ConnectionId> {
         self.write_drops(routes, reason).await.0
+    }
+
+    fn accepted(&self, peer: &rdm_transport::connections::Birth, alpn: &[u8]) {
+        self.accepted_on_alpn(peer, alpn);
     }
 }
 

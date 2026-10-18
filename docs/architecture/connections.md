@@ -452,7 +452,7 @@ A reply timeout after request commit is not proxy-health evidence and does not i
 
 ## 9. Direct reconnect is owned by every node
 
-Every node runs the same reconnect mechanism internally in `rafka-node-base`. Node-admin does not monitor
+Every node runs the same reconnect mechanism internally in `rdm-node`. Node-admin does not monitor
 Proxy routes and does not send reconnect commands.
 
 This is deliberately **not** a normal platform `Job` entity. It is a local durable reconciler whose work is
@@ -466,7 +466,7 @@ control hop to state the source already knows.
 Target module, exact filename may differ:
 
 ```text
-crates/rafka-node-base/src/connection_reconnect.rs
+crates/rdm-node/src/connection_reconnect.rs
 ```
 
 It contains no topic, broker-replication, Kafka, org, or node-admin orchestration semantics.
