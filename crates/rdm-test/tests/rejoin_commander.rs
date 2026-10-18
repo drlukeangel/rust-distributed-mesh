@@ -310,7 +310,16 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             );
             let _ = close_lost.await;
         };
-        let (_lost_answer, ()) = tokio::join!(first, rest);
+        // The cell ends with the successor's start: the lost commander's call, on its closed
+        // endpoint, is dropped then.
+        let (mut first, mut rest) = (std::pin::pin!(first), std::pin::pin!(rest));
+        let mut first_ended = false;
+        loop {
+            tokio::select! {
+                () = &mut rest => break,
+                _ = &mut first, if !first_ended => first_ended = true,
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
@@ -440,7 +449,12 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
         let (hook_started, hook_resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
         hydrator.set_mode(Mode::Pause { started: hook_started.clone(), resume: hook_resume.clone(), outcome: HookOutcome::Ok });
         lost.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
-        let first = async { call(&lost, &target, &start(2)).await };
+        // The lost commander's own call breaks with its endpoint: what it ends in is not this cell's.
+        let first_req = match start(2) {
+            StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => rdm_core::node_command::NodeCommandRequest::StartNode { node_id, incarnation, build_id, attempt, operation },
+            _ => unreachable!("the first command is a start"),
+        };
+        let first = async { crate::common::node_command(&lost.observer.client, &target, &first_req, &CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..CallOptions::default() }).await };
         let rest = async {
             tokio::time::timeout(NEVER, hook_started.notified()).await.expect("the lost commander's start never reached its hook: its join was not answered");
             lost.observer.client.endpoint().close().await;
@@ -467,7 +481,16 @@ fn a_start_whose_commander_is_lost_after_its_join_reads_its_topology_from_the_la
                 "the start's rafka-time refresh is served by the later commander {successor_short}: {refreshed:?}"
             );
         };
-        let (_lost_answer, ()) = tokio::join!(first, rest);
+        // The cell ends with the later commander's start: the lost commander's call, on its closed
+        // endpoint, is dropped then.
+        let (mut first, mut rest) = (std::pin::pin!(first), std::pin::pin!(rest));
+        let mut first_ended = false;
+        loop {
+            tokio::select! {
+                () = &mut rest => break,
+                _ = &mut first, if !first_ended => first_ended = true,
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

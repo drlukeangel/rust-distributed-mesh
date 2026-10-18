@@ -143,6 +143,46 @@ pub async fn reached_back(node: &str, client: &NodeRpcClient, key: &iroh::Public
     }
 }
 
+/// `read` made to the admin a start's reads go to (node-start.md steps 2 and 4): the authority the
+/// join reached (`through`), or, after a stop, the admin whose call commanded the start last
+/// (`commander`), reached back over that call. A later call's commander replaces the one a read is
+/// under way to: that read is dropped and made again to the later one, so a commander lost after
+/// the join holds no read past the call that replaced it. The answer and who gave it; a failure
+/// names whom the read went to.
+async fn at_commander<T, E: std::fmt::Display, F, Fut>(node: &str, client: &NodeRpcClient, through: &JoinThrough, mut commander: Option<&mut tokio::sync::watch::Receiver<iroh::PublicKey>>, read: F) -> Result<(T, String), (String, String)>
+where
+    F: Fn(NodeTarget) -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let (mut target, mut key, mut who) = (through.target.clone(), through.endpoint, through.name.to_string());
+    loop {
+        if let Some(c) = commander.as_deref_mut() {
+            let now = *c.borrow_and_update();
+            if now != key {
+                who = format!("the admin whose call commanded it last (endpoint {})", now.fmt_short());
+                target = reached_back(node, client, &now).await.map_err(|e| (e, who.clone()))?;
+                key = now;
+            }
+        }
+        let replaced = async {
+            match commander.as_deref_mut() {
+                Some(c) => {
+                    if c.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            r = read(target.clone()) => return r.map(|v| (v, who.clone())).map_err(|e| (e.to_string(), who)),
+            () = replaced => {
+                tracing::info!(node, from = %key.fmt_short(), "a later call commanded the start: the read under way is made again to that admin");
+            }
+        }
+    }
+}
+
 /// Starts the task a node-admin's first-start hook runs in, behind the admin's own task gate.
 pub type Spawn = Box<dyn FnOnce(BoxFut<()>) -> tokio::task::JoinHandle<()> + Send>;
 
@@ -247,6 +287,8 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     //    rafka-time, cert and name taken before the node says anything, then the mesh channel holding
     //    that name and the status frames the join answered: node.joined. With no authority, the
     //    channel alone.
+    // After a stop, the start's reads go to the admin that commanded it last (node-start.md step 2).
+    let mut commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>> = None;
     let (through, joined, membership) = match node.joining() {
         Joining::Authority { label } => {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
@@ -260,6 +302,10 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &path.mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, authority: &label, operation: &operation, report_parent, reported: step, channel_parent: Some(root.clone()) };
             let joined = super::node_mesh_join::node_mesh_join(node, call).await?;
             name = joined.name;
+            commander = match &to {
+                JoinTo::Commander(c) => Some(c.clone()),
+                JoinTo::Launcher { .. } => None,
+            };
             (Ok((joined.through, label)), Some(joined.answer), joined.membership)
         }
         Joining::None(why) => {
@@ -282,7 +328,7 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
     let driver = hydration.driver(ctx, events, root.clone());
     *state.lock().unwrap() = driver.as_ref().map(|d| d.handle());
     // 4. and 5., once the hook passed.
-    let rest = AfterTheHook { root, name: name.clone(), path, node_id, client, rafka_time, membership, through: through.ok(), after };
+    let rest = AfterTheHook { root, name: name.clone(), path, node_id, client, rafka_time, membership, through: through.ok(), commander, after };
     match runs {
         HookRuns::Spawned { spawn } => {
             let task = spawn(Box::pin(async move {
@@ -339,6 +385,10 @@ struct AfterTheHook {
     membership: Membership,
     /// The authority the join reached, and what the step spans name it; `None` with no authority.
     through: Option<(JoinThrough, String)>,
+    /// After a stop, the endpoint of the call that commanded the start last: the topology read and
+    /// the rafka-time refresh go to that admin, as the join did (node-start.md step 2; the reads are
+    /// the mesh-primary's, node-topology-get.md).
+    commander: Option<tokio::sync::watch::Receiver<iroh::PublicKey>>,
     after: Box<dyn AfterHook>,
 }
 
@@ -367,7 +417,7 @@ impl AfterTheHook {
     }
 
     async fn steps(self, driver: Option<Arc<HookDriver>>) -> Result<(), (StartFailed, Box<dyn AfterHook>)> {
-        let Self { root, name, path, node_id, client, rafka_time, membership, through, mut after } = self;
+        let Self { root, name, path, node_id, client, rafka_time, membership, through, mut commander, mut after } = self;
         // 4. The topology, from the authority that answered the join.
         // A mesh the topology step installed, at the version it installed: what the rafka-time refresh
         // names, so the authority answers it `Unchanged`.
@@ -375,9 +425,12 @@ impl AfterTheHook {
         if let Some((t, label)) = &through {
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-topology-taken", node = %name, launcher = %label);
             after.before_topology_read(&t.name).instrument(step.clone()).await;
-            let read = match crate::topology_read::get_topology(&client, &t.target, &t.name.mesh, &membership, None, None).instrument(step.clone()).await {
-                Ok(read) => read,
-                Err(e) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {}: {e}", t.name) }, after)),
+            let read = match at_commander(&name, &client, t, commander.as_mut(), |target| {
+                let (client, membership, mesh) = (&client, &membership, &t.name.mesh);
+                async move { crate::topology_read::get_topology(client, &target, mesh, membership, None, None).await }
+            }).instrument(step.clone()).await {
+                Ok((read, _)) => read,
+                Err((e, who)) => return Err((StartFailed { step: "node.topology", reason: format!("{name} could not read the topology of {who}: {e}") }, after)),
             };
             after.topology_installed(&membership, &read).instrument(step.clone()).await;
             held = read.installed.first().map(|m| (m.mesh.clone(), SourceVersion { publisher: m.publisher.clone(), topology_version: m.topology_version }));
@@ -391,20 +444,23 @@ impl AfterTheHook {
         let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-rafka-time-refreshed", node = %name, served_by = tracing::field::Empty, unchanged = tracing::field::Empty, outcome = tracing::field::Empty);
         match &through {
             Some((t, _)) => {
-                step.record("served_by", tracing::field::display(&t.name));
                 // The read names the mesh the topology step installed and its version; an authority that
                 // answered no snapshot is read whole again, as the topology step read it.
                 let (mesh, since) = match held {
                     Some((mesh, since)) => (Some(mesh), Some(since)),
                     None => (None, None),
                 };
-                let read = match crate::topology_read::read_topology(&client, &t.target, &name, mesh.as_deref(), since).instrument(step.clone()).await {
+                let (read, who) = match at_commander(&name, &client, t, commander.as_mut(), |target| {
+                    let (client, node, mesh, since) = (&client, &name, mesh.as_deref(), since.clone());
+                    async move { crate::topology_read::read_topology(client, &target, node, mesh, since).await }
+                }).instrument(step.clone()).await {
                     Ok(read) => read,
-                    Err(e) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not read rafka-time from {}: {e}", t.name) }, after)),
+                    Err((e, who)) => return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not read rafka-time from {who}: {e}") }, after)),
                 };
+                step.record("served_by", tracing::field::display(&who));
                 step.record("unchanged", !read.unchanged.is_empty());
-                if let Err(e) = step.in_scope(|| read.adopt_rafka_time(&rafka_time, &membership, &name, &path.mesh, &node_id, &t.name.to_string())) {
-                    return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not adopt rafka-time from {}: {e}", t.name) }, after));
+                if let Err(e) = step.in_scope(|| read.adopt_rafka_time(&rafka_time, &membership, &name, &path.mesh, &node_id, &who)) {
+                    return Err((StartFailed { step: "node.rafka-time", reason: format!("{name} could not adopt rafka-time from {who}: {e}") }, after));
                 }
                 step.record("outcome", "adopted");
             }
