@@ -700,8 +700,8 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_rpc.node.remove.via-membership` | `crates/rdm-node/src/node_rpc.rs` | 87 |
 | `rdm.node_rpc.node.update.via-membership` | `crates/rdm-node/src/node_rpc.rs` | 95 |
 | `rdm.node_rpc.node.update.via-membership` | `crates/rdm-node/src/node_rpc.rs` | 106 |
-| `rdm.node_rpc.proof_store.reject.via-probe-arguments` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 372 |
-| `rdm.node_rpc.proof_store.resolve.via-probe` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 377 |
+| `rdm.node_rpc.proof_store.reject.via-probe-arguments` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 374 |
+| `rdm.node_rpc.proof_store.resolve.via-probe` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 379 |
 | `rdm.node_rpc.proof_store.serve.via-request` | `crates/rdm-test/src/proof_store.rs` | 504 |
 | `rdm.node_rpc.request.reject.via-busy` | `crates/rdm-transport/src/server.rs` | 810 |
 | `rdm.node_rpc.request.reject.via-carrier-edge-lost` | `crates/rdm-transport/src/forward.rs` | 183 |

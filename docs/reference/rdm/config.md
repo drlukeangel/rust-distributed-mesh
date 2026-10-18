@@ -152,7 +152,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (55 names)
 | `RDM_NODE_NAME` | `crates/rdm-transport/src/transport_diag.rs` | 86 | fn `header` | argument to `std::env::var` |
 | `RDM_OTEL_DEBUG` | `crates/rdm-transport/src/telemetry.rs` | 678 | fn `span_export_filter` | argument to `std::env::var` |
 | `RDM_OTLP_LOG_LEVEL` | `crates/rdm-transport/src/telemetry.rs` | 692 | fn `otlp_log_export_level` | argument to `std::env::var` |
-| `RDM_PROBE_BIND` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 442 | fn `probe_bind` | argument to `std::env::var` |
+| `RDM_PROBE_BIND` | `crates/rdm-test/src/bin/rafka_rpc_probe.rs` | 444 | fn `probe_bind` | argument to `std::env::var` |
 | `RDM_PROBE_BIND` | `crates/rdm-test/src/estate.rs` | 1146 | fn `ProbeHandle::command` | argument to `.env` |
 | `RDM_RAM_BUDGET_BYTES` | `crates/rdm-transport/src/load.rs` | 34 | fn `LoadSampler::for_this_process` | argument to `env` |
 | `RDM_REQUIRE_CONTAINER` | `tools/test-runner/src/lib.rs` | 58 | const `SCRUBBED` | literal |
