@@ -1424,7 +1424,7 @@ checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 [[package]]
 name = "iroh"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
+source = "git+https://github.com/drlukeangel/iroh?rev=23ab5a849d745d7db174778fa1fe3c12ec158580#23ab5a849d745d7db174778fa1fe3c12ec158580"
 dependencies = [
  "backon",
  "blake3",
@@ -1473,7 +1473,7 @@ dependencies = [
 [[package]]
 name = "iroh-base"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
+source = "git+https://github.com/drlukeangel/iroh?rev=23ab5a849d745d7db174778fa1fe3c12ec158580#23ab5a849d745d7db174778fa1fe3c12ec158580"
 dependencies = [
  "curve25519-dalek",
  "data-encoding",
@@ -1491,7 +1491,7 @@ dependencies = [
 [[package]]
 name = "iroh-dns"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
+source = "git+https://github.com/drlukeangel/iroh?rev=23ab5a849d745d7db174778fa1fe3c12ec158580#23ab5a849d745d7db174778fa1fe3c12ec158580"
 dependencies = [
  "arc-swap",
  "cfg_aliases",
@@ -1513,7 +1513,7 @@ dependencies = [
 [[package]]
 name = "iroh-gossip"
 version = "0.101.0"
-source = "git+https://github.com/drlukeangel/iroh-gossip?rev=c8fd82477b6da7c6ca19d2ba7669dcd1dbd0e9d1#c8fd82477b6da7c6ca19d2ba7669dcd1dbd0e9d1"
+source = "git+https://github.com/drlukeangel/iroh-gossip?rev=dce7b7061583952b68340d6ff715c6c9017a04ff#dce7b7061583952b68340d6ff715c6c9017a04ff"
 dependencies = [
  "blake3",
  "bytes",
@@ -1566,7 +1566,7 @@ dependencies = [
 [[package]]
 name = "iroh-relay"
 version = "1.3.0"
-source = "git+https://github.com/drlukeangel/iroh?rev=921afe53685c0a28536062fff0ac15c8a8bf9190#921afe53685c0a28536062fff0ac15c8a8bf9190"
+source = "git+https://github.com/drlukeangel/iroh?rev=23ab5a849d745d7db174778fa1fe3c12ec158580#23ab5a849d745d7db174778fa1fe3c12ec158580"
 dependencies = [
  "blake3",
  "bytes",
@@ -2867,7 +2867,7 @@ dependencies = [
 [[package]]
 name = "rdm-admin"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=b22d6776c22b3495338c6bd73e31fa57b0f3e9f4#b22d6776c22b3495338c6bd73e31fa57b0f3e9f4"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=702ddd9e17a4bccbae24a37a9b85a37e7e64db1c#702ddd9e17a4bccbae24a37a9b85a37e7e64db1c"
 dependencies = [
  "async-trait",
  "blake3",
@@ -2893,7 +2893,7 @@ dependencies = [
 [[package]]
 name = "rdm-client"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=b22d6776c22b3495338c6bd73e31fa57b0f3e9f4#b22d6776c22b3495338c6bd73e31fa57b0f3e9f4"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=702ddd9e17a4bccbae24a37a9b85a37e7e64db1c#702ddd9e17a4bccbae24a37a9b85a37e7e64db1c"
 dependencies = [
  "iroh",
  "rdm-core",
@@ -2907,7 +2907,7 @@ dependencies = [
 [[package]]
 name = "rdm-core"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=b22d6776c22b3495338c6bd73e31fa57b0f3e9f4#b22d6776c22b3495338c6bd73e31fa57b0f3e9f4"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=702ddd9e17a4bccbae24a37a9b85a37e7e64db1c#702ddd9e17a4bccbae24a37a9b85a37e7e64db1c"
 dependencies = [
  "blake3",
  "hex",
@@ -2922,7 +2922,7 @@ dependencies = [
 [[package]]
 name = "rdm-node"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=b22d6776c22b3495338c6bd73e31fa57b0f3e9f4#b22d6776c22b3495338c6bd73e31fa57b0f3e9f4"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=702ddd9e17a4bccbae24a37a9b85a37e7e64db1c#702ddd9e17a4bccbae24a37a9b85a37e7e64db1c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2942,7 +2942,7 @@ dependencies = [
 [[package]]
 name = "rdm-test"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=b22d6776c22b3495338c6bd73e31fa57b0f3e9f4#b22d6776c22b3495338c6bd73e31fa57b0f3e9f4"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=702ddd9e17a4bccbae24a37a9b85a37e7e64db1c#702ddd9e17a4bccbae24a37a9b85a37e7e64db1c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2965,7 +2965,7 @@ dependencies = [
 [[package]]
 name = "rdm-transport"
 version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=b22d6776c22b3495338c6bd73e31fa57b0f3e9f4#b22d6776c22b3495338c6bd73e31fa57b0f3e9f4"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=702ddd9e17a4bccbae24a37a9b85a37e7e64db1c#702ddd9e17a4bccbae24a37a9b85a37e7e64db1c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3084,14 +3084,15 @@ dependencies = [
 name = "rshape-consumer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "postcard",
- "anyhow",
  "rdm-admin",
  "rdm-core",
  "rdm-node",
  "rdm-test",
  "rdm-transport",
+ "serde_json",
  "tokio",
  "tracing",
 ]
