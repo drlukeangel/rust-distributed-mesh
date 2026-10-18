@@ -475,6 +475,10 @@ RDM has no `docs/features/<slug>/` tree. The three documents map to: **overview*
   - Its first gate (`602b1863`) was red on two cells this change does not exercise, both green on main `e278636c` and on `602b1863` in one run each, side by side (logs: scratchpad `q56red/`):
     - `provider_state::an_os_stopped_member_is_recorded_on_node_get_and_cleared_when_it_runs_again`: `node.get` showed the record cleared, but no `via-os-stopped cleared` span was emitted, and the admin left cleanly (kept `gate-gates-e1s8-602b1863-provider_state`). That span is emitted only when the removal reports a row removed. i144 e2's defect, read with the release's lifecycle reds.
     - `fabric_primary::losing_the_fabric_primary_mesh_moves_control`: `mesh2.admin.1`'s `node.get` did not answer at the cell's `enter` after mesh1's loss (kept `gate-gates-e1s8-602b1863-fabric_primary`).
+  - Its second gate (`6ce360ab`) was red on three other cells, each green on main `e278636c` and on `6ce360ab` in one run each, side by side (logs: scratchpad `q56red2/`):
+    - `admin_start_declares::a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again`: the restarted admin's rafka-time step was answered `UnknownMesh mesh1` by `mesh1.admin.1`, the answering admin.
+    - `rename_precondition::a_node_holding_connections_is_refused_its_name_until_its_connections_are_deleted`: its ping ended `NotSent(Resolve(Unknown))`.
+    - `telemetry_exit::a_process_that_emits_one_span_and_exits_immediately_leaves_its_span_file`: the exit flush ended at its 2 s bound, 9 of 9 spans unconfirmed.
 
 ## Verification
 
