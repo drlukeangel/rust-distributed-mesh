@@ -2458,6 +2458,9 @@ Page diffs (delegated ruling `R-FM2`):
 
 ### State
 
+Land preflight `c0b26b39` refused the newly added held-log test identifier's word `drain` before a gate ran. Renamed both the cell and its self-invocation to `a_held_log_writer_ends_the_exit_flush_at_its_one_bound_named`; no behavior or bound change. Original RED remains cited above.
+
+
 **Work resumed; rebased on main `9e977175`.** No Q56 handoff is treated as a halt. Exit-timing diagnostics (`049dedda`, original run `8dc83d7a`) preserve every assertion and bound. Controls: probe root 2/2 GREEN including all forty real Direct/carried calls (`s88-probe-root-timing-controls.log`, 1.28 s), exit controls 4/4 GREEN under syscall observation (`s88-child-exit-timing-controls.log`, 2.03 s; raw `s88-exit-syscalls.log`). These isolated controls do not dispose of the concurrent missing-file red. Q54 acquisition code/page and the full s88 package remain unlanded until the land script succeeds; the next attempt uses the new main and diagnostic candidate, all gate jobs concurrent.
 
 

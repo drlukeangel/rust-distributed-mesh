@@ -700,7 +700,7 @@ mod evidence_tests {
     /// The process drain's one deadline includes a held fmt log, after the
     /// evidence and collector processors. No log writer can hold the exit forever.
     #[test]
-    fn a_held_log_writer_ends_the_exit_drain_at_its_one_bound_named() {
+    fn a_held_log_writer_ends_the_exit_flush_at_its_one_bound_named() {
         use std::io::{BufRead, Read, Write};
         use std::process::{Command, Stdio};
         use std::time::{Duration, Instant};
@@ -736,7 +736,7 @@ mod evidence_tests {
             println!("DRAIN_DONE_MS={}", started.elapsed().as_millis());
             std::process::exit(0);
         }
-        let name = concat!(module_path!(), "::a_held_log_writer_ends_the_exit_drain_at_its_one_bound_named");
+        let name = concat!(module_path!(), "::a_held_log_writer_ends_the_exit_flush_at_its_one_bound_named");
         let name = name.split_once("::").unwrap().1;
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", name, "--nocapture"]).env(CHILD, "1")
