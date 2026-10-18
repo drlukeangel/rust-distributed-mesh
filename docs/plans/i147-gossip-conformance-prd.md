@@ -394,6 +394,8 @@ full gate stems saved under target/evidence/publisher-birth/gate-red/. The next 
 
 First runtime RED: `9b590d24`, 0/2 GREEN, `/home/admin/rust-distributed-mesh-deploy/i147-e5-first-red.log`: JoinNode's decoder accepts the appended bytes but discards the type declaration (:38, Null); WireDigest loses the supplied 32-byte held hash (:48, Null). These are expected feature gaps, not fixture or outside-cell failures. The next RED adds the public Channel surface and real-endpoint transport cells: undeclared join, lower-sequence handoff, fabric scoping, complete-message chunk sizing, reordered/duplicate chunks and missing-chunk loss. Those cells are expected not to compile until the new public API exists; their runtime properties are not claimed proven by that compile failure.
 
+Channel/API RED captured at `c34b0148`, `/home/admin/rust-distributed-mesh-deploy/i147-e5-channel-api-red.log`: the public `rdm_transport::gossip` module, `Membership::join_channel`, and constructor declaration input do not exist. Six real-endpoint cells and the positive ownership API contract are committed; they have not run, so this is compile RED rather than six claimed behavioral failures. The earlier two wire cells actually executed and failed on missing metadata. No application implementation, wire reseal, golden rewrite, existing assertion or bound change is included in these RED commits. Remaining RED coverage (admin pre-hydration/late discovery, types bounds, peer hash learning, trace/no data, overflow and compile-fail ownership) stays required before e5 can land.
+
 
 - **Goal → gap.** Rafka links iroh-gossip itself (six crates), builds a raw `GossipSender` per
   entity kind (`crates/rafka-node-base/src/kind_topics.rs`) and broadcasts its own frame bytes
