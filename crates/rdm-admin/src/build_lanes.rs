@@ -589,4 +589,38 @@ mod tests {
         assert_eq!("meshes/mesh1/builds/rev-00000000000000000003/00000000000000000004".parse::<LaneKey>().unwrap(), LaneKey { lane, revision: 3, seq: 4 });
         assert!("meshes/mesh1/builds/rev-3/4".parse::<LaneKey>().is_err(), "a key not in the lane's shape is refused by name");
     }
+
+    /// CONTRACT (i146 Q61 A; build.md §5.2: "A recovery-critical Build fact (the accepted Build, an
+    /// attempt claim, a step receipt, a completion) is not committed until it is durable in storage that
+    /// survives the loss of the current fabric-primary"; §5.3: "a write of that revision past the seal is
+    /// refused stale"): before the fabric's first state-commit, each process opening the root with its
+    /// own scratchpad unpublished, a Build fact appended to a lane stands on the root when its append
+    /// returns and another process reads it there; a seal the other process writes refuses the old
+    /// writer's next append; a mesh's attempt claim stands on the root when it is taken; and neither
+    /// scratchpad's publication writes a lane key or a claim. Must NOT happen: a lane fact, a seal or an
+    /// attempt claim held in a process's scratchpad, or an old writer's append past a seal another
+    /// process wrote.
+    #[tokio::test]
+    async fn before_the_first_state_commit_a_lane_fact_and_a_claim_stand_on_the_root_and_a_seal_refuses_the_old_writer() {
+        let d = crate::record_store::tempdir("lane-before-commit");
+        let (pad_old, pad_new) = (crate::record_store::Scratchpad::new(), crate::record_store::Scratchpad::new());
+        let held = |pad: &std::sync::Arc<crate::record_store::Scratchpad>| crate::store_root::StoreRoot::held_at(&d, pad.clone());
+        let (old, successor) = (Lanes::new(held(&pad_old), crate::model::IncarnationId::mint()), Lanes::new(held(&pad_new), crate::model::IncarnationId::mint()));
+        let lane = LaneId::Fabric;
+        assert_eq!(old.append(&lane, 3, &fact(1)).await.unwrap(), Appended::At(LaneKey { lane: lane.clone(), revision: 3, seq: 1 }));
+        assert!(d.join("fabric/builds/rev-00000000000000000003/00000000000000000001.json").exists(), "the fact stands on the root when its append returns");
+        assert_eq!(successor.read_new(&lane).await.unwrap().len(), 1, "another process reads it on the root");
+        let seal = LaneSeal { revision: 3, sealed_by: 1, by: by() };
+        assert_eq!(successor.seal(&lane, &seal).await.unwrap().at.seq, 2, "the seal takes the next key, after the fact");
+        assert!(matches!(old.append(&lane, 3, &fact(2)).await.unwrap(), Appended::Sealed { .. }), "the old writer meets the seal the other process wrote");
+        let claims = crate::mesh_claims::MeshClaims::on_root(held(&pad_new), crate::model::IncarnationId::mint());
+        let row = crate::mesh_claims::InFlight { build_id: crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), lane: None, attempt: 1, claimant: "mesh1.admin.1".into(), lane_key: None };
+        assert_eq!(claims.take("mesh2", &row).await.unwrap(), crate::mesh_claims::Taken::Won);
+        assert!(d.join("meshes/mesh2/claims/in-flight.json").exists(), "the attempt claim stands on the root when it is taken");
+        for pad in [pad_old, pad_new] {
+            let published = pad.publish().await.unwrap();
+            assert!(published.stores.iter().all(|s| !s.store.contains("builds") && !s.store.contains("claims")), "no lane key or claim is held for a publication: {published:?}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

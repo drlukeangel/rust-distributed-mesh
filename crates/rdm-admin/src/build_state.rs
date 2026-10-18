@@ -3484,13 +3484,56 @@ mod tests {
         assert!(fabric.get("mesh").is_none() && fabric.get("claimant").is_none(), "a fabric-lane line is written as before: {fabric}");
     }
 
+    /// CONTRACT (i146 Q61 A; build.md §5.2: "Restarting every node-admin at once must not erase the facts
+    /// needed to reconstruct the Fabric and continue an active Build", §5.3: "a successor reads them
+    /// there"): a fabric-primary's committed Build facts (the accepted Build, its attempt claim, a step
+    /// receipt, the attempt's completion) stand on the shared root before the fabric's first
+    /// state-commit, so the same fabric-primary restarted (a new process of its birth on the root, its
+    /// scratchpad empty) and a successor opened on the root each read every one of them, and the
+    /// Build complete. Must NOT happen: a committed fact lost with the process that held it, or read
+    /// only after a state-commit.
+    #[tokio::test]
+    async fn every_build_fact_committed_before_the_first_state_commit_is_recovered_by_a_restart_and_by_a_successor() {
+        let d = crate::record_store::tempdir("q61-recovery");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let fabric_id = crate::model::FabricId::mint();
+        let birth = writer();
+        {
+            let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
+            assert_eq!(root.writes_to(), "scratchpad", "the fabric has had no state-commit");
+            let j = FileJournal::open_on_root(&root, "mesh1", &birth).await.unwrap();
+            j.publish_accepted(&intent("b1")).await.unwrap();
+            j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+            j.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
+            j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+            // The process ends here, its scratchpad never published.
+        }
+        let id = BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
+        for (who, mesh, writer) in [("the same fabric-primary restarted", "mesh1", birth.clone()), ("a successor", "mesh2", writer())] {
+            let root = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
+            assert_eq!(root.writes_to(), "scratchpad", "{who}: the fabric has still had no state-commit");
+            let j = FileJournal::open_on_root(&root, mesh, &writer).await.unwrap();
+            let kinds: Vec<&str> = j.facts().await.unwrap().iter().map(|f| match f {
+                BuildFact::Accepted(_) => "accepted",
+                BuildFact::Claim(_) => "claim",
+                BuildFact::Step(_) => "step",
+                BuildFact::Attempt(_) => "completion",
+                _ => "other",
+            }).collect();
+            assert_eq!(kinds, ["accepted", "claim", "step", "completion"], "{who} reads every committed fact on the root");
+            assert_eq!(j.read_build(&id).await.unwrap().state, BuildState::Complete, "{who}: the Build is complete");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// CONTRACT (R-BI6, Luke 2026-10-12: "the Build journal's location is the adapter's and
     /// provider's choice; RDM's file adapter keeps it on the fabric's shared store root
     /// (`fabric/builds/` under the writer ladder, the fabric-primary its writer) so a successor reads
     /// it there; the per-admin journal and `store_root.rs`'s exclusion of it go"): a `FileJournal`
     /// opened on a `StoreRoot` writes fabric-lane facts under `fabric/builds/rev-<R>/<seq>` and
     /// mesh-lane facts under `meshes/<mesh>/builds/rev-<R>/<seq>`, one key per fact (never under a per-admin data
-    /// dir), holds writes in the root's `Scratchpad` before the first state-commit, and a successor
+    /// dir), each on the root when it is committed, before the first state-commit too (Q61), and a successor
     /// (whether already open on the same `StoreRoot` or freshly opened after a restart) reads both
     /// fabric-lane and mesh-lane facts from the shared store root without gossip.
     #[tokio::test]
@@ -3500,28 +3543,22 @@ mod tests {
         std::fs::create_dir_all(&store).unwrap();
         let fabric_id = crate::model::FabricId::mint();
 
-        // 1. Before the first state-commit, a root opened on `store` holds writes in its scratchpad.
+        // 1. Before the first state-commit, a root opened on `store` holds RDM's rows in its
+        // scratchpad; each Build fact stands on the root when it is committed (Q61).
         let root_pre = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
         assert_eq!(root_pre.writes_to(), "scratchpad");
         let j_mesh1 = FileJournal::open_on_root(&root_pre, "mesh1", &writer()).await.unwrap();
         j_mesh1.publish_accepted(&intent("b1")).await.unwrap();
         j_mesh1.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
         j_mesh1.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
-        assert!(
-            lane_files(root_pre.dir()).is_empty(),
-            "before state-commit, nothing is written to fabric/builds/ on disk: {:?}",
-            lane_files(root_pre.dir())
-        );
-        let pub_out = root_pre.scratchpad().unwrap().publish().await.unwrap();
-        assert!(
-            pub_out.stores.iter().any(|s| s.store == "fabric/builds/rev-00000000000000000000" && s.written == 3),
-            "state-commit publishes the held fabric/builds lane keys: {pub_out:?}"
-        );
         assert_eq!(
             lane_files(root_pre.dir()),
             ["fabric/builds/rev-00000000000000000000/00000000000000000001", "fabric/builds/rev-00000000000000000000/00000000000000000002", "fabric/builds/rev-00000000000000000000/00000000000000000003"],
-            "after state-commit, each fact is its own key of the fabric lane, in order, on the store root"
+            "before state-commit, each committed fact is its own key of the fabric lane, in order, on the store root"
         );
+        assert!(!root_pre.dir().join("fabric/identity.json").exists(), "nothing else of RDM's rows is on the root before state-commit");
+        let pub_out = root_pre.scratchpad().unwrap().publish().await.unwrap();
+        assert!(!pub_out.stores.iter().any(|s| s.store.starts_with("fabric/builds")), "state-commit publishes no lane key: none was held: {pub_out:?}");
 
         // 2. A second admin in mesh2 opens the shared store root; a successor in mesh1 also opens it.
         // Without gossip (`absorb_facts`), mesh2's journal already sees the accepted Build from the
