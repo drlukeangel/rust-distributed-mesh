@@ -2855,29 +2855,37 @@ impl Membership {
 
     /// Evidence of what this node holds: a mesh it first hears, or hears
     /// again, and a mesh none of whose members it still hears. And whether it
-    /// is cut off: it has heard other members, and now hears none.
+    /// is cut off (gossip.md §6, Q58): it hears no other member of its mesh and
+    /// holds one whose silence no lifecycle event it applied explains.
     fn watch_meshes(&self) {
         let (book, via, cut_off, view) = (self.book.clone(), self.view.via.clone(), self.cut_off.clone(), self.view.clone());
         tokio::spawn(async move {
             let mut held: BTreeSet<String> = BTreeSet::new();
-            let mut heard_others = false;
-            let mut heard: BTreeMap<String, (String, bool)> = BTreeMap::new();
+            let mut heard: BTreeSet<String> = BTreeSet::new();
             loop {
                 let node = view.current_name();
+                let own_mesh = view.mesh.clone();
                 let current = book.current(book.staleness_floor());
-                let now_heard: BTreeMap<String, (String, bool)> = current.iter().map(|d| (d.node.node_id.to_string(), (d.node.name.to_string(), d.status == rdm_core::MemberStatus::Leaving))).collect();
-                for (id, (name, leaving)) in heard.iter().filter(|(id, _)| !now_heard.contains_key(*id)) {
-                    if *leaving || *name == node || book.is_departed(id) {
-                        continue;
-                    }
-                    let silent_ms = book.get(id).map(|(_, silent)| silent.as_millis() as u64).unwrap_or(0);
+                let now_heard: BTreeSet<String> = current.iter().map(|d| d.node.node_id.to_string()).collect();
+                // Q58: a member whose silence a lifecycle event this view applied explains is expected
+                // silence, neither stale nor counted: a stop admitted (`Leaving`) or applied (the stopped
+                // birth left the book), an open restart, a deletion applied (the birth left the book).
+                // What remains is a member of this node's own mesh the book still holds and does not hear.
+                let restarting: BTreeSet<String> = book.in_flight().into_iter().filter(|o| o.is_restart()).map(|o| o.node_id.to_string()).collect();
+                let unexplained: Vec<(String, String, u64)> = book
+                    .all()
+                    .into_iter()
+                    .filter(|d| d.node.name.mesh == own_mesh && d.node.name.to_string() != node && !now_heard.contains(d.node.node_id.as_str()))
+                    .filter(|d| d.status != rdm_core::MemberStatus::Leaving && !restarting.contains(d.node.node_id.as_str()) && !book.is_departed(d.node.node_id.as_str()))
+                    .map(|d| (d.node.node_id.to_string(), d.node.name.to_string(), book.get(d.node.node_id.as_str()).map(|(_, silent)| silent.as_millis() as u64).unwrap_or(0)))
+                    .collect();
+                for (id, name, silent_ms) in unexplained.iter().filter(|(id, _, _)| heard.contains(id)) {
                     tracing::info_span!("rdm.mesh.membership.update.via-member-stale", node = %node, member = %name, member_id = %id, silent_ms, staleness_ms = book.staleness_floor().as_millis() as u64)
                         .in_scope(|| tracing::info!("a member is no longer heard within the staleness floor: held, not current"));
                 }
                 heard = now_heard;
                 let others = current.iter().filter(|d| d.node.name.to_string() != node).count();
-                heard_others |= others > 0;
-                let off = heard_others && others == 0;
+                let off = others == 0 && !unexplained.is_empty();
                 if let Some(role) = cut_off.lock().unwrap().observe(off, Instant::now()) {
                     tracing::info_span!("rdm.mesh.membership.update.via-cut-off", node = %node, role)
                         .in_scope(|| tracing::info!("no other member is heard: what this node holds is not acted on"));
