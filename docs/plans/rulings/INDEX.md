@@ -38,7 +38,9 @@ packet takes the next free number here before it is written; a collision is renu
 | Q60 | Dev | i146 e2 | a process exit is held by its evidence thread's file creation: what Q42's bound holds ([packet](../proposal/i146-q60-exit-held-by-a-threads-filesystem-call.md)) | C ([ruling](i146-q60-exit-flush-bound.md)): the bound holds the node's code; the cells record the kernel teardown unbounded; `drain` names renamed | asked 2026-10-18; ruled 2026-10-18 (Luke) |
 | Q61 | Dev | i146 | before the first state-commit, a Build fact durable on the shared root when committed, or held in the scratchpad ([packet](../proposal/i146-q61-build-facts-before-state-commit.md)) | A ([ruling](i146-q61-build-facts-before-state-commit.md)): durable on the root when committed, before state-commit included; the publish gate goes, the seal stays, R-BI6's cell turns | asked 2026-10-18; ruled 2026-10-18 (arch, relayed by Luke); landed `4a099c0d` (RED `c108f25d`, GREEN `9116f625`) |
 
-Next free number: **Q61**.
+| Q62 | Codex | i148 demo | the demo's faults through the public API: pre-Opened control-stream faults and per-ALPN Direct loss; the source's held Direct graph | x: the fleet-wide active Direct graph is read from the connections store (connections.md §4.1, §3.2), an e2 defect fixed, nothing fed by hand; the faults are testkit seams behind the fault door, as `gossip_faults` (i147 e5), never a product hook; the packet Codex files at `../proposal/i148-q62-demo-faults-through-the-public-api.md` | asked and ruled 2026-10-18 (the lead) |
+
+Next free number: **Q63**.
 
 Files: `i143-q50-…`, `i143-q53-…`, `i144-q40-…`, `i144-q51-…`, `i146-q46-…`, `i146-q47-…`, `i146-q52-…`,
 `i146-q55-…`, `i146-q58-…`, `i146-q60-…`, `i146-q61-…`, `i147-q19-…`, `i147-q59-…`, `i147-q21-…`, `i147-q34-…`; the dated `*-rulings-*.md` files hold the earlier
