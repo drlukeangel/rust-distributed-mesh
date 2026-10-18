@@ -397,3 +397,35 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
         assert_eq!((rows, status), (1, MemberStatus::ReadyForTraffic), "Q53: acknowledged exact-birth Ready is in the successor's first full; published={published}, trace={trace}");
     }
 }
+
+/// Q54: acquisition uses the incoming view's exact births, never a row's name.
+#[test]
+fn a_successor_ignores_declared_rows_for_births_it_does_not_hold() {
+    crate::mesh_delete_resume::capture().run(async {
+        let dir = std::env::temp_dir().join(format!("status-held-births-{}", NodeId::mint()));
+        let (mesh_id, fabric_id) = (MeshId::mint(), FabricId::mint());
+        let mut now = view(&mesh_id, &fabric_id);
+        let b = now.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().clone();
+        let rpc = now.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap().clone();
+        now.nodes.retain(|n| n.name.to_string() != "mesh1.admin.1");
+        now.nodes.iter_mut().find(|n| n.node_id == b.node_id).unwrap().is_primary = true;
+        let root = rdm_admin::store_root::StoreRoot::at(&dir);
+        let storage = Arc::new(FileStatusStorage::open(&root, "mesh1", b.incarnation_id.as_ref().unwrap()).await.unwrap());
+        let exact = (rpc.node_id.clone(), rpc.incarnation_id.clone().unwrap());
+        let stale = (rpc.node_id.clone(), IncarnationId::mint());
+        let absent = (NodeId::mint(), IncarnationId::mint());
+        for (node_id, incarnation_id) in [&exact, &stale, &absent] {
+            storage.put_node_declared(&NodeDeclaredRow { node_id: node_id.clone(), incarnation_id: incarnation_id.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
+        }
+        let records = Records::default();
+        records.set_status(storage, "mesh1".into(), b.name.clone(), b.node_id.clone());
+        let topology = RwLock::new(Topology { nodes: Vec::new(), ..now.clone() });
+        records.install_projected(&topology, || now.clone()).await;
+        let held = records.declared.lock().unwrap();
+        assert_eq!(held.node(&exact.0, &exact.1), Some(NodeState::ReadyForTraffic));
+        assert_eq!(held.node(&stale.0, &stale.1), None, "a previous incarnation is not held");
+        assert_eq!(held.node(&absent.0, &absent.1), None, "a matching name does not establish a birth");
+        drop(held);
+        let _ = std::fs::remove_dir_all(dir);
+    });
+}
