@@ -3722,6 +3722,46 @@ mod tests {
         assert_eq!(t.node(&new.node.name).map(|n| n.node_id.clone()), Some(new.node.node_id.clone()), "the view holds the new node at the path");
     }
 
+    /// CONTRACT (gossip.md §3.1 `NodeDeleted`: "the birth is removed ... the current topology no
+    /// longer lists it"; node-identity-and-state.md §6: all removal from the view is the membership
+    /// book's): a birth this admin's records hold (its entry sweep reached it) leaves the view for good
+    /// once it is deleted. Its path.name taken by a new birth that is deleted in turn, and the deleted
+    /// retention passed (the book then holds nothing of either birth), the view lists nothing at that
+    /// path.name. What must NOT happen: the deleted birth's record standing in for it again,
+    /// ready-for-traffic, once the book has forgotten the departure (soak seed 1432787: z5dwdq96cky0
+    /// came back as an arrival at mesh1.rpc.1 862 s after its deletion).
+    #[tokio::test]
+    async fn a_deleted_birth_never_comes_back_from_this_admins_records_once_its_path_name_is_free() {
+        async fn view_over(me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, records: &Records) -> Topology {
+            records.install_read(me, topology, book, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, book, records, reads)).await
+        }
+        let deleted = |d: &MeshDigest| rdm_core::LifecycleOp { build_id: "b1".into(), attempt: 1, operation: format!("node.delete:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 };
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let book = DigestBook::default();
+        let records = Records::default();
+        let first = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(first.clone());
+        // This admin's entry sweep reached the birth (`spawn_entry_sweep`): its record stands in for it.
+        let reached = crate::reenter::MapNode { node_id: first.node.node_id.clone(), name: first.node.name.clone(), endpoint_id: first.node.endpoint_id.clone(), transport_addr: first.node.transport_addr, incarnation: first.node.incarnation.clone(), transition: None, ready: true, data_dir: None, admin_api_base: None };
+        records.publish(reached.as_node(NodeStatus::ReadyForTraffic, ProviderKind::Process));
+        let topology = RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &book, &records));
+        let listed = |t: &Topology| t.node(&first.node.name).map(|n| (n.node_id.clone(), n.status));
+        assert_eq!(listed(&view_over(&me, &topology, &book, &records).await), Some((first.node.node_id.clone(), NodeStatus::ReadyForTraffic)));
+
+        assert!(book.depart(deleted(&first)), "the birth is deleted");
+        assert_eq!(listed(&view_over(&me, &topology, &book, &records).await), None, "the deleted birth leaves the view");
+        // A new birth takes the path.name and is deleted in turn.
+        let second = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        book.record(second.clone());
+        assert_eq!(listed(&view_over(&me, &topology, &book, &records).await), Some((second.node.node_id.clone(), NodeStatus::ReadyForTraffic)));
+        assert!(book.depart(deleted(&second)), "the new birth is deleted");
+        assert_eq!(listed(&view_over(&me, &topology, &book, &records).await), None);
+
+        // The deleted retention passes: the book holds nothing of either birth.
+        let after = DigestBook::default();
+        assert_eq!(listed(&view_over(&me, &topology, &after, &records).await), None, "a deleted birth came back into the view from this admin's records");
+    }
+
     /// CONTRACT: a view installed by a writer that had to wait for the view lock reflects the
     /// records as they are when it holds the lock, so a removal that lands while it waits is not
     /// undone by the older projection.
