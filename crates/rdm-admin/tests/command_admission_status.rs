@@ -63,7 +63,7 @@ async fn the_mesh_primary_sets_its_member_stopping_at_the_stops_admission_and_re
 
     let rpc = member(&fabric, "mesh1.rpc.1", 10);
     assert!(membership.book.record(rpc.clone()), "the member's heartbeat is held");
-    assert!(membership.book.started(&rpc.node.node_id, &rpc.node.incarnation), "node.started of the member");
+    assert!(membership.book.started(&rpc.node.node_id, &rpc.node.incarnation, &rpc.node.name), "node.started of the member");
     let status = |d: &MeshDigest| membership.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
     let projected = |d: &MeshDigest| backbone.own_members(&membership).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
     assert_eq!(status(&rpc), Some(MemberStatus::ReadyForTraffic));

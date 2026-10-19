@@ -230,7 +230,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_011);
         assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
-        assert!(p.book.started(&id, &inc), "the primary sets it ready-for-traffic from its node.started");
+        assert!(p.book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "the primary sets it ready-for-traffic from its node.started");
         m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
         // v1: the primary's projection lists mesh1.rpc.1 ready.
@@ -290,7 +290,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
         // heartbeat says nothing of it. Its next projection says ready.
         assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 4)));
         assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the birth's heartbeat moves no status at the primary");
-        assert!(p.book.started(&id, &inc), "node.started of the birth");
+        assert!(p.book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
         round().await;
         until("the member to take ready-for-traffic from the projection", || m.book.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
         let v4 = version_at_m().unwrap();
@@ -360,7 +360,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_031);
         assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
-        assert!(p.book.started(&id, &inc), "the primary sets it ready-for-traffic from its node.started");
+        assert!(p.book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "the primary sets it ready-for-traffic from its node.started");
         m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
         // v1: the primary's projection lists mesh1.rpc.1 ready.

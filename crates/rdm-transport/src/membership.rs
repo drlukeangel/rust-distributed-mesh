@@ -4753,10 +4753,17 @@ impl DigestBook {
     /// `(node.id, incarnation)` arrives"). The birth's status is ReadyForTraffic, and an open restart of
     /// that exact birth is over; its projection says both on its next round. Only for a birth of this
     /// book's own mesh: a mesh-primary sets its own mesh's statuses. `false` when nothing moved.
-    pub fn started(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+    ///
+    /// `name` is the birth's `path.name` as the report's decision named it, read only when this book
+    /// holds neither a digest of the birth nor its open restart (a primary born while the member was
+    /// silent decides its report from durable rows, Q80): the birth is held ready-for-traffic before its
+    /// digest arrives, and that digest, a join's or a heartbeat, finds the status held. A held digest's
+    /// name wins.
+    pub fn started(&self, node_id: &NodeId, incarnation: &IncarnationId, name: &rdm_core::PathName) -> bool {
         let held = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation).map(|(d, _, _)| d.node.name.clone());
         let restart = self.restart_of(node_id.as_str(), incarnation);
-        let name = held.clone().or(restart.as_ref().map(|o| o.name.clone()));
+        let name = held.clone().or(restart.as_ref().map(|o| o.name.clone())).unwrap_or_else(|| name.clone());
+        let name = Some(name);
         let own_mesh = self.own_mesh.lock().unwrap().clone();
         let Some(name) = name.filter(|n| !own_mesh.is_empty() && n.mesh == own_mesh) else { return false };
         let prior = self.author_status(node_id.as_str(), incarnation, rdm_core::MemberStatus::ReadyForTraffic);
@@ -6183,7 +6190,7 @@ mod tests {
     /// The mesh-primary's report-taking of `node.started` of the birth `inc` of `id`: its
     /// DeclareNodeState(ReadyForTraffic) applied by its StatusAuthority.
     fn node_started(book: &DigestBook, id: &NodeId, inc: &IncarnationId) {
-        book.started(id, inc);
+        book.started(id, inc, &"mesh1.rpc.1".parse().unwrap());
     }
 
     /// CONTRACT (node-status-heartbeat-connections.md §A.3: "the successor acquires the held member
@@ -6520,7 +6527,7 @@ mod tests {
         let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(view.book.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
-        assert!(view.book.started(&id, &inc), "and sets it ready-for-traffic from its node.started");
+        assert!(view.book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "and sets it ready-for-traffic from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.admin.1".to_string()))] {
             let late = Frame::Members { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 6)], in_flight: vec![], departed: vec![] };
             view.take_snapshot(&late, &fabric, side, &mut view.order.lock().unwrap());
@@ -6697,7 +6704,7 @@ mod tests {
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "the join report");
         assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::Pending), "held Pending from node.joined");
-        assert!(book.started(&id, &inc), "node.started of the birth");
+        assert!(book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
         // The digest the intake read the status for before node.started, written after it.
         let since = Instant::now();
         book.inner.lock().unwrap().insert(id.to_string(), (digest(&id, &inc, None, MemberStatus::Pending, 101), Instant::now(), Heard::Direct));
@@ -6732,7 +6739,7 @@ mod tests {
         let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.get(id.as_str()).is_none(), "the book holds no digest of the birth");
-        assert!(book.started(&id, &inc), "node.started of a birth not held yet");
+        assert!(book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of a birth not held yet");
         assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "held ready-for-traffic before its digest");
         let started = spans.named("rdm.mesh.membership.update.from-node-started");
         assert_eq!(started.iter().map(|f| f["member"].clone()).collect::<Vec<_>>(), vec!["mesh1.rpc.1".to_string()], "from-node-started names the birth: {started:#?}");
@@ -6744,6 +6751,11 @@ mod tests {
         assert_eq!(book.get(id.as_str()).map(|(d, _)| d.status), ready, "get hands it out ready-for-traffic");
         assert_eq!(book.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
         assert!(book.routable(id.as_str()), "the started birth of a ready mesh is routable");
+        // A held digest's name wins over the one the caller names: here the caller's names another mesh.
+        let (other, other_inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&other, &other_inc, None, MemberStatus::Pending, 100)));
+        assert!(book.started(&other, &other_inc, &"mesh2.rpc.9".parse().unwrap()), "the held digest's name, of this book's mesh, decides");
+        assert_eq!(book.member_status(&other, &other_inc), ready);
     }
 
     /// CONTRACT: an overlay that ended stays ended: a restart node.started of its birth ended, the
@@ -6762,7 +6774,7 @@ mod tests {
         assert!(book.restarting(restart.clone()));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ConnectionsDeleting, 110)));
         assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 120)));
-        assert!(book.started(&id, &inc), "node.started of the birth");
+        assert!(book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()), "node.started of the birth");
         assert!(book.restart_of(id.as_str(), &inc).is_none());
         assert!(!book.restarting(restart.clone()), "the same operation again opens nothing");
         let (none, unconverged, no_build): (BTreeSet<(String, u32, String)>, BTreeSet<(String, u32)>, BTreeSet<String>) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
@@ -7217,7 +7229,7 @@ mod tests {
         next.node.endpoint_id = EndpointId(key);
         assert!(book.record_at(next, long_ago));
         assert!(held_targets(&book, |_| true).is_empty(), "its heartbeat closes nothing");
-        assert!(book.started(&id, &inc));
+        assert!(book.started(&id, &inc, &"mesh1.rpc.1".parse().unwrap()));
         let targets = held_targets(&book, |_| true);
         assert_eq!(targets.len(), 1, "node.started of the same birth closes the restart");
         assert_eq!(targets[0].addr.ip_addrs().next().map(|a| a.port()), Some(41000), "and is a target at its own address");

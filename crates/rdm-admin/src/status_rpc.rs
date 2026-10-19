@@ -1202,7 +1202,7 @@ impl StatusAuthority {
             if let Some(book) = &self.book {
                 match row.state {
                     NodeState::ReadyForTraffic => {
-                        book.started(&row.node_id, &row.incarnation_id);
+                        book.started(&row.node_id, &row.incarnation_id, &row.name);
                     }
                     state => {
                         book.reported(&row.node_id, &row.incarnation_id, member_of_declared(state));

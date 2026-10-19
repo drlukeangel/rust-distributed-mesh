@@ -39,7 +39,7 @@ fn reserved(kind: Kind) {
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let digest = MeshDigest { held_hash: Default::default(), fabric_id: fabric.clone(), node: MeshNode { node_id: node_id.clone(), name: "mesh1.admin.2".parse().unwrap(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None };
         receiver.book.record(digest);
-        assert!(receiver.book.started(&node_id, &incarnation));
+        assert!(receiver.book.started(&node_id, &incarnation, &"mesh1.admin.2".parse().unwrap()));
         let holder = SeatHolder { mesh: "mesh1".into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 };
         receiver.seats().take(Seat::FabricPrimary, &holder);
         receiver.seats().take(Seat::MeshPrimary, &holder);

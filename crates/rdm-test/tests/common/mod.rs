@@ -543,7 +543,7 @@ pub async fn lifecycle_reply(client: &rdm_transport::NodeRpcClient, target: &rdm
                 None
             }
             N::NodeStarted => {
-                if let Some(book) = book { book.started(node_id, incarnation); }
+                if let Some((book, (held, _))) = book.and_then(|b| b.get(node_id.as_str()).map(|h| (b, h))) { book.started(node_id, incarnation, &held.node.name); }
                 Some(if joined { R::Started } else { R::AlreadyApplied })
             }
             N::NodeStopped => {

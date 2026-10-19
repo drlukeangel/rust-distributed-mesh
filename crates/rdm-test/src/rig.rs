@@ -515,13 +515,12 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                     // it ready-for-traffic. A birth the book does not hold yet is not known here: the
                     // member reports again.
                     if let R::DeclareNodeState { node_id, incarnation, state, .. } = &req {
-                        let held = book.get(node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == *incarnation);
-                        if !held {
+                        let Some(name) = book.get(node_id.as_str()).filter(|(d, _)| d.node.incarnation == *incarnation).map(|(d, _)| d.node.name) else {
                             return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
-                        }
+                        };
                         use rdm_core::MemberStatus as M;
                         match state {
-                            NodeState::ReadyForTraffic => book.started(node_id, incarnation),
+                            NodeState::ReadyForTraffic => book.started(node_id, incarnation, &name),
                             NodeState::Pending => book.reported(node_id, incarnation, M::Pending),
                             NodeState::ConnectionsDeleting => book.reported(node_id, incarnation, M::ConnectionsDeleting),
                             NodeState::Stopped => book.reported(node_id, incarnation, M::Leaving),

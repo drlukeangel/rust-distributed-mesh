@@ -33,7 +33,7 @@ fn story(kind: StatusEvent, scenario: Story) {
         let successor = PublisherId { node: "mesh1.admin.2".into(), incarnation: IncarnationId::mint(), node_id: rdm_core::NodeId::mint() };
         sender.set_author(&publisher);
         receiver.book.record(MeshDigest { held_hash: Default::default(), fabric_id: fabric, node: MeshNode { node_id: op.node_id.clone(), name: op.name.clone(), endpoint_id: EndpointId(send_ep.id().to_string()), transport_addr: socket, incarnation: op.incarnation.clone(), supersedes: None, runtime: None }, status: MemberStatus::ReadyForTraffic, node_state: Default::default(), admin_api_base: None, digest_seq: 1, emitted_at_rafka_ms: 1, data_dir: None, mesh_id: Some(mesh), in_flight: None, config: Default::default(), load: None, gossip: None });
-        assert!(receiver.book.started(&op.node_id, &op.incarnation));
+        assert!(receiver.book.started(&op.node_id, &op.incarnation, &op.name));
         tokio::time::timeout(Duration::from_secs(5), async {
             while !capture.spans().unwrap().iter().any(|s| s["name"] == "rdm.mesh.connection.update.via-neighbour-up") { tokio::time::sleep(Duration::from_millis(10)).await; }
         }).await.unwrap();
@@ -43,11 +43,11 @@ fn story(kind: StatusEvent, scenario: Story) {
         if matches!(scenario, Story::Completed) {
             match kind {
                 StatusEvent::Deleting => { assert!(receiver.book.deleting(op.clone())); receiver.book.deletions_from_facts(&std::collections::BTreeMap::from([(op.key(), "attempt-converged")]), &Default::default()); }
-                StatusEvent::Restarting => { assert!(receiver.book.restarting(op.clone())); assert!(receiver.book.started(&op.node_id, &op.incarnation)); }
+                StatusEvent::Restarting => { assert!(receiver.book.restarting(op.clone())); assert!(receiver.book.started(&op.node_id, &op.incarnation, &op.name)); }
                 StatusEvent::Stopped => {
                     assert!(receiver.book.stopped(op.clone()));
                     let mut start = op.clone(); start.operation = "node.start:mesh1.rpc.2".into();
-                    assert!(receiver.book.joined(&start)); assert!(receiver.book.started(&op.node_id, &op.incarnation));
+                    assert!(receiver.book.joined(&start)); assert!(receiver.book.started(&op.node_id, &op.incarnation, &op.name));
                 }
             }
             assert!(receiver.book.routable(op.node_id.as_str()));

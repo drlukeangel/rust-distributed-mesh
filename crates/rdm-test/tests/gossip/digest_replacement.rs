@@ -54,7 +54,7 @@ fn story(story: Story) {
         } else {
             send(&sender, &receiver, digest.clone(), 1).await;
         }
-        assert!(receiver.book.started(&node_id, &incarnation));
+        assert!(receiver.book.started(&node_id, &incarnation, &digest.node.name));
         let before = receiver.book.get(node_id.as_str()).unwrap().0;
         let changes = receiver.book.digest_changes();
         let births = receiver.book.birth_changes();
