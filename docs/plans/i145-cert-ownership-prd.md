@@ -219,7 +219,12 @@ No new gossip frame and no new `MemberStatus`.
   the mesh-primary first, the fabric-primary itself in process; `node.get` shows the held issue,
   `fabric.get` the next expiry and each mesh's stalled births. An admin's own `NodeSelf` now holds its
   app-protocol registry (as a node's does): a renewed cert is installed on it, and its
-  `node.connections.delete` closes those connections too. Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
+  `node.connections.delete` closes those connections too. The successor cell: red on the RED (no
+  renewal within 90 s of the seat move), green on GREEN in 47 s. Fast gate on the stack rebased on
+  main d55112a6 (trial head 760b388b, gates-e6s4-760b388b): one red,
+  `connections_writer:750` (one of the reconciler's two recovery-dial spans had not reached the
+  exporter at its flush; the dials themselves ran; green 4 of 4 alone; no cert path). The stack's own
+  base is e1: a gate there stops at test discovery, main's newer cells being absent. Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
   Known gap, held: the policy has no durable row (`FabricIdentity` is `{ fabric_id, name }`, `model.rs:317`), and a recovered root admin with no maker reads its own env (`boot.rs:924`), as it does `MESH_SPAWN_TYPE`; nothing shows a recovery changing the TTLs.
   Two cells assert admission and are green only once e2 lands: `a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admitted`, `an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_peer_holding_the_old`.
   Page lines for e5's text: mesh-issuer-renew.md:20 ("the root rotated (a fabric re-birth)") against `fabric.root.update`; fabric-certs.md:28-31 and :50 against §Custody.
