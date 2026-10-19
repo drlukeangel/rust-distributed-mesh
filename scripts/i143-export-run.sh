@@ -5,6 +5,7 @@
 # `export-manifest` to certify.
 #
 #   scripts/i143-export-run.sh [--plan]
+#   scripts/i143-export-run.sh --soaks [--plan]
 #
 # The plan: the consumer build (`i143-rshape-consumer-build`) is in the first batch, and every job
 # whose command runs the consumer's executables (RDM_RSHAPE_CONSUMER_BIN_DIR) comes after it. The
@@ -12,6 +13,11 @@
 # or by its layer when it has none; at most I143_EXPORT_BATCH jobs (default 6) run in a batch. The
 # soak jobs (layer soak-*) are held by name: no soak runs until the fast gate and the release suite
 # are green on one SHA (Luke 2026-10-09). `--plan` prints the plan and runs nothing.
+#
+# `--soaks` runs the held soak jobs instead, with the consumer build first, and only at a HEAD whose
+# fast and release gate logs in $HOME/rust-distributed-mesh-deploy are green: a `gates-<lane>-<short>.log`
+# and a `gates-<lane>-<short>release.log` whose first line is `[gate] head=<HEAD> dirty=0`, with a DONE
+# line and no FAIL line. Without both, the run is refused by name and nothing runs.
 #
 # A tree with an uncommitted path is refused by name, and the run stops by name when HEAD moves or a
 # path changes between batches: every receipt is the one SHA's. Each job runs with the release gate's
@@ -24,14 +30,18 @@ cd "$ROOT"
 unset CARGO_TARGET_DIR
 REG="${I143_ACCEPTANCE_JOBS:-tools/mesh-audit/i143-acceptance-jobs.json}"
 N="${I143_EXPORT_BATCH:-6}"
-case "${1:-}" in
-    ""|--plan) ;;
-    *) echo "usage: scripts/i143-export-run.sh [--plan]" >&2; exit 2 ;;
-esac
+SOAKS=0 DRY=0
+for a in "$@"; do
+    case "$a" in
+        --soaks) SOAKS=1 ;;
+        --plan) DRY=1 ;;
+        *) echo "usage: scripts/i143-export-run.sh [--soaks] [--plan]" >&2; exit 2 ;;
+    esac
+done
 
-PLAN=$(python3 - "$REG" "$N" <<'PY'
+PLAN=$(python3 - "$REG" "$N" "$SOAKS" <<'PY'
 import datetime, json, os, sys
-reg_path, n = sys.argv[1], int(sys.argv[2])
+reg_path, n, soaks = sys.argv[1], int(sys.argv[2]), sys.argv[3] == "1"
 if n < 1:
     sys.exit(f"I143_EXPORT_BATCH={n}: a batch runs at least one job")
 reg = json.load(open(reg_path))
@@ -52,8 +62,9 @@ for section in ("jobs", "rshape_jobs"):
         if job.startswith("_"):
             continue
         layer = v.get("layer", "")
-        if layer.startswith("soak"):
-            held.append((job, layer))
+        if layer.startswith("soak") != soaks and job != "i143-rshape-consumer-build":
+            if not soaks:
+                held.append((job, layer))
             continue
         consumer = any("RDM_RSHAPE_CONSUMER_BIN_DIR" in c.get("command", "") for c in v.get("cells", []))
         jobs.append((job, consumer, wall(section, job, layer)))
@@ -69,7 +80,23 @@ for job, layer in held:
 PY
 ) || { echo "i143-export-run: REFUSED no plan could be made from $REG" >&2; exit 2; }
 
-if [ "${1:-}" = "--plan" ]; then
+# The soaks' bar (Luke 2026-10-09): the fast gate and the release suite green at this HEAD.
+green_gate() {
+    local suffix=$1 f
+    for f in "$HOME"/rust-distributed-mesh-deploy/gates-*.log; do
+        case "$f" in *release.log) [ "$suffix" = release ] || continue ;; *) [ "$suffix" = fast ] || continue ;; esac
+        head -1 "$f" | grep -qx "\[gate\] head=$(git rev-parse HEAD) dirty=0" && grep -q '^DONE' "$f" && ! grep -q '^FAIL' "$f" && { echo "$f"; return 0; }
+    done
+    return 1
+}
+if [ "$SOAKS" = 1 ]; then
+    for g in fast release; do
+        log=$(green_gate $g) || { echo "i143-export-run: REFUSED --soaks at $(git rev-parse --short HEAD): no green $g gate log at this HEAD (no soak runs until the fast gate and the release suite are green on one SHA, Luke 2026-10-09)" >&2; exit 2; }
+        echo "i143-export-run: $g gate green at this HEAD: $log"
+    done
+fi
+
+if [ "$DRY" = 1 ]; then
     echo "i143-export-run: plan at $(git rev-parse --short HEAD) from $REG, at most $N jobs a batch"
     echo "$PLAN"
     exit 0
