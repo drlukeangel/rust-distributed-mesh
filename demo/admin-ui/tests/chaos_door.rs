@@ -7,6 +7,11 @@ use serde_json::json;
 use rdm_test::process_faults::{local_control_domain, proc_state, start_token};
 use std::process::{Command, Stdio};
 
+/// The witness a ready-for-traffic fabric read mints.
+fn ready() -> Option<rdm_test::estate::FabricReady> {
+    rdm_test::estate::FabricReady::read(rdm_client::ScopeStatus::ReadyForTraffic)
+}
+
 /// A sleeper with a published runtime record in a fresh data dir.
 fn node(name: &str, fabric_primary: bool) -> (std::process::Child, NodeFacts, std::path::PathBuf) {
     let child = Command::new("sleep").arg("60").stdout(Stdio::null()).spawn().unwrap();
@@ -25,23 +30,26 @@ async fn a_fault_aimed_at_the_fabric_primary_is_refused_by_name_and_signals_noth
     let nodes = [fp_facts, rpc_facts];
     let chaos = Chaos::default();
     for action in ["kill", "stop"] {
-        let r = chaos.fault(&nodes, "mesh1.admin.1", action).await;
+        let r = chaos.fault(&nodes, "mesh1.admin.1", action, ready()).await;
         assert_eq!((r.outcome, r.detail["refusal"].as_str()), ("refused", Some(FABRIC_PRIMARY_REFUSAL)), "{r:?}");
     }
     assert!(matches!(proc_state(fp.id()), Some('S' | 'R')), "the fabric-primary was not signalled");
     let cut = chaos.cut(&nodes, "mesh", "mesh1").await;
     assert_eq!(cut.detail["refusal"], FABRIC_PRIMARY_REFUSAL, "{cut:?}");
 
-    let stopped = chaos.fault(&nodes, "mesh1.rpc.1", "stop").await;
+    let not_ready = chaos.fault(&nodes, "mesh1.rpc.1", "kill", None).await;
+    assert_eq!((not_ready.outcome, not_ready.detail["refusal"].as_str()), ("refused", Some("fabric-not-ready")), "a kill before the fabric is read ready-for-traffic is refused by name: {not_ready:?}");
+    assert!(matches!(proc_state(rpc.id()), Some('S' | 'R')), "the refused kill signalled nothing");
+    let stopped = chaos.fault(&nodes, "mesh1.rpc.1", "stop", ready()).await;
     assert_eq!((stopped.outcome, stopped.detail["state_after"].as_str()), ("applied", Some("T")), "{stopped:?}");
-    let resumed = chaos.fault(&nodes, "mesh1.rpc.1", "continue").await;
+    let resumed = chaos.fault(&nodes, "mesh1.rpc.1", "continue", ready()).await;
     assert_eq!(resumed.outcome, "applied", "{resumed:?}");
-    let killed = chaos.fault(&nodes, "mesh1.rpc.1", "kill").await;
+    let killed = chaos.fault(&nodes, "mesh1.rpc.1", "kill", ready()).await;
     assert_eq!((killed.outcome, killed.detail["exited"].as_bool()), ("applied", Some(true)), "{killed:?}");
     let _ = rpc.wait();
-    let again = chaos.fault(&nodes, "mesh1.rpc.1", "kill").await;
+    let again = chaos.fault(&nodes, "mesh1.rpc.1", "kill", ready()).await;
     assert_eq!((again.outcome, again.detail["refusal"].as_str()), ("refused", Some("already_exited")), "a refusal carries the kit's reason: {again:?}");
-    assert_eq!(chaos.faults().len(), 7, "every action, applied or refused, is on the record");
+    assert_eq!(chaos.faults().len(), 8, "every action, applied or refused, is on the record");
     let _ = fp.kill();
     let _ = fp.wait();
     let _ = std::fs::remove_dir_all(d1);

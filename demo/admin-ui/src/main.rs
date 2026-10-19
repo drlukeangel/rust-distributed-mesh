@@ -114,7 +114,8 @@ async fn chaos_fault(State(s): State<AppState>, Json(b): Json<FaultBody>) -> Res
         Ok(n) => view::facts(&n),
         Err(e) => return unreachable(e),
     };
-    let r = s.chaos.fault(&nodes, &b.node, &b.action).await;
+    let ready = admin.fabric().await.ok().and_then(|f| rdm_test::estate::FabricReady::read(f.status));
+    let r = s.chaos.fault(&nodes, &b.node, &b.action, ready).await;
     s.ui_event(&format!("ui.chaos.fault.{}", r.outcome), &b.node, format!("{} {}: {}", b.action, b.node, r.detail));
     answer(r)
 }

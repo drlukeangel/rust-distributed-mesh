@@ -579,6 +579,16 @@ impl Drop for EstateScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FabricReady(pub(crate) ());
 
+impl FabricReady {
+    /// The witness from one fabric read, `status` as `fabric.get` answers it. An interactive fault panel
+    /// (the demo admin-ui's Chaos tab) reads the fabric before each kill and is refused `fabric-not-ready`
+    /// without one; a cell waits with [`Estate::until_fabric_ready`] instead, so its refusal is the same
+    /// on every run.
+    pub fn read(status: rdm_client::ScopeStatus) -> Option<FabricReady> {
+        (status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(FabricReady(()))
+    }
+}
+
 pub struct Estate {
     pub owner: Owner,
     pub root: PathBuf,

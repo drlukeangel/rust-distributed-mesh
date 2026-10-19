@@ -11,6 +11,7 @@
 //! runtime, and none that takes every node-admin down.
 
 use rdm_test::netfault::Partition;
+use rdm_test::estate::FabricReady;
 use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -101,10 +102,14 @@ impl Chaos {
     }
 
     /// Apply `action` (`kill`, `stop` or `continue`) to the exact runtime of `target`. The record
-    /// is `refused` when the node is the fabric-primary, unknown, or the kit refuses.
-    pub async fn fault(&self, nodes: &[NodeFacts], target: &str, action: &str) -> FaultRecord {
+    /// is `refused` when the node is the fabric-primary, unknown, or the kit refuses, and a kill is
+    /// refused `fabric-not-ready` without `ready`: a death during fabric start is not exercised (Q74).
+    pub async fn fault(&self, nodes: &[NodeFacts], target: &str, action: &str, ready: Option<FabricReady>) -> FaultRecord {
         let fault = match action {
-            "kill" => Fault::Kill,
+            "kill" => match ready {
+                Some(r) => Fault::Kill(r),
+                None => return self.record(target, action, "refused", json!({"refusal": "fabric-not-ready", "reason": "the fabric has not been read ready-for-traffic: a death during fabric start is not exercised"})),
+            },
             "stop" => Fault::Stop,
             "continue" => Fault::Continue,
             other => return self.record(target, other, "refused", json!({"refusal": "unknown-action", "reason": format!("`{other}` is not kill, stop or continue")})),
