@@ -4618,6 +4618,9 @@ fn observed_facts(spans: &[Value], source: &str, dest: &str) -> Vec<Value> {
 }
 
 async fn supersession_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -4969,6 +4972,9 @@ fn fd_census(pid: u64) -> Value {
 }
 
 async fn churn_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -5125,6 +5131,9 @@ fn topology_versions(spans: &[Value]) -> BTreeMap<String, Vec<u64>> {
 }
 
 async fn partition_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -5333,6 +5342,9 @@ impl Observer {
 }
 
 async fn control_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     use rdm_transport::membership::Frame;
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
@@ -5516,6 +5528,9 @@ fn holds_all_unheard(view: &[Value], names: &[String]) -> bool {
 }
 
 async fn cut_ops_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -5713,6 +5728,9 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
 }
 
 async fn cut_spawn_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -5926,6 +5944,9 @@ const HOLD: &str = "rdm.node_admin.build.reject.via-unheard-mesh";
 /// mesh as a mesh: its fabric-primary reads the victim's exit from the shared host and records the evidence it
 /// held, and opens no attempt, emits no NodeDeleted and creates no birth for any node of the near mesh.
 async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -6187,6 +6208,9 @@ enum Victims {
 }
 
 async fn victims_run(cell: &str, shape: Shape, which: Victims) {
+    if !cuts_here(cell) {
+        return;
+    }
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -6416,6 +6440,9 @@ async fn world(cell: &str, shape: Shape) -> World {
 }
 
 async fn direct_edge_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let World { mut f, mut inv, nodes, launches, primaries, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
@@ -6472,6 +6499,9 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
 }
 
 async fn carrier_edge_run(cell: &str, shape: Shape) {
+    if !cuts_here(cell) {
+        return;
+    }
     let World { mut f, inv, nodes, launches, primaries, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
@@ -6731,6 +6761,20 @@ fn tickle_round() -> Duration {
 /// Whether this host can drop UDP between loopback ports; `Err` names why it cannot.
 fn host_can_cut() -> Result<(), String> {
     Partition::start(&[], &[]).map(|_| ())
+}
+
+/// Whether the cut cell `cell` runs on this host (netfault.rs): a host that cannot drop UDP between
+/// loopback ports skips it by name, and fails it by name when `RDM_REQUIRE_NETFAULT=1` (CI), as the
+/// soak's own check does.
+fn cuts_here(cell: &str) -> bool {
+    match host_can_cut() {
+        Ok(()) => true,
+        Err(why) => {
+            assert!(std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1"), "RDM_REQUIRE_NETFAULT=1: {cell} cuts traffic and this host cannot drop UDP between loopback ports: {why}");
+            eprintln!("SKIP {cell}: it cuts traffic and this host cannot drop UDP between loopback ports: {why}");
+            false
+        }
+    }
 }
 
 /// The route of every route.resolve span, in start order.
