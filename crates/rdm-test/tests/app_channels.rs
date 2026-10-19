@@ -243,3 +243,101 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
     );
 }
 
+
+const MEMBERS: &str = "app.members";
+
+// @feature: gossip
+/// CONTRACT (gossip.md app channels: node-admin joins every type a member declares, with the entity
+/// framework as a Channel subscriber; i141 e11's receive wiring): a node-admin's app watches its held
+/// set (`Membership::held_type_changes`). A member it deployed declares a type the admin does not
+/// declare; its join grows the admin's held set, and the watch reports the whole new set. An event the
+/// member publishes on that type once the channel's neighbours are up, before the app joins the
+/// channel, is buffered by the admin's subscription and received by the app's `join_channel`.
+#[test]
+fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receives_an_event_published_before_the_join() {
+    let cell = "a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receives_an_event_published_before_the_join";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let dir = std::env::temp_dir().join(format!("app-held-watch-{}", NodeId::mint()));
+        let member_dir = dir.join("member");
+        let root = start_with(config(&dir), Wiring { types: vec![BASE.into()], fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.unwrap();
+        root.stop_reconciling();
+        let mut held = root.membership.held_type_changes();
+        assert_eq!(*held.borrow_and_update(), BTreeSet::from([BASE.to_string()]), "the watch starts at the set held now");
+
+        let d = root.digest.lock().unwrap().clone();
+        std::fs::create_dir_all(&member_dir).unwrap();
+        let runtime = rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("app-held-watch")).unwrap();
+        runtime.write_record(&member_dir).unwrap();
+        let key = rdm_test::node::load_or_mint_key(&member_dir).unwrap();
+        let launch = rdm_core::launch::Launch {
+            fabric: config(&dir).fabric,
+            fabric_id: d.fabric_id.clone(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            seeds: vec![(d.node.endpoint_id.0.clone(), d.node.transport_addr)],
+            launcher: Some(rdm_core::launch::Launcher { name: d.node.name.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }),
+            data_dir: member_dir.clone(),
+            store_dir: dir.clone(),
+            mesh_id: d.mesh_id.clone(),
+            mesh_issuer: None,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        let _report = root.runner.joins.expect(rdm_admin::join::Deployed {
+            name: launch.name.clone(),
+            node_id: launch.node_id.clone(),
+            incarnation: launch.incarnation.clone(),
+            supersedes: None,
+            endpoint_id: rdm_core::EndpointId(key.public().to_string()),
+            runtime,
+            data_dir: member_dir.display().to_string(),
+            last_accepted_name: None,
+            held: false,
+        });
+        let member = rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[MEMBERS], &[])
+            .await
+            .expect("the member declaring app.members starts");
+
+        let grown = tokio::time::timeout(BOUND, async {
+            loop {
+                held.changed().await.expect("the admin's held watch stays open");
+                let set = held.borrow_and_update().clone();
+                if set.contains(MEMBERS) {
+                    return set;
+                }
+            }
+        })
+        .await
+        .expect("the admin's held watch reports the member's new type");
+        assert_eq!(grown, BTreeSet::from([BASE.to_string(), MEMBERS.to_string()]), "the whole held set is sent");
+        assert_eq!(grown, root.membership.held_types(), "the snapshot read agrees with the watch");
+
+        // The member's channel and the admin's subscription see each other (a protocol event).
+        let (to_admin, _from_admin) = member.membership.join_channel(MEMBERS).await.expect("the member joins its declared channel").split();
+        tokio::time::timeout(BOUND, async {
+            while spans.0.lock().unwrap().values().filter(|(n, _, f)| n == "rdm.mesh.channel.update.via-neighbour" && f.get("event_type").map(String::as_str) == Some(MEMBERS)).count() < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the app.members channel's neighbours are up on both sides");
+        let published = rdm_transport::gossip::Event { subject: "members/1".into(), sequence: Some(1), dataschema: Some("members.v1".into()), data: bytes::Bytes::from_static(b"before the join") };
+        to_admin.publish(published).await.expect("the member publishes");
+
+        let mut channel = root.membership.join_channel(MEMBERS).await.expect("the admin's app joins the type its held watch reported");
+        let got = tokio::time::timeout(Duration::from_secs(10), channel.recv()).await.expect("the event published before the join is received").expect("the channel is open");
+        assert_eq!((got.data.as_ref(), got.sequence), (&b"before the join"[..], Some(1)));
+        drop(channel);
+        member.stop().await;
+        root.leave().await;
+        let _ = std::fs::remove_dir_all(dir);
+    });
+}
