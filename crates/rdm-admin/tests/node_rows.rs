@@ -756,7 +756,7 @@ mod writer {
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
@@ -901,7 +901,7 @@ mod writer {
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
@@ -1058,7 +1058,7 @@ mod writer {
             env: Default::default(),
             data_root: data_root.to_path_buf(),
             store_dir: data_root.join("store"),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();

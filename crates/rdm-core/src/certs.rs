@@ -39,35 +39,27 @@ pub struct BirthIdentity {
     pub endpoint_key: EndpointId,
 }
 
-/// A signer's refusal to issue, carried by name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CertRefusal {
-    /// The refusal's stable name (what an app greps for).
-    pub name: String,
-    /// What the signer says about it.
-    pub detail: String,
-}
-
-impl CertRefusal {
-    /// A refusal named `name`.
-    pub fn new(name: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { name: name.into(), detail: detail.into() }
-    }
-}
-
-impl std::fmt::Display for CertRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.name, self.detail)
-    }
-}
-
-/// Why an issuance did not produce bytes.
+/// Why an issuance did not produce a cert.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IssueFailure {
     /// This admin holds no rafka-time yet, so it has no issue time to mint on.
     NoRafkaTime(String),
-    /// The signer refused.
-    Refused(CertRefusal),
+    /// The chain refuses it, by name.
+    Refused {
+        /// The refusal.
+        error: CertError,
+        /// What it was asked to issue, and for whom.
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for IssueFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoRafkaTime(why) => f.write_str(why),
+            Self::Refused { error, detail } => write!(f, "{error}: {detail}"),
+        }
+    }
 }
 
 /// A fresh ed25519 key, from 32 random bytes.

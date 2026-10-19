@@ -865,9 +865,11 @@ pub struct LaunchTemplate {
     /// The fabric's shared store root every launch carries (R14): the estate's one directory,
     /// handed on unchanged.
     pub store_dir: PathBuf,
-    /// The issuing material a new mesh's first node-admin is launched with: set on the template of
-    /// that launch alone, from the signer's `issue_mesh_issuer`. `None` for every other launch.
-    pub mesh_issuer: Option<Vec<u8>>,
+    /// The issuing material of its mesh a node-admin is launched with (fabric-certs.md: every
+    /// launched admin), set on the template of a node-admin's launch from the launching admin's
+    /// [`CertIssuer::issuing_material`](crate::certs::CertIssuer::issuing_material). `None` for every
+    /// other launch and for a launcher configured with no certs.
+    pub issuing: Option<rdm_core::launch::IssuingMaterial>,
     /// The bound of a `node.connections.delete { All }` every launch carries: the launching admin's
     /// own (`AdminConfig::connections_delete_deadline`).
     pub connections_delete_deadline: Duration,
@@ -1656,7 +1658,7 @@ impl DeploymentPipeline<'_> {
             data_dir: data_dir.clone(),
             store_dir: self.template.store_dir.clone(),
             mesh_id: self.template.env.get(rdm_core::launch::ENV_MESH_ID).and_then(|v| rdm_core::MeshId::parse(v).ok()),
-            mesh_issuer: self.template.mesh_issuer.clone(),
+            issuing: self.template.issuing.clone(),
             connections_delete_deadline: self.template.connections_delete_deadline,
         };
         // The launch environment; its TRACEPARENT is taken inside the
@@ -2788,7 +2790,7 @@ mod tests {
                 env: BTreeMap::new(),
                 data_root: data_root.clone(),
                 store_dir: data_root.clone(),
-                mesh_issuer: None,
+                issuing: None,
                 connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             let joins = Joins::default();
@@ -2838,7 +2840,7 @@ mod tests {
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root,
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         }
     }

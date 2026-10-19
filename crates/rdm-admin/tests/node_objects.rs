@@ -368,7 +368,7 @@ impl Rig {
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runs = Arc::new(AttemptRuns::default());

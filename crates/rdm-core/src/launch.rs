@@ -35,9 +35,11 @@ pub const ENV_DATA_DIR: &str = "RDM_DATA_DIR";
 pub const ENV_STORE_DIR: &str = "RDM_STORE_DIR";
 /// The id of the node's mesh.
 pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
-/// The issuing material a new mesh's first node-admin is launched with, as hex of opaque bytes.
-/// RDM never parses it: the embedding app's signer made it and the app's own node-admin reads it.
-pub const ENV_MESH_ISSUER: &str = "RDM_MESH_ISSUER";
+/// A launched node-admin's mesh issuing key (fabric-certs.md "Where a node-admin's signing material
+/// comes from"), the ed25519 secret as hex. A secret: it travels only in a launch's environment.
+pub const ENV_ISSUING_KEY: &str = "RDM_ISSUING_KEY";
+/// A launched node-admin's mesh issuing cert, signed by the fabric's root, as hex.
+pub const ENV_ISSUING_CERT: &str = "RDM_ISSUING_CERT";
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
@@ -57,6 +59,26 @@ pub struct Launcher {
     pub node_id: NodeId,
     /// The launching node-admin's incarnation.
     pub incarnation: IncarnationId,
+}
+
+/// A secret carried in a launch's environment, as hex: its debug form names its length, never its value.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretHex(pub String);
+
+impl std::fmt::Debug for SecretHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretHex({} hex digits)", self.0.len())
+    }
+}
+
+/// The issuing material a launched node-admin signs its mesh's member certs with (`RDM_ISSUING_KEY`,
+/// `RDM_ISSUING_CERT`): the issuing key's secret and its root-signed cert, each as hex.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuingMaterial {
+    /// The issuing key's ed25519 secret.
+    pub key: SecretHex,
+    /// The issuing cert, signed by the fabric's root.
+    pub cert: String,
 }
 
 /// Everything a node needs to come up as the exact node node-admin allocated.
@@ -91,9 +113,9 @@ pub struct Launch {
     pub store_dir: PathBuf,
     /// The id of the node's mesh: it names the mesh's membership channel.
     pub mesh_id: Option<MeshId>,
-    /// The issuing material a new mesh's first node-admin is launched with (opaque bytes, never
-    /// parsed here). `None` for every other birth and for an app configured with no certs.
-    pub mesh_issuer: Option<Vec<u8>>,
+    /// The issuing material of its mesh a node-admin is launched with. `None` for every other birth
+    /// and for a launcher configured with no certs.
+    pub issuing: Option<IssuingMaterial>,
     /// The bound of a `node.connections.delete { All }` at this birth, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the eligible work in flight is let finish until it
     /// passes, then the closure answers `Deadline`.
@@ -157,6 +179,22 @@ pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
         .collect()
 }
 
+/// The issuing material `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` carry: both, or neither. One
+/// without the other, or either not hex, is refused by name.
+pub fn decode_issuing(key: Option<String>, cert: Option<String>) -> Result<Option<IssuingMaterial>> {
+    let present = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    match (present(key), present(cert)) {
+        (None, None) => Ok(None),
+        (Some(key), Some(cert)) => {
+            decode_hex(ENV_ISSUING_KEY, &key)?;
+            decode_hex(ENV_ISSUING_CERT, &cert)?;
+            Ok(Some(IssuingMaterial { key: SecretHex(key), cert }))
+        }
+        (Some(_), None) => Err(format!("{ENV_ISSUING_KEY} is set without {ENV_ISSUING_CERT}: issuing material is the key and its cert together")),
+        (None, Some(_)) => Err(format!("{ENV_ISSUING_CERT} is set without {ENV_ISSUING_KEY}: issuing material is the key and its cert together")),
+    }
+}
+
 /// `<path.name>,<node id>,<incarnation id>`
 pub fn decode_launcher(s: &str) -> Result<Launcher> {
     let mut it = s.split(',');
@@ -205,8 +243,9 @@ impl Launch {
         if let Some(id) = &self.mesh_id {
             m.insert(ENV_MESH_ID.into(), id.to_string());
         }
-        if let Some(issuer) = self.mesh_issuer.as_ref().filter(|b| !b.is_empty()) {
-            m.insert(ENV_MESH_ISSUER.into(), encode_hex(issuer));
+        if let Some(issuing) = &self.issuing {
+            m.insert(ENV_ISSUING_KEY.into(), issuing.key.0.clone());
+            m.insert(ENV_ISSUING_CERT.into(), issuing.cert.clone());
         }
         m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
@@ -230,7 +269,7 @@ impl Launch {
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
-            mesh_issuer: get(ENV_MESH_ISSUER).filter(|s| !s.trim().is_empty()).map(|s| decode_hex(ENV_MESH_ISSUER, s.trim())).transpose()?,
+            issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT))?,
             connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         })
     }
@@ -256,7 +295,7 @@ mod tests {
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
-            mesh_issuer: Some(vec![0x00, 0xab, 0xff]),
+            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into() }),
             connections_delete_deadline: Duration::from_millis(750),
         };
         let env = l.to_env();
@@ -269,15 +308,19 @@ mod tests {
         let mut blank = env.clone();
         blank.insert(ENV_FABRIC.into(), " ".into());
         assert!(Launch::from_env(|k| blank.get(k).cloned()).unwrap_err().contains("RDM_FABRIC is required and must not be empty"));
-        assert_eq!(env.get(ENV_MESH_ISSUER).map(String::as_str), Some("00abff"));
+        assert_eq!((env.get(ENV_ISSUING_KEY).map(String::len), env.get(ENV_ISSUING_CERT).map(String::as_str)), (Some(64), Some("00abff")));
+        assert!(!format!("{l:?}").contains(&"0a".repeat(32)), "the issuing key never prints: {l:?}");
         let mut odd = env.clone();
-        odd.insert(ENV_MESH_ISSUER.into(), "abc".into());
-        assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_MESH_ISSUER has an odd number"));
-        odd.insert(ENV_MESH_ISSUER.into(), "zz".into());
-        assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_MESH_ISSUER is not hex"));
-        // A launch that carries no issuer sets no variable.
-        let none = Launch { mesh_issuer: None, ..l.clone() }.to_env();
-        assert!(!none.contains_key(ENV_MESH_ISSUER));
+        odd.insert(ENV_ISSUING_CERT.into(), "abc".into());
+        assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_CERT has an odd number"));
+        odd.insert(ENV_ISSUING_KEY.into(), "zz".into());
+        assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY is not hex"));
+        let mut half = env.clone();
+        half.remove(ENV_ISSUING_CERT);
+        assert!(Launch::from_env(|k| half.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY is set without RDM_ISSUING_CERT"));
+        // A launch that carries no issuing material sets no variable.
+        let none = Launch { issuing: None, ..l.clone() }.to_env();
+        assert!(!none.contains_key(ENV_ISSUING_KEY) && !none.contains_key(ENV_ISSUING_CERT));
         // The connections-delete bound rides the launch: absent or blank is the default, a value that
         // is no whole number of milliseconds is refused by name.
         assert_eq!(env.get(ENV_CONNECTIONS_DELETE_DEADLINE).map(String::as_str), Some("750"));

@@ -49,7 +49,7 @@ async fn born(name: &str) -> RoleProcess {
         data_dir: dir.path().to_path_buf(),
         store_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
-        mesh_issuer: None,
+        issuing: None,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     launcher.deployed(&launch, &key);

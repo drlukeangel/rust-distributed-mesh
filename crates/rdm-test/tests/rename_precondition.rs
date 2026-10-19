@@ -75,7 +75,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 data_dir: dir,
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
-                mesh_issuer: None,
+                issuing: None,
                 connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);

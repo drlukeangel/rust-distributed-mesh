@@ -146,7 +146,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             data_dir: joiner_dir.clone(),
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();

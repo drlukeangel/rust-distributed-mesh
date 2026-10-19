@@ -497,7 +497,7 @@ async fn deadline_arm() -> rdm_admin::deployment::pipeline::Completion {
         env: Default::default(),
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
-        mesh_issuer: None,
+        issuing: None,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rdm_admin::join::Joins::default();

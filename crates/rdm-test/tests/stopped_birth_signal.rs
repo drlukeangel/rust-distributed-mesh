@@ -51,7 +51,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         data_dir: dir.to_path_buf(),
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
-        mesh_issuer: None,
+        issuing: None,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }

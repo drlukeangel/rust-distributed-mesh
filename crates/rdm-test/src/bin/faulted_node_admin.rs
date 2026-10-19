@@ -22,16 +22,17 @@ async fn main() {
         };
         let armed = admin_faults::arm_boot_cuts(&faults, &root).unwrap_or_else(|e| fail("boot cuts", e));
         tracing::info_span!("rdm.testkit.fault.create.via-boot", node = %name, door_op = rdm_test::fault_door::OP, boot_cuts = armed).in_scope(|| tracing::info!("boot cuts armed; the fault door is served on the Node RPC server"));
-        // This executable is the testkit's own: it signs with the deterministic test signer, so a scenario
-        // reads what the bytes encode. A launch that carries issuing material says so in a span.
+        // This executable holds the cert material every RDM node-admin does (fabric-certs.md): the root its
+        // environment or data dir gives it, or its launch's issuing material. A launch's issuing cert (never
+        // its key) is recorded in a span, so a scenario reads what the admin was launched with.
         if let Some(l) = &cfg.launch {
             // The export filter admits `rafka*` targets only: this executable's own target is not one.
             tracing::info_span!(
                 target: "rafka_node_rpc_testkit",
                 "rdm.testkit.cert.resolve.via-launch",
                 node = %name,
-                mesh_issuer_len = l.mesh_issuer.as_ref().map_or(0, Vec::len) as u64,
-                mesh_issuer = %String::from_utf8_lossy(l.mesh_issuer.as_deref().unwrap_or_default()),
+                issuing = l.issuing.is_some(),
+                issuing_cert = %l.issuing.as_ref().map(|m| m.cert.as_str()).unwrap_or(""),
             )
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));
         }
@@ -41,7 +42,7 @@ async fn main() {
         let door = faults.clone();
         wiring.serve_app = Some(Box::new(move |b| rdm_test::fault_door::serve(b, door)));
         wiring.fabric_hooks = test_app::hooks(mode, faults).unwrap_or_else(|e| fail("test app", e));
-        wiring.certs = rdm_admin::certs::CertChoice::Signer(std::sync::Arc::new(rdm_test::test_certs::TestCertSigner));
+        wiring.certs = rdm_admin::entry::material_or_exit("faulted-node-admin", cfg);
         wiring
     })
     .await

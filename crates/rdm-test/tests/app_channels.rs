@@ -172,7 +172,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             data_dir: joiner_dir.clone(),
             store_dir: root_dir.clone(),
             mesh_id: root_digest.mesh_id.clone(),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let _report = root.runner.joins.expect(rdm_admin::join::Deployed {

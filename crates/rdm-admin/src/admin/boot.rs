@@ -267,10 +267,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // reads this one reader.
     let rafka_time = rdm_transport::clock::RafkaTime::unadopted();
     let clock: rdm_transport::clock::SharedClock = Arc::new(rafka_time.clone());
-    // The app's signing capability, chosen explicitly: a node-admin started with no choice is
-    // refused here, by name, before it touches anything.
-    let signer = std::mem::take(&mut wiring.certs).resolve().map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?;
-    let issuer = Arc::new(crate::certs::CertIssuer::new(signer, rafka_time.clone()));
+    // The cert material, chosen explicitly (fabric-certs.md "How RDM is instantiated"): a node-admin
+    // started with no choice is refused here, by name, before it touches anything.
+    let issuer = Arc::new(std::mem::take(&mut wiring.certs).issuer(rafka_time.clone()).map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?);
     let key_file = cfg.data_dir.join("node-key");
     let key_held = crate::blocking::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
     let step = if key_held {
@@ -1131,7 +1130,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 env: cfg.passthrough.clone(),
                                 data_root,
                                 store_dir: cfg.store_dir.clone(),
-                                mesh_issuer: None,
+                                issuing: None,
                                 connections_delete_deadline: cfg.connections_delete_deadline,
                             };
                             let mut registry = HookRegistry::new();

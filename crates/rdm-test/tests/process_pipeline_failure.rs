@@ -42,7 +42,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             env: BTreeMap::new(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         struct Never;

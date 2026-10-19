@@ -682,6 +682,8 @@ impl Estate {
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", root.display().to_string()),
+            // The fabric's root the bootstrap admin is started with (fabric-certs.md): the testkit's.
+            ("RDM_CA_SECRET", crate::test_certs::test_root_hex()),
         ];
         env.extend(extra_env.iter().map(|(k, v)| (*k, v.to_string())));
         let admin_exe = match &external {
@@ -953,6 +955,8 @@ impl Estate {
             ("RDM_BIN_DIR", bin_dir().display().to_string()),
             ("RDM_EVIDENCE_DIR", self.evidence.display().to_string()),
             ("RDM_ESTATE_ROOT", self.root.display().to_string()),
+            // A person starting a node-admin on an estate holds the fabric's root and hands it in.
+            ("RDM_CA_SECRET", crate::test_certs::test_root_hex()),
         ];
         env.extend(operator_env.iter().map(|(k, v)| (*k, v.to_string())));
         let exe = match &self.external {

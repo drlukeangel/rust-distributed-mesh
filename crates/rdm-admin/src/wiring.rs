@@ -206,14 +206,15 @@ pub struct Wiring {
     pub serve_app: Option<ServeApp>,
     /// Hooks registered, in order, before the lifecycle registry seals.
     pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
-    /// The app's cert signer, or the explicit choice of no certs. There is no default: a node-admin
-    /// started with [`CertChoice::Unchosen`] is refused at start by name.
+    /// The cert material: the fabric's root ([`CertChoice::Ca`]), a mesh's issuing material
+    /// ([`CertChoice::Issuer`]), or no certs by name ([`CertChoice::NoCerts`]). There is no default: a
+    /// node-admin started with [`CertChoice::Unchosen`] is refused at start by name.
     pub certs: crate::certs::CertChoice,
 }
 
 impl Wiring {
-    /// Nothing wrapped and no hook, with no certs by explicit choice: what RDM's own executables
-    /// pass.
+    /// Nothing wrapped and no hook, with no certs by explicit choice: an in-process node-admin that
+    /// issues nothing.
     pub fn no_certs() -> Self {
         Self { certs: crate::certs::CertChoice::NoCerts, ..Self::default() }
     }

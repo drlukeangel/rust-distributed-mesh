@@ -386,22 +386,22 @@ pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -
     admin_side_taking_joins(ip, fabric, "mesh1.admin.1", false, None, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
-fn no_certs() -> Arc<dyn rdm_admin::certs::CertSigner> {
-    Arc::new(rdm_admin::certs::NoCerts)
+fn no_certs() -> rdm_admin::certs::CertChoice {
+    rdm_admin::certs::CertChoice::NoCerts
 }
 
-/// [`admin_side_on_rafka_time`] whose join door issues each admitted birth's member cert with
-/// `signer`, on the admin side's rafka-time (the reference, when given).
-pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, signer: Arc<dyn rdm_admin::certs::CertSigner>) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, reference_ms, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, signer).await
+/// [`admin_side_on_rafka_time`] whose join door issues each admitted birth's member cert with the
+/// material `certs` names, on the admin side's rafka-time (the reference, when given).
+pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, certs: rdm_admin::certs::CertChoice) -> AdminSide {
+    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, reference_ms, |b| b, rdm_core::digest::MemberStatus::ReadyForTraffic, certs).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, signer: Arc<dyn rdm_admin::certs::CertSigner>) -> AdminSide {
-    admin_side_taking_joins_seated(ip, fabric, name, takes_joins, reference_ms, serve_app, status, signer, SideSeat::Primary).await
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice) -> AdminSide {
+    admin_side_taking_joins_seated(ip, fabric, name, takes_joins, reference_ms, serve_app, status, certs, SideSeat::Primary).await
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, signer: Arc<dyn rdm_admin::certs::CertSigner>, seat: SideSeat) -> AdminSide {
+async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rdm_transport::ServerBuilder) -> rdm_transport::ServerBuilder, status: rdm_core::digest::MemberStatus, certs: rdm_admin::certs::CertChoice, seat: SideSeat) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -458,7 +458,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                 let membership = membership.clone();
                 Arc::new(move || membership.mesh_primary().ok().map(|p| p.node.name.to_string()))
             },
-            issuer: Arc::new(rdm_admin::certs::CertIssuer::new(signer, rafka_time.clone())),
+            issuer: Arc::new(certs.issuer(rafka_time.clone()).expect("the admin side's cert choice is made")),
             row: Arc::new({
                 let rows = rows.clone();
                 move |name| {

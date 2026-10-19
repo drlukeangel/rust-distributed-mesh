@@ -317,9 +317,9 @@ impl JoinDoor {
                         span.record("outcome", "not-ready");
                         return rdm_core::reply::join::not_ready(format!("{}: {why}", self.me));
                     }
-                    Err(crate::certs::IssueFailure::Refused(r)) => {
+                    Err(crate::certs::IssueFailure::Refused { error, detail }) => {
                         span.record("outcome", "cert-refused");
-                        return rdm_core::reply::join::cert_refused(r.name, r.detail);
+                        return rdm_core::reply::join::cert_refused(error.as_str().to_string(), detail);
                     }
                 };
                 span.record("cert_len", cert.len() as u64);

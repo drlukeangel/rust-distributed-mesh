@@ -1,7 +1,7 @@
 //! Fabric certs on node-admins (i143.e12.s22): a node-admin is started with an explicit cert
 //! choice, the Day-0 root makes no JoinNode and holds no member cert, and an admin launched by
-//! another admin holds the member cert that admin's signer issued for exactly its birth, in its
-//! before_ready context and on its running handle.
+//! another admin holds the member cert that admin issued for exactly its birth, verifying to the
+//! root, in its before_ready context and on its running handle.
 
 use rdm_core::launch::{Launch, Launcher};
 use rdm_core::runtime::RuntimeFact;
@@ -11,8 +11,8 @@ use rdm_admin::before_ready::{BeforeReadyHook, BeforeReadyState};
 use rdm_admin::certs::CertChoice;
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
-use rdm_test::test_certs::{TestCertSigner, TestMemberCert};
-use std::sync::Arc;
+use rdm_core::certs;
+use rdm_test::test_certs::{root_choice, test_root_public};
 use std::time::Duration;
 
 const WRONG: Duration = Duration::from_secs(60);
@@ -47,9 +47,9 @@ fn a_node_admin_started_with_no_cert_choice_is_refused_at_start_by_name() {
 
 // @feature: node-lifecycle
 /// CONTRACT: the Day-0 root made no JoinNode, so it holds no member cert (`None`, not empty bytes)
-/// in its context or on its handle. An admin it launches is issued a member cert by the root's
-/// signer for exactly that birth, on the root's rafka-time, and finds the same bytes in its hook's
-/// context and on its handle.
+/// in its context or on its handle. An admin it launches is issued a member cert by the root for
+/// exactly that birth, on the root's rafka-time and verifying to the root, and finds the same bytes
+/// in its hook's context and on its handle.
 #[test]
 fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_root_holds_none() {
     let cap = crate::common::capture("a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_root_holds_none");
@@ -59,7 +59,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let root_before_ready = TestBeforeReady::new(Mode::Local);
         let root_cfg = day0_config(&root_dir);
         let (fabric, fabric_id) = (root_cfg.fabric.clone(), root_cfg.fabric_id.clone());
-        let root = start_with(root_cfg, Wiring { before_ready: BeforeReadyHook::new(root_before_ready.clone()), certs: CertChoice::Signer(Arc::new(TestCertSigner)), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
+        let root = start_with(root_cfg, Wiring { before_ready: BeforeReadyHook::new(root_before_ready.clone()), certs: root_choice(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::default() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         tokio::time::timeout(WRONG, root.before_ready().unwrap().settled()).await.expect("the root's hook returns");
         assert_eq!(root.member_cert, None, "the Day-0 root made no JoinNode");
@@ -86,7 +86,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             data_dir: joiner_dir.clone(),
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runtime = rdm_core::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
@@ -110,13 +110,16 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         assert_eq!(tokio::time::timeout(WRONG, joiner.before_ready().unwrap().settled()).await.expect("the hook returns"), BeforeReadyState::Passed);
 
         let bytes = joiner.member_cert.clone().expect("a launched admin joined, so it holds the cert its launcher issued");
-        let cert = TestMemberCert::decode(&bytes).expect("the root's signer wrote it");
+        let signed = certs::cert_from_bytes(&bytes).expect("the root issued a signed member cert");
+        let cert = &signed.cert;
         assert_eq!(
-            (cert.node_id.as_str(), cert.incarnation.as_str(), cert.name.as_str(), cert.mesh.as_str(), cert.endpoint_key.as_str()),
-            (launch.node_id.to_string().as_str(), launch.incarnation.as_str(), "mesh1.admin.2", "mesh1", key.public().to_string().as_str()),
+            (cert.node_id.to_string(), cert.incarnation.as_str(), cert.name.to_string(), cert.mesh.as_str(), cert.endpoint.0.as_str()),
+            (launch.node_id.to_string(), launch.incarnation.as_str(), "mesh1.admin.2".to_string(), "mesh1", key.public().to_string().as_str()),
             "issued for exactly this birth"
         );
-        assert!((before..=after).contains(&cert.issued_at_ms), "issued on the root's rafka-time: {before} <= {} <= {after}", cert.issued_at_ms);
+        let life = certs::MEMBER_CERT_TTL_SECS * 1000;
+        assert!((before + life..=after + life).contains(&cert.expiry_ms), "issued on the root's rafka-time: {before} <= {} <= {after}", cert.expiry_ms - life);
+        assert_eq!(certs::verify(&signed, &test_root_public(), after, 0), Ok(()), "verifies to its issuer and the issuer to the root");
         assert_eq!(joiner_before_ready.member_certs.lock().unwrap().clone(), vec![Some(bytes)], "the hook's context carries the handle's bytes");
 
         joiner.leave().await;

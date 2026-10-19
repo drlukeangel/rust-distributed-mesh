@@ -113,7 +113,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rdm_admin::deployment::pip
             env: BTreeMap::new(),
             data_root: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };

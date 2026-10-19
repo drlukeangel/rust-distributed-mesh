@@ -11,7 +11,19 @@ use tracing::Instrument;
 /// leaving on a fabric shutdown or a signal. `service` is the telemetry service name and the
 /// prefix of its console lines.
 pub async fn run(service: &str) {
-    run_with(service, |_| Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), ..Wiring::no_certs() }).await
+    run_with(service, |cfg| Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), certs: material_or_exit(service, cfg), ..Wiring::default() }).await
+}
+
+/// The cert material RDM's own node-admin executable holds ([`crate::certs::CertChoice::from_config`]);
+/// one that holds none, or holds material that does not decode, refuses to start by name.
+pub fn material_or_exit(service: &str, cfg: &AdminConfig) -> crate::certs::CertChoice {
+    crate::certs::CertChoice::from_config(cfg).unwrap_or_else(|why| {
+        tracing::info_span!("rdm.node_admin.cert.reject.via-no-material", node = %cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| cfg.mesh.clone()), reason = %why)
+            .in_scope(|| tracing::error!("this node-admin holds no usable cert material: it refuses to start"));
+        eprintln!("{service}: refusing to start: {why}");
+        rdm_transport::flush_before_exit();
+        std::process::exit(2);
+    })
 }
 
 #[cfg(feature = "file-backend")]

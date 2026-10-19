@@ -87,7 +87,7 @@ async fn rig_before_ready(tag: &str, carry: bool, before_ready: Option<std::sync
         data_dir: dir.clone(),
         store_dir: dir.clone(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
-        mesh_issuer: None,
+        issuing: None,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     primary.deployed(&launch, &key);

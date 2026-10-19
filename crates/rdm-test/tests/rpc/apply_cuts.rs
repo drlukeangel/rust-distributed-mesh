@@ -200,7 +200,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
         store_dir: data_dir.clone(),
         data_dir,
         mesh_id: None,
-        mesh_issuer: None,
+        issuing: None,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));

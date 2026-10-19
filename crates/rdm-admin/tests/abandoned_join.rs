@@ -130,7 +130,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             env: Default::default(),
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Arc::new(Joins::default());

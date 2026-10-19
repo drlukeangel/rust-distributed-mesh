@@ -49,7 +49,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             data_dir: data.clone(),
             store_dir: data.clone(),
             mesh_id: None,
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());

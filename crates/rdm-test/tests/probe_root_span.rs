@@ -81,7 +81,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             data_dir: data.clone(),
             store_dir: data.clone(),
             mesh_id: None,
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());

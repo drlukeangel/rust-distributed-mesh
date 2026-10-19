@@ -275,7 +275,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
             .collect(),
         data_root,
         store_dir,
-        mesh_issuer: None,
+        issuing: None,
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
