@@ -6,7 +6,7 @@
 //! (`tools/mesh-audit/i143-acceptance-jobs.json`, `jobs` and `rshape_jobs`) is an owner, and its
 //! receipt is the one `scripts/i143-acceptance-gate.sh` writes: `target/i143-acceptance/jobs/<job>.json`
 //! for `jobs`, `target/i143-rshape/jobs/<job>.json` for `rshape_jobs`. A receipt certifies only when
-//! its outcome is `ok`, its `source_sha` is the candidate, it ran with no uncommitted path, and every artifact
+//! its outcome is `ok` with no cell skipped by name (a skip proves nothing), its `source_sha` is the candidate, it ran with no uncommitted path, and every artifact
 //! it recorded still hashes to the sha256 it recorded. Anything else is refused by name, and every
 //! refusal is named in one run, never just the first.
 
@@ -35,6 +35,9 @@ pub struct Receipt {
 pub struct ReceiptCell {
     pub name: String,
     pub outcome: String,
+    /// The skip's name and reason, when the cell skipped by name.
+    #[serde(default)]
+    pub skip: Option<String>,
     #[serde(default)]
     pub artifacts: BTreeMap<String, String>,
 }
@@ -204,6 +207,10 @@ fn check_receipt(job: &str, path: &Path, shown: &str, candidate: &str, root: &Pa
         refusals.push(Refusal::ReceiptDirty { job: job.into(), dirty_paths: receipt.dirty_paths });
     }
     for cell in &receipt.cells {
+        if cell.outcome == "skipped" || cell.skip.is_some() {
+            let skip = cell.skip.clone().unwrap_or_else(|| "skipped".into());
+            refusals.push(Refusal::ReceiptCellSkipped { job: job.into(), cell: cell.name.clone(), skip });
+        }
         for (artifact, recorded) in &cell.artifacts {
             let p = Path::new(artifact);
             let full: PathBuf = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
