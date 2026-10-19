@@ -166,7 +166,7 @@ impl State {
             .lock()
             .unwrap()
             .clone()
-            .ok_or(ChannelError::Left)?;
+            .ok_or(ChannelError::NoAuthor)?;
         let counter = self.ids.fetch_add(1, Ordering::Relaxed);
         let mut identity = blake3::Hasher::new();
         identity.update(&self.id_nonce);
@@ -192,7 +192,7 @@ impl State {
         };
         let full = context
             .encode(&event.data)
-            .map_err(|_| ChannelError::Left)?;
+            .map_err(|e| ChannelError::Encode(e.to_string()))?;
         let sender = self
             .sender
             .lock()
@@ -223,7 +223,7 @@ impl State {
             return sender
                 .broadcast(full.into())
                 .await
-                .map_err(|_| ChannelError::Left);
+                .map_err(|e| ChannelError::Broadcast { chunk: 0, of: 1, detail: e.to_string() });
         }
         let mut chunk = context.chunk(15);
         let mut lo = 0;
@@ -231,8 +231,8 @@ impl State {
         while lo < hi {
             let mid = (lo + hi + 1) / 2;
             let body = wire::encode(&(15_u16, PARTS as u16, vec![0_u8; mid]))
-                .map_err(|_| ChannelError::Left)?;
-            if chunk.encode(&body).map_err(|_| ChannelError::Left)?.len() <= MAX {
+                .map_err(|e| ChannelError::Encode(e.to_string()))?;
+            if chunk.encode(&body).map_err(|e| ChannelError::Encode(e.to_string()))?.len() <= MAX {
                 lo = mid;
             } else {
                 hi = mid - 1;
@@ -249,12 +249,12 @@ impl State {
         for (i, bytes) in full.chunks(lo).enumerate() {
             chunk.id = format!("{}/{i}", context.id);
             let body =
-                wire::encode(&(i as u16, n as u16, bytes)).map_err(|_| ChannelError::Left)?;
-            let message = chunk.encode(&body).map_err(|_| ChannelError::Left)?;
+                wire::encode(&(i as u16, n as u16, bytes)).map_err(|e| ChannelError::Encode(e.to_string()))?;
+            let message = chunk.encode(&body).map_err(|e| ChannelError::Encode(e.to_string()))?;
             sender
                 .broadcast(message.into())
                 .await
-                .map_err(|_| ChannelError::Left)?;
+                .map_err(|e| ChannelError::Broadcast { chunk: i, of: n, detail: e.to_string() })?;
         }
         Ok(())
     }
@@ -537,13 +537,13 @@ impl Hub {
                 r#type: kind.into(),
             });
         }
-        let e = self.ensure(kind).await.map_err(|_| ChannelError::Left)?;
+        let e = self.ensure(kind).await.map_err(|e| ChannelError::Subscribe { r#type: kind.into(), detail: e.to_string() })?;
         let rx = e
             .receiver
             .lock()
             .unwrap()
             .take()
-            .ok_or(ChannelError::Left)?;
+            .ok_or_else(|| ChannelError::ReceiverHeld { r#type: kind.into() })?;
         Ok(Channel {
             state: e.state.clone(),
             rx: Some(rx),
@@ -716,13 +716,13 @@ impl Hub {
                     }
                     let sequence = match &h.sequence {
                         None => None,
-                        Some(s) if s.len() == 20 && s.bytes().all(|b| b.is_ascii_digit()) => {
-                            match s.parse() {
-                                Ok(v) => Some(v),
-                                Err(_) => continue,
+                        Some(s) => match Some(s).filter(|s| s.len() == 20 && s.bytes().all(|b| b.is_ascii_digit())).and_then(|s| s.parse().ok()) {
+                            Some(v) => Some(v),
+                            None => {
+                                tracing::info_span!("rdm.mesh.channel.reject.via-malformed-sequence", event_type = %h.kind, event_id = %h.id, sequence_len = s.len()).in_scope(|| tracing::info!("an event's sequence is 20 decimal digits: the frame is dropped"));
+                                continue;
                             }
-                        }
-                        _ => continue,
+                        },
                     };
                     let identity = event_identity(&h.source, &h.id);
                     if seen.contains_key(&identity) {
