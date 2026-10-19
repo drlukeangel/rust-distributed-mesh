@@ -99,16 +99,26 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc};
-    use std::time::{Duration, Instant};
+    use std::sync::{atomic::{AtomicUsize, Ordering}, Arc, Condvar, Mutex};
+    use std::time::Instant;
 
-    /// A disk the kernel holds: every write takes `HOLD`.
-    struct HeldDisk(Arc<AtomicUsize>);
-    const HOLD: Duration = Duration::from_millis(250);
+    /// A disk the kernel holds: a write on the log's own thread waits until the test releases the
+    /// disk. Every write records the thread that made it; a write from any other thread is not held,
+    /// so a line written on the runtime's worker shows up as written, by that worker, at once.
+    struct HeldDisk {
+        lines: Arc<AtomicUsize>,
+        writers: Arc<Mutex<Vec<String>>>,
+        released: Arc<(Mutex<bool>, Condvar)>,
+    }
     impl Write for HeldDisk {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            std::thread::sleep(HOLD);
-            self.0.fetch_add(buf.iter().filter(|b| **b == b'\n').count(), Ordering::SeqCst);
+            let writer = std::thread::current().name().unwrap_or_default().to_string();
+            if writer == "rdm-log" {
+                let (held, wake) = &*self.released;
+                let _released = wake.wait_while(held.lock().unwrap(), |released| !*released).unwrap();
+            }
+            self.writers.lock().unwrap().push(writer);
+            self.lines.fetch_add(buf.iter().filter(|b| **b == b'\n').count(), Ordering::SeqCst);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -116,37 +126,31 @@ mod tests {
         }
     }
 
-    /// CONTRACT: a log line written while the log's disk is held for 250 ms does not hold the
-    /// runtime: the only worker keeps ticking a 10 ms timer within 100 ms of its schedule while
-    /// five lines are logged from a task on that same worker, and after `flush` all five lines are
-    /// in the sink.
+    /// CONTRACT: a log line written while the log's disk is held does not hold the runtime: five
+    /// lines logged from a task on the runtime's only worker all return while the disk still holds
+    /// the first one (no line has reached the disk), and once the disk is released, `flush` confirms
+    /// all five, every one written by the log's own thread.
     #[test]
     fn a_held_log_disk_never_stalls_the_runtime_worker() {
-        let lines = Arc::new(AtomicUsize::new(0));
-        let sink = LogSink::start(HeldDisk(lines.clone()));
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_time().build().unwrap();
-        let worst = rt.block_on(async {
+        let (lines, writers) = (Arc::new(AtomicUsize::new(0)), Arc::new(Mutex::new(Vec::new())));
+        let released = Arc::new((Mutex::new(false), Condvar::new()));
+        let sink = LogSink::start(HeldDisk { lines: lines.clone(), writers: writers.clone(), released: released.clone() });
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).build().unwrap();
+        rt.block_on(async {
             let subscriber = tracing_subscriber::fmt().with_writer(sink.clone()).finish();
-            let ticker = tokio::spawn(async {
-                let mut worst = Duration::ZERO;
-                for _ in 0..60 {
-                    let t = Instant::now();
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    worst = worst.max(t.elapsed().saturating_sub(Duration::from_millis(10)));
-                }
-                worst
-            });
-            let emitter = tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(async {
+            tokio::spawn(tracing::instrument::WithSubscriber::with_subscriber(async {
                 for i in 0..5 {
                     tracing::info!(i, "a line");
-                    tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-            }, subscriber));
-            emitter.await.unwrap();
-            ticker.await.unwrap()
+            }, subscriber))
+            .await
+            .unwrap();
         });
+        assert_eq!(lines.load(Ordering::SeqCst), 0, "the five calls returned with the disk still held; lines written on the way: {:?}", writers.lock().unwrap());
+        *released.0.lock().unwrap() = true;
+        released.1.notify_all();
         assert!(sink.flush_until(Instant::now() + crate::export::EXIT_FLUSH_BOUND), "the log flush completes within the process bound");
         assert_eq!(lines.load(Ordering::SeqCst), 5, "every line handed over reaches the sink");
-        assert!(worst < Duration::from_millis(100), "the worker was held {worst:?} by a log write");
+        assert!(writers.lock().unwrap().iter().all(|w| w == "rdm-log"), "every line is written by the log's own thread: {:?}", writers.lock().unwrap());
     }
 }
