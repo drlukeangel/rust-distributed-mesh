@@ -62,13 +62,30 @@ semantics and implement no delivery-retry loops.
 
 ## § OTLP span-assertion bar
 
-| Span | Owner | Attributes | Cells |
+Restated from the code (lane e6s7, 2026-10-18; Gemini phase 2 item 3). The bar first written here named
+`rdm.node_rpc.message.*` spans the code never built: the delivery layer's spans are `rdm.node_rpc.delivery.*`,
+and the sender's settled outcome is three attributes of its call span, not a span of its own.
+
+| Span | Owner (code) | Attributes | Cells that assert it by name |
 |---|---|---|---|
-| `rdm.node_rpc.message.update.via-resend` | the sender | delivery_id, op, target, attempt, backoff_ms | every retry cell |
-| `rdm.node_rpc.message.resolve.via-acked` | the sender | delivery_id, op, target, attempts, outcome ∈ {acked, receiver-gone, cancelled} | every cell |
-| `rdm.node_rpc.message.update.via-ack` | the receiver | delivery_id, op, acceptance ∈ {recorded, read-only, duplicate} | every cell |
-| `rdm.node_rpc.message.reject.via-duplicate-pending` | the receiver | delivery_id, op | duplicate-during-execution cell |
-| control: no per-protocol retry span remains (`via-declare-own` retried by its own loop, etc.) | — | — | e3 cells |
+| `rdm.node_rpc.request.update.via-call` | the sender (`client.rs:741`; streaming `stream.rs:517`) | beside outcome, code, detail: delivery_id (`:806`), attempts (`:997`), delivery ∈ {acked, cancelled, receiver-gone} (`:895`, `:933`, `:962`, `:987`) | `delivery::a_repeat_during_execution_stays_pending_and_unacked_then_is_acked_without_dispatch` (acked, attempts ≥ 2); `delivery::a_read_only_request_is_acked_at_once` (its write, as the timeline's origin) |
+| `rdm.node_rpc.delivery.update.via-resend` | the sender (`client.rs:1277`) | delivery_id, attempt, backoff_ms; op and target are its parent call span's | `delivery::a_repeat_during_execution…` (in the caller's trace); `delivery::a_read_only_request_is_acked_at_once` (each resend against the ack) |
+| `rdm.node_rpc.delivery.update.via-attempt-ended` | the sender (`client.rs:1227`) | delivery_id, attempts, path (`AttemptEnd::name`, `client.rs:299`) | `delivery::every_return_of_a_requests_attempt_task_is_spanned_with_its_path` |
+| `rdm.node_rpc.delivery.remove.via-receiver-gone` | the sender (`client.rs:1191`) | delivery_id, attempts, reason | none |
+| `rdm.node_rpc.delivery.update.via-carried-attempt` | the sender (`client.rs:1339`) | delivery_id, attempt, carrier, forward_id | none |
+| `rdm.node_rpc.delivery.reject.via-carried-leg` | the sender (`client.rs:1302`) | delivery_id, attempt, carrier, reason | none |
+| `rdm.node_rpc.delivery.update.via-carrier-failed` | the sender (`client.rs:1410`) | delivery_id, attempt, reason | none |
+| `rdm.node_rpc.delivery.serve.via-ack` | the receiver (`server.rs:654` duplicate, `:889` recorded) | delivery_id, acceptance ∈ {recorded, duplicate}; peer on a duplicate. A read-only request's ack, written at its dispatch, has no span (`server.rs:888`) | `delivery::a_repeat_during_execution…` (duplicate) |
+| `rdm.node_rpc.delivery.update.via-response-resend` | the responder (`delivery.rs:997`) | delivery_id, reason, attempts, outcome ∈ {acked, caught-up, receiver-gone, process-ended} | `delivery::a_response_is_delivered_on_a_new_stream_after_a_reconnect` (acked, its cause named) |
+| `rdm.node_rpc.delivery.remove.via-sender-ended` | the receiver (`delivery.rs:375`) | sender, held, reason | none |
+| `rdm.node_rpc.delivery.remove.via-caller-finished` (debug) | the responder (`server.rs:719`) | delivery_id | none |
+| `rdm.node_rpc.delivery.remove.via-ack-dropped-by-seam` | the test seam (`delivery.rs:616`) | delivery_id, of | none (the seam cells count) |
+| control: no per-protocol retry span remains | — | — | i146 e3's control cell, not written (:878) |
+
+Not built as the first bar had them: `message.resolve.via-acked` (the call span's `delivery` attribute carries
+its outcome); `read-only` as an acceptance value (that ack has no span); and `reject.via-duplicate-pending`
+(a repeat before its acceptance is held without a span, counted in `DeliveryStats::duplicates_pending`,
+`delivery.rs:657`, and acked `duplicate` at the acceptance).
 
 ## § Per-sprint seed-data obligation
 
