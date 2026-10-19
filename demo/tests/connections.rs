@@ -60,9 +60,13 @@ fn birth_of(node: &rdm_node::node::RunningNode) -> Birth {
 async fn boot_admin_with_committed_store_root(root_dir: &Path) -> (Running, PathBuf) {
     let root = start_with(
         config(root_dir),
+        // The fabric runs with certs, as a consumer's does: the root admin holds the testkit's root
+        // (fabric-certs.md: `CertChoice::Ca`), issues every birth its member cert at join, and every
+        // acceptor admits a product connection on the dialer's chain.
         Wiring {
             fabric_hooks: FabricHooks::no_app_work(),
-            ..Wiring::no_certs()
+            certs: rdm_test::test_certs::root_choice(),
+            ..Wiring::default()
         },
     )
     .await
@@ -138,7 +142,7 @@ async fn spawn_member_with_time(
         store_dir: shared.into(),
         mesh_id: d.mesh_id.clone(),
         issuing: None,
-        roots: Vec::new(),
+        roots: vec![rdm_test::test_certs::test_root_public()],
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
@@ -1198,12 +1202,19 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         assert!(
             spans
                 .iter()
-                // The estate runs `Wiring::no_certs()`: each acceptor admits by name, spanned
-                // via-no-certs-configured (node-connections-admit.md, `NoCerts`).
-                .filter(|s| s["name"] == "rdm.node.connections.create.via-no-certs-configured")
+                // Each acceptor admits on the dialer's cert chain (node-connections-admit.md: via-admitted
+                // names the cert's expiry), never by name.
+                .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted" && {
+                    let e = &s["attributes"]["cert_expires_at"];
+                    e.as_u64().or_else(|| e.as_str().and_then(|e| e.parse().ok())).is_some_and(|e| e > 0)
+                })
                 .count()
                 >= 3,
-            "three-node trace must include the three no-certs admission spans across source, carrier, and destination"
+            "three-node trace must include the three cert admission spans across source, carrier, and destination"
+        );
+        assert!(
+            !spans.iter().any(|s| s["name"] == "rdm.node.connections.create.via-no-certs-configured"),
+            "a fabric with certs admits no connection by name"
         );
     });
 }
