@@ -2263,7 +2263,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // log (its own appends and the facts it absorbs from the fabric alike), before the append
                                     // returns: a hold opens with its pre-event's receipt and closes with its operation's `Complete`
                                     // or its attempt's `Converged`, and no reader of the log sees that fact while the book still
-                                    // holds the hold. A successor primary publishes the same overlays from the same facts. Derived
+                                    // holds the hold (a log on a plane other admins write converges at the derivation instead:
+                                    // `LocalBuildLog::derive_on_every_fact`). A successor primary publishes the same overlays from the same facts. Derived
                                     // once over the facts held before the hierarchy's first round, then on every fact.
                                     {
                                         let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));

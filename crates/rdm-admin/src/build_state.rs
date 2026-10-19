@@ -2065,7 +2065,11 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// time facts enter the log, whoever put them there (an own append or an absorbed fact), before
     /// any reader sees them and before the append returns: what is derived from the facts never lags
     /// a reader of them. Never the whole log: an adapter that keeps none in memory reads those Builds
-    /// one by one. It runs under the writer's turn, never under the lock readers take.
+    /// one by one. It runs under the writer's turn, never under the lock readers take. A log whose
+    /// facts live on a plane other admins write (no copy in memory) cannot order reads after the
+    /// derivation: a fact there is readable before this admin derives over it (another admin's
+    /// fact until this admin absorbs it; an own fact between its claim, which can lose, and the
+    /// derivation over it), and the overlays converge at that derivation.
     async fn derive_on_every_fact(&self, derive: FactDerivation);
     /// Put the context attempt `(build_id, lane, attempt)` carries ([`crate::build_claim`]): a blind
     /// put of its own key. Local to this admin: never a Build fact, never gossiped, never read by
