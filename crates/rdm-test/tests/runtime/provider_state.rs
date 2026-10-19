@@ -371,6 +371,37 @@ async fn provider_state_survives_a_confirmed_seat_handover_and_its_return() {
 
 /// What the operating system shows of one process, strace-free: its state letter, its pending signal
 /// masks (thread and process-wide, hex) and its CPU ticks; `None` once it is gone.
+/// One sample of a member after its terminate (`os_view`: state, pending and shared-pending signal
+/// masks, CPU): gone, or a zombie (`Z`, `X`) holding at most the terminate's SIGKILL pending until its
+/// parent reaps it.
+fn ended_by_its_terminate(sample: &Option<(char, String, String, u64)>) -> bool {
+    let only_kill = |mask: &str| u64::from_str_radix(mask, 16).is_ok_and(|bits| bits & !(1 << (libc::SIGKILL - 1)) == 0);
+    match sample {
+        None => true,
+        Some((st, sig, shd, _)) => matches!(st, 'Z' | 'X') && only_kill(sig) && only_kill(shd),
+    }
+}
+
+/// CONTRACT (the signal audit's reading of a member's end): the kernel delivers the terminate's
+/// SIGKILL to a stopped task by waking it to die, so a sample can catch it still stopped (`T`),
+/// runnable (`R`), sleeping (`S`) or in its exit (`D`) with that SIGKILL, and only it, pending; that is
+/// its terminate ending it, not the member running again. A member with nothing pending outside a
+/// zombie's state, or with any other signal, is not ended.
+#[test]
+fn a_member_the_kernel_is_killing_is_read_as_ended_by_its_terminate() {
+    let kill = format!("{:016x}", 1u64 << (libc::SIGKILL - 1));
+    let none = "0000000000000000".to_string();
+    // Release run at d829b383: mesh2.rpc.2 sampled `R`, SIGKILL pending in both masks, then gone.
+    assert!(ended_by_its_terminate(&Some(('R', kill.clone(), kill.clone(), 27))), "runnable with only the terminate's SIGKILL pending is being killed");
+    assert!(ended_by_its_terminate(&Some(('D', none.clone(), kill.clone(), 27))), "in its exit with only the SIGKILL pending is being killed");
+    assert!(ended_by_its_terminate(&Some(('Z', kill.clone(), none.clone(), 27))));
+    assert!(ended_by_its_terminate(&None));
+    assert!(!ended_by_its_terminate(&Some(('R', none.clone(), none.clone(), 27))), "runnable with nothing pending runs again");
+    assert!(!ended_by_its_terminate(&Some(('R', format!("{:016x}", 1u64 << (libc::SIGCONT - 1)), none.clone(), 27))), "a SIGCONT is not the terminate");
+    assert!(ended_by_its_terminate(&Some(('T', kill.clone(), none.clone(), 27))), "still stopped with the SIGKILL pending is being killed");
+    assert!(ended_by_its_terminate(&Some(('S', kill.clone(), kill, 27))), "woken to die");
+}
+
 fn os_view(pid: u32) -> Option<(char, String, String, u64)> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string()).unwrap_or_default();
@@ -488,11 +519,10 @@ async fn the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate() {
     // until its parent reaps it, or gone.
     let deleted_seen = before(&deleted.0, continued_at);
     let deleted_cpu = held_cpu(&deleted.0);
-    let only_kill = |mask: &str| u64::from_str_radix(mask, 16).is_ok_and(|bits| bits & !(1 << (libc::SIGKILL - 1)) == 0);
     let ended_at = deleted_seen.iter().position(|(_, _, v)| !matches!(v, Some((st, ..)) if *st == 'T')).unwrap_or_else(|| panic!("{}: its terminate ended it: {deleted_seen:?}", deleted.0));
     let (held_part, ended) = deleted_seen.split_at(ended_at);
     assert!(held_part.iter().all(|(_, _, v)| matches!(v, Some((_, sig, shd, cpu)) if sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == deleted_cpu)), "{}: suspended, nothing pending and no CPU until its terminate: {held_part:?}", deleted.0);
-    assert!(ended.iter().all(|(_, _, v)| match v { None => true, Some((st, sig, shd, _)) => matches!(st, 'Z' | 'X') && only_kill(sig) && only_kill(shd) }), "{}: ended by its terminate's SIGKILL alone, never running again: {ended:?}", deleted.0);
+    assert!(ended.iter().all(|(_, _, v)| ended_by_its_terminate(v)), "{}: ended by its terminate's SIGKILL alone, never running again: {ended:?}", deleted.0);
     let terminates: Vec<(String, String)> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "step") == "TerminateRuntime" && members.iter().any(|(n, _, _)| attr(sp, "node") == *n)).map(|sp| (attr(sp, "node"), attr(sp, "build_id"))).collect();
     assert!(terminates.len() == 1 && terminates[0].0 == deleted.0 && same_build(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == deleted.0).unwrap(), &delete_build), "one TerminateRuntime of a member, the delete's of {}: {terminates:?}", deleted.0);
     println!("watched {} changes of the suspended members", seen.len());
