@@ -400,7 +400,9 @@ pub(crate) struct Hub {
     peers: Vec<iroh::EndpointId>,
     joined_peers: Mutex<HashMap<String, BTreeSet<iroh::EndpointId>>>,
     own: BTreeSet<String>,
-    held: Mutex<BTreeSet<String>>,
+    /// The held set: every type joined, declared or learned. One watch, so a reader of the set and a
+    /// waiter for its growth read the same value.
+    held: watch::Sender<BTreeSet<String>>,
     entries: tokio::sync::Mutex<HashMap<String, Arc<Entry>>>,
     author: Arc<Mutex<Option<Birth>>>,
     clock: SharedClock,
@@ -428,7 +430,7 @@ impl Hub {
             peers: seeds.iter().map(|a| a.id).collect(),
             own,
             joined_peers: Default::default(),
-            held: Mutex::new(BTreeSet::new()),
+            held: watch::channel(BTreeSet::new()).0,
             entries: Default::default(),
             author,
             clock,
@@ -458,13 +460,21 @@ impl Hub {
         self.own.clone()
     }
     pub(crate) fn held(&self) -> BTreeSet<String> {
-        self.held.lock().unwrap().clone()
+        self.held.borrow().clone()
+    }
+    /// The held set as it grows: the whole set, sent each time a type is joined.
+    pub(crate) fn held_changes(&self) -> watch::Receiver<BTreeSet<String>> {
+        self.held.subscribe()
     }
     pub(crate) async fn hold(&self, types: &BTreeSet<String>) -> anyhow::Result<()> {
         for kind in types {
             self.ensure(kind).await?;
         }
-        self.held.lock().unwrap().extend(types.iter().cloned());
+        self.held.send_if_modified(|held| {
+            let before = held.len();
+            held.extend(types.iter().cloned());
+            held.len() != before
+        });
         Ok(())
     }
     pub(crate) fn hash(&self) -> [u8; 32] {
@@ -519,7 +529,7 @@ impl Hub {
     pub(crate) async fn drop_chunk_once(&self, kind: &str, index: usize) -> anyhow::Result<()> {
         anyhow::ensure!(index < PARTS, "chunk index exceeds the sixteen-part limit");
         anyhow::ensure!(
-            self.held.lock().unwrap().contains(kind),
+            self.held.borrow().contains(kind),
             "the type is not held"
         );
         let entry = self.ensure(kind).await?;
@@ -527,7 +537,7 @@ impl Hub {
         Ok(())
     }
     pub(crate) async fn join(&self, kind: &str) -> Result<Channel, ChannelError> {
-        if !self.held.lock().unwrap().contains(kind) {
+        if !self.held.borrow().contains(kind) {
             tracing::info_span!(
                 "rdm.mesh.channel.reject.via-undeclared-type",
                 event_type = kind

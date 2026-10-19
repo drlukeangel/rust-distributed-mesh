@@ -2878,7 +2878,7 @@ impl Membership {
     /// learned type is joined (gossip.md app channels: node-admin joins every type a member declares and
     /// what another admin's `held_hash` teaches it), so an app holding a channel subscriber per type
     /// learns of each new one. The receiver's current value is the set held now.
-    pub fn held_type_changes(&self) -> tokio::sync::watch::Receiver<std::collections::BTreeSet<String>> { tokio::sync::watch::channel(self.apps.held()).1 }
+    pub fn held_type_changes(&self) -> tokio::sync::watch::Receiver<std::collections::BTreeSet<String>> { self.apps.held_changes() }
     /// The hash carried by this birth's next digest.
     pub fn held_hash(&self) -> [u8; 32] { self.apps.hash() }
     /// Hold a verified member or peer's declaration and joined types; ordinary app declarations stay immutable.
