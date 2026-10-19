@@ -3,6 +3,7 @@
 
 type Result<T> = std::result::Result<T, String>;
 use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
+use crate::certs::VerifyingKey;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -44,6 +45,12 @@ pub const ENV_ISSUING_CERT: &str = "RDM_ISSUING_CERT";
 /// node-admin, and written into every node-admin's launch beside its mesh's issuing material by a
 /// launcher that holds it. A secret: it travels only in a launch's environment.
 pub const ENV_CA_SECRET: &str = "RDM_CA_SECRET";
+/// The fabric's root set a launched node verifies presented member certs against (fabric-certs.md
+/// §chain; fabric-ca-renew.md "Launch": "a node born mid-overlap trusts both"): one root, or two
+/// during a root rotation, each an ed25519 public key as hex, comma-separated. Written by the
+/// launching node-admin from the set it holds at the launch, the way `RDM_MESH_ID` is; absent for a
+/// launcher configured with no certs.
+pub const ENV_ROOTS: &str = "RDM_ROOTS";
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
@@ -131,6 +138,10 @@ pub struct Launch {
     /// The issuing material of its mesh a node-admin is launched with. `None` for every other birth
     /// and for a launcher configured with no certs.
     pub issuing: Option<IssuingMaterial>,
+    /// The fabric's root set this birth verifies presented member certs against (`RDM_ROOTS`), as its
+    /// launcher held it at the launch: one root, or two during a root rotation. Empty for a launcher
+    /// configured with no certs.
+    pub roots: Vec<VerifyingKey>,
     /// The bound of a `node.connections.delete { All }` at this birth, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the eligible work in flight is let finish until it
     /// passes, then the closure answers `Deadline`.
@@ -192,6 +203,19 @@ pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
             Ok((n.to_string(), a.parse().map_err(|x| format!("address in `{e}`: {x}"))?))
         })
         .collect()
+}
+
+/// `roots` as `RDM_ROOTS` carries them: each public key as hex, comma-separated.
+pub fn encode_roots(roots: &[VerifyingKey]) -> String {
+    let _ = roots;
+    String::new()
+}
+
+/// The root set `RDM_ROOTS` carries: absent or empty is none; each entry must be an ed25519 public
+/// key as hex, and a set is one root, or two during a root rotation. Anything else is refused by name.
+pub fn decode_roots(v: Option<&str>) -> Result<Vec<VerifyingKey>> {
+    let _ = v;
+    Ok(Vec::new())
 }
 
 /// The issuing material `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` carry: both, or neither, with the
@@ -292,6 +316,7 @@ impl Launch {
             store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
             issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT), get(ENV_CA_SECRET))?,
+            roots: Vec::new(),
             connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         })
     }
@@ -318,6 +343,7 @@ mod tests {
             store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
             issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)) }),
+            roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(750),
         };
         let env = l.to_env();
@@ -364,6 +390,52 @@ mod tests {
             bad.insert(k.into(), v);
             let e = Launch::from_env(|x| bad.get(x).cloned()).unwrap_err();
             assert!(e.starts_with(k) && e.contains(says), "{e}");
+        }
+    }
+
+    /// CONTRACT (fabric-ca-renew.md "Launch": "A launched node is written the current set at launch
+    /// (`RDM_ROOTS`), the way `RDM_MESH_ID` is, so a node born mid-overlap trusts both"): a launch
+    /// carries its root set, one root or two, through the environment and reads the same set back; a
+    /// launch with no set (a launcher configured with no certs) writes no variable and reads back none.
+    /// A value that is no ed25519 public key, and a set of more than two, are refused by name.
+    #[test]
+    fn a_launch_carries_its_root_set_as_rdm_roots_and_refuses_one_that_is_no_key_by_name() {
+        let (a, b) = (crate::certs::mint_key().verifying_key(), crate::certs::mint_key().verifying_key());
+        let base = Launch {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            name: "mesh1.rpc.2".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            launcher: None,
+            seeds: vec![],
+            data_dir: "/tmp/x".into(),
+            store_dir: "/tmp/store".into(),
+            mesh_id: None,
+            issuing: None,
+            roots: vec![a],
+            connections_delete_deadline: DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        for roots in [vec![a], vec![a, b]] {
+            let l = Launch { roots: roots.clone(), ..base.clone() };
+            let env = l.to_env();
+            let written = roots.iter().map(|k| encode_hex(k.as_bytes())).collect::<Vec<_>>().join(",");
+            assert_eq!(env.get(ENV_ROOTS), Some(&written), "the set as RDM_ROOTS carries it");
+            assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap().roots, roots, "the same set read back");
+        }
+        let none = Launch { roots: vec![], ..base.clone() }.to_env();
+        assert!(!none.contains_key(ENV_ROOTS), "a launch with no root set writes no RDM_ROOTS: {none:?}");
+        assert_eq!(Launch::from_env(|k| none.get(k).cloned()).unwrap().roots, Vec::<VerifyingKey>::new());
+        let env = base.to_env();
+        let three = [a, b, crate::certs::mint_key().verifying_key()].iter().map(|k| encode_hex(k.as_bytes())).collect::<Vec<_>>().join(",");
+        for (bad, says) in [("zz".to_string(), "is not an ed25519 public key"), ("ab".repeat(31), "is not an ed25519 public key"), (three, "carries 3 roots")] {
+            let mut env = env.clone();
+            env.insert(ENV_ROOTS.into(), bad.clone());
+            let e = Launch::from_env(|k| env.get(k).cloned()).err().unwrap_or_else(|| panic!("RDM_ROOTS `{bad}` must be refused"));
+            assert!(e.starts_with(ENV_ROOTS) && e.contains(says), "{e}");
         }
     }
 }

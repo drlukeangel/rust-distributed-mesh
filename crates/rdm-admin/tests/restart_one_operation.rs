@@ -183,6 +183,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         issuing: None,
+        roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts::default(), Events::default(), rdm_admin::join::Joins::default());
@@ -286,6 +287,7 @@ async fn a_restart_whose_reissued_start_is_already_applied_takes_no_new_join() {
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         issuing: None,
+        roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { answers_stopped: true, start_already_applied: true, ..StopsThenStarts::default() }, Events::default(), rdm_admin::join::Joins::default());
@@ -355,6 +357,7 @@ async fn a_restart_takes_its_stops_stopped_reply_as_the_left_reply() {
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         issuing: None,
+        roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { answers_stopped: true, ..StopsThenStarts::default() }, Events::default(), rdm_admin::join::Joins::default());
@@ -426,6 +429,7 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
         data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         issuing: None,
+        roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { refuses_stop: true, ..StopsThenStarts::default() }, Events::default(), rdm_admin::join::Joins::default());
@@ -540,6 +544,7 @@ async fn a_starts_node_joined_is_taken_at_its_admitted_join_before_its_node_star
         data_root: std::env::temp_dir().join(format!("i143-s52-start-order-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-s52-start-order-store-{}", NodeId::mint())),
         issuing: None,
+        roots: Default::default(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-s52-start-order".into()) };

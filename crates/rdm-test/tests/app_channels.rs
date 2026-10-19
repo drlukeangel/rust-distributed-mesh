@@ -173,6 +173,7 @@ fn a_late_declaration_joins_before_the_admin_answers_and_a_peer_hash_reads_node_
             store_dir: root_dir.clone(),
             mesh_id: root_digest.mesh_id.clone(),
             issuing: None,
+            roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let _report = root.runner.joins.expect(rdm_admin::join::Deployed {
@@ -289,6 +290,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
             store_dir: dir.clone(),
             mesh_id: d.mesh_id.clone(),
             issuing: None,
+            roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let _report = root.runner.joins.expect(rdm_admin::join::Deployed {

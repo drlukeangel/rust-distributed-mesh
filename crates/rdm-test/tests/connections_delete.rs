@@ -76,6 +76,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
                 issuing: None,
+                roots: Vec::new(),
                 connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);

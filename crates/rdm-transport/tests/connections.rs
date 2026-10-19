@@ -2122,3 +2122,214 @@ async fn a_direct_connected_retires_the_proxy() {
     dest.shutdown().await;
 }
 
+
+/// A reference no OS clock reads (1970-03-23): every cert of the chain cells below is judged on it.
+const CHAIN_NOW_MS: u64 = 7_000_000_000;
+
+/// A testkit fabric chain (`rdm_core::certs`): a root and its mesh's issuing key.
+struct Chain {
+    root: rdm_core::certs::SigningKey,
+    issuer: rdm_core::certs::IssuingKey,
+}
+
+impl Chain {
+    /// A fresh root and `mesh`'s issuing key under it, minted at `at_ms` for `ttl_secs`.
+    fn minted(mesh: &str, ttl_secs: u64, at_ms: u64) -> Self {
+        let root = rdm_core::certs::mint_key();
+        let issuer = rdm_core::certs::IssuingKey::mint(&root, mesh, ttl_secs, at_ms);
+        Self { root, issuer }
+    }
+
+    /// The signed member cert of `peer`'s birth, expiring at `expiry_ms`.
+    fn member(&self, peer: &TestPeer, expiry_ms: u64) -> rdm_core::certs::SignedCert {
+        let birth = rdm_core::certs::BirthIdentity {
+            node_id: peer.birth.node_id.clone(),
+            incarnation: peer.birth.incarnation.clone(),
+            mesh: peer.birth.name.mesh.clone(),
+            name: peer.birth.name.clone(),
+            endpoint_key: rdm_core::EndpointId(peer.resolved.endpoint_id.to_string()),
+        };
+        rdm_core::certs::issue(&self.issuer, &birth, expiry_ms).expect("the testkit chain issues the member cert")
+    }
+}
+
+/// Rafka-time adopted at [`CHAIN_NOW_MS`].
+fn chain_time() -> rdm_transport::clock::RafkaTime {
+    let time = rdm_transport::clock::RafkaTime::unadopted();
+    time.adopt(CHAIN_NOW_MS);
+    time
+}
+
+/// One floor of skew, in ms: what a presented cert's expiry is allowed on either side.
+fn floor_ms() -> u64 {
+    rdm_core::cadence::staleness_floor().as_millis() as u64
+}
+
+/// A dialer and an acceptor on [`ALPN_A`], the acceptor admitting on `roots` at [`CHAIN_NOW_MS`], the
+/// dialer presenting `cert`. Returns the dialer's open: the admitted connection or the refusal.
+async fn dial_presenting(roots: Vec<rdm_core::certs::VerifyingKey>, cert: impl FnOnce(&TestPeer) -> Vec<u8>) -> Result<(), ConnectError> {
+    let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    dialer.know(&acceptor);
+    acceptor.know(&dialer);
+    acceptor.registry.admit_on(roots, chain_time());
+    dialer.registry.set_member_cert(cert(&dialer));
+    let (opener, _) = dialer.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut accepts) = acceptor.registry.connections(ALPN_A).unwrap().split();
+    let accepted = tokio::spawn(async move { accepts.accept().await.map(|c| c.id().clone()) });
+    let opened = opener.open(&acceptor.birth).await;
+    let out = match opened {
+        Ok(conn) => {
+            let id = tokio::time::timeout(Duration::from_secs(10), accepted).await.expect("the admitted connection reaches accept").unwrap().unwrap();
+            assert_eq!(&id, conn.id(), "the connection the acceptor serves is the one opened");
+            Ok(())
+        }
+        Err(e) => {
+            accepted.abort();
+            let refused: Vec<_> = acceptor.sink.history().into_iter().filter(|r| r.state == ConnectionState::Refused).collect();
+            if let ConnectError::Refused { reason } = &e {
+                assert_eq!(refused.iter().map(|r| r.reason.clone()).collect::<Vec<_>>(), vec![Some(reason.clone())], "the acceptor's Refused fact carries the verdict's reason");
+            }
+            Err(e)
+        }
+    };
+    dialer.shutdown().await;
+    acceptor.shutdown().await;
+    out
+}
+
+/// The verdict on a presented cert that `tamper` makes of a valid one of the dialer's birth, signed
+/// by a mesh1 chain minted at [`CHAIN_NOW_MS`] and admitted on that chain's root.
+async fn refusal_of(tamper: impl FnOnce(&Chain, &TestPeer) -> rdm_core::certs::SignedCert) -> String {
+    let chain = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
+    let root = chain.root.verifying_key();
+    match dial_presenting(vec![root], |dialer| rdm_core::certs::cert_to_bytes(&tamper(&chain, dialer))).await {
+        Err(ConnectError::Refused { reason }) => reason,
+        other => panic!("the tampered cert must be refused by name: {other:?}"),
+    }
+}
+
+/// CONTRACT (node-connections-admit.md Verification, Result; fabric-certs.md §chain, §Time): an inbound
+/// connection on a registered ALPN whose dialer presents a correctly signed, unexpired member cert of
+/// this fabric is admitted on the acceptor's root set, judged on its rafka-time: the
+/// `via-admitted` span names the cert's expiry and the clock `rafka-time`, and the connection is
+/// served. A cert one floor past its expiry is still admitted (the skew on either side).
+#[test]
+fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-valid-cert").expect("the cell's evidence file can be created");
+    let expiries = capture.run(4, async {
+        let mut expiries = Vec::new();
+        for expiry in [CHAIN_NOW_MS + 60_000, CHAIN_NOW_MS - floor_ms() + 1] {
+            let chain = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
+            let root = chain.root.verifying_key();
+            let admitted = dial_presenting(vec![root], |dialer| rdm_core::certs::cert_to_bytes(&chain.member(dialer, expiry))).await;
+            assert_eq!(admitted, Ok(()), "a valid cert expiring at {expiry} is admitted");
+            expiries.push(expiry);
+        }
+        expiries
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let admitted: Vec<(u64, String)> = spans
+        .iter()
+        .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted")
+        .map(|s| (s["attributes"]["cert_expires_at"].as_str().and_then(|v| v.parse().ok()).or_else(|| s["attributes"]["cert_expires_at"].as_u64()).unwrap_or(0), s["attributes"]["clock"].as_str().unwrap_or_default().to_string()))
+        .collect();
+    assert_eq!(admitted, expiries.iter().map(|e| (*e, "rafka-time".to_string())).collect::<Vec<_>>(), "each admission names the presented cert's expiry and the clock it was judged on");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 4): a member cert the issuing
+/// key does not verify (its signed payload altered) is refused `bad-signature`.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_bad_signature() {
+    let reason = refusal_of(|chain, dialer| {
+        let mut signed = chain.member(dialer, CHAIN_NOW_MS + 60_000);
+        signed.cert.expiry_ms += 1;
+        signed
+    })
+    .await;
+    assert_eq!(reason, "bad-signature");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 1): a member cert whose issuing
+/// cert no root of the acceptor's set signed (another fabric's chain) is refused `issuer-bad-signature`.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_issuer_bad_signature() {
+    let other = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
+    let reason = refusal_of(move |_, dialer| other.member(dialer, CHAIN_NOW_MS + 60_000)).await;
+    assert_eq!(reason, "issuer-bad-signature");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 3): a member cert whose mesh is
+/// not its issuer's is refused `issuer-mesh-mismatch`, before its signature is judged.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_issuer_mesh_mismatch() {
+    let reason = refusal_of(|chain, dialer| {
+        let mut signed = chain.member(dialer, CHAIN_NOW_MS + 60_000);
+        signed.cert.mesh = "mesh2".into();
+        signed
+    })
+    .await;
+    assert_eq!(reason, "issuer-mesh-mismatch");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 5, §Time): a member cert past
+/// its expiry by more than one floor on the acceptor's rafka-time is refused `expired`.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_expired() {
+    let reason = refusal_of(|chain, dialer| chain.member(dialer, CHAIN_NOW_MS - floor_ms() - 1)).await;
+    assert_eq!(reason, "expired");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 2, §Time): a member cert whose
+/// issuing cert is past its expiry by more than one floor is refused `issuer-expired`.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_issuer_expired() {
+    let reason = refusal_of(|chain, dialer| {
+        let lapsed = Chain { root: chain.root.clone(), issuer: rdm_core::certs::IssuingKey::mint(&chain.root, "mesh1", 1, CHAIN_NOW_MS - 2 * floor_ms() - 1_000) };
+        lapsed.member(dialer, lapsed.issuer.expiry_ms())
+    })
+    .await;
+    assert_eq!(reason, "issuer-expired");
+}
+
+/// CONTRACT (fabric-certs.md §Custody: a root rotation refreshes "the public set to every other node"
+/// through `node.roots.update`; fabric-ca-renew.md): the acceptor's root set is one holder its
+/// admissions read afresh. A cert of a second root is refused `issuer-bad-signature` while the set
+/// holds only the first; once the holder is replaced by both, the next admission admits it, and once
+/// replaced by the second alone, a cert of the first is refused.
+#[tokio::test]
+async fn a_root_set_replaced_at_runtime_is_read_by_the_next_admission() {
+    let (first, second) = (Chain::minted("mesh1", 3_600, CHAIN_NOW_MS), Chain::minted("mesh1", 3_600, CHAIN_NOW_MS));
+    let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    dialer.know(&acceptor);
+    acceptor.know(&dialer);
+    acceptor.registry.admit_on(vec![first.root.verifying_key()], chain_time());
+    let (opener, _) = dialer.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut accepts) = acceptor.registry.connections(ALPN_A).unwrap().split();
+    let served = tokio::spawn(async move {
+        let mut n = 0;
+        while accepts.accept().await.is_some() {
+            n += 1;
+        }
+        n
+    });
+
+    dialer.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&second.member(&dialer, CHAIN_NOW_MS + 60_000)));
+    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::Refused { reason: "issuer-bad-signature".into() }, "the second root is not in the set");
+
+    let holder = acceptor.registry.roots();
+    holder.replace(vec![first.root.verifying_key(), second.root.verifying_key()]);
+    assert_eq!(acceptor.registry.roots().current().len(), 2, "the registry hands out the one holder");
+    assert!(dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await.is_ok(), "the next admission is judged on the replaced set: the second root's cert is admitted");
+
+    holder.replace(vec![second.root.verifying_key()]);
+    dialer.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&first.member(&dialer, CHAIN_NOW_MS + 60_000)));
+    match dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await {
+        Err(ConnectError::Refused { reason }) => assert_eq!(reason, "issuer-bad-signature", "the first root left the set"),
+        other => panic!("a cert of a root no longer in the set must be refused: {other:?}"),
+    }
+    dialer.shutdown().await;
+    acceptor.shutdown().await;
+    served.abort();
+}

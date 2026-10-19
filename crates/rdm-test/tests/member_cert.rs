@@ -10,8 +10,9 @@ use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_admin::before_ready::BeforeReadyHook;
 use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use rdm_test::node;
-use rdm_core::certs;
+use rdm_core::certs::{self, IssuingKey};
 use rdm_test::test_certs::{root_choice, test_root_public};
+use std::time::Duration;
 
 /// A reference no OS clock reads: 1970-03-23.
 const AUTHORITY_REFERENCE_MS: u64 = 7_000_000_000;
@@ -32,6 +33,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide, incarn
         store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         issuing: None,
+        roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
@@ -175,5 +177,73 @@ fn an_authority_configured_with_no_certs_admits_the_birth_with_an_empty_cert_and
         assert_eq!(named.len(), 1, "a span names the choice: {named:?}");
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// One birth of mesh1 at `name`, launched by `admin` with the root set `roots` and the product ALPN
+/// `alpn` registered, started and joined.
+async fn alpn_birth(admin: &AdminSide, fabric: &FabricId, name: &str, roots: Vec<rdm_core::certs::VerifyingKey>, alpn: &rdm_transport::connections::Alpn) -> (rdm_node::node::RunningNode, std::path::PathBuf) {
+    let dir = birth_dir("member-cert-roots");
+    let key = node::load_or_mint_key(&dir).unwrap();
+    let launch = Launch { name: name.parse().unwrap(), roots, ..launch_in(&dir, fabric, admin, IncarnationId::mint(), None, NodeId::mint()) };
+    admin.deployed(&launch, &key);
+    let running = rdm_node::node::start_with_rafka_time_before_ready_alpns_and(&launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), |s| s, None, |b, _| b, &[], std::slice::from_ref(alpn))
+        .await
+        .expect("the birth starts");
+    (running, dir)
+}
+
+fn birth_of(n: &rdm_node::node::RunningNode) -> rdm_transport::connections::Birth {
+    rdm_transport::connections::Birth { name: n.digest.node.name.clone(), node_id: n.digest.node.node_id.clone(), incarnation: n.digest.node.incarnation.clone() }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (node-connections-admit.md Verification; fabric-certs.md §chain: "against the fabric's
+/// root set, the anchors every node holds"; fabric-ca-renew.md "Launch"): a node admits on the root set
+/// its launch carries (`RDM_ROOTS`). Its peer presenting the member cert its join was issued (chained
+/// to the testkit's root) is admitted; the same peer presenting a cert of another root is refused
+/// `issuer-bad-signature`. A node launched with no root set (its launcher configured with no certs)
+/// admits that same foreign cert by name. Must NOT happen: a node with a root set admitting what does
+/// not chain to it.
+#[test]
+fn a_node_admits_on_the_root_set_its_launch_carries() {
+    use rdm_transport::NodeResolver as _;
+    let cap = crate::common::capture("a_node_admits_on_the_root_set_its_launch_carries");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let alpn = rdm_transport::connections::Alpn { name: b"member-cert-roots/1".to_vec(), forwardable: false, carriers: vec![rdm_core::NodeKind::RpcNode] };
+        let fabric = FabricId::mint();
+        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), root_choice()).await;
+        let (acceptor, a_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.1", vec![test_root_public()], &alpn).await;
+        let (dialer, d_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.2", vec![test_root_public()], &alpn).await;
+        let (no_certs, n_dir) = alpn_birth(&admin, &fabric, "mesh1.rpc.3", vec![], &alpn).await;
+        let dialing = dialer.data_connections_for_testkit();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while [&acceptor, &no_certs].iter().any(|n| dialer.node_rpc.resolver.resolve(&rdm_transport::NodeTarget::ExactNode(n.digest.node.node_id.clone())).is_err()) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the dialer resolves both peers");
+
+        assert!(dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await.is_ok(), "the join's cert chains to the launch's root: admitted");
+
+        let other = rdm_core::certs::mint_key();
+        let issuer = IssuingKey::mint(&other, "mesh1", certs::ISSUING_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS);
+        let own = certs::cert_from_bytes(&dialer.member_cert).unwrap().cert;
+        let birth = certs::BirthIdentity { node_id: own.node_id, incarnation: own.incarnation, mesh: own.mesh, name: own.name, endpoint_key: own.endpoint };
+        let foreign = certs::issue(&issuer, &birth, AUTHORITY_REFERENCE_MS + 3_600_000).unwrap();
+        dialing.set_member_cert(certs::cert_to_bytes(&foreign));
+        match dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await {
+            Err(rdm_transport::connections::ConnectError::Refused { reason }) => assert_eq!(reason, "issuer-bad-signature"),
+            other => panic!("a cert of another root must be refused by name: {other:?}"),
+        }
+        assert!(dialing.probe_direct(&birth_of(&no_certs), &alpn.name).await.is_ok(), "a node launched with no root set admits by name");
+
+        for n in [acceptor, dialer, no_certs] {
+            n.stop().await;
+        }
+        for d in [a_dir, d_dir, n_dir] {
+            let _ = std::fs::remove_dir_all(&d);
+        }
     })
 }

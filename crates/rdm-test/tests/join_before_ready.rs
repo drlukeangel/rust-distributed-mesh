@@ -41,6 +41,7 @@ fn node_whose_launcher_never_takes_its_join_ends_by_name_and_is_never_ready() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             issuing: None,
+            roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let started = node::start(&launch, |b, _| b).await;
@@ -87,6 +88,7 @@ fn node_launched_with_no_launcher_is_refused_at_start_by_name() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             issuing: None,
+            roots: Vec::new(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let started = node::start(&launch, |b, _| b).await;

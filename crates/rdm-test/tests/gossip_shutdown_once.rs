@@ -79,6 +79,7 @@ fn launch_in(dir: &std::path::Path, fabric: &FabricId, admin: &AdminSide) -> Lau
         store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         issuing: None,
+        roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }

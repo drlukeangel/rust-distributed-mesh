@@ -5,6 +5,9 @@
 //! RPC's execution-capacity admission (`crate::admission`, node-rpc.md §17).
 
 use super::{write_control_msg, Alpn, Birth, ConnectionsRegistry, CLOSE_CODE_REFUSED, MAX_CONTROL_FRAME};
+use crate::clock::RafkaTime;
+use rdm_core::certs::VerifyingKey;
+use std::sync::{Arc, RwLock};
 use rdm_core::connections::{ConnectionKind as CoreKind, ConnectionState, NodeConnection};
 use rdm_core::ConnectionId;
 use serde::{Deserialize, Serialize};
@@ -25,6 +28,60 @@ pub struct NoCertsAdmitter;
 impl Admitter for NoCertsAdmitter {
     fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
         Ok((0, "no-certs"))
+    }
+}
+
+/// The fabric's root set this node verifies presented member certs against (fabric-certs.md §chain:
+/// the anchors every node holds, one, or two during a root rotation). One shared holder, read afresh
+/// by every admission, so `node.roots.update` replaces it at runtime and the next admission is judged
+/// on the new set.
+#[derive(Clone, Default)]
+pub struct RootSet(Arc<RwLock<Vec<VerifyingKey>>>);
+
+impl std::fmt::Debug for RootSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.current().iter().map(|k| rdm_core::launch::encode_hex(k.as_bytes()))).finish()
+    }
+}
+
+impl RootSet {
+    /// A holder of `roots`.
+    pub fn new(roots: Vec<VerifyingKey>) -> Self {
+        Self(Arc::new(RwLock::new(roots)))
+    }
+
+    /// The set held now.
+    pub fn current(&self) -> Vec<VerifyingKey> {
+        self.0.read().unwrap().clone()
+    }
+
+    /// Hold `roots` from now on: every later admission is judged on them.
+    pub fn replace(&self, roots: Vec<VerifyingKey>) {
+        *self.0.write().unwrap() = roots;
+    }
+}
+
+/// The verification of `node.connections.admit` (node-connections-admit.md Verification): the
+/// presented member cert's chain to the [`RootSet`] held at the admission, both expiries judged on
+/// this node's rafka-time (the local clock, `local-bootstrap`, before it holds one) with one staleness
+/// floor of skew on either side. A refusal is named by the chain's own check
+/// ([`rdm_core::certs::CertError`]); bytes that are no cert are `no-credential`.
+pub struct CertAdmitter {
+    roots: RootSet,
+    time: RafkaTime,
+}
+
+impl CertAdmitter {
+    /// The verifier judging on `roots`, as they stand at each admission, and on `time`.
+    pub fn new(roots: RootSet, time: RafkaTime) -> Self {
+        Self { roots, time }
+    }
+}
+
+impl Admitter for CertAdmitter {
+    fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
+        let _ = (&self.roots, &self.time);
+        Err(NO_CREDENTIAL.to_string())
     }
 }
 

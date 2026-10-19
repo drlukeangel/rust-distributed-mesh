@@ -220,7 +220,7 @@ pub enum ConnectError {
 }
 
 mod admit;
-pub use admit::{Admitter, NoCertsAdmitter};
+pub use admit::{Admitter, CertAdmitter, NoCertsAdmitter, RootSet};
 use admit::{AdmitVerdict, PresentFrame};
 
 /// Where the data-plane `Connections` runtime records `NodeConnection` rows and reads the held projection.
@@ -456,6 +456,8 @@ struct RegistryInner {
     resolver: Arc<dyn NodeResolver>,
     sink: Arc<dyn ConnectionsSink>,
     admitter: Mutex<Arc<dyn Admitter>>,
+    /// The root set the admitter judges on: one holder, replaced at runtime by `node.roots.update`.
+    roots: RootSet,
     member_cert: Mutex<Vec<u8>>,
     slots: Mutex<HashMap<Vec<u8>, RegisteredSlot>>,
     accept_txs: HashMap<Vec<u8>, mpsc::UnboundedSender<Connection>>,
@@ -498,6 +500,7 @@ impl ConnectionsRegistry {
                 resolver,
                 sink,
                 admitter: Mutex::new(Arc::new(NoCertsAdmitter)),
+                roots: RootSet::default(),
                 member_cert: Mutex::new(member_cert),
                 slots: Mutex::new(slots),
                 accept_txs,
@@ -559,6 +562,20 @@ impl ConnectionsRegistry {
     /// Install a custom [`Admitter`] for inbound connections on registered ALPNs.
     pub fn set_admitter(&self, admitter: Arc<dyn Admitter>) {
         *self.inner.admitter.lock().unwrap() = admitter;
+    }
+
+    /// Admit inbound connections on the fabric's root set `roots`, judged on `time`
+    /// (node-connections-admit.md): the set is held in this registry's [`RootSet`], which
+    /// [`Self::roots`] hands to whoever replaces it at runtime. An empty set is a node started with no
+    /// certs: it admits by name.
+    pub fn admit_on(&self, roots: Vec<rdm_core::certs::VerifyingKey>, time: crate::clock::RafkaTime) {
+        let _ = (roots, time);
+    }
+
+    /// The root set this registry's admissions are judged on: the one holder `node.roots.update`
+    /// replaces at runtime.
+    pub fn roots(&self) -> RootSet {
+        self.inner.roots.clone()
     }
 
     /// Update the member cert bytes presented on outbound dials.

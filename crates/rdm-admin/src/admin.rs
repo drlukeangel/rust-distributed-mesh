@@ -4060,6 +4060,7 @@ mod tests {
             store_dir: STORE_DIR.into(),
             mesh_id: None,
             issuing: None,
+            roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(1250),
         };
         let launched = launch.to_env();

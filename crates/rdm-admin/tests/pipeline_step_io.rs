@@ -104,6 +104,7 @@ fn a_step_span_names_the_time_its_blocking_calls_waited_for_a_thread_apart_from_
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             issuing: None,
+            roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = rdm_admin::join::Joins::default();
@@ -220,6 +221,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             issuing: None,
+            roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = rdm_admin::join::Joins::default();

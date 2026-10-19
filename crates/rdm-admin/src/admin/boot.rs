@@ -1175,6 +1175,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 data_root,
                                 store_dir: cfg.store_dir.clone(),
                                 issuing: None,
+                                roots: Default::default(),
                                 connections_delete_deadline: cfg.connections_delete_deadline,
                             };
                             let mut registry = HookRegistry::new();

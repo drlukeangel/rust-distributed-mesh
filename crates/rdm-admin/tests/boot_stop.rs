@@ -36,6 +36,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         store_dir: data_dir.clone(),
         mesh_id: None,
         issuing: Some(rdm_core::launch::IssuingMaterial::of(&issuing, &root)),
+        roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"))

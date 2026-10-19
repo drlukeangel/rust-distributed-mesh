@@ -870,6 +870,10 @@ pub struct LaunchTemplate {
     /// [`CertIssuer::issuing_material`](crate::certs::CertIssuer::issuing_material). `None` for every
     /// other launch and for a launcher configured with no certs.
     pub issuing: Option<rdm_core::launch::IssuingMaterial>,
+    /// The fabric's root set the launching admin holds (fabric-certs.md §chain), the holder its own
+    /// admissions read: every launch carries the set as it stands at the launch (`RDM_ROOTS`), one
+    /// root, or two during a root rotation. Empty for a launcher configured with no certs.
+    pub roots: rdm_transport::connections::RootSet,
     /// The bound of a `node.connections.delete { All }` every launch carries: the launching admin's
     /// own (`AdminConfig::connections_delete_deadline`).
     pub connections_delete_deadline: Duration,
@@ -1659,6 +1663,7 @@ impl DeploymentPipeline<'_> {
             store_dir: self.template.store_dir.clone(),
             mesh_id: self.template.env.get(rdm_core::launch::ENV_MESH_ID).and_then(|v| rdm_core::MeshId::parse(v).ok()),
             issuing: self.template.issuing.clone(),
+            roots: Vec::new(),
             connections_delete_deadline: self.template.connections_delete_deadline,
         };
         // The launch environment; its TRACEPARENT is taken inside the
@@ -2791,6 +2796,7 @@ mod tests {
                 data_root: data_root.clone(),
                 store_dir: data_root.clone(),
                 issuing: None,
+                roots: Default::default(),
                 connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             let joins = Joins::default();
@@ -2841,6 +2847,7 @@ mod tests {
             data_root: data_root.clone(),
             store_dir: data_root,
             issuing: None,
+            roots: Default::default(),
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         }
     }
@@ -3018,5 +3025,65 @@ mod tests {
         std::fs::remove_file(dir.join(ADOPTION_RECEIPTS)).unwrap();
         assert_eq!(adoption_missing(&dir).await.unwrap().len(), 4);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A provider that records the environment of each launch it is asked for and launches nothing.
+    #[derive(Default)]
+    struct RecordsLaunches {
+        envs: std::sync::Mutex<Vec<BTreeMap<String, String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for RecordsLaunches {
+        fn kind(&self) -> crate::model::ProviderKind {
+            crate::model::ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            "process:cell".into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, super::super::provider::DeployError> {
+            self.envs.lock().unwrap().push(spec.env.clone());
+            Err(super::super::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this cell launches nothing".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), super::super::provider::DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            DeploymentStatus::Unknown
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), super::super::provider::DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, super::super::provider::DeployError> {
+            Ok(Found::NeverLaunched)
+        }
+    }
+
+    /// CONTRACT (fabric-ca-renew.md "Launch": "A launched node is written the current set at launch
+    /// (`RDM_ROOTS`), the way `RDM_MESH_ID` is, so a node born mid-overlap trusts both"): every launch
+    /// carries the launching admin's root set as the holder stands at that launch: one root, then,
+    /// once the holder is replaced by two, both. A launcher whose set is empty (configured with no
+    /// certs) writes none.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_launch_carries_the_launching_admins_root_set_as_it_stands_at_the_launch() {
+        let (a, b) = (rdm_core::certs::mint_key().verifying_key(), rdm_core::certs::mint_key().verifying_key());
+        let provider = RecordsLaunches::default();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let build_id = accepted_build(&builds).await;
+        builds.claim_attempt(&crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        let template = LaunchTemplate { roots: rdm_transport::connections::RootSet::new(vec![a]), ..cell_template("launch-roots") };
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider: &provider, joins: &joins, observer: &NoObserver, sink: &NoSink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let create = |node: &str| CreateRequest { build_id: build_id.clone(), attempt: 1, node: node.parse().unwrap(), spec: &crate::deployment::endpoint::RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        let _ = pipeline.create(&create("mesh1.rpc.1")).await.map(|_| ()).expect_err("the provider launches nothing");
+        template.roots.replace(vec![a, b]);
+        let _ = pipeline.create(&create("mesh1.rpc.2")).await.map(|_| ()).expect_err("the provider launches nothing");
+        template.roots.replace(vec![]);
+        let _ = pipeline.create(&create("mesh1.rpc.3")).await.map(|_| ()).expect_err("the provider launches nothing");
+        let written: Vec<Option<String>> = provider.envs.lock().unwrap().iter().map(|e| e.get(rdm_core::launch::ENV_ROOTS).cloned()).collect();
+        let hex = |k: &rdm_core::certs::VerifyingKey| rdm_core::launch::encode_hex(k.as_bytes());
+        assert_eq!(written, vec![Some(hex(&a)), Some(format!("{},{}", hex(&a), hex(&b))), None], "each launch carries the set as it stood at that launch");
+        let _ = std::fs::remove_dir_all(&template.data_root);
     }
 }
