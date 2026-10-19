@@ -689,13 +689,14 @@ impl VerdictSink for LocalVerdicts {
 }
 
 /// The drive of the current Build, for the reconcile loop: `ensure` it while it is in progress
-/// (R-BI3: the Build in progress is resumed), and once it completed, the drive this admin holds of
+/// (R-BI3: the Build in progress is resumed), and once it is complete, the drive this admin holds of
 /// it that has not ended (one that paused or stalled while the Build completed): its next pass reads
-/// the Build complete and ends its callers' streams.
+/// the Build complete and ends its callers' streams. A Build that completed once and whose later
+/// attempt failed is the known state too, and only a caller's resubmit drives it on (R-BI3).
 pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc<Drive>> {
-    let id = match env.builds.current_build().await {
-        Ok(crate::build_state::CurrentBuild::InProgress(id)) => id,
-        Ok(crate::build_state::CurrentBuild::Completed(id)) if drives.get(&id).is_some_and(|d| !d.ended()) => id,
+    let (id, completed) = match env.builds.current_build().await {
+        Ok(crate::build_state::CurrentBuild::InProgress(id)) => (id, false),
+        Ok(crate::build_state::CurrentBuild::Completed(id)) if drives.get(&id).is_some_and(|d| !d.ended()) => (id, true),
         Ok(_) => return Vec::new(),
         Err(e) => {
             tracing::info!(error = %e, "Build state unreadable; nothing driven");
@@ -703,6 +704,7 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
         }
     };
     match env.builds.read_build(&id).await {
+        Ok(b) if completed && b.state != crate::build_state::BuildState::Complete => Vec::new(),
         Ok(b) => vec![drives.ensure(env, &b.build_id, b.attempt_to_drive())],
         Err(e) => {
             tracing::info!(error = %e, build_id = %id.log(), "the current Build is unreadable; nothing driven");

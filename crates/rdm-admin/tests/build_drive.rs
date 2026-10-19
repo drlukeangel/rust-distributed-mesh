@@ -2376,3 +2376,58 @@ fn a_drive_paused_while_its_build_completes_is_picked_up_again_and_ends_its_stre
         }
     });
 }
+
+/// CONTRACT (R-BI3: only a caller's resubmit drives a failed Build on): a Build that completed once
+/// stays the known state when a later attempt of it fails (`CurrentBuild::Completed`), and the drive
+/// this admin still holds of it, one that never framed that attempt's end, is not passed again by
+/// the reconcile loop: no next attempt is claimed until a caller resubmits.
+/// Must NOT happen: the reconcile loop claiming the attempt after the failed one by itself (gate
+/// e6s7-b7d25a17, node_restart: attempt 2 of a restart failed, and 52 ms later the drive claimed
+/// attempt 3 with no resubmit).
+#[test]
+fn a_held_drive_of_a_build_whose_later_attempt_failed_claims_no_next_attempt() {
+    use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, CurrentBuild};
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rdm_transport::span_capture("failed-attempt-no-next", exporter.clone());
+    let _g = tracing::dispatcher::set_default(&tracing::Dispatch::new(tracing_subscriber::registry().with(layer)));
+    let drive_outcomes = || -> Vec<String> {
+        capture.flush(Duration::from_secs(10)).expect("spans flush");
+        exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == "rdm.node_admin.build.update.via-drive")
+            .map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == "outcome").map(|kv| kv.value.to_string()).unwrap_or_default())
+            .collect()
+    };
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let r = rig().await;
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "attempt 1 completes the Build");
+        // A later attempt of it (a restart) is opened; the reconcile loop's drive of it is held,
+        // paused by a view that authorizes nothing.
+        r.builds.open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: 2, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }).await.unwrap();
+        r.switch.authorizes.store(false, Ordering::SeqCst);
+        let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
+        let held = drives.get(&r.build).expect("the reconcile loop holds the Build's drive");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !drive_outcomes().contains(&"paused".to_string()) {
+            assert!(tokio::time::Instant::now() < deadline, "the held drive ran and paused: {:?}", drive_outcomes());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Attempt 2 is claimed and fails at its executor; the held drive never frames its end.
+        r.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: r.build.clone(), attempt: 2, executor: "mesh1.admin.2".into() }).await.unwrap();
+        let failed = AttemptOutcome::Failed { reason: "the restart's stop was not admitted".into(), code: rdm_core::outcome::Code::FailedPrecondition };
+        r.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt: 2, outcome: failed }).await.unwrap();
+        assert_eq!(r.builds.current_build().await.unwrap(), CurrentBuild::Completed(r.build.clone()), "the Build that completed once is the known state");
+        assert!(!held.ended(), "the held drive framed no end of attempt 2");
+
+        r.switch.authorizes.store(true, Ordering::SeqCst);
+        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let p = r.builds.read_build(&r.build).await.unwrap();
+        assert_eq!(p.attempt, 2, "no attempt after the failed one is claimed without a resubmit; via-drive outcomes {:?}", drive_outcomes());
+        assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "only attempt 1 was dispatched");
+    });
+}
