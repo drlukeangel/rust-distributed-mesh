@@ -98,15 +98,15 @@ pub struct IssuingMaterial {
     /// The fabric's root, written beside them: every node-admin RDM launches holds it (fabric-certs.md
     /// §Custody).
     pub root: SecretHex,
-    /// The fabric CA's key, written beside the root (the CA's cert is the issuing cert's own).
-    pub ca_key: Option<SecretHex>,
+    /// The fabric CA's key, written beside the root: every node-admin RDM launches holds the CA
+    /// (fabric-certs.md §Custody; the CA's cert is the issuing cert's own).
+    pub ca_key: SecretHex,
 }
 
 impl IssuingMaterial {
-    /// The material of `key` with the fabric's `root` beside it, as a launch writes it; the CA key is
-    /// its launcher's to add.
-    pub fn of(key: &crate::certs::IssuingKey, root: &crate::certs::SigningKey) -> Self {
-        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()), root: SecretHex(crate::certs::encode_key(root)), ca_key: None }
+    /// The material of `key` with the fabric's `root` and its CA `ca` beside it, as a launch writes it.
+    pub fn of(key: &crate::certs::IssuingKey, root: &crate::certs::SigningKey, ca: &crate::certs::CaKey) -> Self {
+        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()), root: SecretHex(crate::certs::encode_key(root)), ca_key: SecretHex(crate::certs::encode_key(ca.secret())) }
     }
 }
 
@@ -234,8 +234,8 @@ pub fn decode_roots(v: Option<&str>) -> Result<Vec<VerifyingKey>> {
 }
 
 /// The issuing material `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` carry: both, or neither, with the
-/// root `RDM_CA_SECRET` beside them and the CA key `RDM_FABRIC_CA_KEY` when its launcher wrote it. One
-/// without the other, issuing material without the root, or any of them not hex, is refused by name.
+/// root `RDM_CA_SECRET` and the CA key `RDM_FABRIC_CA_KEY` beside them. One without the other, issuing
+/// material without the root or the CA key, or any of them not hex, is refused by name.
 /// A root with no issuing material is no issuing material: it is the bootstrap admin's, read by its
 /// cert choice.
 pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<String>, ca_key: Option<String>) -> Result<Option<IssuingMaterial>> {
@@ -249,8 +249,11 @@ pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<St
                 return Err(format!("{ENV_ISSUING_KEY} and {ENV_ISSUING_CERT} are set without {ENV_CA_SECRET}: a node-admin is launched with the fabric's root beside its mesh's issuing material (fabric-certs.md §Custody)"));
             };
             decode_hex(ENV_CA_SECRET, &root)?;
-            let ca_key = present(ca_key).map(|k| decode_hex(ENV_FABRIC_CA_KEY, &k).map(|_| SecretHex(k))).transpose()?;
-            Ok(Some(IssuingMaterial { key: SecretHex(key), cert, root: SecretHex(root), ca_key }))
+            let Some(ca_key) = present(ca_key) else {
+                return Err(format!("{ENV_ISSUING_KEY} and {ENV_ISSUING_CERT} are set without {ENV_FABRIC_CA_KEY}: a node-admin is launched with the fabric CA beside the root and its mesh's issuing material (fabric-certs.md §Custody)"));
+            };
+            decode_hex(ENV_FABRIC_CA_KEY, &ca_key)?;
+            Ok(Some(IssuingMaterial { key: SecretHex(key), cert, root: SecretHex(root), ca_key: SecretHex(ca_key) }))
         }
         (Some(_), None) => Err(format!("{ENV_ISSUING_KEY} is set without {ENV_ISSUING_CERT}: issuing material is the key and its cert together")),
         (None, Some(_)) => Err(format!("{ENV_ISSUING_CERT} is set without {ENV_ISSUING_KEY}: issuing material is the key and its cert together")),
@@ -309,9 +312,7 @@ impl Launch {
             m.insert(ENV_ISSUING_KEY.into(), issuing.key.0.clone());
             m.insert(ENV_ISSUING_CERT.into(), issuing.cert.clone());
             m.insert(ENV_CA_SECRET.into(), issuing.root.0.clone());
-            if let Some(ca_key) = &issuing.ca_key {
-                m.insert(ENV_FABRIC_CA_KEY.into(), ca_key.0.clone());
-            }
+            m.insert(ENV_FABRIC_CA_KEY.into(), issuing.ca_key.0.clone());
         }
         if !self.roots.is_empty() {
             m.insert(ENV_ROOTS.into(), encode_roots(&self.roots));
@@ -365,7 +366,7 @@ mod tests {
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
-            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)), ca_key: Some(SecretHex("0c".repeat(32))) }),
+            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)), ca_key: SecretHex("0c".repeat(32)) }),
             roots: Vec::new(),
             connections_delete_deadline: Duration::from_millis(750),
         };
@@ -388,6 +389,9 @@ mod tests {
         let mut no_root = env.clone();
         no_root.remove(ENV_CA_SECRET);
         assert!(Launch::from_env(|k| no_root.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY and RDM_ISSUING_CERT are set without RDM_CA_SECRET"), "issuing material without the root is refused by name");
+        let mut no_ca = env.clone();
+        no_ca.remove(ENV_FABRIC_CA_KEY);
+        assert!(Launch::from_env(|k| no_ca.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY and RDM_ISSUING_CERT are set without RDM_FABRIC_CA_KEY"), "issuing material without the CA key is refused by name");
         let mut odd = env.clone();
         odd.insert(ENV_ISSUING_CERT.into(), "abc".into());
         assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_CERT has an odd number"));

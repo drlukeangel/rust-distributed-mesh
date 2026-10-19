@@ -298,7 +298,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let clock: rdm_transport::clock::SharedClock = Arc::new(rafka_time.clone());
     // The cert material, chosen explicitly (fabric-certs.md "How RDM is instantiated"): a node-admin
     // started with no choice is refused here, by name, before it touches anything.
-    let issuer = Arc::new(std::mem::take(&mut wiring.certs).issuer(rafka_time.clone()).map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?);
+    let issuer = Arc::new(std::mem::take(&mut wiring.certs).issuer(&cfg.data_dir, crate::certs::day_zero(&cfg), rafka_time.clone()).map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?);
     // The fabric's cert policy is the bootstrap admin's own (fabric-certs.md §Tracking: read once by
     // the bootstrap admin); a launched admin takes it from its entry pull below.
     if cfg.launch.is_none() {

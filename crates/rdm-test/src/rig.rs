@@ -459,7 +459,12 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                 let membership = membership.clone();
                 Arc::new(move || membership.mesh_primary().ok().map(|p| p.node.name.to_string()))
             },
-            issuer: Arc::new(certs.issuer(rafka_time.clone()).expect("the admin side's cert choice is made")),
+            issuer: Arc::new({
+                // The admin side holds the testkit fabric's one CA, kept where an admin keeps it.
+                let cert_dir = std::env::temp_dir().join(format!("rdm-admin-side-certs-{}", NodeId::mint()));
+                rdm_admin::certs::keep_ca(&cert_dir, &crate::test_certs::test_ca()).expect("the admin side keeps the testkit CA");
+                certs.issuer(&cert_dir, false, rafka_time.clone()).expect("the admin side's cert choice is made")
+            }),
             row: Arc::new({
                 let rows = rows.clone();
                 move |name| {

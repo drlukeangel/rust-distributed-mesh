@@ -36,7 +36,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         data_dir: data_dir.clone(),
         store_dir: data_dir.clone(),
         mesh_id: None,
-        issuing: Some(rdm_core::launch::IssuingMaterial::of(&issuing, &root)),
+        issuing: Some(rdm_core::launch::IssuingMaterial::of(&issuing, &root, &ca)),
         roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };

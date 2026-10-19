@@ -23,7 +23,7 @@
 
 pub use rdm_core::certs::{BirthIdentity, CertError, IssueFailure};
 use rdm_core::certs::{CaKey, IssuingKey, SigningKey, VerifyingKey};
-use rdm_core::launch::{IssuingMaterial, SecretHex, ENV_FABRIC_CA_KEY, ENV_ISSUING_CERT, ENV_ISSUING_KEY};
+use rdm_core::launch::{IssuingMaterial, ENV_FABRIC_CA_KEY, ENV_ISSUING_CERT, ENV_ISSUING_KEY};
 use rdm_transport::clock::RafkaTime;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -35,6 +35,10 @@ pub const ENV_CA_SECRET: &str = rdm_core::launch::ENV_CA_SECRET;
 
 /// The file in a node-admin's data dir that keeps the fabric's root it holds.
 pub const CA_SECRET_FILE: &str = "ca-secret";
+
+/// The file in a node-admin's data dir that keeps the fabric CA it holds: the CA's key and its
+/// root-signed cert, as hex, one per line.
+pub const FABRIC_CA_FILE: &str = "fabric-ca";
 
 /// What a node-admin is started with for certs. There is no default: [`CertChoice::Unchosen`] is
 /// refused at start by name.
@@ -49,9 +53,6 @@ pub enum CertChoice {
     Ca {
         /// The root's ed25519 secret.
         secret: SigningKey,
-        /// The fabric CA, as its launch gave it; one given none mints it under the root at its first
-        /// need (`fabric.ca.create`).
-        ca: Option<CaKey>,
         /// Its mesh's issuing key, as its launch gave it: the mesh's one issuer, never minted again.
         issuing: Option<IssuingKey>,
     },
@@ -61,12 +62,13 @@ impl CertChoice {
     /// The material an RDM node-admin executable is started with, read from `get` (its environment)
     /// and `data_dir`: `RDM_CA_SECRET`, else the `ca-secret` its data dir keeps, the fabric's root, with
     /// `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` beside it when it was launched with them (its mesh's
-    /// one issuer, which must be `own_mesh`'s and chain to that root, and the fabric CA's key
-    /// `RDM_FABRIC_CA_KEY` that signed it when the launch carried it); else, for the bootstrap admin of
+    /// one issuer, which must be `own_mesh`'s and chain to that root); else, for the bootstrap admin of
     /// day 0 (`day_zero`: no launch and no seeds), a root minted now. A root the environment gives or
     /// this call mints is kept as `ca-secret` in the data dir when none is kept there yet, so the same
-    /// admin started again holds the same root. Material that does not decode, issuing material
-    /// without the root, and an admin that is not day 0's and holds no root, are refused by name.
+    /// admin started again holds the same root. The fabric CA a launch carries beside them
+    /// (`RDM_FABRIC_CA_KEY`) is kept as `fabric-ca`, which [`Self::issuer`] reads. Material that does
+    /// not decode, issuing material without the root or the CA key, and an admin that is not day 0's
+    /// and holds no root, are refused by name.
     pub fn from_material(data_dir: &Path, own_mesh: &str, day_zero: bool, get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let kept = data_dir.join(CA_SECRET_FILE);
         let present = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
@@ -90,41 +92,70 @@ impl CertChoice {
                 Err(e) => return Err(format!("{}: the fabric's root this data dir keeps cannot be read: {e}", kept.display())),
             },
         };
-        if let Some(secret) = root {
-            let key = issuing.as_ref().map(|m| issuing_key(m, own_mesh, &secret.verifying_key())).transpose()?;
-            let ca = match (&issuing, &key) {
-                (Some(m), Some(k)) => ca_key(m, k)?,
-                _ => None,
-            };
-            return Ok(Self::Ca { secret, ca, issuing: key });
-        }
-        if day_zero {
-            let secret = rdm_core::certs::mint_key();
-            keep(&secret)?;
-            tracing::info_span!("rdm.node_admin.cert.create.via-day-zero-root", mesh = own_mesh, kept = %kept.display())
-                .in_scope(|| tracing::info!("the bootstrap admin holds no root and has no seeds: it minted the fabric's root (fabric.ca.create)"));
-            return Ok(Self::Ca { secret, ca: None, issuing: None });
-        }
-        Err(format!(
-            "this node-admin holds no cert material: {ENV_CA_SECRET} or a `{CA_SECRET_FILE}` in {} (fabric-certs.md: an admin with seeds or an anchor and no root refuses to start)",
-            data_dir.display(),
-        ))
+        let secret = match root {
+            Some(secret) => secret,
+            None if day_zero => {
+                let secret = rdm_core::certs::mint_key();
+                keep(&secret)?;
+                tracing::info_span!("rdm.node_admin.cert.create.via-day-zero-root", mesh = own_mesh, kept = %kept.display())
+                    .in_scope(|| tracing::info!("the bootstrap admin holds no root and has no seeds: it minted the fabric's root (fabric.ca.create)"));
+                secret
+            }
+            None => {
+                return Err(format!(
+                    "this node-admin holds no cert material: {ENV_CA_SECRET} or a `{CA_SECRET_FILE}` in {} (fabric-certs.md: an admin with seeds or an anchor and no root refuses to start)",
+                    data_dir.display(),
+                ))
+            }
+        };
+        let key = match (&issuing, issuing.as_ref().map(|m| issuing_key(m, own_mesh, &secret.verifying_key())).transpose()?) {
+            (Some(m), Some(k)) => {
+                keep_ca(data_dir, &ca_key(m, &k)?)?;
+                Some(k)
+            }
+            _ => None,
+        };
+        Ok(Self::Ca { secret, issuing: key })
     }
 
     /// [`Self::from_material`] for the node-admin `cfg` configures, from this process's environment:
     /// day 0 is a bootstrap admin with no launch, no seeds and no recovery flag, so a person-started
     /// recovery never mints a root of its own.
     pub fn from_config(cfg: &crate::admin::AdminConfig) -> Result<Self, String> {
-        let day_zero = cfg.launch.is_none() && cfg.seeds.is_empty() && !cfg.mesh_primary && !cfg.fabric_primary;
-        Self::from_material(&cfg.data_dir, &cfg.mesh, day_zero, |k| std::env::var(k).ok())
+        Self::from_material(&cfg.data_dir, &cfg.mesh, day_zero(cfg), |k| std::env::var(k).ok())
     }
 
-    /// The issuer this choice makes, issuing on `time`. The unchosen choice is refused by name.
-    pub fn issuer(self, time: RafkaTime) -> Result<CertIssuer, String> {
+    /// The issuer this choice makes, issuing on `time`. A root holder issues under the fabric CA its
+    /// data dir keeps (`fabric-ca`: its launch's, or its own day 0's); on day 0 (`day_zero`) with none
+    /// kept, it mints the CA now under the root and keeps it (`fabric.ca.create`, step 1 of
+    /// fabric.create). A root holder with no CA off day 0, a kept CA that is not the one its mesh's
+    /// issuer chains to, and the unchosen choice, are refused by name.
+    pub fn issuer(self, data_dir: &Path, day_zero: bool, time: RafkaTime) -> Result<CertIssuer, String> {
         match self {
             Self::Unchosen => Err("this node-admin was started with no cert choice: set Wiring::certs to CertChoice::Ca or CertChoice::NoCerts".into()),
             Self::NoCerts => Ok(CertIssuer::no_certs(time)),
-            Self::Ca { secret, ca, issuing } => Ok(CertIssuer::with_root(secret, ca, issuing, time)),
+            Self::Ca { secret, issuing } => {
+                let kept = data_dir.join(FABRIC_CA_FILE);
+                let ca = match read_ca(&kept)? {
+                    Some(ca) => ca,
+                    None if day_zero => {
+                        // Day 0's rafka-time is this admin's own clock, which it adopts at boot (rafka_time.rs).
+                        let now_ms = rdm_transport::clock::Clock::now_rafka_ms(&rdm_transport::clock::OsClock);
+                        let ca = CaKey::mint(&secret, rdm_core::certs::CA_CERT_TTL_SECS, now_ms);
+                        keep_ca(data_dir, &ca)?;
+                        tracing::info_span!("rdm.node_admin.cert.create.via-ca-create", ca_expires_at_ms = ca.expiry_ms(), kept = %kept.display())
+                            .in_scope(|| tracing::info!("the bootstrap admin minted the fabric CA under the root (fabric.ca.create, step 1 of fabric.create)"));
+                        ca
+                    }
+                    None => return Err(format!("this node-admin holds the root and no fabric CA: no `{FABRIC_CA_FILE}` in {} and no {ENV_FABRIC_CA_KEY} in its launch (fabric-certs.md §Custody: every admin holds the current CA material)", data_dir.display())),
+                };
+                if let Some(k) = &issuing {
+                    if &k.cert().ca != ca.cert() {
+                        return Err(format!("{}: the kept fabric CA is not the CA its mesh's issuer chains to", kept.display()));
+                    }
+                }
+                Ok(CertIssuer::with_root(secret, ca, issuing, time))
+            }
         }
     }
 }
@@ -145,22 +176,56 @@ fn issuing_key(issuing: &IssuingMaterial, own_mesh: &str, root: &VerifyingKey) -
 }
 
 /// The fabric CA `issuing` carries beside its root (`RDM_FABRIC_CA_KEY`), whose cert is `key`'s own
-/// CA cert: the key must be the one that cert names. `None` when the launch carried no CA key.
-fn ca_key(issuing: &IssuingMaterial, key: &IssuingKey) -> Result<Option<CaKey>, String> {
-    let Some(hex) = &issuing.ca_key else { return Ok(None) };
-    let secret = rdm_core::certs::decode_key(&hex.0).map_err(|e| format!("{ENV_FABRIC_CA_KEY}: {e}"))?;
+/// CA cert: the key must be the one that cert names.
+fn ca_key(issuing: &IssuingMaterial, key: &IssuingKey) -> Result<CaKey, String> {
+    let secret = rdm_core::certs::decode_key(&issuing.ca_key.0).map_err(|e| format!("{ENV_FABRIC_CA_KEY}: {e}"))?;
     if secret.verifying_key() != key.cert().ca.cert.ca_pub {
         return Err(format!("{ENV_FABRIC_CA_KEY}: the CA key is not the key the issuing cert's CA cert names"));
     }
-    Ok(Some(CaKey::from_parts(secret, key.cert().ca.clone())))
+    Ok(CaKey::from_parts(secret, key.cert().ca.clone()))
+}
+
+/// Whether the node-admin `cfg` configures is day 0's bootstrap admin: no launch, no seeds and no
+/// recovery flag, so a person-started recovery never mints a root or a CA of its own.
+pub fn day_zero(cfg: &crate::admin::AdminConfig) -> bool {
+    cfg.launch.is_none() && cfg.seeds.is_empty() && !cfg.mesh_primary && !cfg.fabric_primary
+}
+
+/// Keep `ca` as the fabric CA `data_dir` holds (`fabric-ca`: its key and its cert, hex, one per line),
+/// in place of any kept before: the CA a launch gives an admin is the fabric's current one.
+pub fn keep_ca(data_dir: &Path, ca: &CaKey) -> Result<(), String> {
+    let path = data_dir.join(FABRIC_CA_FILE);
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("{}: the data dir the fabric CA is kept in: {e}", data_dir.display()))?;
+    let text = format!("{}\n{}\n", rdm_core::certs::encode_key(ca.secret()), rdm_core::certs::encode_ca_cert(ca.cert()));
+    std::fs::write(&path, text).map_err(|e| format!("{}: the fabric CA could not be kept: {e}", path.display()))
+}
+
+/// The fabric CA the data dir keeps at `path` (`fabric-ca`), when one is kept: its key must be the one
+/// its cert names.
+fn read_ca(path: &Path) -> Result<Option<CaKey>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: the fabric CA this data dir keeps cannot be read: {e}", path.display())),
+    };
+    let mut lines = text.lines();
+    let (Some(key), Some(cert)) = (lines.next(), lines.next()) else {
+        return Err(format!("{}: the kept fabric CA is not its key and its cert, one per line", path.display()));
+    };
+    let secret = rdm_core::certs::decode_key(key).map_err(|e| format!("{}: the kept CA key: {e}", path.display()))?;
+    let cert = rdm_core::certs::decode_ca_cert(cert).map_err(|e| format!("{}: the kept CA cert: {e}", path.display()))?;
+    if secret.verifying_key() != cert.cert.ca_pub {
+        return Err(format!("{}: the kept CA key is not the key its cert names", path.display()));
+    }
+    Ok(Some(CaKey::from_parts(secret, cert)))
 }
 
 /// What an admin signs with.
 enum Material {
     /// No certs, by name.
     NoCerts,
-    /// The fabric's root: every mesh's issuer can be minted.
-    Root(SigningKey),
+    /// The fabric's root and the fabric CA under it: every mesh's issuer can be minted.
+    Root(SigningKey, CaKey),
 }
 
 /// One member cert issue (fabric-certs.md §Tracking): the bytes the birth is handed, and what its cert
@@ -204,9 +269,6 @@ pub struct CertIssuer {
     /// The issuing key of each mesh this admin signs for: minted once under the fabric CA, or the one
     /// it was given.
     issuers: Mutex<BTreeMap<String, IssuingKey>>,
-    /// The fabric CA this admin mints issuers under: the one its launch gave it, else minted under the
-    /// root at its first need (`fabric.ca.create`).
-    ca: Mutex<Option<CaKey>>,
     /// The fabric's cert policy this admin issues under: the defaults until it is set.
     policy: Mutex<rdm_core::certs::CertPolicy>,
 }
@@ -214,14 +276,14 @@ pub struct CertIssuer {
 impl CertIssuer {
     /// The explicit choice of no certs, on `time`.
     pub fn no_certs(time: RafkaTime) -> Self {
-        Self { material: Material::NoCerts, time, issuers: Mutex::default(), ca: Mutex::default(), policy: Mutex::default() }
+        Self { material: Material::NoCerts, time, issuers: Mutex::default(), policy: Mutex::default() }
     }
 
-    /// An issuer holding the fabric's root `secret`, the fabric CA `ca` and its own mesh's issuing key
-    /// `issuing` when its launch gave them, on `time`.
-    pub fn with_root(secret: SigningKey, ca: Option<CaKey>, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
+    /// An issuer holding the fabric's root `secret`, the fabric CA `ca`, and its own mesh's issuing key
+    /// `issuing` when its launch gave it one, on `time`.
+    pub fn with_root(secret: SigningKey, ca: CaKey, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
         let issuers = issuing.into_iter().map(|k| (k.mesh().to_string(), k)).collect();
-        Self { material: Material::Root(secret), time, issuers: Mutex::new(issuers), ca: Mutex::new(ca), policy: Mutex::default() }
+        Self { material: Material::Root(secret, ca), time, issuers: Mutex::new(issuers), policy: Mutex::default() }
     }
 
     /// Hold `policy`, the fabric's cert policy, from now on (fabric-certs.md §Tracking: read once by
@@ -331,10 +393,10 @@ impl CertIssuer {
     /// now on in place of the one held.
     pub fn renew_issuer(&self, mesh: &str) -> Result<(IssuingKey, IssuerMint), IssueFailure> {
         let now_ms = self.now("a mesh's issuing material")?;
-        let Material::Root(root) = &self.material else {
+        let Material::Root(_, ca) = &self.material else {
             unreachable!("a no-certs admin renews no issuer of mesh {mesh}: its caller reads is_no_certs first")
         };
-        let (key, mint) = self.mint_issuer(root, mesh, now_ms)?;
+        let (key, mint) = self.mint_issuer(ca, mesh, now_ms)?;
         self.issuers.lock().unwrap().insert(mesh.to_string(), key.clone());
         Ok((key, mint))
     }
@@ -346,27 +408,12 @@ impl CertIssuer {
         self.issuers.lock().unwrap().insert(key.mesh().to_string(), key).map(|old| old.expiry_ms())
     }
 
-    /// The fabric CA this admin mints issuers under: the one held, else one minted now under `root`
-    /// (`fabric.ca.create`), living the policy's CA TTL, and held from then on.
-    fn ca_for(&self, root: &SigningKey, now_ms: u64) -> CaKey {
-        let mut ca = self.ca.lock().unwrap();
-        if let Some(held) = ca.as_ref() {
-            return held.clone();
-        }
-        let minted = CaKey::mint(root, self.policy().ca_ttl_secs, now_ms);
-        tracing::info_span!("rdm.node_admin.cert.create.via-ca-create", issued_at_rafka_ms = now_ms, ca_expires_at_rafka_ms = minted.expiry_ms(), outcome = "issued")
-            .in_scope(|| tracing::info!("the fabric CA is minted under the fabric's root (fabric.ca.create)"));
-        *ca = Some(minted.clone());
-        minted
-    }
-
     /// The one place an issuing key is minted (`mesh.issuer.create`, `mesh.issuer.renew`): under the
-    /// fabric CA `root` holds, at `now_ms`, living the policy's issuing TTL cut to the CA's expiry.
-    fn mint_issuer(&self, root: &SigningKey, mesh: &str, now_ms: u64) -> Result<(IssuingKey, IssuerMint), IssueFailure> {
+    /// fabric CA `ca`, at `now_ms`, living the policy's issuing TTL cut to the CA's expiry.
+    fn mint_issuer(&self, ca: &CaKey, mesh: &str, now_ms: u64) -> Result<(IssuingKey, IssuerMint), IssueFailure> {
         let policy = self.policy();
-        let ca = self.ca_for(root, now_ms);
         let expiry_ms = now_ms.saturating_add(policy.issuing_ttl_secs.saturating_mul(1000)).min(ca.expiry_ms());
-        let key = IssuingKey::mint(&ca, mesh, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("mesh {mesh}'s issuing cert under the fabric CA expiring at {}", ca.expiry_ms()) })?;
+        let key = IssuingKey::mint(ca, mesh, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("mesh {mesh}'s issuing cert under the fabric CA expiring at {}", ca.expiry_ms()) })?;
         let mint = IssuerMint { mesh: mesh.to_string(), issued_at: now_ms, expires_at: key.expiry_ms(), renew_at: issuer_renew_at(mesh, now_ms, key.expiry_ms(), policy.renew_at_permille) };
         Ok((key, mint))
     }
@@ -374,7 +421,7 @@ impl CertIssuer {
     /// The fabric root's public key, when this admin holds the root.
     pub fn root(&self) -> Option<VerifyingKey> {
         match &self.material {
-            Material::Root(secret) => Some(secret.verifying_key()),
+            Material::Root(secret, _) => Some(secret.verifying_key()),
             Material::NoCerts => None,
         }
     }
@@ -391,8 +438,8 @@ impl CertIssuer {
             return Ok((key.clone(), None));
         }
         match &self.material {
-            Material::Root(root) => {
-                let (key, mint) = self.mint_issuer(root, mesh, now_ms)?;
+            Material::Root(_, ca) => {
+                let (key, mint) = self.mint_issuer(ca, mesh, now_ms)?;
                 tracing::info_span!("rdm.node_admin.cert.create.via-mesh-birth", mesh, issued_at_rafka_ms = now_ms, issuer_expires_at_rafka_ms = key.expiry_ms(), outcome = "issued")
                     .in_scope(|| tracing::info!("the mesh's issuing key is minted under the fabric CA (mesh.issuer.create)"));
                 issuers.insert(mesh.to_string(), key.clone());
@@ -426,10 +473,8 @@ impl CertIssuer {
         }
         let now_ms = self.now("a mesh's issuing material")?;
         let (key, minted) = self.issuer_for(mesh, now_ms)?;
-        let Material::Root(root) = &self.material else { unreachable!("a no-certs issuer hands no issuing material") };
-        // The CA key handed is the one that signed this issuer, so the launched admin holds its chain.
-        let ca_key = self.ca.lock().unwrap().as_ref().filter(|ca| ca.cert() == &key.cert().ca).map(|ca| SecretHex(rdm_core::certs::encode_key(ca.secret())));
-        Ok((Some(IssuingMaterial { ca_key, ..IssuingMaterial::of(&key, root) }), minted))
+        let Material::Root(root, ca) = &self.material else { unreachable!("a no-certs issuer hands no issuing material") };
+        Ok((Some(IssuingMaterial::of(&key, root, ca)), minted))
     }
 }
 
@@ -444,10 +489,16 @@ pub fn issuer_renew_at(mesh: &str, issued_at: u64, expires_at: u64, renew_at_per
 mod tests {
     use super::*;
     use crate::model::{EndpointId, IncarnationId, NodeId};
+    use rdm_core::launch::SecretHex;
 
     fn birth(name: &str) -> BirthIdentity {
         let name: crate::model::PathName = name.parse().unwrap();
         BirthIdentity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), mesh: name.mesh.clone(), name, endpoint_key: EndpointId("k".into()) }
+    }
+
+    /// A fabric CA under `root`.
+    fn ca_of(root: &SigningKey) -> CaKey {
+        CaKey::mint(root, rdm_core::certs::CA_CERT_TTL_SECS, 1)
     }
 
     fn time_at(ms: u64) -> RafkaTime {
@@ -459,7 +510,8 @@ mod tests {
     // @feature: node-lifecycle
     #[test]
     fn an_issuer_whose_admin_holds_no_rafka_time_issues_nothing_and_says_so() {
-        let issuer = CertIssuer::with_root(rdm_core::certs::mint_key(), None, None, RafkaTime::unadopted());
+        let root = rdm_core::certs::mint_key();
+        let issuer = CertIssuer::with_root(root.clone(), ca_of(&root), None, RafkaTime::unadopted());
         match issuer.member(&birth("mesh1.rpc.1")) {
             Err(IssueFailure::NoRafkaTime(why)) => assert!(why.contains("no rafka-time"), "{why}"),
             other => panic!("{other:?}"),
@@ -470,10 +522,11 @@ mod tests {
     // @feature: node-lifecycle
     #[test]
     fn the_explicit_no_certs_choice_issues_empty_bytes_and_an_unchosen_wiring_resolves_to_a_named_refusal() {
-        let issuer = CertChoice::NoCerts.issuer(time_at(5)).unwrap();
+        let nowhere = std::path::Path::new("/nonexistent");
+        let issuer = CertChoice::NoCerts.issuer(nowhere, false, time_at(5)).unwrap();
         assert_eq!(issuer.member(&birth("mesh1.rpc.1")), Ok(Vec::new()));
         assert_eq!(issuer.issuing_material("mesh2"), Ok(None));
-        let refused = CertChoice::default().issuer(time_at(5)).err().expect("no choice is refused");
+        let refused = CertChoice::default().issuer(nowhere, false, time_at(5)).err().expect("no choice is refused");
         assert!(refused.contains("no cert choice") && refused.contains("NoCerts"), "{refused}");
     }
 
@@ -483,11 +536,13 @@ mod tests {
     fn a_member_cert_due_past_its_issuers_expiry_is_cut_to_it() {
         let root = rdm_core::certs::mint_key();
         let issuing_life_ms = rdm_core::certs::ISSUING_CERT_TTL_SECS * 1000;
-        let fabric_primary = CertIssuer::with_root(root.clone(), None, None, time_at(1_000));
+        let fabric_primary = CertIssuer::with_root(root.clone(), ca_of(&root), None, time_at(1_000));
         let material = fabric_primary.issuing_material("mesh1").unwrap().unwrap();
         // The launched admin's clock is one hour short of its issuer's expiry: a day's cert is cut.
         let issuing = issuing_key(&material, "mesh1", &root.verifying_key()).unwrap();
-        let late = CertChoice::Ca { secret: root, ca: None, issuing: Some(issuing) }.issuer(time_at(1_000 + issuing_life_ms - 3_600_000)).unwrap();
+        let dir = crate::test_support::tempdir("cert-cut-to-issuer");
+        keep_ca(&dir, &ca_key(&material, &issuing).unwrap()).unwrap();
+        let late = CertChoice::Ca { secret: root, issuing: Some(issuing) }.issuer(&dir, false, time_at(1_000 + issuing_life_ms - 3_600_000)).unwrap();
         let signed = rdm_core::certs::cert_from_bytes(&late.member(&birth("mesh1.rpc.1")).unwrap()).unwrap();
         assert_eq!(signed.cert.expiry_ms, signed.issuer.cert.expiry_ms, "cut to the issuer's expiry");
     }
@@ -503,26 +558,33 @@ mod tests {
         let env = |pairs: Vec<(&'static str, String)>| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
         // Day 0: minted and kept; started again, the same root is read back.
         let minted = CertChoice::from_material(&dir, "mesh1", true, env(vec![])).unwrap();
-        let CertChoice::Ca { secret, ca: None, issuing: None } = minted else { panic!("day 0 mints a root, and no CA or issuer") };
+        let CertChoice::Ca { secret, issuing: None } = minted else { panic!("day 0 mints a root, and no issuer") };
         let again = CertChoice::from_material(&dir, "mesh1", false, env(vec![])).unwrap();
         assert!(matches!(&again, CertChoice::Ca { secret: s, .. } if s.to_bytes() == secret.to_bytes()), "the kept root is read back");
         // The environment's root wins over nothing kept, and is kept.
         let other = tempdir_in(&dir, "env-root");
         let given = rdm_core::certs::mint_key();
-        let read = CertChoice::from_material(&other, "mesh1", false, env(vec![(ENV_CA_SECRET, rdm_core::certs::encode_key(&given))])).unwrap();
+        let root_only = || env(vec![(ENV_CA_SECRET, rdm_core::certs::encode_key(&given))]);
+        let root_only_dir = tempdir_in(&dir, "root-only");
+        let no_ca = CertChoice::from_material(&root_only_dir, "mesh1", false, root_only()).unwrap().issuer(&root_only_dir, false, time_at(1)).err().expect("a root and no CA, off day 0");
+        assert!(no_ca.contains("no fabric CA") && no_ca.contains(ENV_FABRIC_CA_KEY), "{no_ca}");
+        let read = CertChoice::from_material(&other, "mesh1", false, root_only()).unwrap();
         assert!(matches!(&read, CertChoice::Ca { secret: s, .. } if s.to_bytes() == given.to_bytes()));
         assert_eq!(std::fs::read_to_string(other.join(CA_SECRET_FILE)).unwrap(), rdm_core::certs::encode_key(&given));
         // A launched admin: the root with its mesh's material; refused for another mesh, and refused by
         // name without the root.
-        let material = CertIssuer::with_root(given, None, None, time_at(1)).issuing_material("mesh2").unwrap().unwrap();
+        let material = CertIssuer::with_root(given.clone(), ca_of(&given), None, time_at(1)).issuing_material("mesh2").unwrap().unwrap();
         let launch = |root: bool| {
             let mut pairs = vec![(ENV_ISSUING_KEY, material.key.0.clone()), (ENV_ISSUING_CERT, material.cert.clone())];
             if root {
                 pairs.push((ENV_CA_SECRET, material.root.0.clone()));
+                pairs.push((ENV_FABRIC_CA_KEY, material.ca_key.0.clone()));
             }
             env(pairs)
         };
-        assert!(matches!(CertChoice::from_material(&tempdir_in(&dir, "launched"), "mesh2", false, launch(true)), Ok(CertChoice::Ca { issuing: Some(_), .. })));
+        let launched = tempdir_in(&dir, "launched");
+        assert!(matches!(CertChoice::from_material(&launched, "mesh2", false, launch(true)), Ok(CertChoice::Ca { issuing: Some(_), .. })));
+        assert_eq!(read_ca(&launched.join(FABRIC_CA_FILE)).unwrap().map(|ca| rdm_core::certs::encode_key(ca.secret())), Some(material.ca_key.0.clone()), "the launch's CA is kept beside the root");
         let wrong = CertChoice::from_material(&tempdir_in(&dir, "wrong-mesh"), "mesh3", false, launch(true)).err().unwrap();
         assert!(wrong.contains("mesh mesh2's") && wrong.contains("mesh mesh3"), "{wrong}");
         let rootless = CertChoice::from_material(&tempdir_in(&dir, "rootless"), "mesh2", false, launch(false)).err().unwrap();
@@ -546,25 +608,25 @@ mod tests {
     fn a_launched_admin_holds_the_root_beside_its_meshs_issuer_and_mints_no_second_one() {
         let dir = crate::test_support::tempdir("cert-root-launch");
         let root = rdm_core::certs::mint_key();
-        let material = CertIssuer::with_root(root.clone(), None, None, time_at(1_000)).issuing_material("mesh1").unwrap().unwrap();
+        let material = CertIssuer::with_root(root.clone(), ca_of(&root), None, time_at(1_000)).issuing_material("mesh1").unwrap().unwrap();
         assert_eq!(material.root, SecretHex(rdm_core::certs::encode_key(&root)), "the root rides beside the issuing material");
-        assert!(material.ca_key.is_some(), "so does the fabric CA's key");
+        assert!(!material.ca_key.0.is_empty(), "so does the fabric CA's key");
         let launch_env = |m: &IssuingMaterial| {
             let m = m.clone();
             move |k: &str| match k {
                 ENV_ISSUING_KEY => Some(m.key.0.clone()),
                 ENV_ISSUING_CERT => Some(m.cert.clone()),
                 ENV_CA_SECRET => Some(m.root.0.clone()),
-                ENV_FABRIC_CA_KEY => m.ca_key.as_ref().map(|k| k.0.clone()),
+                ENV_FABRIC_CA_KEY => Some(m.ca_key.0.clone()),
                 _ => None,
             }
         };
         let choice = CertChoice::from_material(&dir, "mesh1", false, launch_env(&material)).unwrap();
         assert!(
-            matches!(&choice, CertChoice::Ca { secret, ca: Some(ca), issuing: Some(k) } if secret.to_bytes() == root.to_bytes() && rdm_core::certs::encode_issuing_cert(k.cert()) == material.cert && ca.cert() == &k.cert().ca),
+            matches!(&choice, CertChoice::Ca { secret, issuing: Some(k) } if secret.to_bytes() == root.to_bytes() && rdm_core::certs::encode_issuing_cert(k.cert()) == material.cert && read_ca(&dir.join(FABRIC_CA_FILE)).unwrap().is_some_and(|ca| ca.cert() == &k.cert().ca)),
             "the root and the fabric CA, with its mesh's issuer as given"
         );
-        let launched = choice.issuer(time_at(2_000)).unwrap();
+        let launched = choice.issuer(&dir, false, time_at(2_000)).unwrap();
         assert_eq!(launched.root(), Some(root.verifying_key()));
         assert_eq!(launched.issuing_material("mesh1").unwrap(), Some(material.clone()), "its mesh's one issuer handed on with the root, never a second");
         let mesh2 = launched.issuing_material("mesh2").unwrap().expect("another mesh's issuer, minted from its own copy of the root");
@@ -572,7 +634,8 @@ mod tests {
         assert_eq!(rdm_core::certs::decode_issuing_cert(&mesh2.cert).unwrap().ca, rdm_core::certs::decode_issuing_cert(&material.cert).unwrap().ca, "under the CA it was launched with: one CA, no second");
         assert_eq!(mesh2.ca_key, material.ca_key, "the CA key handed on is that CA's");
         // Issuing material another root signed, beside this root: refused by name.
-        let stranger = CertIssuer::with_root(rdm_core::certs::mint_key(), None, None, time_at(1_000)).issuing_material("mesh1").unwrap().unwrap();
+        let other = rdm_core::certs::mint_key();
+        let stranger = CertIssuer::with_root(other.clone(), ca_of(&other), None, time_at(1_000)).issuing_material("mesh1").unwrap().unwrap();
         let mixed = IssuingMaterial { root: material.root.clone(), ..stranger };
         let refused = CertChoice::from_material(&tempdir_in(&dir, "mixed"), "mesh1", false, launch_env(&mixed)).err().expect("refused");
         assert!(refused.contains("ca-bad-signature") && refused.contains("does not verify to the fabric's root"), "{refused}");
@@ -598,14 +661,14 @@ mod tests {
             (issue.issued_at + life * 670 / 1000..=issue.issued_at + life * 720 / 1000).contains(&issue.renew_at)
         };
 
-        let early = CertIssuer::with_root(root.clone(), Some(ca.clone()), Some(issuer.clone()), time_at(1_000));
+        let early = CertIssuer::with_root(root.clone(), ca.clone(), Some(issuer.clone()), time_at(1_000));
         early.set_policy(policy);
         assert_eq!(early.policy(), policy, "the admin holds the policy it was given");
         let first = early.issue_member(&birth("mesh1.rpc.1")).unwrap();
         assert_eq!((first.expires_at - first.issued_at, first.issuer_expires_at), (12_000, 16_000), "the policy's 12 s from its issue, inside the issuer's life: {first:?}");
         assert!(in_window(&first), "renewed at two thirds of its life plus at most 5 %: {first:?}");
 
-        let late = CertIssuer::with_root(root, Some(ca), Some(issuer), time_at(10_000));
+        let late = CertIssuer::with_root(root, ca, Some(issuer), time_at(10_000));
         late.set_policy(policy);
         let cut = late.issue_member(&birth("mesh1.rpc.2")).unwrap();
         assert!(cut.issued_at >= 10_000 && (cut.expires_at, cut.issuer_expires_at) == (16_000, 16_000), "cut to the issuer's expiry: {cut:?}");
@@ -624,10 +687,10 @@ mod tests {
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let dir = crate::test_support::tempdir("cert-ca-restart");
         let nothing = |_: &str| None;
-        let day0 = CertChoice::from_material(&dir, "mesh1", true, nothing).unwrap().issuer(time_at(1_000)).unwrap();
+        let day0 = CertChoice::from_material(&dir, "mesh1", true, nothing).unwrap().issuer(&dir, true, time_at(1_000)).unwrap();
         let before = day0.issuing_material("mesh2").unwrap().expect("mesh2's issuer, minted on day 0");
         // The same admin started again over its data dir: not day 0, nothing in its environment.
-        let restarted = CertChoice::from_material(&dir, "mesh1", false, nothing).unwrap().issuer(time_at(2_000)).unwrap();
+        let restarted = CertChoice::from_material(&dir, "mesh1", false, nothing).unwrap().issuer(&dir, false, time_at(2_000)).unwrap();
         let after = restarted.issuing_material("mesh3").unwrap().expect("mesh3's issuer, minted after the restart");
         let ca_of = |m: &IssuingMaterial| rdm_core::certs::decode_issuing_cert(&m.cert).unwrap().ca;
         assert_eq!(ca_of(&after), ca_of(&before), "the issuer minted after the restart is under the day-0 CA");
