@@ -713,8 +713,15 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   changed"). The sixth, `sticky_seat::a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts`
   (`sticky_seat.rs:579`), is the provider's: the recipe's `node.delete:mesh1.admin.1.old` failed
   `TerminateRuntime` with `stage=unproven` 74 ms in ("mesh1.admin.1.old still runs after the stop
-  ladder"), the old holder being the estate's adopted Day-0 runtime; Q45 changes no termination. Open,
-  to be read (trace `b241a08f397cdc549c10970b44268948`).
+  ladder"), the old holder being the estate's adopted Day-0 runtime; Q45 changes no termination
+  (trace `b241a08f397cdc549c10970b44268948`). Read from ClickHouse (pid 3333306): the runtime took
+  its SIGTERM 1.5 ms into the step and was still exiting when the stop ladder's `running()` read it
+  not running, and the exact inspect after it read `Running`. That read was `Unreadable`: `group()`
+  folded only `NotFound` as a task gone, and the open `stat` of a task released before its read
+  answers `ESRCH`. `group()` folds `ESRCH` beside `NotFound` as the task exited (`process.rs`
+  `task_exited`; unit cell `a_task_released_before_or_during_its_stat_read_has_exited_and_a_denied_read_has_not`).
+  An Unreadable group reads as not running at is() and as nothing to stop at is_ours; held until a
+  run shows a non-transient Unreadable.
   Owner 3 moved onto the layer: each declaration the declarer sends (a mesh primary's round
   completion and Mesh report, an admin's own state, the fabric-primary's events) is one `Budget::Owed`
   call the declarer holds per key (`status_declare.rs` `round`, `Inflight`); a key whose call is in

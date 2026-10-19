@@ -176,7 +176,7 @@ fn group(proc: &str, pid: u32) -> Group {
                         Some(letter) => letters.push(letter),
                         None => return Group::unreadable(path.display(), format!("no state letter in {stat:?}")),
                     },
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) if task_exited(&e) => {}
                     Err(e) => return Group::unreadable(path.display(), e),
                 }
             }
@@ -191,6 +191,13 @@ fn group(proc: &str, pid: u32) -> Group {
         },
         Err(e) => Group::unreadable(&dir, e),
     }
+}
+
+/// A task's `stat` read failed because the task has exited: it was gone before the file was opened
+/// (`NotFound`), or released between the open and the read (`ESRCH`, what the open `stat` of a
+/// released task answers).
+fn task_exited(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH)
 }
 
 /// The state letter of a `stat` line (`/proc/<pid>/stat` or `/proc/<pid>/task/<tid>/stat`): the
@@ -662,6 +669,17 @@ mod tests {
         assert_eq!(fold(&['t', 'R']), Group::Running);
         assert_eq!(fold(&['Z', 'X', 'x']), Group::Gone, "no live task");
         assert_eq!(fold(&[]), Group::Gone);
+    }
+
+    /// CONTRACT (deployment-provider.md §2.6): a task whose `stat` read fails because the task has
+    /// exited, gone before the open (`NotFound`) or released between the open and the read (`ESRCH`),
+    /// is left out of its group's fold; a read denied any other way (`EACCES`) is `Unreadable`,
+    /// never exit proof.
+    #[test]
+    fn a_task_released_before_or_during_its_stat_read_has_exited_and_a_denied_read_has_not() {
+        assert!(task_exited(&std::io::Error::from(std::io::ErrorKind::NotFound)), "gone before the open");
+        assert!(task_exited(&std::io::Error::from_raw_os_error(libc::ESRCH)), "released between the open and the read");
+        assert!(!task_exited(&std::io::Error::from_raw_os_error(libc::EACCES)), "a denied read says nothing of the task: Unreadable");
     }
 
     /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
