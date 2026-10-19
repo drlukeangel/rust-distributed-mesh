@@ -309,11 +309,7 @@ pub async fn run_proof_with(
         return Err(anyhow::anyhow!("{} failed before_ready: {why}", launch.name));
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
-    if crate::node::stop_commanded() {
-        running.stop_commanded().await;
-    } else {
-        running.stop().await;
-    }
+    running.stop().await;
     Ok(())
 }
 

@@ -6,7 +6,7 @@ pub use rdm_core::launch::Launch;
 pub use rdm_core::{certs, dto, model, names, status, NodeKind};
 pub use rdm_transport::{NodeRpcClient, ServerBuilder};
 pub use crate::node::{
-    listen_for_stop, stop_commanded,
+    listen_for_stop,
     stop_requested, wait_for_signal, Node, NodeSeams, RunningNode,
 };
 
@@ -185,11 +185,7 @@ pub async fn run_on(
         return Err(anyhow!("{} failed before_ready: {why}", launch.name));
     }
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true).in_scope(|| tracing::info!("stopping"));
-    if crate::node::stop_commanded() {
-        running.stop_commanded().await;
-    } else {
-        running.stop().await;
-    }
+    running.stop().await;
     Ok(())
 }
 

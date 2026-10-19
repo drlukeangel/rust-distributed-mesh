@@ -83,12 +83,6 @@ pub struct RunningNode {
 /// Alias for [`RunningNode`] as named in the `i148` surface (`Node::connections`).
 pub type Node = RunningNode;
 
-/// Whether this process is parked (stopped by `stop-node`, not started again): the shutdown that
-/// follows deletes no connections, and only a live node runs its own stop on a signal.
-pub fn stop_commanded() -> bool {
-    crate::node_self::parking().is_parked()
-}
-
 impl RunningNode {
     /// Take the one [`rdm_transport::connections::Connections`] handle for `alpn` (`i148`).
     ///
@@ -158,14 +152,20 @@ impl RunningNode {
         }
     }
 
-    /// The stop this process's own signal runs (i146 Q55; node-stop.md steps 2-4, the node its own
-    /// subject, [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connections.delete
-    /// { All }` under the birth's bound, its connections-deleting owed to its mesh-primary; the leave
-    /// step (its gossip neighbours left, its Node RPC pool cut, nothing published); its stopped state
-    /// owed to its mesh-primary. Nothing waits on an answer. Then each router shuts down:
+    /// The stop this process's own signal runs. A birth stopped by `stop-node` and not started again
+    /// ran its stop at the command and leaves stopped only through a start or a delete (node-stop.md
+    /// step 6): its signal runs no second stop, and its process ends as [`Self::stop_commanded`] ends
+    /// it. A live birth runs node-stop.md steps 2-4 as its own subject (i146 Q55,
+    /// [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connections.delete { All }`
+    /// under the birth's bound, its connections-deleting owed to its mesh-primary; the leave step
+    /// (its gossip neighbours left, its Node RPC pool cut, nothing published); its stopped state owed
+    /// to its mesh-primary. Nothing waits on an answer. Then each router shuts down:
     /// `Router::shutdown` shuts every protocol it serves down, gossip included, once, and then closes
     /// the endpoint; the owed declarations end with the process (node-rpc.md §34).
     pub async fn stop(self) {
+        if self.own.is_parked() {
+            return self.stop_commanded().await;
+        }
         crate::taskdump::watched("stop", self.stop_inner()).await
     }
 

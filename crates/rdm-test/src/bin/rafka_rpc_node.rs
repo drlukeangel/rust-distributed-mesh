@@ -95,9 +95,5 @@ async fn main() {
     node::wait_for_signal("rafka-rpc-node").await;
     tracing::info_span!("rdm.mesh.node.delete.via-signal", node = %launch.name, incarnation_id = %launch.incarnation, booted = true)
         .in_scope(|| tracing::info!("stopping"));
-    if node::stop_commanded() {
-        running.stop_commanded().await;
-    } else {
-        running.stop().await;
-    }
+    running.stop().await;
 }
