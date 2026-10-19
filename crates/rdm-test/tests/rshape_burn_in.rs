@@ -4647,16 +4647,45 @@ async fn await_direct(estate: &Estate, holder: &str, dest: &str, what: &str, bou
     }
 }
 
-/// The cut between two nodes' transport sockets: UDP dropped both ways, installed as an nftables table this process owns;
-/// `Partition::start` returning is the host's acknowledgement that every rule is in. The fabric-primary
+/// A cut on the estate's provider, held until it drops: the process provider's nftables UDP drop
+/// between two sets of transport ports (`Partition`), or on the container provider a packet filter in
+/// each container of the cut set (`container_faults::cut`, or `container_faults::silence` against
+/// everything, the host included).
+enum Cut {
+    Process { _partition: Partition },
+    Container(container_faults::Silenced),
+}
+
+impl Drop for Cut {
+    fn drop(&mut self) {
+        if let Cut::Container(c) = self {
+            if let Err(e) = c.lift() {
+                if !std::thread::panicking() {
+                    panic!("the container cut of {:?} could not be lifted: {e}", c.members.iter().map(|m| &m.node).collect::<Vec<_>>());
+                }
+            }
+        }
+    }
+}
+
+/// Cut the nodes `a` from the nodes `b` on the estate's provider; returning is the acknowledgement that
+/// every rule is in. The host and every other node still reach both sides.
+async fn cut_sets(f: &Formed, nodes: &[Value], a: &[String], b: &[String]) -> Cut {
+    if provider() == "container" {
+        Cut::Container(container_faults::cut(&f.estate, a, b).await.unwrap_or_else(|why| panic!("the container provider cannot cut {a:?} from {b:?}: {why}")))
+    } else {
+        Cut::Process { _partition: Partition::start(&udp_ports(nodes, a), &udp_ports(nodes, b)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {a:?} and {b:?}: {why}")) }
+    }
+}
+
+/// The cut between two nodes, both ways, on the estate's provider ([`cut_sets`]). The fabric-primary
 /// is never one of the two. Held until the returned value drops.
-fn cut_between(nodes: &[Value], a: &str, b: &str, fabric_primary: &str) -> (Partition, Value) {
+async fn cut_between(f: &Formed, nodes: &[Value], a: &str, b: &str, fabric_primary: &str) -> (Cut, Value) {
     assert!(a != fabric_primary && b != fabric_primary, "REFUSED: the cut {a} <-> {b} names the fabric-primary {fabric_primary}");
-    assert_eq!(provider(), "process", "REFUSED: the per-pair UDP cut is the process provider's; the container provider cuts through its own network namespaces");
     let (pa, pb) = (udp_ports(nodes, &[a.to_string()]), udp_ports(nodes, &[b.to_string()]));
     assert!(pa.len() == 1 && pb.len() == 1, "one transport socket each: {pa:?} {pb:?}");
-    let cut = Partition::start(&pa, &pb).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {a} and {b}: {why}"));
-    (cut, json!({"fault": "udp-drop", "between": [a, b], "udp_ports": [pa[0], pb[0]], "acknowledged_at_ms": now_ms()}))
+    let cut = cut_sets(f, nodes, &[a.to_string()], &[b.to_string()]).await;
+    (cut, json!({"fault": "drop", "provider": provider(), "between": [a, b], "udp_ports": [pa[0], pb[0]], "acknowledged_at_ms": now_ms()}))
 }
 
 /// The source's spans about its fact toward `dest`: every `connection.update.via-observed`.
@@ -4699,7 +4728,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     // connection has no reply coming. It is never a Reply and never replayed; the other gateway still reaches
     // the broker (the cut is selected, not global). What the source's fact toward the broker says afterwards is
     // recorded as observed.
-    let (cut1, ack1) = cut_between(&st.nodes, &src, &dst, &fp);
+    let (cut1, ack1) = cut_between(&f, &st.nodes, &src, &dst, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack1}));
     let t_cut1 = now_ns();
     let under = orig_get(&f, &src, &dst, "under-cut-established");
@@ -4735,7 +4764,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     // C11, a dial lost: a node that has never connected to the new birth (another mesh's compute) dials it
     // while the cut covers the new birth's socket, so its dial ends without a connection.
     let lost_src = "mesh2.compute.1".to_string();
-    let (cut2, ack2) = cut_between(&st2.nodes, &lost_src, &dst, &fp);
+    let (cut2, ack2) = cut_between(&f, &st2.nodes, &lost_src, &dst, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack2}));
     let t_cut2 = now_ns();
     let failed_call = orig_get(&f, &lost_src, &dst, "dial-under-cut");
@@ -5045,7 +5074,6 @@ async fn churn_run(cell: &str, shape: Shape) {
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
-    assert_eq!(provider(), "process", "REFUSED: the descriptor census reads /proc of the process provider; the container provider counts through its own namespace");
     let (src, d1n, d2n, dialer) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.broker.1".to_string(), "mesh1.compute.1".to_string());
     let fp = st.fp_name();
     let src_pid = node_pid(&f, &src).await;
@@ -5061,7 +5089,10 @@ async fn churn_run(cell: &str, shape: Shape) {
         originate_op(&f, &mut a, &src, &n, "baseline");
     }
     let base_census = fd_census(src_pid);
-    let base_procs = provider_actions(&f.bound, &f.estate.root)["processes"].as_array().map(Vec::len).unwrap_or(0);
+    // A node's runtime is a host process or a container (the descriptor census reads a container's init,
+    // the node, from the host's /proc).
+    let runtimes = |v: Value| v["processes"].as_array().map(Vec::len).unwrap_or(0) + v["containers"].as_array().map(Vec::len).unwrap_or(0);
+    let base_procs = runtimes(provider_actions(&f.bound, &f.estate.root));
     assert_eq!(base_procs, f.shape.total(), "one runtime per node of the shape at the baseline");
     events.push(json!({"event": "baseline", "fd_census": base_census, "provider_processes": base_procs}));
 
@@ -5069,7 +5100,7 @@ async fn churn_run(cell: &str, shape: Shape) {
     // acknowledged cut, released, an inbound connection is accepted, and the source dials again.
     let mut rounds = Vec::new();
     for round in 0..3u32 {
-        let (cut, ack) = cut_between(&st.nodes, &src, &d1n, &fp);
+        let (cut, ack) = cut_between(&f, &st.nodes, &src, &d1n, &fp).await;
         f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack}));
         let under = orig_get(&f, &src, &d1n, &format!("churn-cut-{round}"));
         assert!(under.out["outcome"] == "Reply" && matches!(under.out["call_outcome"].as_str(), Some("Indeterminate" | "NotSent")), "a call on a cut connection is never a reply: {}", under.out);
@@ -5123,7 +5154,7 @@ async fn churn_run(cell: &str, shape: Shape) {
     let end_census = fd_census(src_pid);
     assert!(end_census["sockets"].as_u64() <= base_census["sockets"].as_u64(), "the source holds no more sockets than at the baseline: base {base_census} end {end_census}");
     assert!(end_census["fds"].as_u64() <= base_census["fds"].as_u64(), "the source holds no more descriptors than at the baseline: base {base_census} end {end_census}");
-    let end_procs = provider_actions(&f.bound, &f.estate.root)["processes"].as_array().map(Vec::len).unwrap_or(0);
+    let end_procs = runtimes(provider_actions(&f.bound, &f.estate.root));
     assert_eq!(end_procs, f.shape.total(), "the provider runs one runtime per node: the superseded births' runtimes are gone");
     events.push(json!({"event": "terminal", "pooled": pooled, "superseded": superseded, "fd_census_baseline": base_census, "fd_census_end": end_census, "provider_processes": end_procs}));
     inv.holds(
@@ -5204,7 +5235,6 @@ async fn partition_run(cell: &str, shape: Shape) {
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
-    assert_eq!(provider(), "process", "REFUSED: the A/B cut is the process provider's UDP drop; the container provider silences a mesh through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let everyone: Vec<String> = st.nodes.iter().map(|n| s(&n["name"])).collect();
@@ -5235,7 +5265,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     events.push(json!({"event": "healthy-control", "ledger_ops": control}));
 
     // C9: every UDP path between the meshes is dropped; no node is cut from a member of its own mesh.
-    let cut = Partition::start(&udp_ports(&st.nodes, &mesh1), &udp_ports(&st.nodes, &mesh2)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between the meshes: {why}"));
+    let cut = cut_sets(&f, &st.nodes, &mesh1, &mesh2).await;
     let cut_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "between": ["mesh1", "mesh2"], "acknowledged": true}));
     // Bounded hold: each admin has handed each peer-mesh admin to its backbone channel twice.
@@ -5416,7 +5446,6 @@ async fn control_run(cell: &str, shape: Shape) {
     let connections = converge_connections(&f, &mut inv).await;
     let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
-    assert_eq!(provider(), "process", "REFUSED: the per-node UDP cut is the process provider's; the container provider cuts through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
     let window = Duration::from_millis(window_ms);
     let fabric_view = fabric_now(&f.estate).await;
@@ -5450,9 +5479,15 @@ async fn control_run(cell: &str, shape: Shape) {
     let others: Vec<String> = everyone.iter().filter(|n| **n != vname).cloned().collect();
     // The observer is a gossip member too: the victim loses it as it loses every node, or gossip relays the
     // victim's words around the cut through it and no coverage ever goes stale.
-    let mut others_ports = udp_ports(&st.nodes, &others);
-    others_ports.push(observer.udp_port());
-    let cut = Partition::start(&udp_ports(&st.nodes, &[vname.clone()]), &others_ports).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}"));
+    // On the container provider the observer runs on the host, so the victim is silenced against every
+    // container and the host.
+    let cut = if provider() == "container" {
+        Cut::Container(container_faults::silence(&f.estate, &[vname.clone()], &st.fp_name()).await.unwrap_or_else(|why| panic!("the container provider cannot silence {vname}: {why}")))
+    } else {
+        let mut others_ports = udp_ports(&st.nodes, &others);
+        others_ports.push(observer.udp_port());
+        Cut::Process { _partition: Partition::start(&udp_ports(&st.nodes, &[vname.clone()]), &others_ports).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop the victim's traffic: {why}")) }
+    };
     let cut_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "node": vname, "acknowledged": true}));
     let stale = wait_for("the victim's coverage is stale and re-fed", window * 4 + Duration::from_secs(40), || async {
@@ -6541,7 +6576,7 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&control));
     await_direct(&f.estate, &gw, &pname, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == primary["incarnation_id"]).await;
     let attempt0 = build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64().unwrap();
-    let (cut_a, ack_a) = cut_between(&st.nodes, &gw, &pname, &fp);
+    let (cut_a, ack_a) = cut_between(&f, &st.nodes, &gw, &pname, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack_a}));
     let t_cut_a = now_ns();
     let lost = probe_call(&f.estate, &["dial", "--target", &format!("path:{gw}"), "--destination", &format!("path:{pname}"), "--key", "x"]);
@@ -6610,7 +6645,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     assert_eq!((healthy.out["route"].as_str(), healthy.out["carrier"].as_str(), healthy.out["call_outcome"].as_str()), (Some("via-peer"), Some(car.as_str()), Some("reply")), "the healthy control is carried: {}", healthy.out);
     // The cut covers the carrier and the destination, which have never been connected: the carrier's own dial
     // finds no path and writes its Failed fact, the carrier's edge to the destination is not Active.
-    let (cut_b, ack_b) = cut_between(&st.nodes, &car, &dst, &fp);
+    let (cut_b, ack_b) = cut_between(&f, &st.nodes, &car, &dst, &fp).await;
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop", "ack": ack_b}));
     let t_cut_b = now_ns();
     let probe_edge = probe_call(&f.estate, &["dial", "--target", &format!("path:{car}"), "--destination", &format!("path:{dst}"), "--key", "x"]);

@@ -211,6 +211,9 @@ pub struct Silenced {
     pub members: Vec<Member>,
     /// The containers the members no longer hear.
     pub unheard: Vec<Member>,
+    /// Whether the members also drop all UDP to and from the host ([`silence`]); a [`cut`] leaves the
+    /// host reaching both sides.
+    pub host_cut: bool,
     #[serde(skip)]
     tools: std::sync::Arc<std::collections::BTreeMap<String, std::sync::Mutex<NamespaceTool>>>,
 }
@@ -239,7 +242,30 @@ pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fa
     for (n, id) in estate.live_containers().into_iter().filter(|(n, _)| !nodes.contains(n)) {
         unheard.push(Member { node: n, ip: address_of(estate, &id)?, id });
     }
-    let mut silenced = Silenced { network: network_of(estate), gateway, members, unheard, tools: Default::default() };
+    with_tools(Silenced { network: network_of(estate), gateway, members, unheard, host_cut: true, tools: Default::default() })
+}
+
+/// Cut the containers of `a` from the containers of `b`: in each container of `a`, every packet to and
+/// from each container of `b` is dropped. The host and every other container still reach both sides,
+/// as the process provider's UDP drop between two port sets does. Installed before it returns;
+/// [`Silenced::lift`] ends it. A node that runs in no container of the fabric is refused by name.
+pub async fn cut(estate: &impl ContainerEstate, a: &[String], b: &[String]) -> Result<Silenced, String> {
+    let gateway = gateway_of(estate)?;
+    let mut sides = [Vec::new(), Vec::new()];
+    for (side, nodes) in sides.iter_mut().zip([a, b]) {
+        for n in nodes {
+            let id = estate.container_of(n).await.ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
+            side.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
+        }
+    }
+    let [members, unheard] = sides;
+    let cut = with_tools(Silenced { network: network_of(estate), gateway, members, unheard, host_cut: false, tools: Default::default() })?;
+    cut.install()?;
+    Ok(cut)
+}
+
+/// One namespace tool per member, each opened with the set's install and lift rules.
+fn with_tools(mut silenced: Silenced) -> Result<Silenced, String> {
     let install = silenced.install_rules();
     let lift = lift_rules();
     let tools: Result<std::collections::BTreeMap<_, _>, String> = on_members(&silenced.members, |m| {
@@ -292,7 +318,9 @@ impl Silenced {
         for u in &self.unheard {
             r += &format!("-A {SILENCE_CHAIN} -s {ip} -j DROP\n-A {SILENCE_CHAIN} -d {ip} -j DROP\n", ip = u.ip);
         }
-        r += &format!("-A {SILENCE_CHAIN} -s {gw} -p udp -j DROP\n-A {SILENCE_CHAIN} -d {gw} -p udp -j DROP\n", gw = self.gateway);
+        if self.host_cut {
+            r += &format!("-A {SILENCE_CHAIN} -s {gw} -p udp -j DROP\n-A {SILENCE_CHAIN} -d {gw} -p udp -j DROP\n", gw = self.gateway);
+        }
         r += &format!("-I INPUT 1 -j {SILENCE_CHAIN}\n-I OUTPUT 1 -j {SILENCE_CHAIN}\nCOMMIT\n");
         r
     }
