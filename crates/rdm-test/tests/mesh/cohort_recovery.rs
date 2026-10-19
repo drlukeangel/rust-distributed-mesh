@@ -69,6 +69,8 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
     let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
+    // The cohort is lost from a running fabric: the fault falls after its first ready-for-traffic.
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     // The lost mesh: the one whose admins do not hold the fabric seat.
     let fabric_holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
