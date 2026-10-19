@@ -788,6 +788,118 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
     eprintln!("span rdm.node_admin.build.update.via-dispatch {}", dispatches[0]);
 }
 
+/// A Build log read by a reconcile tick that took its current-Build read before the Build's latest
+/// verdict landed: `current_build` answers the pointer as read then, and every other read is the log
+/// as it is now.
+struct ReadBeforeTheVerdict {
+    inner: Arc<dyn BuildStateAdapter>,
+    current: rdm_admin::build_state::CurrentBuild,
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for ReadBeforeTheVerdict {
+    async fn publish_accepted(&self, a: &rdm_admin::build_state::BuildAccepted) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.publish_accepted(a).await
+    }
+    async fn open_attempt(&self, o: &rdm_admin::build_state::AttemptOpened) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.open_attempt(o).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<rdm_admin::build_state::BuildProjection, rdm_admin::build_state::BuildStateError> {
+        self.inner.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<rdm_admin::build_state::CurrentBuild, rdm_admin::build_state::BuildStateError> {
+        Ok(self.current.clone())
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rdm_admin::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn list_active(&self) -> Result<Vec<rdm_admin::build_state::BuildProjection>, rdm_admin::build_state::BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<rdm_admin::build_state::ClaimOutcome, rdm_admin::build_state::BuildStateError> {
+        self.inner.claim_attempt(c).await
+    }
+    async fn adopt_claim(&self, c: &rdm_admin::build_state::BuildAttemptClaim) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.adopt_claim(c).await
+    }
+    async fn append_step_receipt(&self, r: &rdm_admin::build_state::BuildStepReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.append_step_receipt(r).await
+    }
+    async fn append_attempt_receipt(&self, r: &rdm_admin::build_state::BuildAttemptReceipt) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.append_attempt_receipt(r).await
+    }
+    async fn facts(&self) -> Result<Vec<rdm_admin::build_state::BuildFact>, rdm_admin::build_state::BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, rdm_admin::build_state::BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rdm_admin::build_state::BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn terminate_failures_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Vec<rdm_admin::build_state::FailedTerminate>, rdm_admin::build_state::BuildStateError> {
+        self.inner.terminate_failures_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<rdm_admin::build_state::OwedExit>, rdm_admin::build_state::BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+    async fn forget(&self, id: &BuildId) -> Result<(), rdm_admin::build_state::BuildStateError> {
+        self.inner.forget(id).await
+    }
+}
+
+/// CONTRACT (R-BI3, i143-rulings-2026-10-12-rx-authz.md: "A failed Build is never current, and nothing
+/// resumes it on its own; a caller resubmits it"): the reconcile loop's tick (`ensure_active`) reads the
+/// current Build's id, then the Build. When the Build's attempt failed between the two reads (a
+/// restart whose stop was never admitted), the Build it read is Failed and the tick drives nothing:
+/// it makes no drive and returns none, so no next attempt is claimed, and it says so on
+/// `rdm.node_admin.build.reject.via-not-in-progress-when-read` naming the Build, its attempt and its
+/// state. Must NOT happen: a drive of the failed Build's next attempt from the tick (the land gate on
+/// 7b2310bb, node_restart.rs:212: attempt 3 claimed 2 ms after attempt 2 failed, by a drive with no
+/// parent span, the reconcile loop's).
+#[test]
+fn a_reconcile_tick_whose_build_failed_between_its_reads_drives_and_claims_nothing() {
+    use rdm_admin::build_state::{AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildState, CurrentBuild};
+    let cap = capture();
+    let (b0, read, ensured, held, claims) = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let door = door(&rig, Duration::from_secs(30)).await;
+        let b0 = rig.builds.current_build().await.unwrap().into_build_id().unwrap();
+        let claim = |attempt: u32| BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() };
+        rig.builds.claim_attempt(&claim(1)).await.unwrap();
+        rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+        // A restart reopens the completed Build; its attempt is claimed and running.
+        rig.builds.open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1, mesh: None }).await.unwrap();
+        rig.builds.claim_attempt(&claim(2)).await.unwrap();
+        // The tick's current-Build read, taken now; the attempt's verdict lands before its Build read.
+        let before = rig.builds.current_build().await.unwrap();
+        assert_eq!(before, CurrentBuild::InProgress(b0.clone()), "the restart's attempt is in progress when the tick reads the current Build");
+        rig.builds
+            .append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "mesh1.rpc.2: stop-node was not admitted".into(), code: rdm_core::outcome::Code::DeadlineExceeded } })
+            .await
+            .unwrap();
+        let read = rig.builds.read_build(&b0).await.unwrap();
+        let e = &door.env;
+        let env = Arc::new(DriveEnv { me: e.me.clone(), topology: e.topology.clone(), builds: Arc::new(ReadBeforeTheVerdict { inner: rig.builds.clone(), current: before }), door: e.door.clone(), dispatcher: e.dispatcher.clone(), gate: e.gate.clone(), departure: e.departure.clone(), verdicts: e.verdicts.clone(), turns: e.turns.clone() });
+        let drives = Arc::new(Drives::default());
+        let ensured = rdm_admin::build_op::ensure_active(&drives, &env).await.len();
+        let held = drives.get(&b0).is_some();
+        let claims: Vec<u32> = rig.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+            BuildFact::Claim(c) if c.build_id == b0 => Some(c.attempt),
+            _ => None,
+        }).collect();
+        assert_eq!((read.state, read.attempt), (BuildState::Failed, 2), "the tick's Build read is the failed attempt: {read:?}");
+        (b0, read, ensured, held, claims)
+    });
+    assert_eq!(ensured, 0, "the tick drives nothing of the Build it read failed ({:?} at attempt {})", read.state, read.attempt);
+    assert!(!held, "no drive of {b0} is made");
+    assert_eq!(claims, vec![1, 2], "no attempt after the failed one is claimed");
+    let spans = cap.spans();
+    let told = spans_named(&spans, "rdm.node_admin.build.reject.via-not-in-progress-when-read");
+    assert!(told.iter().any(|s| s["attributes"]["build_id"] == b0.log().to_string().as_str() && s["attributes"]["attempt"] == "2" && s["attributes"]["state"] == "Failed"), "the tick names the Build it read failed: {told:?}");
+    eprintln!("span rdm.node_admin.build.reject.via-not-in-progress-when-read {}", told[0]);
+}
+
 /// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
 /// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
 /// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and
