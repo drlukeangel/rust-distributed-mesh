@@ -2655,6 +2655,13 @@ async fn a_refused_terminate_is_found_by_the_tick_and_a_successor_after_a_later_
     let held = rt.hang().expect("the exact runtime is hung");
     let refused = failed_terminate(&estate, &fp, &build, &mesh, &node).await;
 
+    // The birth Build's attempt ends on its refused terminate before a later Build is asked for: the
+    // fabric takes one Build at a time, and the Failed receipt can land before the attempt has ended.
+    build_log::build_fact(&estate.carrier_at(&fp).await, &build, &format!("{build}'s attempt ended on the refused terminate"), SETTLE, |p| {
+        serde_json::to_value(p).ok().is_some_and(|v| v["state"] == "failed" || v["state"] == "complete")
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"));
     // A later Build is accepted for the fabric and becomes current.
     let grown = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2), ("mesh2", 2, 2)]).await;
     let later = grown.build_id.to_string();
