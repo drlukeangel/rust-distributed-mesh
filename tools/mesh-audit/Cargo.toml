@@ -30,6 +30,10 @@ path = "src/bin/dep_rules.rs"
 name = "address-lookup"
 path = "src/bin/address_lookup.rs"
 
+[[bin]]
+name = "export-manifest"
+path = "src/bin/export_manifest.rs"
+
 
 [[test]]
 name = "main"

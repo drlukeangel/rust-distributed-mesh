@@ -2808,7 +2808,7 @@ R-D1 drive landed bd201c0c; R14 shared store landed fbcb087b (absorbed s43); lan
 
 ### State
 
-The parity scan has run before (a ledger row per boundary commit, no MIRROR pending). The open e12 builder blocks land first.
+The parity scan has run before (a ledger row per boundary commit, no MIRROR pending). The open e12 builder blocks land first. The export certifier is built (2026-10-19, lane e6s4; its RED first in this landing): `tools/mesh-audit/src/export.rs` and its binary `export-manifest` certify one 40-hex candidate only when `parity::scan` is eligible and every owner's job receipt (each job of the acceptance registry's `jobs` and `rshape_jobs`; the receipt `scripts/i143-acceptance-gate.sh` writes) is `ok` at that SHA, written with no uncommitted path, with every recorded artifact still hashing; each failure is refused by name (`parity-mirror-pending`, `parity-unclassified`, `receipt-missing`, `receipt-not-ok`, `receipt-at-another-sha`, `receipt-dirty`, `artifact-changed`, `artifact-missing`, `candidate-not-a-sha`). Its cells `export_manifest_rejects_pending_or_unclassified_parity` and `export_manifest_certifies_one_candidate_with_all_owner_receipts` (`tools/mesh-audit/tests/export_certifier.rs`) are job `i143-2790-export` (layer export). Run in the lane against main's registry and ledger it names 77 owners, parity clean, every receipt missing.
 
 ### Remaining
 
