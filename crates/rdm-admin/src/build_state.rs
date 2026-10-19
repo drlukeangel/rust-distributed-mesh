@@ -3261,6 +3261,68 @@ mod tests {
         assert_eq!(read.attempts_converged, [(rdm_core::fixture_crockford60("b1"), 3)].into(), "the converged attempts are named by Build and attempt");
     }
 
+    /// CONTRACT (gossip.md:276: NodeRestarting stays until node.started of the same `(node.id,
+    /// incarnation)`): a later attempt of the same Build that reuses a restart's `NodeRestarting`
+    /// step (its pipeline re-runs the operation and writes no new pre-event receipt) and completes
+    /// the restart, or converges carrying it, ends the hold stamped with the reused step's attempt.
+    /// Its completion is recorded under the operation's own stamped attempt, so every reader's
+    /// `(build, attempt, operation)` lookup closes it. Release run at d829b383 (R3 of
+    /// `mock_recovery_retains_build_and_advances_attempt`): attempt 5 wrote `NodeRestarting` for
+    /// `node.restart:mesh2.broker.2`, its executor died, attempt 6 reused the step and completed the
+    /// restart, and an admin born after its node.started held it open for good.
+    #[test]
+    fn a_restart_reused_and_ended_by_a_later_attempt_is_completed_under_its_own_attempt() {
+        let restart = |node: &str, attempt: u32| rdm_core::LifecycleOp {
+            build_id: rdm_core::fixture_crockford60("b1"),
+            attempt,
+            operation: format!("node.restart:{node}"),
+            node_id: rdm_core::NodeId::mint(),
+            incarnation: rdm_core::IncarnationId::mint(),
+            name: node.parse().unwrap(),
+            event_at_rafka_ms: 1,
+        };
+        let step = |op: &rdm_core::LifecycleOp, attempt: u32, step: &str| {
+            BuildFact::Step(BuildStepReceipt {
+                mesh: None,
+                build_id: BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(),
+                attempt,
+                operation: op.operation.clone(),
+                step: step.into(),
+                outcome: StepOutcome::Complete,
+                output: (step == "NodeRestarting").then(|| serde_json::to_value(op).unwrap()),
+                executor: None,
+            })
+        };
+        let key = |op: &rdm_core::LifecycleOp| (rdm_core::fixture_crockford60("b1"), op.attempt, op.operation.clone());
+
+        // Attempt 5 writes the pre-event; attempt 6 reuses it and runs the rest to Complete.
+        let completed = restart("mesh2.broker.2", 5);
+        let mut facts = vec![BuildFact::Accepted(intent("b1")), step(&completed, 5, "NodeRestarting")];
+        assert_eq!(in_flight_ops(&facts, &fold(&facts)).ops, vec![completed.clone()], "attempt 5's pre-event opens the restart");
+        for s in ["StopNode", "AwaitNodeLeft", "StartNode", "Complete"] {
+            facts.push(step(&completed, 6, s));
+        }
+        let read = in_flight_ops(&facts, &fold(&facts));
+        assert!(read.restarts_completed.contains(&key(&completed)), "attempt 6's Complete of the reused restart is recorded under its own attempt 5: {:?}", read.restarts_completed);
+        assert!(read.ops.is_empty(), "the reused restart is no longer in flight: {:?}", read.ops);
+
+        // Attempt 6 converging while it carried the reused operation ends it the same way.
+        let converged = restart("mesh2.broker.3", 5);
+        let mut facts = vec![BuildFact::Accepted(intent("b1")), step(&converged, 5, "NodeRestarting"), step(&converged, 6, "StopNode")];
+        facts.push(BuildFact::Attempt(attempt("b1", 6, AttemptOutcome::Converged)));
+        let read = in_flight_ops(&facts, &fold(&facts));
+        assert!(read.restarts_completed.contains(&key(&converged)), "attempt 6 converged carrying the reused restart: {:?}", read.restarts_completed);
+        assert!(read.ops.is_empty());
+
+        // A later attempt that never carried the operation ends nothing of it.
+        let untouched = restart("mesh2.broker.4", 5);
+        let mut facts = vec![BuildFact::Accepted(intent("b1")), step(&untouched, 5, "NodeRestarting")];
+        facts.push(BuildFact::Attempt(attempt("b1", 6, AttemptOutcome::Converged)));
+        let read = in_flight_ops(&facts, &fold(&facts));
+        assert_eq!(read.ops, vec![untouched.clone()], "attempt 6 never carried it");
+        assert!(!read.restarts_completed.contains(&key(&untouched)));
+    }
+
     /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row
     /// another build wrote, a field it renamed) is refused by name (build, attempt, operation, step,
     /// why) and opens no overlay; it is never skipped as if it carried nothing.
