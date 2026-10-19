@@ -65,9 +65,10 @@ fn named_loss(stderr: &str) -> Option<(usize, usize)> {
 /// CONTRACT: forty probe invocations (twenty direct, twenty carried through a gateway), each a real Get against a live proof-store node (the call
 /// dials, opens a stream, reads a reply), each leave their `via-probe` root span in their own span
 /// file, in one trace with the call's spans, or end their exit's evidence flush at its bound with the
-/// loss named whole (i146 Q42; Luke 2026-10-17: the bound is the contract, a named, bounded loss).
-/// What must NOT happen: a run whose file holds the call's spans and not their root with no loss
-/// named.
+/// loss named whole (i146 Q42; Luke 2026-10-17: the bound is the contract, a named, bounded loss);
+/// a flush that ended before its first export names that loss with no span file at all.
+/// What must NOT happen: a run whose file holds the call's spans and not their root, or a run that
+/// left no span file, with no loss named.
 #[test]
 fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
     let cap = crate::common::capture("forty_probe_runs_direct_and_carried_each_export_their_root_span");
@@ -150,9 +151,14 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             assert!(out.status.success(), "the probe exited abnormally: {}", context());
             let v: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap_or_else(|e| panic!("no JSON ({e}): {}", context()));
             assert_eq!(v["outcome"], "Reply", "the call reaches the live node: {v}; {}", context());
+            // The span file is opened by its first export, so a run whose exit flush ended at its
+            // bound before any export left no file: no spans, and its loss is read below.
             let fresh: Vec<_> = span_files(&evidence).into_iter().filter(|p| !before.contains(p)).collect();
-            assert_eq!(fresh.len(), 1, "one invocation leaves one span file; {}", context());
-            let spans = std::fs::read_to_string(&fresh[0]).unwrap_or_else(|e| panic!("the span file could not be read: {e}; {}", context()));
+            assert!(fresh.len() <= 1, "one invocation leaves at most one span file, its own; {}", context());
+            let spans = match fresh.first() {
+                Some(file) => std::fs::read_to_string(file).unwrap_or_else(|e| panic!("the span file could not be read: {e}; {}", context())),
+                None => String::new(),
+            };
             if !spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
                 let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
                 match named_loss(&String::from_utf8_lossy(&out.stderr)) {
@@ -166,7 +172,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         served.shutdown().await;
         let _ = std::fs::remove_dir_all(&evidence);
         let _ = std::fs::remove_dir_all(&data);
-        assert!(missing.is_empty(), "runs whose span file holds the call's spans and not their root, with no loss named: {missing:?}");
+        assert!(missing.is_empty(), "runs whose span file holds the call's spans and not their root, or that left no span file, with no loss named: {missing:?}");
     })
 }
 
