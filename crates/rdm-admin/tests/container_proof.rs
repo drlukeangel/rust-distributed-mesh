@@ -117,6 +117,29 @@ async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_la
     assert_eq!(fresh.find(&never).await.unwrap(), Found::NeverLaunched);
 }
 
+/// CONTRACT (Q79, node-replace.md: a replace re-births at the same path.name while its predecessor,
+/// renamed and stopped, still runs; container.rs: "each node owns one address on the fabric network
+/// (`--ip`)"): the address the container provider binds belongs to the birth that holds it. A new birth
+/// at a name whose earlier birth's container still runs is given an address no container on the network
+/// holds, and its container starts beside the earlier one. Must NOT happen: the new birth handed the
+/// earlier birth's address (docker run: "Address already in use", the rshape replace on 0a10139b).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_birth_at_a_name_whose_stopped_predecessor_still_runs_gets_its_own_address() {
+    let fabric = fabric_name("new-birth-address");
+    let Some(p) = provider(&fabric).await else { return };
+    let _cleanup = Fabric(fabric.clone());
+    let name = launch(&p, &fabric, 0).node;
+    let first_ip = p.bind_ip(&name).await.expect("an address for the first birth");
+    let first = ResolvedNodeLaunch { transport: SocketAddr::new(first_ip, 20000), ..launch(&p, &fabric, 0) };
+    let held = p.spawn(&first).await.expect("the first birth's container runs");
+    // The first birth is renamed and stopped: its container keeps running, and its address with it.
+    let second_ip = p.bind_ip(&name).await.expect("an address for the new birth");
+    let second = ResolvedNodeLaunch { node: name.clone(), transport: SocketAddr::new(second_ip, 20000), ..launch(&p, &fabric, 1) };
+    p.spawn(&second).await.unwrap_or_else(|e| panic!("the new birth at {name} starts on its own address ({second_ip}; the stopped birth holds {first_ip}): {e}"));
+    assert_ne!(second_ip, first_ip, "the new birth at {name} is given an address of its own");
+    assert_eq!(daemon_state(&container_id(&held)), "running", "the stopped predecessor still runs on its address");
+}
+
 /// CONTRACT (lifecycles/node-create.md step 1: "Record the exact deployment ... and launch its
 /// executable"; a record with no live runtime reads as exited): the launch's record is durable before
 /// the container is created, as the process provider's is before its executable runs. A launch whose
