@@ -2842,7 +2842,11 @@ The parity scan has run before (a ledger row per boundary commit, no MIRROR pend
 
 ### State
 
-Not started. No soak runs until the fast gate and the release suite are green on one SHA (Luke 2026-10-09). Chaos runs last. The three container estate cells (`i143-2777-container`, `i143-2784-chaos-container`, and `container_kill` in `container-proof`) are tied to `e12.s88` (`R14 item 6`: container provider store-root qualification and mount).
+Not started. No soak runs until the fast gate and the release suite are green on one SHA (Luke 2026-10-09). Chaos runs last.
+
+**The soak driver's proving runs (DevX box, seed 1432787; not the e11.s12 soak, which still waits for one green SHA).** Each red is a product defect, fixed RED first:
+- `z5dwdq96cky0` came back as an arrival at `mesh1.rpc.1` once the book forgot its departure (a non-executor admin's records outlived the delete): fixed `e6999467` (`Records::remove_deleted`, `rdm.node_admin.topology.remove.via-node-deleted`).
+- Full process run on `fd700d55` (wall 1048 s, red at 933 s, round 113, ledger clean: 3201 ops, 0 violations): `node.delete:mesh1.admin.2`'s TerminateRuntime refused "the provider cannot inspect its runtime after the stop ladder", because the leader's `/proc/<pid>/stat` start-token read answered `ESRCH` as the node exited (`returns-unknown.via-proc-unreadable`). Fixed `3c62e6ee` (RED `01ce7c78`): the start-token read maps `task_exited` to Gone, as the per-task reads have since `b0543a96` (deployment-provider.md §2.6). Evidence `/home/adsmin/rust-distributed-mesh-deploy/soak-fix/full3-1432787-cell` on the DevX box. The three container estate cells (`i143-2777-container`, `i143-2784-chaos-container`, and `container_kill` in `container-proof`) are tied to `e12.s88` (`R14 item 6`: container provider store-root qualification and mount).
 
 ### Remaining
 
