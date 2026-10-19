@@ -2153,6 +2153,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 for id in &report.returned {
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
+                                                    // The silence, held-running and os-stopped rows are written and removed by the
+                                                    // mesh-primary (node-identity-and-state.md): an admin that does not hold the
+                                                    // seat hears the return and clears only its own records.
+                                                    if !holds_seat {
+                                                        continue;
+                                                    }
                                                     write(id, None, &mut written).await;
                                                     if let Some(n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)) {
                                                         records.clear_held_running(n).await;
