@@ -28,10 +28,13 @@ def keep(log: Path, artifacts: Path, destination: Path, testkit: Path) -> None:
         return
     cells = list(dict.fromkeys(c for job in jobs for c in failed_cells(Path(str(log) + ".d") / (job + ".log"))))
     destination.mkdir(parents=True, exist_ok=True)
+    # A second run at the same SHA keeps its own snapshot beside the first: never overwritten.
     name = "gate-" + log.stem
+    run = 1
+    while (destination / name).exists():
+        run += 1
+        name = f"gate-{log.stem}-run{run}"
     shared = destination / name
-    if shared.exists():
-        raise ValueError(f"evidence snapshot {shared} already exists; never overwrite it")
     temporary = Path(tempfile.mkdtemp(prefix=name + ".tmp-", dir=destination))
     try:
         if artifacts.is_dir():
