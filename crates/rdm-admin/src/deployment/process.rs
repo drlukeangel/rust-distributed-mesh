@@ -385,10 +385,19 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
         }
     }
     cmd.args(&spec.args).envs(&spec.env).stdin(Stdio::null()).stdout(log("stdout.log")?).stderr(log("stderr.log")?);
+    // A session of its own (deployment-provider.md §2.5: the provider signals no runtime the operating
+    // system holds suspended outside a terminate). A member in a process group of its launcher's session
+    // is orphaned when that launcher dies, and the kernel sends SIGHUP then SIGCONT to an orphaned group
+    // that holds a stopped member: a suspended member would be woken and ended by its launcher's death.
+    // In its own session its group is never orphaned by that death, so the provider is the only one that
+    // signals it.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
+        // SAFETY: setsid(2) is async-signal-safe and touches no memory of the parent.
+        unsafe {
+            cmd.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        }
     }
     // The record names the launch and its pid, so a re-run can find it: durable before the executable
     // runs.
