@@ -367,6 +367,14 @@ impl FabricRounds {
         }
     }
 
+    /// Whether this step acts on nothing of `build`: the accepted topology is not the one the fabric
+    /// climbs under. Either [`Self::resized`] put the fabric back to pending, or the move waits until
+    /// the state it leaves went out, and until then no round of the new Build runs inside the old
+    /// one's climb (fabric-state-sync.md: the hook follows "all planned meshes ready").
+    fn topology_moved(&self, climb: &mut Climb, build: &crate::build_state::BuildProjection, me: &PathName) -> bool {
+        self.resized(climb, build, me) || climb.tracked.as_ref().is_some_and(|held| *held != build.topology)
+    }
+
     /// A Build this fabric-primary has just accepted (states.md, Resize and roll: "A resize or roll puts
     /// the fabric back to pending"): when the current Build's topology is not the one the fabric climbs
     /// under, the fabric is back to pending now, inside the acceptance and before its door answers, and
@@ -500,7 +508,7 @@ impl FabricRounds {
             Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build", &me),
             Err(e) => return self.block(climb, &[unreadable(&e)], "sync_state names the current Build", &me),
         };
-        if self.resized(climb, &build, &me) {
+        if self.topology_moved(climb, &build, &me) {
             return;
         }
         let parent = climb.root.clone().unwrap_or_else(tracing::Span::none);
@@ -582,7 +590,7 @@ impl FabricRounds {
             Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build", &me),
             Err(e) => return self.block(climb, &[unreadable(&e)], "commit-state names the current Build", &me),
         };
-        if self.resized(climb, &build, &me) {
+        if self.topology_moved(climb, &build, &me) {
             return;
         }
         match &climb.key {
