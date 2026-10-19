@@ -128,16 +128,17 @@ async fn gossip_node() -> GossipNode {
 }
 
 /// CONTRACT (gossip.md §3.3): a Day-0 node-admin (mesh1.admin.1, mesh1's primary) and mesh1.admin.2,
-/// launched by it, both ready. mesh1.admin.2 holds mesh1's projection from mesh1.admin.1's
-/// publications on mesh1's channel. A delta of mesh1 under mesh1.admin.1's epoch whose base is not the
-/// version mesh1.admin.2 holds reaches it on that channel (`via-version-gap`): mesh1.admin.2 marks the
-/// source desynchronized and tops up from its own Mesh's primary (`rdm.mesh.entry.update.via-top-up`,
-/// served by mesh1.admin.1). Afterwards it holds no desynchronized source and its topology serves
-/// mesh1 again. mesh1.admin.1 hears the same delta with no baseline of its own mesh on that channel; it
-/// is the Mesh's primary, so it has no primary to top up from and says so by name
-/// (`rdm.mesh.entry.reject.via-top-up`, `reason=this-node-is-the-mesh-primary`), dialing nobody. Must
-/// NOT happen: a node-admin holding a desynchronized source with no top-up (its topology door
-/// answering `unknown-mesh` for its own mesh), or a primary dialing itself for a top-up.
+/// launched by it, both ready. mesh1.admin.2 holds mesh1's projection from mesh1.admin.1's publications
+/// on mesh1's channel, and the Digest of the primary its seat record names. A delta of mesh1 under
+/// mesh1.admin.1's revision whose base is not the version mesh1.admin.2 holds reaches it on that channel
+/// (`via-version-gap`): mesh1.admin.2 marks the source desynchronized and tops up from its own Mesh's
+/// primary (`rdm.mesh.entry.update.via-top-up`, served by mesh1.admin.1). Afterwards it holds no
+/// desynchronized source and its topology serves mesh1 again. mesh1.admin.1 hears the same delta with no
+/// baseline of its own mesh on that channel; it is the Mesh's primary, so it has no primary to top up
+/// from and says so by name (`rdm.mesh.entry.reject.via-top-up`,
+/// `reason=this-node-is-the-mesh-primary`), dialing nobody. Must NOT happen: a node-admin holding a
+/// desynchronized source with no top-up (its topology door answering `unknown-mesh` for its own mesh),
+/// or a primary dialing itself for a top-up.
 #[test]
 fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
     let cell = "a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary";
@@ -167,6 +168,15 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         until_ready("mesh1.admin.2", || admin.digest.lock().unwrap().clone()).await;
         until("mesh1.admin.2 to hold mesh1's projection under the primary's epoch", WRONG, || admin.membership.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
         assert!(!admin.publishes_its_mesh(), "mesh1.admin.2 is not its mesh's primary");
+        // The top-up pulls from the birth the node's seat record names, through that birth's own
+        // Digest (gossip.md §3.1, §3.3): a gap signalled before the node holds it is one refused
+        // attempt, held for nothing, until the primary next speaks. A start whose topology read the
+        // primary answered before its first publication carries no snapshot of mesh1 (a mesh with
+        // no published snapshot is absent, node-rpc-envelope.md op 0x1E), so the cell waits for it.
+        until("mesh1.admin.2 to hold its own Mesh's primary, the birth its seat record names", WRONG, || {
+            admin.membership.mesh_primary().is_ok_and(|p| p.node.node_id == root_digest.node.node_id && p.node.incarnation == root_digest.node.incarnation)
+        })
+        .await;
 
         // The cell's own endpoint on mesh1's channel, through mesh1.admin.2. A neighbour coming up at the
         // primary hears the primary's full once (its neighbour replay): it is waited for, so no full of
