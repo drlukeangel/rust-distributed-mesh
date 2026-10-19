@@ -4,7 +4,7 @@
 //! then the backbone aggregate), §13, §17 "Restart Evidence".
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
-use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::estate::{named, wait_for, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha, Door};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -112,6 +112,36 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
                 })
                 .await;
         }
+    }
+    // The other mesh's primary holds the target mesh's aggregate past the restart frame's version, with nothing in
+    // flight, before the estate stops: the restart's end is a material change its mesh primary sends on the backbone
+    // at once, and anti-entropy sends it again every backbone interval (gossip.md §3.2). The ordinary nodes' fact
+    // above does not wait for it: the door withheld every aggregate carrying the restart, so they never held it in
+    // flight. Bounded by the staleness floor.
+    let frame_version: u64 = wait_for(&format!("{away_primary}'s NodeRestarting frame of {operation} is in its evidence"), Duration::from_secs(10), || {
+        let spans = spans_of(&estate, pids[&away_primary]);
+        let version = named(&spans, "rdm.mesh.membership.update.via-status-event")
+            .into_iter()
+            .find(|x| x["attributes"]["frame"] == "node-restarting" && x["attributes"]["operation"] == operation.as_str())
+            .and_then(|x| x["attributes"]["topology_version"].as_str().and_then(|v| v.parse().ok()));
+        async move { version }
+    })
+    .await;
+    {
+        let peers = estate.peers().await;
+        let views = estate.node_views().await;
+        let home_view = views.iter().find(|n| n.name.to_string() == home_primary).unwrap_or_else(|| panic!("node.get lists {home_primary}")).clone();
+        let carrier = peers.carrier_at(home_view.name.clone());
+        let rpc = rdm_client::NodeRpc::new(carrier.client());
+        let at = rdm_transport::NodeTarget::ExactNode(home_view.node_id.clone());
+        wait_for(&format!("{home_primary} holds {away}'s aggregate past v{frame_version} with nothing in flight"), rdm_transport::membership::staleness_floor(), || async {
+            let frames = rpc.topology_get(&at, Some(away.to_string()), None, &rdm_transport::CallOptions::default()).await.ok()?;
+            frames
+                .iter()
+                .any(|f| matches!(f, rdm_core::topology::TopologyReply::Snapshot { mesh, topology_version, in_flight, .. } if mesh.as_str() == away && *topology_version > frame_version && in_flight.is_empty()))
+                .then_some(())
+        })
+        .await;
     }
     door.release("aggregate-in-flight").await;
     estate.stop().await;
