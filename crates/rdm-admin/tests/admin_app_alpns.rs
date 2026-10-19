@@ -3,13 +3,11 @@
 //! ALPN the embedding registered at bind passes `node.connections.admit` before the app sees it,
 //! and a registration naming RDM's own Node RPC or gossip ALPN is refused at bind.
 
-use iroh::protocol::{AcceptError, ProtocolHandler};
 use rdm_admin::admin::{start_with, AdminConfig, Running};
 use rdm_admin::wiring::{FabricHooks, Wiring};
 use rdm_core::{IncarnationId, NodeId, NodeKind};
 use rdm_transport::connections::{Alpn, Birth, ConnectionsRegistry, MemoryConnectionsSink};
 use rdm_transport::{ResolvedNode, StaticResolver};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,20 +28,8 @@ fn app_alpn(name: &[u8]) -> Alpn {
     Alpn { name: name.to_vec(), forwardable: false, carriers: vec![NodeKind::RpcNode] }
 }
 
-/// The app's own handler for its protocol: it counts the connections it is handed.
-#[derive(Debug, Clone, Default)]
-struct AppHandler(Arc<AtomicUsize>);
-
-impl ProtocolHandler for AppHandler {
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        connection.closed().await;
-        Ok(())
-    }
-}
-
-fn wiring_with(alpn: &[u8], app: &AppHandler) -> Wiring {
-    Wiring { alpns: vec![(alpn.to_vec(), Box::new(app.clone()))], fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }
+fn wiring_with(alpn: &[u8]) -> Wiring {
+    Wiring { alpns: vec![app_alpn(alpn)], fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }
 }
 
 fn resolved_admin(running: &Running) -> ResolvedNode {
@@ -83,8 +69,8 @@ fn an_admins_app_alpn_dial_passes_admit() {
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("admin-app-alpn-{}", NodeId::mint()));
-        let app = AppHandler::default();
-        let running = start_with(day0_config(&dir), wiring_with(APP, &app)).await.expect("the Day-0 admin comes up");
+        let running = start_with(day0_config(&dir), wiring_with(APP)).await.expect("the Day-0 admin comes up");
+        let (_, mut app) = running.connections(APP).expect("the app takes its protocol's Connections from the admin").split();
         let admin = resolved_admin(&running);
         let floor = rdm_core::cadence::staleness_floor();
 
@@ -96,12 +82,15 @@ fn an_admins_app_alpn_dial_passes_admit() {
             _ => None,
         };
         assert_eq!(close, Some((412, "no-credential".to_string())), "a dial that presents nothing on the admin's app ALPN is refused at admission");
-        assert_eq!(app.0.load(Ordering::SeqCst), 0, "a refused connection never reaches the app");
+        assert!(tokio::time::timeout(Duration::from_millis(200), app.accept()).await.is_err(), "a refused connection never reaches the app");
 
         let (registry, router, _) = member_dialer(&admin).await;
         let (opener, _) = registry.connections(APP).unwrap().split();
+        let accepted = tokio::spawn(async move { app.accept().await });
         let opened = tokio::time::timeout(floor * 2, opener.open(&Birth { name: admin.name.clone(), node_id: admin.node_id.clone(), incarnation: admin.incarnation.clone() })).await;
-        assert!(matches!(opened, Ok(Ok(_))), "a member's dial is admitted: {opened:?}");
+        let Ok(Ok(conn)) = opened else { panic!("a member's dial is admitted: {opened:?}") };
+        let reached = tokio::time::timeout(floor, accepted).await.expect("the admitted connection reaches the app").unwrap();
+        assert_eq!(reached.map(|c| c.id().clone()), Some(conn.id().clone()), "the app accepts the member's admitted connection");
         let _ = router.shutdown().await;
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -118,7 +107,7 @@ fn binding_rdm_own_alpn_through_wiring_is_refused() {
     rt.block_on(async {
         for (own, named) in [(rdm_transport::ALPN, "Node RPC"), (iroh_gossip::ALPN, "gossip")] {
             let dir = std::env::temp_dir().join(format!("admin-own-alpn-{}", NodeId::mint()));
-            let started = start_with(day0_config(&dir), wiring_with(own, &AppHandler::default())).await;
+            let started = start_with(day0_config(&dir), wiring_with(own)).await;
             match started {
                 Err(e) => assert!(e.to_string().contains(&format!("RDM's own {named} ALPN")), "refused by name: {e}"),
                 Ok(running) => {

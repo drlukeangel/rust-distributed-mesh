@@ -167,8 +167,12 @@ impl FabricHooks {
 pub struct Wiring {
     /// The embedded app's own kinds, declared once for this admin birth.
     pub types: Vec<String>,
-    /// Additional app protocols served on this admin's owned endpoint.
-    pub alpns: Vec<(Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>)>,
+    /// The embedded app's own protocols on this admin's endpoint, registered like every node's
+    /// (`rdm_transport::connections::Alpn`): RDM owns their accept loop, every inbound connection on
+    /// one passes `node.connections.admit` before the app takes it from
+    /// [`crate::admin::Running::connections`], and a registration naming RDM's own Node RPC or gossip
+    /// ALPN refuses the admin's start by name (fabric-certs.md §On a connection).
+    pub alpns: Vec<rdm_transport::connections::Alpn>,
     /// The application hooks the fabric-primary calls. `sync_state` must be chosen.
     pub fabric_hooks: FabricHooks,
     /// The embedding's own action a node completes before it checks in to a commit-state or

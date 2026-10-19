@@ -57,9 +57,18 @@ pub struct Running {
     pub member_cert: Option<Vec<u8>>,
     /// This admin's status authority, once it holds a view.
     pub(crate) authority: crate::status_rpc::AuthoritySlot,
+    /// The app's protocols on this admin's endpoint ([`crate::wiring::Wiring::alpns`]).
+    pub(crate) data_connections: rdm_transport::connections::ConnectionsRegistry,
 }
 
 impl Running {
+    /// Take the one [`rdm_transport::connections::Connections`] handle for the app protocol `alpn`
+    /// registered at bind ([`crate::wiring::Wiring::alpns`]), as a node's app takes its own
+    /// (`RunningNode::connections`): `UnregisteredAlpn` for any other, `AlreadyTaken` on a second call.
+    pub fn connections(&self, alpn: &[u8]) -> std::result::Result<rdm_transport::connections::Connections, rdm_transport::connections::ConnectError> {
+        self.data_connections.connections(alpn)
+    }
+
     /// The birth this admin runs under: its digest's node, the birth its Node RPC door opens for.
     pub fn birth(&self) -> MeshNode {
         self.digest.lock().unwrap().node.clone()
@@ -227,6 +236,26 @@ pub(crate) fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book:
 pub async fn start(cfg: AdminConfig) -> Result<Running, String> {
     // `start` carries no hook and no wrapper, so it is an embedding with no application work in state-sync.
     start_with(cfg, crate::wiring::Wiring { fabric_hooks: crate::wiring::FabricHooks::no_app_work(), ..crate::wiring::Wiring::no_certs() }).await
+}
+
+/// The app's protocols ([`crate::wiring::Wiring::alpns`]) on this admin's endpoint, registered like
+/// every node's: a `ConnectionsRegistry` over the admin's connections log and live resolver, and each
+/// protocol's handler routed, so RDM owns its accept loop and `node.connections.admit` runs before
+/// the app sees a connection.
+fn route_app_alpns(
+    router: iroh::protocol::RouterBuilder,
+    endpoint: &iroh::Endpoint,
+    resolver: Arc<rdm_transport::LiveNodeResolver>,
+    connections: Arc<crate::connections_writer::ConnectionsWriter>,
+    alpns: &[rdm_transport::connections::Alpn],
+) -> Result<(iroh::protocol::RouterBuilder, rdm_transport::connections::ConnectionsRegistry), String> {
+    let (registry, handlers) = rdm_transport::connections::ConnectionsRegistry::new(endpoint.clone(), resolver, connections, alpns, Vec::new())
+        .map_err(|e| format!("an app protocol: {e}"))?;
+    let mut router = router;
+    for (alpn, handler) in handlers {
+        router = router.accept(alpn, handler);
+    }
+    Ok((router, registry))
 }
 
 /// [`start`], with the decorators and hooks of `wiring` applied to the parts the admin is built
@@ -479,8 +508,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
 
     // The mesh endpoint: gossip for membership and Build facts.
     // The transport is the one every node kind binds with (`rdm_transport::endpoint::transport_config`).
+    // The app's own protocols are registered Connections like every node's: one of RDM's own two
+    // ALPNs among them refuses the start by name (fabric-certs.md §On a connection).
+    rdm_transport::connections::validate_alpns(&wiring.alpns).map_err(|e| format!("{name}: an app protocol: {e}"))?;
     let mut alpns = vec![iroh_gossip::ALPN.to_vec(), rdm_transport::ALPN.to_vec()];
-    alpns.extend(wiring.alpns.iter().map(|(alpn, _)| alpn.clone()));
+    alpns.extend(wiring.alpns.iter().map(|alpn| alpn.name.clone()));
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-endpoint-bound", node = %name, requested = %mesh_addr, bound = tracing::field::Empty);
     let endpoint = rdm_transport::endpoint::bind_exact(key.clone(), mesh_addr, alpns.clone(), rdm_transport::endpoint::transport_config())
         .await
@@ -507,10 +539,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         Ok(n) => tracing::info!(node = %name, rows = n, "connections hydrated from storage"),
         Err(e) => return Err(format!("connections storage: {e}")),
     }
-    // An owed Proxy retirement whose write was refused is attempted again while owed
-    // (connections.md §10); a node-admin has no data plane, so no recovery dial. The task ends
-    // with the process.
-    let _reconciler = connections.spawn_reconciler(crate::connections_writer::RECONCILER_TICK, None);
     // The process's one live-node resolver: the client's and the server's (an accepted
     // connection's peer is named by it).
     let node_rpc_resolver = Arc::new(rdm_transport::LiveNodeResolver::default());
@@ -548,10 +576,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
         .seal(rdm_transport::ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .map_err(|e| format!("the admin's protocol catalog refused to seal: {e:?}"))?;
     let step = tracing::info_span!(parent: &boot, "rdm.mesh.node.add.via-alpn-registered", node = %name, alpns = "node-rpc,gossip");
-    let mut router_builder = IrohRouter::builder(endpoint.clone())
+    let router_builder = IrohRouter::builder(endpoint.clone())
         .accept(iroh_gossip::ALPN, gossip.clone())
         .accept(rdm_transport::ALPN, rpc_server.clone());
-    for (alpn, handler) in std::mem::take(&mut wiring.alpns) { router_builder = router_builder.accept(alpn, handler); }
+    // The app's protocols on this endpoint: RDM's accept loop and `node.connections.admit` for each,
+    // their rows in this admin's connections log. The member cert it presents is its join's.
+    let (router_builder, data_connections) = route_app_alpns(router_builder, &endpoint, node_rpc_resolver.clone(), connections.clone(), &wiring.alpns)
+        .map_err(|e| format!("{name}: {e}"))?;
+    // An owed Proxy close (connections.md §10) whose write was refused is attempted again while
+    // owed, and a Direct series on an app protocol is dialled again through the app's registry; an
+    // admin with no app protocol has no data plane and no recovery dial. The task ends with the
+    // process.
+    let _reconciler = if wiring.alpns.is_empty() {
+        connections.spawn_reconciler(crate::connections_writer::RECONCILER_TICK, None)
+    } else {
+        let dial = rdm_node::connection_reconnect::registry_recovery_dial(&data_connections, None);
+        rdm_node::connection_reconnect::spawn_alpn_reconciler(&connections, crate::connections_writer::RECONCILER_TICK, dial)
+    };
     let iroh_router = router_builder.spawn();
     drop(step);
     tracing::info_span!(parent: &boot, "rdm.mesh.node.create.via-accept-loop-started", node = %name).in_scope(|| tracing::info!("the router accepts node-rpc and gossip connections"));
@@ -664,6 +705,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                 // The member cert the launching admin's signer issued for this birth, carried by the join that
                 // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
                 let member_cert: Option<Vec<u8>> = joined.as_ref().map(|a| a.control.member_cert.clone());
+                if let Some(cert) = &member_cert {
+                    data_connections.set_member_cert(cert.clone());
+                }
                 // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
                 // once, here. A recovery start (a flag or an inherited root) takes it from the nodes it reaches below.
                 let mut sole_node_root = false;
@@ -2647,7 +2691,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             }
                                         }));
                                     }
-                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), before_ready_cancel, before_ready: before_ready_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone() });
+                                    *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), before_ready_cancel, before_ready: before_ready_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs"), authority: authority.clone(), data_connections: data_connections.clone() });
                                     Ok::<_, String>(())
                                 })
                             });
