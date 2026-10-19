@@ -657,6 +657,12 @@ impl NodeSelf {
         matches!(*self.cycle.lock().unwrap(), Cycle::Stopped(_) | Cycle::Starting { .. })
     }
 
+    /// Whether a stop of this birth has been admitted: under way, done, or followed by a start that
+    /// has not ended. Only a birth with no stop admitted runs node.stop's steps on its own signal.
+    pub fn stop_admitted(&self) -> bool {
+        !matches!(*self.cycle.lock().unwrap(), Cycle::Live(_))
+    }
+
     /// This surface, completing `actions` before it checks in to a round.
     pub fn with_round_actions(self, actions: Arc<dyn crate::rounds::RoundActions>) -> Self {
         self.set_round_actions(actions);

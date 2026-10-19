@@ -152,10 +152,10 @@ impl RunningNode {
         }
     }
 
-    /// The stop this process's own signal runs. A birth stopped by `stop-node` and not started again
-    /// ran its stop at the command and leaves stopped only through a start or a delete (node-stop.md
-    /// step 6): its signal runs no second stop, and its process ends as [`Self::stop_commanded`] ends
-    /// it. A live birth runs node-stop.md steps 2-4 as its own subject (i146 Q55,
+    /// The stop this process's own signal runs. A birth whose `stop-node` was admitted (under way,
+    /// done, or followed by a start not yet ended) runs its stop at the command and leaves stopped only
+    /// through a start or a delete (node-stop.md step 6): its signal runs no second stop, and its
+    /// process ends as [`Self::stop_commanded`] ends it, once every reply it owes is settled. A live birth runs node-stop.md steps 2-4 as its own subject (i146 Q55,
     /// [`crate::node_self::NodeSelf::stop_on_signal`]): the whole `node.connections.delete { All }`
     /// under the birth's bound, its connections-deleting owed to its mesh-primary; the leave step
     /// (its gossip neighbours left, its Node RPC pool cut, nothing published); its stopped state owed
@@ -163,7 +163,7 @@ impl RunningNode {
     /// `Router::shutdown` shuts every protocol it serves down, gossip included, once, and then closes
     /// the endpoint; the owed declarations end with the process (node-rpc.md §34).
     pub async fn stop(self) {
-        if self.own.is_parked() {
+        if self.own.stop_admitted() {
             return self.stop_commanded().await;
         }
         crate::taskdump::watched("stop", self.stop_inner()).await
