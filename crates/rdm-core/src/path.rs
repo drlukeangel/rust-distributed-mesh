@@ -264,15 +264,9 @@ mod tests {
         assert_eq!(serde_json::to_string(&old).unwrap(), "\"mesh1.rpc.2.old\"");
         assert_eq!("mesh1.rpc.2.older".parse::<PathName>(), Err(PathNameError::Suffix("mesh1.rpc.2.older".into())));
         assert_eq!("mesh1.rpc.2.old.old".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc.2.old.old".into())));
-        // A successor born beside it carries exactly one `.new` until it takes the name.
-        let new: PathName = "mesh1.rpc.2.new".parse().unwrap();
-        assert!(new.new && !new.old);
-        assert_eq!(new, "mesh1.rpc.2".parse::<PathName>().unwrap().successor());
-        assert_eq!(new.to_string(), "mesh1.rpc.2.new");
-        assert_eq!(new.base(), "mesh1.rpc.2".parse::<PathName>().unwrap());
-        assert_eq!(new.renamed().to_string(), "mesh1.rpc.2.old", "one suffix at most");
-        assert_eq!(old.successor().to_string(), "mesh1.rpc.2.new", "one suffix at most");
-        assert_eq!("mesh1.rpc.2.new.old".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc.2.new.old".into())));
+        assert_eq!(old.base(), "mesh1.rpc.2".parse::<PathName>().unwrap());
+        // A successor is created at the path its predecessor released: no other suffix exists.
+        assert_eq!("mesh1.rpc.2.new".parse::<PathName>(), Err(PathNameError::Suffix("mesh1.rpc.2.new".into())));
     }
 
     /// CONTRACT (proposal node-properties-own-commands.md §2.1 Entry: a rename carries the name only;
