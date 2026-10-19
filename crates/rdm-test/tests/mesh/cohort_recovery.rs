@@ -46,6 +46,24 @@ fn births(nodes: &[Value]) -> BTreeMap<String, String> {
     nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect()
 }
 
+/// The fabric seat handed over before any loss (Luke 2026-10-12, i143-prd.md e12.s57): a node.stop of
+/// the fabric-primary's admin `former`, whose first step moves its seats to its same-mesh successor
+/// (node-primary-update.md step 1). The move ends the caller's stream with the new seat, and the
+/// Build is followed there to its end: the former holder is down only once the stop completes, and
+/// the successor's view names it the fabric-primary. Returns the successor.
+async fn hand_fabric_seat_over(estate: &mut Estate, former: &str) -> String {
+    let mesh = former.split('.').next().unwrap();
+    let successor = format!("{mesh}.admin.{}", if former.ends_with(".1") { 2 } else { 1 });
+    estate.enter(&Estate::path(&successor)).await;
+    let mut stream = estate.nodes_obj().await.stop(&Estate::path(former)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {former}: {e}"));
+    let accepted = stream.accepted().clone();
+    if matches!(Estate::frames_of(&mut stream).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
+    estate.until_node(&successor, &format!("{successor} holds the fabric seat {former} handed over"), Duration::from_secs(60), |n| n.filter(|n| n.is_fabric_primary).map(|_| ())).await;
+    successor
+}
+
 /// CONTRACT (#2803 acceptance 2, 3, 10, 13, 14, 15, 16, 19; node-admin-lifecycle.md 4.1-4.3): a peer
 /// mesh loses its entire node-admin cohort (exact SIGKILL of both admin runtimes) and, while it has
 /// no admin, one ordinary member dies as well (`rpc.3`). The fabric primary's verdict on the lost
@@ -249,8 +267,10 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
 
 /// CONTRACT (#2803 acceptance 4, 5, 8, 9, 10; node-admin-lifecycle.md 3, 4.4): every node-admin of the
 /// fabric is lost at once (exact SIGKILL of all four admin runtimes) and, with no admin running,
-/// one ordinary member of the fabric primary's mesh dies as well. A person starts ONE node-admin on
-/// the former fabric primary's data dir with both primary flags. It is not Day 0: it comes back as
+/// one ordinary member of the fabric primary's mesh dies as well. Before the loss the fabric seat is
+/// handed over: node.stop of the fabric-primary's admin moves its seats to its same-mesh successor
+/// first and takes it down only once that transfer is confirmed. A person starts ONE node-admin on
+/// the current fabric primary's data dir with both primary flags. It is not Day 0: it comes back as
 /// the same node (same NodeId, a new incarnation) with no maker, takes its durable map as the
 /// topology, connects to a local node of its own mesh, sweeps its own mesh once with a Ping (the
 /// dead sibling and the dead member do not answer), and sends them to the standard decommission.
@@ -269,7 +289,8 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     // The fault falls on an established fabric: the person's admin restarts from the Fabric record the
     // fabric-primary writes at the state commit, so the fabric is ready-for-traffic first.
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let holder = hand_fabric_seat_over(&mut estate, &former).await;
     let holder_mesh = holder.split('.').next().unwrap().to_string();
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
     let mesh_ids: BTreeMap<String, String> = {
@@ -284,7 +305,8 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let old = births(&before);
     let old_ids: BTreeMap<String, String> = before.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
 
-    // The fault: every node-admin, at once; then, with the fabric admin-less, one ordinary member.
+    // The fault: every node-admin, at once, the stopped former holder's process with them; then, with
+    // the fabric admin-less, one ordinary member.
     let mut killed = Vec::new();
     for (path, pid) in estate.live_runtimes() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -304,7 +326,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     }
     assert_eq!(killed.len(), 5, "the member died with no admin running: {killed:?}");
 
-    // The person starts one node-admin on the former fabric primary's data dir.
+    // The person starts one node-admin on the current fabric primary's data dir.
     let restarted = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
     estate.enter(&restarted).await;
     let after = values(&estate.settles_to(&shape, Duration::from_secs(240)).await);
@@ -384,8 +406,9 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
 
 /// CONTRACT (node-identity-and-state.md 2.5: "a node-admin that holds the fabric seat and finds no
 /// live node in its durable map adopts its own clock"): every runtime of the fabric is lost at once,
-/// the admins and the ordinary members alike, so no node is left that holds rafka-time. A person
-/// starts ONE node-admin on the former fabric primary's data dir with both primary flags. Every node
+/// the admins and the ordinary members alike, so no node is left that holds rafka-time. Before the
+/// loss the fabric seat is handed over as the cell above hands it. A person starts ONE node-admin on
+/// the current fabric primary's data dir with both primary flags. Every node
 /// in its durable map is confirmed gone by the provider, so it adopts its own clock at once
 /// (`rdm.mesh.entry.update.via-rafka-time-adopted{source=own-clock, reason=nothing-alive}`) without
 /// entering a recovery-pull wait. The births the fabric then recreates adopt rafka-time from it.
@@ -398,7 +421,8 @@ async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
     estate.until_fabric_ready(Duration::from_secs(60)).await;
-    let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let former = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let holder = hand_fabric_seat_over(&mut estate, &former).await;
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
 
     // The fault: every runtime of the fabric, at once.
