@@ -749,14 +749,16 @@ async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_throu
 }
 
 // @feature: node-lifecycle
-/// CONTRACT (CLAUDE.md, commands go down: fabric-primary → mesh-primary → node; e3, decided by the lead
-/// 2026-10-19: "The fabric-primary sends UpdateIssuer to the mesh's primary only; the mesh-primary
-/// installs it, then forwards it to its other admins"; node-issuer-update.md): under a 45 s issuing
-/// TTL the fabric-primary (mesh1.admin.1) re-mints mesh2's issuer and sends `node.issuer.update` to
-/// mesh2's primary alone, whose install is sent by the fabric-primary; mesh2's primary then carries it
-/// to mesh2's other admin, whose install is sent by mesh2's primary. Each hop's receipt is spanned
-/// `via-renewal` `installed` for its receiver. Must NOT happen: the fabric-primary calling mesh2's
-/// secondary admin.
+/// CONTRACT (fabric-authority.md §1.1: "a command the fabric-primary originates for a mesh's node
+/// reaches it as a forwarded command through its mesh-primary"; node-issuer-update.md; Luke
+/// 2026-10-19): under a 45 s issuing TTL the fabric-primary (mesh1.admin.1) re-mints mesh2's issuer and
+/// sends `node.issuer.update` to mesh2's primary directly; once that receipt is held it sends the same
+/// update to mesh2's other admin as a Forward (0x1A) whose exact carrier is mesh2's primary and whose
+/// inner call is Status (0x1B) `UpdateIssuer`. The fabric-primary originates and records both: each hop's
+/// `via-renewal` names it as `sender` and the receiver `installed`. The secondary's install names mesh2's
+/// primary as its `sender` (the carrier); the forward and the carried inner call are in the trace of the
+/// fabric-primary's update to the secondary. Must NOT happen: an update originated by mesh2's primary
+/// alone, or the fabric-primary calling mesh2's secondary admin directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     use rdm_test::estate::{named, Estate};
@@ -766,8 +768,10 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
     let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh2.admin.1", "mesh2.admin.2"].into_iter().map(str::to_string).collect();
     let views = estate.settles_to_named(&names, Duration::from_secs(30)).await;
     let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2").collect();
-    let primary = mesh2_admins.iter().find(|v| v.is_primary).map(|v| v.name.to_string()).expect("mesh2 holds a primary");
-    let secondary = mesh2_admins.iter().find(|v| !v.is_primary).map(|v| v.name.to_string()).expect("mesh2 holds a secondary admin");
+    let primary = mesh2_admins.iter().find(|v| v.is_primary).cloned().expect("mesh2 holds a primary");
+    let secondary = mesh2_admins.iter().find(|v| !v.is_primary).cloned().expect("mesh2 holds a secondary admin");
+    let (primary_name, secondary_name) = (primary.name.to_string(), secondary.name.to_string());
+    let (primary_id, secondary_id) = (primary.node_id.to_string(), secondary.node_id.to_string());
 
     let rotated = estate_span(&estate, "rdm.fabric.issuer.update.via-renewal", "the fabric-primary re-mints mesh2's issuer", Duration::from_secs(90), |sp| attr(sp, "mesh") == "mesh2" && attr(sp, "outcome") == "minted").await;
     let expiry = attr(&rotated, "issuer_expires_at");
@@ -775,17 +779,26 @@ async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
         let expiry = expiry.clone();
         move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "sender") == sender && attr(sp, "issuer_expires_at") == expiry
     };
-    let received = |node: String| {
+    let received_from_the_fabric_primary = |node: String| {
         let expiry = expiry.clone();
-        move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "outcome") == "installed" && attr(sp, "issuer_expires_at") == expiry
+        move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "sender") == "mesh1.admin.1" && attr(sp, "outcome") == "installed" && attr(sp, "issuer_expires_at") == expiry
     };
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's primary installs the update the fabric-primary sent", Duration::from_secs(30), installed(primary.clone(), "mesh1.admin.1".into())).await;
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary's hop is received", Duration::from_secs(30), received(primary.clone())).await;
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's secondary installs the update its primary carried", Duration::from_secs(30), installed(secondary.clone(), primary.clone())).await;
-    estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "mesh2's primary's hop is received", Duration::from_secs(30), received(secondary.clone())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's primary installs the update the fabric-primary sent", Duration::from_secs(30), installed(primary_name.clone(), "mesh1.admin.1".into())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary records mesh2's primary's receipt", Duration::from_secs(30), received_from_the_fabric_primary(primary_name.clone())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's secondary installs the update its primary carried", Duration::from_secs(30), installed(secondary_name.clone(), primary_name.clone())).await;
+    let to_secondary = estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary records the secondary's receipt", Duration::from_secs(30), received_from_the_fabric_primary(secondary_name.clone())).await;
     let spans = estate.spans();
-    let direct: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().filter(|sp| attr(sp, "node") == secondary && attr(sp, "sender") == "mesh1.admin.1").collect();
-    assert!(direct.is_empty(), "the fabric-primary never calls mesh2's secondary admin: {direct:#?}");
+    let trace = to_secondary["trace_id"].as_str().unwrap_or_default().to_string();
+    let in_trace = |name: &str| -> Vec<serde_json::Value> { named(&spans, name).into_iter().filter(|sp| sp["trace_id"].as_str() == Some(trace.as_str())).cloned().collect() };
+    let forwards: Vec<_> = in_trace("rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr(sp, "op") == "26" && attr(sp, "target").contains(&primary_id)).collect();
+    assert!(!forwards.is_empty(), "the fabric-primary's update to the secondary is a Forward (0x1A) whose carrier is mesh2's primary {primary_id}: {:#?}", in_trace("rdm.node_rpc.request.update.via-call"));
+    let carried: Vec<_> = in_trace("rdm.node_rpc.request.serve.via-carried-inner").into_iter().filter(|sp| attr(sp, "inner_op") == "27" && attr(sp, "target") == secondary_id).collect();
+    assert!(!carried.is_empty(), "mesh2's primary carries the Status (0x1B) UpdateIssuer to the secondary {secondary_id}");
+    let alone: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") != "mesh1.admin.1").collect();
+    assert!(alone.is_empty(), "no update to the secondary is originated by anyone but the fabric-primary: {alone:#?}");
+    let direct: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().filter(|sp| attr(sp, "node") == secondary_name && attr(sp, "sender") == "mesh1.admin.1").collect();
+    assert!(direct.is_empty(), "the fabric-primary never calls mesh2's secondary admin directly: {direct:#?}");
+    estate.record_trace_url(&trace);
     let mut estate = estate;
     estate.stop().await;
 }
