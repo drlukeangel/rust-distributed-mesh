@@ -450,6 +450,10 @@ async fn start_booted(
         Vec::new(),
     )
     .map_err(|e| anyhow!("{e}"))?;
+    // node.connections.admit judges every dialer of the app's protocols on the root set the launch
+    // carries (`RDM_ROOTS`), held where node.roots.update replaces it, on this node's rafka-time; a
+    // launch with none (its launcher configured with no certs) admits by name.
+    data_connections.admit_on(launch.roots.clone(), rafka_time.clone());
     // The control plane: Node RPC is no connection (connections.md "Two planes, two words"), so its
     // dials and accepts write nothing to the connections log.
     // One delivery state for the process (node-rpc.md §43): its birth mints every frame's identity,

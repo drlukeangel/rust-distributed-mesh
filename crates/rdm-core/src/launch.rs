@@ -207,15 +207,23 @@ pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
 
 /// `roots` as `RDM_ROOTS` carries them: each public key as hex, comma-separated.
 pub fn encode_roots(roots: &[VerifyingKey]) -> String {
-    let _ = roots;
-    String::new()
+    roots.iter().map(|k| encode_hex(k.as_bytes())).collect::<Vec<_>>().join(",")
 }
 
 /// The root set `RDM_ROOTS` carries: absent or empty is none; each entry must be an ed25519 public
 /// key as hex, and a set is one root, or two during a root rotation. Anything else is refused by name.
 pub fn decode_roots(v: Option<&str>) -> Result<Vec<VerifyingKey>> {
-    let _ = v;
-    Ok(Vec::new())
+    let entries: Vec<&str> = v.unwrap_or_default().split(',').map(str::trim).filter(|e| !e.is_empty()).collect();
+    if entries.len() > 2 {
+        return Err(format!("{ENV_ROOTS} carries {} roots: a fabric trusts one root, or two during a root rotation", entries.len()));
+    }
+    entries
+        .into_iter()
+        .map(|e| {
+            let bytes: [u8; 32] = decode_hex("the entry", e).map_err(|err| format!("{ENV_ROOTS} entry `{e}` is not an ed25519 public key: {err}"))?.try_into().map_err(|b: Vec<u8>| format!("{ENV_ROOTS} entry `{e}` is not an ed25519 public key: it is {} bytes, not 32", b.len()))?;
+            VerifyingKey::from_bytes(&bytes).map_err(|err| format!("{ENV_ROOTS} entry `{e}` is not an ed25519 public key: {err}"))
+        })
+        .collect()
 }
 
 /// The issuing material `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` carry: both, or neither, with the
@@ -293,6 +301,9 @@ impl Launch {
             m.insert(ENV_ISSUING_CERT.into(), issuing.cert.clone());
             m.insert(ENV_CA_SECRET.into(), issuing.root.0.clone());
         }
+        if !self.roots.is_empty() {
+            m.insert(ENV_ROOTS.into(), encode_roots(&self.roots));
+        }
         m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
     }
@@ -316,7 +327,7 @@ impl Launch {
             store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
             issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT), get(ENV_CA_SECRET))?,
-            roots: Vec::new(),
+            roots: decode_roots(get(ENV_ROOTS).as_deref())?,
             connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         })
     }

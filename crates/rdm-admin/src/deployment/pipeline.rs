@@ -1663,7 +1663,7 @@ impl DeploymentPipeline<'_> {
             store_dir: self.template.store_dir.clone(),
             mesh_id: self.template.env.get(rdm_core::launch::ENV_MESH_ID).and_then(|v| rdm_core::MeshId::parse(v).ok()),
             issuing: self.template.issuing.clone(),
-            roots: Vec::new(),
+            roots: self.template.roots.current(),
             connections_delete_deadline: self.template.connections_delete_deadline,
         };
         // The launch environment; its TRACEPARENT is taken inside the

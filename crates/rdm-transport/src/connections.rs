@@ -569,7 +569,9 @@ impl ConnectionsRegistry {
     /// [`Self::roots`] hands to whoever replaces it at runtime. An empty set is a node started with no
     /// certs: it admits by name.
     pub fn admit_on(&self, roots: Vec<rdm_core::certs::VerifyingKey>, time: crate::clock::RafkaTime) {
-        let _ = (roots, time);
+        let admitter: Arc<dyn Admitter> = if roots.is_empty() { Arc::new(NoCertsAdmitter) } else { Arc::new(CertAdmitter::new(self.inner.roots.clone(), time)) };
+        self.inner.roots.replace(roots);
+        *self.inner.admitter.lock().unwrap() = admitter;
     }
 
     /// The root set this registry's admissions are judged on: the one holder `node.roots.update`

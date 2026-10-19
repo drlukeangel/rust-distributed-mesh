@@ -79,9 +79,26 @@ impl CertAdmitter {
 }
 
 impl Admitter for CertAdmitter {
-    fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
-        let _ = (&self.roots, &self.time);
-        Err(NO_CREDENTIAL.to_string())
+    fn verify(&self, _caller: &Birth, _alpn: &[u8], cert: &[u8]) -> Result<(u64, &'static str), String> {
+        let Ok(signed) = rdm_core::certs::cert_from_bytes(cert) else {
+            return Err(NO_CREDENTIAL.to_string());
+        };
+        let (now_ms, clock) = match self.time.try_now_ms() {
+            Some(ms) => (ms, "rafka-time"),
+            None => (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0), "local-bootstrap"),
+        };
+        let skew_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
+        // No root of the set verifies the issuing cert until one does; the root that does names any
+        // later check's failure (fabric-certs.md §chain, in order).
+        let mut refusal = rdm_core::certs::CertError::IssuerBadSignature;
+        for root in self.roots.current() {
+            match rdm_core::certs::verify(&signed, &root, now_ms, skew_ms) {
+                Ok(()) => return Ok((signed.cert.expiry_ms, clock)),
+                Err(rdm_core::certs::CertError::IssuerBadSignature) => {}
+                Err(e) => refusal = e,
+            }
+        }
+        Err(refusal.as_str().to_string())
     }
 }
 

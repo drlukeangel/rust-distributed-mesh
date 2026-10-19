@@ -583,6 +583,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // their rows in this admin's connections log. The member cert it presents is its join's.
     let (router_builder, data_connections) = route_app_alpns(router_builder, &endpoint, node_rpc_resolver.clone(), connections.clone(), &wiring.alpns)
         .map_err(|e| format!("{name}: {e}"))?;
+    // The fabric's root set this admin admits its app protocols' dialers on and writes into every
+    // launch it makes (`RDM_ROOTS`, fabric-ca-renew.md "Launch"): the set its own launch carried, else
+    // the root it holds; none when it was started with no certs, and then it admits by name.
+    let own_roots = cfg.launch.as_ref().map(|l| l.roots.clone()).filter(|r| !r.is_empty()).or_else(|| issuer.root().map(|r| vec![r])).unwrap_or_default();
+    data_connections.admit_on(own_roots, rafka_time.clone());
     // An owed Proxy close (connections.md §10) whose write was refused is attempted again while
     // owed, and a Direct series on an app protocol is dialled again through the app's registry; an
     // admin with no app protocol has no data plane and no recovery dial. The task ends with the
@@ -1175,7 +1180,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 data_root,
                                 store_dir: cfg.store_dir.clone(),
                                 issuing: None,
-                                roots: Default::default(),
+                                roots: data_connections.roots(),
                                 connections_delete_deadline: cfg.connections_delete_deadline,
                             };
                             let mut registry = HookRegistry::new();
