@@ -2817,23 +2817,29 @@ async fn recovery_run(cell: &str, shape: Shape) {
     // The Build's attempt history, from the fabric's own folded projection (a SIGKILLed executor's
     // spans are lost with it; its attempt is in the Build's facts) and from the survivors' spans.
     let observed: Vec<&Value> = a.build_obs.iter().filter(|o| o["build_id"] == b0.as_str()).collect();
-    let mut executors_by_attempt: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    // An attempt is one lane's, keyed (build_id, lane, attempt) as check_one_executor_per_attempt keys it: the
+    // fabric lane's (`lane` empty) or a mesh's drift lane, each numbered on its own (build.md §4.1, R-BI7),
+    // so attempt 1 of mesh2's lane is not attempt 1 of the fabric lane. The folded Build's own attempt and
+    // executor are the fabric lane's (BuildProjection::in_lane(None) is the Build itself). The dead
+    // executor's attempt is the fabric lane's: the restart it executed is an attempt of the accepted Build.
+    let fabric_lane = |n: u64| (b0.clone(), String::new(), n);
+    let mut executors_by_attempt: BTreeMap<(String, String, u64), BTreeSet<String>> = BTreeMap::new();
     for o in &observed {
         if let (Some(n), Some(e)) = (o["attempt"].as_u64(), o["executor"].as_str()) {
-            executors_by_attempt.entry(n).or_default().insert(e.to_string());
+            executors_by_attempt.entry(fabric_lane(n)).or_default().insert(e.to_string());
         }
     }
     // The survivors' own spans of the same Build: an attempt the polling did not catch is in them, and
     // an attempt both sources name must name the same admin.
     for c in claims.iter().filter(|c| c["build_id"] == b0.as_str() && matches!(c["outcome"].as_str(), Some("converged" | "failed" | "handed-off" | "interrupted"))) {
-        executors_by_attempt.entry(c["attempt"].as_u64().unwrap()).or_default().insert(s(&c["executor"]));
+        executors_by_attempt.entry((s(&c["build_id"]), s(&c["lane"]), c["attempt"].as_u64().unwrap())).or_default().insert(s(&c["executor"]));
     }
-    for (n, e) in &executors_by_attempt {
-        assert_eq!(e.len(), 1, "the fabric's folded Build shows attempt {n} of {b0} held by {e:?}");
+    for ((_, lane, n), e) in &executors_by_attempt {
+        assert_eq!(e.len(), 1, "the fabric's folded Build shows attempt {n} of {b0}'s lane {lane:?} held by {e:?}");
     }
-    let dead_attempt = executors_by_attempt.get(&killed_at_attempt).unwrap_or_else(|| panic!("the in-flight attempt {killed_at_attempt} was never observed"));
+    let dead_attempt = executors_by_attempt.get(&fabric_lane(killed_at_attempt)).unwrap_or_else(|| panic!("the in-flight attempt {killed_at_attempt} was never observed"));
     assert!(dead_attempt.contains(&executor_name), "attempt {killed_at_attempt} was held by {executor_name}");
-    let later: Vec<(u64, &BTreeSet<String>)> = executors_by_attempt.iter().filter(|(n, _)| **n > killed_at_attempt).map(|(n, e)| (*n, e)).collect();
+    let later: Vec<(u64, &BTreeSet<String>)> = executors_by_attempt.iter().filter(|((_, lane, n), _)| lane.is_empty() && *n > killed_at_attempt).map(|((_, _, n), e)| (*n, e)).collect();
     assert!(!later.is_empty(), "the Build advanced past the dead executor's attempt {killed_at_attempt}: {executors_by_attempt:?}");
     // The attempt right after the dead executor's is a surviving admin's. (A later attempt may be held
     // by the executor's path.name again: that is its re-born admin, a new birth.)
@@ -2841,8 +2847,11 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let kill_ns = kill["kill_ns"].as_u64().unwrap();
     let spans_after: Vec<&Value> = claims.iter().filter(|c| c["build_id"] == b0.as_str() && c["start_unix_nano"].as_u64().unwrap() > kill_ns).collect();
     assert!(!spans_after.is_empty(), "the surviving admins claimed further attempts of {b0} after the executor's death");
-    assert_eq!(spans_after[0]["attempt"].as_u64(), Some(later[0].0), "the first surviving claim is the attempt that follows the dead executor's: {spans_after:#?}");
-    assert_ne!(spans_after[0]["executor"], executor_name.as_str(), "the first claim after the death is a survivor's");
+    // The attempt that follows the dead executor's is its own lane's next: the fabric lane's.
+    let fabric_after: Vec<&&Value> = spans_after.iter().filter(|c| s(&c["lane"]).is_empty()).collect();
+    assert!(!fabric_after.is_empty(), "the surviving admins claimed further fabric-lane attempts of {b0} after the executor's death: {spans_after:#?}");
+    assert_eq!(fabric_after[0]["attempt"].as_u64(), Some(later[0].0), "the first surviving fabric-lane claim is the attempt that follows the dead executor's: {fabric_after:#?}");
+    assert_ne!(fabric_after[0]["executor"], executor_name.as_str(), "the first fabric-lane claim after the death is a survivor's");
     // The dead admin's path.name is re-born by the same Build: its mesh's surviving primary admin proves the exit and
     // runs its node recovery, its delete, create and update under b0 by a later attempt (mesh-recovery.md:8-9).
     let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
@@ -2850,13 +2859,25 @@ async fn recovery_run(cell: &str, shape: Shape) {
         .filter(|c| c["attributes"]["build_id"] == b0.as_str() && c["attributes"]["node"] == executor_name.as_str() && start_ns(c) > kill_ns)
         .collect();
     assert!(!creates.is_empty(), "{executor_name} was re-born by node.create.via-build under {b0}");
-    assert!(creates.iter().all(|c| u64::from(attempt_of(c)) > killed_at_attempt), "the re-birth is a later attempt than the dead executor's");
+    // A drift lane numbers its own attempts: a create in a mesh's lane is never the dead executor's attempt,
+    // and a fabric-lane create comes after it. A create's lane is its reconcile's, in its own trace.
+    let lane_of = |c: &Value| claims.iter().find(|r| r["trace_id"] == c["trace_id"] && r["attempt"].as_u64() == Some(u64::from(attempt_of(c)))).map(|r| s(&r["lane"]));
+    assert!(
+        creates.iter().all(|c| match lane_of(c) {
+            Some(lane) if lane.is_empty() => u64::from(attempt_of(c)) > killed_at_attempt,
+            Some(_) => true,
+            None => false,
+        }),
+        "the re-birth is a later attempt than the dead executor's, in its own lane: {:?}",
+        creates.iter().map(|c| (lane_of(c), attempt_of(c))).collect::<Vec<_>>()
+    );
     let rebirth_executors: BTreeSet<String> = spans_after.iter().filter(|c| s(&c["operations"]).split(',').any(|op| op == format!("node.create:{executor_name}"))).map(|c| s(&c["executor"])).collect();
     let survivor_name = s(&survivor["name"]);
     assert_eq!(rebirth_executors, BTreeSet::from([survivor_name.clone()]), "the dead admin's re-birth was planned and executed by its mesh's surviving primary admin {survivor_name} (the fabric-primary {fp_at_the_death} owns only a mesh that has none)");
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([b0.clone()]), "the only Build ever accepted is the formation Build");
-    let max_attempt = executors_by_attempt.keys().max().copied().unwrap();
+    let max_attempt = executors_by_attempt.keys().filter(|(_, lane, _)| lane.is_empty()).map(|(_, _, n)| *n).max().unwrap();
+    let executors_by_attempt: Vec<Value> = executors_by_attempt.iter().map(|((b, lane, n), e)| json!({"build_id": b, "lane": lane, "attempt": n, "executors": e})).collect();
     inv.holds(
         "recovery retained the accepted Build and advanced its attempt: the in-flight attempt belonged to the executor that died, every later attempt to a surviving or re-born admin, exactly one holder per attempt, the dead admin's path.name re-born by the fabric-primary under the same Build, and the only Build ever accepted is the formation Build",
         true,
