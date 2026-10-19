@@ -13,7 +13,7 @@ use iroh_gossip::{
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Instant,
@@ -98,6 +98,9 @@ struct State {
     ids: Arc<AtomicU64>,
     id_nonce: [u8; 32],
     finished: watch::Sender<bool>,
+    /// The channel's gossip neighbours as its receive loop last saw them: evidence for the publish
+    /// span only, never a condition on publishing.
+    neighbours: AtomicUsize,
     #[cfg(feature = "testkit-gossip")]
     chunk_cut: std::sync::atomic::AtomicUsize,
 }
@@ -166,7 +169,27 @@ impl State {
             .unwrap()
             .clone()
             .ok_or(ChannelError::Left)?;
+        // The publication as this birth handed it to its gossip, with the neighbours its receive loop
+        // last saw: an event handed over with none reaches no one (gossip is best-effort).
+        let span = tracing::info_span!(
+            "rdm.mesh.channel.update.via-publish",
+            event_type = %self.kind,
+            event_id = %context.id,
+            sequence = ?context.sequence,
+            bytes = full.len(),
+            neighbours = self.neighbours.load(Ordering::Acquire),
+            chunks = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        let sent = tracing::Instrument::instrument(self.broadcast_whole_or_chunks(&sender, &context, full), span.clone()).await;
+        span.record("outcome", if sent.is_ok() { "handed-to-gossip" } else { "refused" });
+        sent
+    }
+
+    /// `full` as one gossip message, or as its chunks when it does not fit one.
+    async fn broadcast_whole_or_chunks(&self, sender: &GossipSender, context: &Attributes, full: Vec<u8>) -> Result<(), ChannelError> {
         if full.len() <= MAX {
+            tracing::Span::current().record("chunks", 1u64);
             return sender
                 .broadcast(full.into())
                 .await
@@ -192,6 +215,7 @@ impl State {
             });
         }
         let n = full.len().div_ceil(lo);
+        tracing::Span::current().record("chunks", n as u64);
         for (i, bytes) in full.chunks(lo).enumerate() {
             chunk.id = format!("{}/{i}", context.id);
             let body =
@@ -528,6 +552,7 @@ impl Hub {
             ids: self.ids.clone(),
             id_nonce: self.id_nonce,
             finished: watch::channel(false).0,
+            neighbours: AtomicUsize::new(0),
             #[cfg(feature = "testkit-gossip")]
             chunk_cut: std::sync::atomic::AtomicUsize::new(usize::MAX),
         });
@@ -566,7 +591,13 @@ impl Hub {
                 };
                 seen.expire_until(Instant::now().into());
                 if let Some(Ok(GossipEvent::NeighborUp(peer))) = &item {
-                    tracing::info_span!("rdm.mesh.channel.update.via-neighbour", event_type = %state.kind, peer = %peer).in_scope(|| tracing::info!("application channel neighbour joined"));
+                    let neighbours = state.neighbours.fetch_add(1, Ordering::AcqRel) + 1;
+                    tracing::info_span!("rdm.mesh.channel.update.via-neighbour", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour joined"));
+                    continue;
+                }
+                if let Some(Ok(GossipEvent::NeighborDown(peer))) = &item {
+                    let neighbours = state.neighbours.fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| Some(n.saturating_sub(1))).map_or(0, |n| n.saturating_sub(1));
+                    tracing::info_span!("rdm.mesh.channel.update.via-neighbour-down", event_type = %state.kind, peer = %peer, neighbours).in_scope(|| tracing::info!("application channel neighbour left"));
                     continue;
                 }
                 let Some(Ok(GossipEvent::Received(message))) = item else {
@@ -816,6 +847,7 @@ mod tests {
                 ids: Arc::new(AtomicU64::new(1)),
                 id_nonce: [0; 32],
                 finished: watch::channel(false).0,
+                neighbours: AtomicUsize::new(0),
                 #[cfg(feature = "testkit-gossip")]
                 chunk_cut: std::sync::atomic::AtomicUsize::new(usize::MAX),
             };
