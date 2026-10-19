@@ -703,7 +703,8 @@ impl ControlPlane {
     /// topology operation's claimed attempt there, or the mesh's own drift attempt) answers
     /// `BuildInProgress` naming the Build, the mesh and its claimant; an attempt in another mesh
     /// refuses nothing. Then the mesh's in-flight row is taken on the store root before any fact is
-    /// written, the attempt is opened in the mesh's lane, and its claim is decided by this admin. The
+    /// written, the attempt is opened in the mesh's lane (the fabric lane for a hung mesh-primary, which the
+    /// fabric-primary recovers), and its claim is decided by this admin. The
     /// lane's attempt already opened with this very recovery and claimed by no one (its opener lost
     /// between its open and its claim) is claimed as it stands: never opened again, and nothing ends it.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
@@ -766,9 +767,15 @@ impl ControlPlane {
             // mesh's rows wins (R-BI7 caveat 3). The row names its claim's lane key (Q35), so it is
             // taken in the claim's own writer's turn; a row standing for another attempt that still
             // holds the mesh refuses here, before anything of this attempt is written.
-            let lane = Some(path.mesh.as_str());
+            // A hung mesh-primary is recovered by the fabric-primary from the fabric lane, as a lost
+            // mesh's node-admin is (node-recovery.md, "for a lost mesh's node-admin"; mesh-investigation.md):
+            // the mesh's lane is written by its seat holder (build.md, the Build journal's writers), and
+            // the hung holder keeps that seat until this attempt's exit proof (elections §4.3). The mesh's
+            // in-flight row still holds the mesh.
+            let lane = if hung_mesh_primary { None } else { Some(path.mesh.as_str()) };
             // The lane's attempt opened with this very recovery and claimed by no one is claimed as
             // it stands; otherwise the lane's next attempt is opened for it.
+            let open = open.filter(|_| lane.is_some());
             let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
             span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
             let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: me.to_string(), lane_key: None };

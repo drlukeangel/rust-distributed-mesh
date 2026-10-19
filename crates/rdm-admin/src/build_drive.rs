@@ -911,7 +911,8 @@ impl DriveEnv {
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
     /// included): it is the mesh's first recovering node-admin.
     fn recovery_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
-        self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node, crashed)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
+        hung_recovery_admits(p, op)
+            || self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node, crashed)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
     }
 
     /// The node.create of the node-admin a fully crashed mesh is owed (mesh-investigation.md step 5,
@@ -1606,6 +1607,21 @@ pub fn describe(r: &BuildReply) -> String {
         BuildReply::UnknownBuild { build_id } => format!("unknown-build ({build_id})"),
         BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::ConnectionsDeleting { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::Unauthorized { reason } => format!("{} ({reason})", r.name()),
         other => other.name().to_string(),
+    }
+}
+
+/// A hung mesh-primary's recovery (R-FM1; node-recovery.md: the fabric-primary holds and submits it, in
+/// the fabric lane): `op` is one of the attempt's own operations on the exact birth its `Recover`
+/// action names, the retire of that birth as a crashed target (`TerminateRuntime` on its exact runtime
+/// handle, then node.delete, nothing sent to it) or the create over it at the same path.name. They act
+/// on the provider's `Running` at the hold's expiry and on their own exit proof, never on silence, so
+/// R-D1's fence does not hold them; nothing else of the unheard mesh crosses it.
+fn hung_recovery_admits(p: &BuildProjection, op: &BuildOperation) -> bool {
+    let Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) = p.action.as_ref() else { return false };
+    let birth = |b: &crate::build::ExitedBirth| &b.node_id == node_id && &b.incarnation == from_incarnation;
+    match op {
+        BuildOperation::RetireNode { node, exited: Some(b) } | BuildOperation::CreateNode { node, over: Some(b) } => node == path && birth(b),
+        _ => false,
     }
 }
 

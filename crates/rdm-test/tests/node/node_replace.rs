@@ -1242,8 +1242,9 @@ async fn a_hung_member_held_past_the_hold_is_terminated_and_recovered() {
 /// before the proof): `mesh2` has two node-admins (`mesh2.admin.1` primary, `mesh2.admin.2` standby).
 /// `mesh2.admin.1` is hung (every task but the leader held by a tracer) with `RDM_HUNG_HOLD_FLOORS=2`. During the hold, `held_running` is
 /// surfaced on `node.get` and `mesh2.admin.2` does NOT take the seat. When the hold expires, the
-/// fabric-primary submits the recovery Build with `TerminateRuntime`, records `exit_proof`, R-EL1
-/// seats `mesh2.admin.2` on the exit proof, and `mesh2.admin.1` recovers as a new birth.
+/// fabric-primary submits the recovery Build with `TerminateRuntime` in the fabric lane, records
+/// `exit_proof`, R-EL1 seats `mesh2.admin.2` on the exit proof, and `mesh2.admin.1` recovers as a new
+/// birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_the_fabric_primary() {
     let (mut estate, birth_build) = born_at(
@@ -1282,12 +1283,14 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
     let attempt = s(&recovery["attributes"]["attempt"]);
     let fp_path = Estate::path(&fp);
     let b = build_log::build_value(&estate.carrier_at(&fp_path).await, &birth_build).await;
-    let steps = lane_steps(&b, "mesh2");
+    // The fabric-primary runs a hung mesh-primary's recovery in the fabric lane: mesh2's own lane is
+    // written by its seat holder, the hung birth, until this attempt's exit proof.
+    let steps = b["steps"].as_array().cloned().unwrap_or_default();
     let terminate = steps
         .iter()
         .find(|r| r["operation"] == format!("node.delete:{mp_name}") && r["step"] == "TerminateRuntime" && r["outcome"] == "complete")
         .cloned()
-        .unwrap_or_else(|| panic!("expected TerminateRuntime receipt in mesh2 lane steps: {steps:?}"));
+        .unwrap_or_else(|| panic!("expected TerminateRuntime receipt in the fabric lane's steps: {steps:?}"));
     let spans = estate.spans();
     let proof_span = named(&spans, "rdm.node_admin.node.delete.via-exit-proof")
         .into_iter()

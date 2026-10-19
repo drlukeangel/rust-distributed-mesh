@@ -773,18 +773,23 @@ pub async fn run_recovery(control: &crate::control_plane::ControlPlane, door: &R
     }
 }
 
-/// The run of the recovery attempt `opened`, which `control` opened and claimed in its mesh's lane
-/// ([`run_recovery`] after the open): planned from the lane's receipts, run through `door`, followed
-/// to its terminal, and the mesh's in-flight row released at the verdict.
+/// The run of the recovery attempt `opened`, which `control` opened and claimed in its mesh's lane, or
+/// in the fabric lane for a hung mesh-primary ([`run_recovery`] after the open): planned from the
+/// lane's receipts, run through `door`, followed to its terminal, and the mesh's in-flight row
+/// released at the verdict.
 pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, door: &RunDoor, opened: crate::control_plane::Opened) -> Result<Recovered, RecoveryNotRun> {
     let me = door.held_name().await;
     let lane = opened.mesh.as_deref();
-    let Some(mesh) = opened.mesh.clone() else {
-        return Err(RecoveryNotRun::Broke { why: format!("{me}: attempt {} of {} is a fabric-lane attempt: a recovery runs in its mesh's drift lane", opened.attempt, opened.build_id), opened });
-    };
     let p = match control.builds.read_build(&opened.build_id).await {
         Ok(p) => p.in_lane(lane),
-        Err(e) => return Err(RecoveryNotRun::Broke { why: format!("{me}: Build {} could not be read to plan attempt {} of mesh {mesh}'s lane: {e}; the attempt holds mesh {mesh}", opened.build_id, opened.attempt), opened }),
+        Err(e) => return Err(RecoveryNotRun::Broke { why: format!("{me}: Build {} could not be read to plan attempt {} of {}'s lane: {e}; the attempt holds its mesh", opened.build_id, opened.attempt, lane.unwrap_or("the fabric")), opened }),
+    };
+    // A drift attempt acts in its lane's mesh. A fabric-lane recovery is a hung mesh-primary's, which
+    // the fabric-primary recovers (R-FM1, node-recovery.md): it acts in the mesh of the birth its open names.
+    let mesh = match (&opened.mesh, p.attempt_actions.get(&opened.attempt)) {
+        (Some(mesh), _) => mesh.clone(),
+        (None, Some(crate::accepted::AttemptAction::Recover { path, .. })) => path.mesh.clone(),
+        (None, _) => return Err(RecoveryNotRun::Broke { why: format!("{me}: attempt {} of {} is a fabric-lane attempt that names no recovered birth: a recovery runs in its mesh's drift lane, or in the fabric lane for a hung mesh-primary", opened.attempt, opened.build_id), opened }),
     };
     let observed = control.topology.read().await.clone();
     let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
