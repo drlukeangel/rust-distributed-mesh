@@ -71,6 +71,7 @@ gossip.
 | `rdm.node_admin.cert.update.via-renewal` | the issuing authority | node, node_id, incarnation_id, issued_at, expires_at, previous_expires_at, outcome ∈ {`installed`, `not-sent`, `refused`} | e3 |
 | `rdm.node.cert.update.via-installed` | the node | node, node_id, incarnation_id, expires_at | e3 |
 | `rdm.fabric.issuer.update.via-renewal` | the fabric-primary | mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome | e3 |
+| `rdm.node_admin.issuer.update.via-renewal` | the fabric-primary, per admin | node, node_id, incarnation_id, mesh, issuer_expires_at, previous_issuer_expires_at, outcome | e3 |
 | `rdm.node_admin.issuer.update.via-installed` | the admin | node, mesh, issuer_expires_at | e3 |
 | `rdm.fabric.ca.update.via-renewal` | the fabric-primary | ca_expires_at, previous_ca_expires_at, meshes, outcome | e5 |
 | `rdm.fabric.root.update.via-caller` | the fabric-primary | phase, root_expires_at, previous_root_expires_at, nodes, outcome | e5 |
@@ -151,9 +152,16 @@ No new gossip frame and no new `MemberStatus`.
   `a_member_due_near_the_issuers_expiry_is_cut_to_it`;
   `two_admins_read_the_same_policy_from_the_entry_pull`;
   `a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get`. RED first.
-- **Page text.** None beyond the set.
+- **Page text.** Drafted 2026-10-19, to Luke with e3's landing, exact old → new:
+  - mesh-issuer-renew.md step 2: "[node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the mesh. An admin not reached is retried on the next tick until the old issuer expires." → "[node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the mesh as a command forwarded through the mesh-primary. An admin not reached is retried on the next tick until the old issuer expires."
+  - node-issuer-update.md, Caller: "The fabric-primary" → "The fabric-primary: to the mesh-primary directly, to every other node-admin of the mesh as a command forwarded through the mesh-primary"
+  - node-cert-renew.md, Caller: "The birth's issuing authority: its mesh-primary for a member, the fabric-primary for a mesh-primary" → "The birth's issuing authority: its mesh-primary for a member, the fabric-primary for a mesh-primary; the fabric-primary renews its own cert in-process with its mesh's issuing key, with no call (`via-renewal`, outcome `installed`)"
+  - node-cert-renew.md, Row: "The authority writes the birth's cert row before it sends (`issued_at`, `expires_at`, `renew_at`), and marks it `renewed` on the receipt" → "The authority puts the birth's cert row, keyed by the birth and `issued_at`, before it sends (`issued_at`, `expires_at`, `renew_at`), and puts the receipt row under the same key on the receipt; the newest issue and whether it has a receipt are the birth's renewal state"
 - **Sizing.** Two seats (member renewal + row + policy; issuer renewal + watch).
-- **State.** not started.
+- **State.** not started; starts when e1 lands. Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
+  Known gap, held: the policy has no durable row (`FabricIdentity` is `{ fabric_id, name }`, `model.rs:317`), and a recovered root admin with no maker reads its own env (`boot.rs:924`), as it does `MESH_SPAWN_TYPE`; nothing shows a recovery changing the TTLs.
+  Two cells assert admission and are green only once e2 lands: `a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admitted`, `an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_peer_holding_the_old`.
+  Page lines for e5's text: mesh-issuer-renew.md:20 ("the root rotated (a fabric re-birth)") against `fabric.root.update`; fabric-certs.md:28-31 and :50 against §Custody.
 
 #### e5 — the CA under the root: `fabric.ca.create`, `fabric.ca.renew`, `fabric.root.update`; every admin holds the root
 
