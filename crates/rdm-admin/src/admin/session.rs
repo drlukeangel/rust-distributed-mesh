@@ -53,10 +53,12 @@ pub(crate) fn refuse_contradictory_start(cfg: &AdminConfig, holds: Option<&str>)
 
 /// How a node-admin's own mesh's Pending holds its Ready (e4.s11; i143 export gate: normal
 /// joining admins never self-Ready; only the Day-0 root, which has no upstream authority, applies
-/// its own mesh's Pending).
+/// its own mesh's Pending). Pending belongs to mesh.create's first admin alone (states.md): an admin
+/// entering an existing mesh joins it, its cohort live or not (mesh-investigation.md, "A node-admin
+/// joins the live mesh").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PendingGate {
-    /// Pending is applied here, or an admin joining a mesh whose admin cohort is live owes nothing.
+    /// Pending is applied here, or this admin enters an existing mesh and owes nothing.
     Clear,
     /// The Day-0 root applies its own mesh's Pending to itself.
     SelfApply,
@@ -64,12 +66,12 @@ pub(crate) enum PendingGate {
     Blocked(String),
 }
 
-pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applied: bool, cohort_live: bool) -> PendingGate {
+pub(crate) fn pending_gate(me: &PathName, mesh: &str, day0: bool, pending_applied: bool, enters_existing_mesh: bool) -> PendingGate {
     if pending_applied {
         PendingGate::Clear
     } else if day0 {
         PendingGate::SelfApply
-    } else if cohort_live {
+    } else if enters_existing_mesh {
         PendingGate::Clear
     } else {
         PendingGate::Blocked(format!("{me}: the first admin of {mesh}: its mesh's Pending has not been applied here by the fabric primary"))

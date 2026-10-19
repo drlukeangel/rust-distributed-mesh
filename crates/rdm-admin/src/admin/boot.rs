@@ -1689,13 +1689,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // node.start's steps after the hook (topology, Build floor, rafka-time): Ready waits on
                                                 // them, and the step it is at is named here with the others.
                                                 blocked.extend(start_progress.blocker());
-                                                // A mesh is Pending until its authority says so (e4.s11): a mesh's first admin holds
-                                                // its own Ready until the fabric primary applied MeshStatus::Pending at it; the Day-0
-                                                // root, with no upstream authority, applies its own. An admin joining a mesh whose
-                                                // admin cohort is already live owes nothing here.
+                                                // A mesh is Pending until its authority says so (e4.s11): mesh.create's first admin
+                                                // holds its own Ready until the fabric primary applied MeshStatus::Pending at it; the
+                                                // Day-0 root, with no upstream authority, applies its own. An admin entering an
+                                                // existing mesh (its entry read holds another node of it) joins that mesh and owes
+                                                // nothing here, its cohort live or not.
                                                 let pending_applied = records.declared.lock().unwrap().meshes.contains_key(&mesh_id);
-                                                let cohort_live = topology.read().await.cohort(&mesh_name, NodeKind::NodeAdmin).any(|n| n.name != me && n.status.is_live());
-                                                match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, cohort_live) {
+                                                let enters_existing_mesh = entering_gate.load(std::sync::atomic::Ordering::SeqCst);
+                                                match pending_gate(&me, &mesh_name, day0.is_some(), pending_applied, enters_existing_mesh) {
                                                     PendingGate::Clear => {}
                                                     PendingGate::Blocked(why) => blocked.push(why),
                                                     PendingGate::SelfApply => match authority.get() {

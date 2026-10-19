@@ -2895,7 +2895,7 @@ mod tests {
             PendingGate::Blocked(why) => assert!(why.contains("not been applied here by the fabric primary"), "{why}"),
             other => panic!("a first admin that is not Day 0 never self-applies: {other:?}"),
         }
-        assert_eq!(pending_gate(&me, "mesh2", false, false, true), PendingGate::Clear, "joining a live cohort owes no Pending");
+        assert_eq!(pending_gate(&me, "mesh2", false, false, true), PendingGate::Clear, "an admin entering an existing mesh owes no Pending, its cohort live or not");
         assert_eq!(pending_gate(&me, "mesh2", false, true, false), PendingGate::Clear);
         assert_eq!(pending_gate(&me, "mesh2", true, true, false), PendingGate::Clear, "Day 0 applies it once");
     }
