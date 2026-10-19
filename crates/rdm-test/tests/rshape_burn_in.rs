@@ -3729,6 +3729,41 @@ fn recipe_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
     ops
 }
 
+/// The node's own Stopped declarations a receiver decided after `t_apply` (its All began): `applied`,
+/// or `already-applied` when the stop's stream reached the mesh-primary first. Whichever of the
+/// declaration and the stream's `stopped` arrives first is applied and the other answers
+/// AlreadyApplied (node-stop.md step 5, Q36, Q49; the declaration is owed, never awaited).
+fn stopped_decided_after(stop: &Value, t_apply: u64) -> Vec<&Value> {
+    stop["declarations_from_the_node"]
+        .as_array()
+        .map(|ds| {
+            ds.iter()
+                .filter(|d| d["start_ns"].as_u64().unwrap_or(0) >= t_apply && d["state"] == "Stopped" && d["outcome"] == "applied")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// CONTRACT (node-stop.md step 5, Q36, Q49): the release run at d829b383 (this box) read
+/// mesh2.gateway.3's Stopped declaration answered `already-applied`, its stop's stream applied first;
+/// that declaration was decided by its receiver.
+#[test]
+fn a_stopped_declaration_answered_already_applied_after_the_all_is_decided() {
+    let stop = json!({
+        "connections_delete_all": [{"start_ns": 1792394057630469340u64, "end_ns": 1792394057630523771u64}],
+        "declarations_from_the_node": [
+            {"op": "declare-node-state", "outcome": "applied", "state": "ReadyForTraffic", "start_ns": 1792394031147454587u64},
+            {"op": "declare-node-state", "outcome": "already-applied", "state": "Stopped", "start_ns": 1792394057676759638u64},
+        ],
+    });
+    let t_apply = stop["connections_delete_all"][0]["start_ns"].as_u64().unwrap();
+    assert_eq!(stopped_decided_after(&stop, t_apply).len(), 1, "the Stopped declaration after the All was decided");
+    let refused = json!({"declarations_from_the_node": [{"outcome": "refused", "state": "Stopped", "start_ns": t_apply + 1}]});
+    assert!(stopped_decided_after(&refused, t_apply).is_empty(), "a refused declaration is not decided");
+    let before = json!({"declarations_from_the_node": [{"outcome": "applied", "state": "Stopped", "start_ns": t_apply - 1}]});
+    assert!(stopped_decided_after(&before, t_apply).is_empty(), "a declaration before the All began does not count");
+}
+
 /// The stop the retiring node ran, read from its own spans and the executor's (node-stop.md steps 2-3):
 /// the node's `via-stop-node` handling and its receipt (`established`: the eligible work in flight
 /// reached zero; `deadline`: the bound ended it), the node's own `node.connections.delete { All }` inside
@@ -4412,8 +4447,8 @@ async fn retire_run(cell: &str, shape: Shape) {
             .collect();
         assert!(served_after.is_empty(), "{node}: work called after the node's All began ({t_apply}) was served: {served_after:?} ({stop})");
         // The status family stays admissible through the All: the node's own Stopped declaration (node-stop.md
-        // step 4: the only one its stop makes), after the All began, is decided by its receiver, `applied`.
-        let decided: Vec<&Value> = stop["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied" && d["state"] == "Stopped").collect();
+        // step 4: the only one its stop makes), after the All began, is decided by its receiver.
+        let decided = stopped_decided_after(&stop, t_apply);
         assert!(!decided.is_empty(), "{node}: no receiver decided a Stopped declaration from the node after its All began: {stop}");
         // The caller's certainty: the stop's reply is `stopped`, its completion.
         let receipts = stop["stop_command_sent"].as_array().unwrap();
