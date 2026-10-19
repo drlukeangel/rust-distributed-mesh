@@ -192,10 +192,10 @@
           "dir": "target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending"
         },
         {
-          "name": "recovery_admin_receives_pending_under_the_existing_mesh_id",
+          "name": "recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id",
           "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id/estate cargo test -p rdm-test --test main bootstrap_pending::recovery_admin_receives_pending_under_the_existing_mesh_id -- --exact",
-          "dir": "target/i143-acceptance/2805/process/recovery_admin_receives_pending_under_the_existing_mesh_id"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id/estate cargo test -p rdm-test --test main bootstrap_pending::recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id -- --exact",
+          "dir": "target/i143-acceptance/2805/process/recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id"
         }
       ]
     },

@@ -264,15 +264,19 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2805, acceptance 2): a peer mesh's only node-admin is lost (its runtime killed
-/// exactly; its mesh holds no fabric seat) and the Build rectifier recovers it as an attempt of the
-/// same Build: the fabric primary hands Pending to the recovery admin with the mesh's EXISTING
-/// MeshId, applied or already-applied, before that admin's Ready, and the Mesh still has the id
-/// it was born with. What must NOT happen: a second MeshId for mesh2 in any hand-off or in the
-/// mesh's own view, the recovery admin Ready before Pending was certain, or a new Build.
+/// CONTRACT (#2805, acceptance 2; mesh-investigation.md step 7, "A node-admin joins the live mesh";
+/// states.md "mesh Pending"): a peer mesh's only node-admin is lost (its runtime killed exactly; its
+/// mesh holds no fabric seat) while its member lives. The fabric primary decides the recovery and marks
+/// the fabric degraded (R-DG1), and the node-admin it creates joins the live mesh under the mesh's
+/// EXISTING MeshId, on the same Build. As the mesh's successor primary it adopts the mesh's held state
+/// and republishes its held MeshStatus with its changed_at preserved; on that report the fabric primary
+/// clears degraded. Pending is handed once, to the admin that launched the mesh's first admin: the
+/// recovery admin is never handed Pending. What must NOT happen: a second certain Pending hand-off, any
+/// Pending hand-off after the fault, a republish under a new changed_at, degraded cleared before the new
+/// primary's round completed, a second MeshId for the mesh, or a new Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
-    let cell = "recovery_admin_receives_pending_under_the_existing_mesh_id";
+async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id() {
+    let cell = "recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -291,7 +295,8 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     let attempt_before = u64::from(estate.builds_obj().await.get(&built.build_id).await.expect("build.get of the accepted Build").attempt);
     estate.enter(&Estate::path(&fabric_holder)).await;
 
-    // The fault: mesh2's only admin runtime, exactly.
+    // The fault: the lost mesh's only admin runtime, exactly.
+    let fault_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut killed = 0;
     for (path, pid) in estate.live_runtimes() {
         if path.file_name().unwrap().to_string_lossy().starts_with(lost_admin.as_str()) {
@@ -303,7 +308,7 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
 
     let admin_inc = serde_json::to_value(&admin_before.incarnation_id).expect("an incarnation serializes");
     let recovered = estate
-        .until_node(&lost_admin, "the lost mesh's admin is reborn and ready", Duration::from_secs(240), |n| {
+        .until_node(&lost_admin, "the lost mesh's admin is created again and ready", Duration::from_secs(240), |n| {
             let n = n?;
             (n.incarnation_id != admin_before.incarnation_id && n.status == NodeStatus::ReadyForTraffic).then(|| serde_json::to_value(n).expect("a view serializes"))
         })
@@ -313,28 +318,56 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     estate.stop().await;
     let spans = estate.spans();
 
+    // Pending: once, at the mesh's first birth.
     let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| h["attributes"]["mesh"] == lost.as_str()).collect();
     let ids: std::collections::BTreeSet<String> = handoffs.iter().map(|h| s(&h["attributes"]["mesh_id"])).collect();
     assert_eq!(ids, [mesh_id.clone()].into_iter().collect(), "every hand-off names the one MeshId, none minted: {handoffs:?}");
-    let certain = |h: &&&Value| matches!(h["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"));
-    let certain_handoffs: Vec<&&Value> = handoffs.iter().filter(certain).collect();
-    assert_eq!(certain_handoffs.len(), 2, "Pending was made certain at the first birth and at the recovery: {handoffs:?}");
-    let recovery = certain_handoffs.iter().max_by_key(|h| start(h)).unwrap();
-    assert_eq!(recovery["attributes"]["target"], lost_admin.as_str());
-    assert_ne!(recovery["attributes"]["target_incarnation"], admin_inc, "the hand-off is to the new birth");
-    assert_eq!(recovery["attributes"]["node"], fabric_holder.as_str(), "the fabric primary ran the recovery birth");
-    let ready = named(&spans, "rdm.mesh.node.update.via-ready")
+    let certain_handoffs: Vec<&&Value> = handoffs.iter().filter(|h| matches!(h["attributes"]["outcome"].as_str(), Some("applied" | "already-applied"))).collect();
+    assert_eq!(certain_handoffs.len(), 1, "Pending is made certain once, at the mesh's first birth; the recovery admin is never handed Pending again: {handoffs:?}");
+    assert!(start(certain_handoffs[0]) < fault_ns, "the one certain hand-off is the first birth's, before the fault: {handoffs:?}");
+    let pending_after: Vec<&&Value> = handoffs.iter().filter(|h| start(h) >= fault_ns).collect();
+    assert!(pending_after.is_empty(), "the recovery admin is never handed Pending: {pending_after:?}");
+
+    // The decision: the fabric primary creates the mesh's node-admin and marks the fabric degraded (R-DG1).
+    let decision = named(&spans, "rdm.node_admin.mesh.create.via-recovery")
         .into_iter()
-        .filter(|r| r["attributes"]["node"] == lost_admin.as_str() && r["attributes"]["incarnation_id"] == recovered["incarnation_id"])
-        .next_back()
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= fault_ns)
+        .min_by_key(|sp| start(sp))
         .cloned()
-        .expect("the recovery admin committed Ready");
-    assert!(end(recovery) <= start(&ready), "Pending certain ({}) before the recovery admin's Ready ({})", end(recovery), start(&ready));
-    let decided: Vec<&Value> = named(&spans, DECLARATION)
+        .expect("the fabric primary decided the recovery of the lost mesh's node-admin");
+    assert_eq!(decision["attributes"]["fabric_status"], "degraded", "the decision marks the fabric degraded: {decision}");
+
+    // Step 7: the successor primary republishes the held MeshStatus, changed_at preserved, after its round.
+    let scope = format!("mesh:{lost}");
+    let sends = named(&spans, "rdm.mesh.fabric.update.via-status-send");
+    let held = sends
+        .iter()
+        .filter(|sp| sp["attributes"]["scope"] == scope.as_str() && start(sp) < fault_ns)
+        .max_by_key(|sp| start(sp))
+        .map(|sp| (s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])))
+        .expect("the lost mesh published its MeshStatus before the fault");
+    let republished: Vec<&&Value> = sends.iter().filter(|sp| sp["attributes"]["scope"] == scope.as_str() && start(sp) >= start(&decision)).collect();
+    assert!(!republished.is_empty(), "the successor primary republishes the held MeshStatus (a via-status-send for {scope} after the decision): none");
+    for sp in &republished {
+        assert_eq!(s(&sp["attributes"]["node"]), lost_admin, "the mesh's status is its own primary's: {sp}");
+        assert_eq!((s(&sp["attributes"]["status"]), s(&sp["attributes"]["changed_at_rafka_ms"])), held, "the republish is the held MeshStatus, changed_at preserved: {sp}");
+    }
+    let round_complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete")
         .into_iter()
-        .filter(|d| d["attributes"]["node"] == lost_admin.as_str() && d["attributes"]["op"] == "apply-mesh-state" && matches!(d["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")))
-        .collect();
-    assert!(decided.len() >= 2, "the new birth's status door decided Pending too: {decided:?}");
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && sp["attributes"]["node"] == lost_admin.as_str() && start(sp) >= start(&decision))
+        .map(start)
+        .min()
+        .expect("the successor primary's round completed");
+    let first_republish = republished.iter().map(|sp| start(sp)).min().unwrap();
+    assert!(first_republish >= round_complete, "the held MeshStatus is republished only after the round completed: {first_republish} vs {round_complete}");
+    let cleared = named(&spans, "rdm.node_admin.mesh.update.via-recovered")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["mesh"] == lost.as_str() && start(sp) >= start(&decision))
+        .min_by_key(|sp| start(sp))
+        .cloned()
+        .expect("the fabric primary cleared degraded on the successor primary's report");
+    assert!(start(&cleared) >= round_complete, "degraded clears only on the new primary's report, after its round completed: {} vs {round_complete}", start(&cleared));
+
     let result = json!({
         "cell": cell,
         "lost_admin": lost_admin,
@@ -345,8 +378,11 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
         "admin_before": admin_inc,
         "admin_after": recovered["incarnation_id"],
         "handoffs": handoffs.len(),
-        "recovery_handoff": {"span_id": recovery["span_id"], "start": start(recovery), "end": end(recovery), "outcome": recovery["attributes"]["outcome"]},
-        "ready": {"span_id": ready["span_id"], "start": start(&ready)},
+        "decision": {"span_id": decision["span_id"], "start": start(&decision)},
+        "held_mesh_status": {"status": held.0, "changed_at_rafka_ms": held.1},
+        "republished": republished.len(),
+        "cleared": {"span_id": cleared["span_id"], "start": start(&cleared)},
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+    estate.record_trace_url(cleared["trace_id"].as_str().unwrap_or(""));
 }
