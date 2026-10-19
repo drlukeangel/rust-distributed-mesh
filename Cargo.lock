@@ -3132,7 +3132,9 @@ name = "rdm-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ed25519-dalek",
  "hex",
+ "iroh-base",
  "postcard",
  "rand 0.8.6",
  "serde",

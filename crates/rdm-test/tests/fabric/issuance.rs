@@ -1,18 +1,17 @@
-//! i143.e12.s22 process E2E: fabric certs (`fabric-certs.md`), on the testkit's own node-admin
-//! executable, which signs with the deterministic test signer.
+//! i143.e12.s22, i145 e1 process E2E: fabric certs (`fabric-certs.md`), on the testkit's own node-admin
+//! executable, which holds the fabric's cert chain as every RDM node-admin does.
 //!
-//! - every JoinNode is issued a member cert for exactly its birth, on the issuing admin's
-//!   rafka-time: a node restarted through the Build is issued a fresh one (new incarnation, later
-//!   issue time);
-//! - the maker issues a new mesh's issuing material and passes it in the launch of that mesh's first
-//!   node-admin, and in no other launch.
+//! - every JoinNode is issued a member cert for exactly its birth, signed by its mesh's issuing key and
+//!   verifying to the fabric's root: a node restarted through the Build is issued a fresh one;
+//! - every launched node-admin is launched with its mesh's issuing material, minted once at the
+//!   mesh's birth by an admin holding the root.
 //!
 //! Evidence: the issuing admins' `rdm.node_admin.cert.create.via-join` and `...via-mesh-birth`
 //! spans, and the testkit's `rdm.testkit.cert.resolve.via-running-node` / `...via-launch` spans, in
-//! which each launched process records the bytes it holds.
+//! which each launched process records the cert it holds (hex) and the issuing cert it was launched with.
 
 use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
-use rdm_test::test_certs::{TestMemberCert, TestMeshIssuer};
+use rdm_core::certs::{self, SignedCert, SignedIssuingCert, VerifyingKey};
 use rdm_test::estate::{named, Estate, Owner};
 use rdm_test::faults::{binding_set, candidate_sha};
 use serde_json::{json, Value};
@@ -27,7 +26,7 @@ fn owner() -> Owner {
         subfeature: "issuance".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is_launched_with_its_issuer".into(),
+        test: "a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root".into(),
     }
 }
 
@@ -35,18 +34,18 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// The member certs the nodes named `node` recorded holding, in the order they started, with the
-/// incarnation each span names.
 fn s_u64(v: &Value) -> u64 {
     v.as_str().and_then(|x| x.parse().ok()).or_else(|| v.as_u64()).unwrap_or(0)
 }
 
-fn held_by(spans: &[Value], node: &str) -> Vec<(String, TestMemberCert)> {
-    let mut found: Vec<(u64, String, TestMemberCert)> = named(spans, "rdm.testkit.cert.resolve.via-running-node")
+/// The member certs the nodes named `node` recorded holding (the testkit's span carries the bytes as
+/// hex), in the order they started, with the incarnation each span names.
+fn held_by(spans: &[Value], node: &str) -> Vec<(String, SignedCert)> {
+    let mut found: Vec<(u64, String, SignedCert)> = named(spans, "rdm.testkit.cert.resolve.via-running-node")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == node)
         .map(|sp| {
-            let cert = TestMemberCert::decode(s(&sp["attributes"]["member_cert"]).as_bytes()).unwrap_or_else(|e| panic!("{node}: {e}: {sp}"));
+            let cert = certs::decode_cert(&s(&sp["attributes"]["member_cert"])).unwrap_or_else(|e| panic!("{node} holds no signed member cert: {e}: {sp}"));
             (sp["start_unix_nano"].as_u64().unwrap_or(0), s(&sp["attributes"]["incarnation_id"]), cert)
         })
         .collect();
@@ -54,20 +53,25 @@ fn held_by(spans: &[Value], node: &str) -> Vec<(String, TestMemberCert)> {
     found.into_iter().map(|(_, inc, c)| (inc, c)).collect()
 }
 
-/// CONTRACT: the admin that accepts a JoinNode issues a member cert for exactly that birth (node
-/// id, incarnation, path.name, mesh, endpoint key) on its rafka-time and the birth holds those
-/// bytes; a restart is a new JoinNode and is issued a fresh cert. The maker issues a created mesh's
-/// issuing material and launches that mesh's first admin with it; the mesh's second admin, launched
-/// while the first is live, is launched with none.
+/// CONTRACT (fabric-certs.md "The chain", "Where a node-admin's signing material comes from" and
+/// "When a cert is issued"; i145 e1): the bootstrap admin holds the fabric's root (minted on day 0 and
+/// kept as its `ca-secret`). The admin that accepts a JoinNode issues a member cert for exactly that
+/// birth (path.name, mesh, node id, incarnation, endpoint key), signed by its mesh's issuing key, and
+/// the birth holds it: it verifies to its issuer and the issuer to the root. A restart is a new
+/// JoinNode and is issued a fresh cert. Every launched node-admin is launched with its mesh's issuing
+/// material (`RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`), the issuing cert signed by the root; the mesh's
+/// issuer is minted once, at the mesh's birth, and every admin of the mesh carries that one. Must NOT
+/// happen: a cert that does not verify to the root, a cert naming another birth, a launched admin with
+/// no issuing material or another mesh's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is_launched_with_its_issuer() {
+async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)]);
     let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1, mesh2] }).await;
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1"].into_iter().map(str::to_string).collect();
-    estate.settles_to_named(&want, Duration::from_secs(30)).await;
+    let views = estate.settles_to_named(&want, Duration::from_secs(30)).await;
 
     // Restart mesh1.rpc.1 through the Build: a new JoinNode of the same node.
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
@@ -77,53 +81,58 @@ async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is
     let mut restart = estate.nodes_obj().await.restart(&path).await.unwrap_or_else(|end| panic!("node.restart of mesh1.rpc.1 was refused: {end}"));
     Estate::complete(&mut restart).await;
     estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its restart", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
+    let ca = estate.bootstrap_data_dir("mesh1").join("ca-secret");
     estate.stop().await;
     let spans = estate.spans();
+    let root: VerifyingKey = certs::decode_key(&std::fs::read_to_string(&ca).unwrap_or_else(|e| panic!("the bootstrap admin keeps the fabric's root at {}: {e}", ca.display()))).unwrap_or_else(|e| panic!("{}: {e}", ca.display())).verifying_key();
 
-    // Every rpc node holds a cert for exactly its birth.
-    let first = held_by(&spans, "mesh1.rpc.1");
-    // The process holds the cert its birth was issued; the rejoin (start after stop) is a second JoinNode
-    // of the same birth, issued a fresh cert on the later rafka-time.
-    assert_eq!(first.len(), 1, "mesh1.rpc.1 booted once: {first:?}");
-    let (inc, cert) = &first[0];
-    assert_eq!((cert.name.as_str(), cert.mesh.as_str(), cert.incarnation.as_str()), ("mesh1.rpc.1", "mesh1", inc.as_str()), "the cert names the birth that holds it");
-    let issuances: Vec<&Value> = named(&spans, "rdm.node_admin.cert.create.via-join").into_iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["incarnation_id"] == inc.as_str()).collect();
-    assert_eq!(issuances.len(), 2, "one issuance for the birth's join and one for its rejoin: {issuances:?}");
-    let issued_at = |sp: &Value| s_u64(&sp["attributes"]["issued_at_rafka_ms"]);
-    let (a, b) = (issuances.iter().map(|sp| issued_at(sp)).min().unwrap(), issuances.iter().map(|sp| issued_at(sp)).max().unwrap());
-    assert!(b > a, "the rejoin's cert is issued later on rafka-time: {a} then {b}");
-    assert_eq!(a, cert.issued_at_ms, "the process holds the cert of its first join");
-    let second_mesh = held_by(&spans, "mesh2.rpc.1");
-    assert_eq!(second_mesh.len(), 1);
-    assert_eq!((second_mesh[0].1.name.as_str(), second_mesh[0].1.mesh.as_str()), ("mesh2.rpc.1", "mesh2"));
-
-    // The issuing admins' spans: one issuance per join, on rafka-time, naming the birth.
+    // Every rpc node holds a cert for exactly its birth, verifying to its issuer and the issuer to the root.
     let issued = named(&spans, "rdm.node_admin.cert.create.via-join");
-    for (inc, cert) in first.iter().chain(second_mesh.iter()) {
-        let sp = issued
+    for node in ["mesh1.rpc.1", "mesh2.rpc.1"] {
+        let held = held_by(&spans, node);
+        // The process holds the cert its birth was issued at its first join.
+        assert_eq!(held.len(), 1, "{node} booted once: {held:?}");
+        let (inc, cert) = &held[0];
+        let view = views.iter().find(|v| v.name.to_string() == node).expect("the node is in the view");
+        assert_eq!(
+            (cert.cert.name.to_string(), cert.cert.mesh.as_str(), cert.cert.node_id.to_string(), cert.cert.incarnation.to_string()),
+            (node.to_string(), node.split('.').next().unwrap(), view.node_id.to_string(), inc.clone()),
+            "the cert names the birth that holds it"
+        );
+        let first_issue = issued
             .iter()
-            .find(|sp| sp["attributes"]["node"] == cert.name.as_str() && sp["attributes"]["incarnation_id"] == inc.as_str() && sp["attributes"]["issued_at_rafka_ms"] == cert.issued_at_ms.to_string().as_str())
-            .unwrap_or_else(|| panic!("no issuance span for {} {inc}", cert.name));
-        assert_eq!(sp["attributes"]["outcome"], "issued", "{sp}");
-        assert_eq!(sp["attributes"]["issued_at_rafka_ms"], cert.issued_at_ms.to_string().as_str(), "the span's issue time is the cert's: {sp}");
+            .filter(|sp| sp["attributes"]["node"] == node && sp["attributes"]["incarnation_id"] == inc.as_str() && sp["attributes"]["outcome"] == "issued")
+            .min_by_key(|sp| s_u64(&sp["attributes"]["issued_at_rafka_ms"]))
+            .unwrap_or_else(|| panic!("no issuance span for {node} {inc}"));
+        assert_eq!(s_u64(&first_issue["attributes"]["expires_at_rafka_ms"]), cert.cert.expiry_ms, "the process holds the cert of its first join: {first_issue}");
+        let at = s_u64(&first_issue["attributes"]["issued_at_rafka_ms"]);
+        assert_eq!(certs::verify(cert, &root, at, 0), Ok(()), "{node}'s cert verifies to its issuer and the issuer to the root");
+        assert_eq!(cert.issuer.cert.mesh, node.split('.').next().unwrap(), "signed by its own mesh's issuer");
     }
+    // The rejoin (start after stop) is a second JoinNode of the same birth, issued a fresh cert on the later rafka-time.
+    let rejoins: Vec<&Value> = issued.iter().copied().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1" && sp["attributes"]["incarnation_id"] == before.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default().as_str()).collect();
+    assert_eq!(rejoins.len(), 2, "one issuance for the birth's join and one for its rejoin: {rejoins:?}");
 
-    // A new mesh's first admin is launched with the issuer the maker issued, and no other admin is.
-    let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();
-    assert_eq!(minted.len(), 1, "one mesh birth issued mesh2's material: {minted:?}");
-    assert_eq!(minted[0]["attributes"]["outcome"], "issued", "{}", minted[0]);
+    // Every launched admin carries its mesh's issuing material, signed by the root; a mesh's issuer is
+    // minted once, at its birth, and every admin of the mesh carries that one.
     let launches = named(&spans, "rdm.testkit.cert.resolve.via-launch");
-    let launch_of = |node: &str| launches.iter().find(|sp| sp["attributes"]["node"] == node).unwrap_or_else(|| panic!("no launch span for {node}"));
-    let first_admin = launch_of("mesh2.admin.1");
-    let material = TestMeshIssuer::decode(s(&first_admin["attributes"]["mesh_issuer"]).as_bytes()).expect("mesh2.admin.1 was launched with the signer's issuing material");
-    assert_eq!(material.mesh, "mesh2");
-    assert_eq!(minted[0]["attributes"]["issued_at_rafka_ms"], material.issued_at_ms.to_string().as_str(), "the launch carries exactly what the maker issued");
-    assert_eq!(first_admin["attributes"]["mesh_issuer_len"], minted[0]["attributes"]["cert_len"], "{first_admin}");
-    assert_eq!(launch_of("mesh2.admin.2")["attributes"]["mesh_issuer_len"], "0", "the second admin of a mesh whose first is live is launched with no issuer");
-    assert_eq!(launch_of("mesh1.admin.2")["attributes"]["mesh_issuer_len"], "0", "nor is an admin joining the Day-0 mesh");
+    let issuing_of = |node: &str| -> SignedIssuingCert {
+        let sp = launches.iter().find(|sp| sp["attributes"]["node"] == node).unwrap_or_else(|| panic!("no launch span for {node}"));
+        certs::decode_issuing_cert(&s(&sp["attributes"]["issuing_cert"])).unwrap_or_else(|e| panic!("{node} was launched with no issuing cert: {e}: {sp}"))
+    };
+    for (node, mesh) in [("mesh1.admin.2", "mesh1"), ("mesh2.admin.1", "mesh2"), ("mesh2.admin.2", "mesh2")] {
+        let issuing = issuing_of(node);
+        assert_eq!(issuing.cert.mesh, mesh, "{node} carries its own mesh's issuing cert");
+        assert!(root.verify_strict(&certs::issuing_cert_bytes(&issuing.cert), &issuing.sig).is_ok(), "{node}'s issuing cert is signed by the root");
+    }
+    assert_eq!(issuing_of("mesh2.admin.1"), issuing_of("mesh2.admin.2"), "mesh2's admins carry the one issuer minted at mesh2's birth");
+    let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();
+    assert_eq!(minted.len(), 1, "one mesh birth minted mesh2's issuer: {minted:?}");
+    assert_eq!(minted[0]["attributes"]["outcome"], "issued", "{}", minted[0]);
 
     estate.artifact("trace-ids.json", &json!({
-        "mesh1.rpc.1 restart issuance": issued.iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1").map(|sp| json!({"trace_id": sp["trace_id"], "span_id": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"], "issued_at_rafka_ms": sp["attributes"]["issued_at_rafka_ms"]})).collect::<Vec<_>>(),
-        "mesh2 mesh-birth issuance": {"trace_id": minted[0]["trace_id"], "span_id": minted[0]["span_id"], "cert_len": minted[0]["attributes"]["cert_len"]},
+        "mesh1.rpc.1 issuances": issued.iter().filter(|sp| sp["attributes"]["node"] == "mesh1.rpc.1").map(|sp| json!({"trace_id": sp["trace_id"], "span_id": sp["span_id"], "incarnation_id": sp["attributes"]["incarnation_id"], "issued_at_rafka_ms": sp["attributes"]["issued_at_rafka_ms"]})).collect::<Vec<_>>(),
+        "mesh2 mesh-birth issuance": {"trace_id": minted[0]["trace_id"], "span_id": minted[0]["span_id"]},
     }));
+    estate.record_trace_url(&s(&minted[0]["trace_id"]));
 }
