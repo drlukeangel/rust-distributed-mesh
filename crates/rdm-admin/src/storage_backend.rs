@@ -363,6 +363,50 @@ mod tests {
         assert!(b.fabric.claim_identity(&identity).await.unwrap().is_ok(), "the Fabric identity is written once lifted");
     }
 
+    /// The same script against any backend that keeps its rows across opens: a birth's runtime rows
+    /// and attempt contexts are the data dir's, so the admin re-born at the same path.name over the
+    /// inherited data dir (a new node.id and incarnation, `inherited = true`) reads its predecessor's;
+    /// an admin over another data dir reads none of them.
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(backend: &dyn StorageBackend, first: &StorageScope, reborn: &StorageScope, other: &StorageScope) {
+        let runtime = crate::storage::RuntimeRow {
+            node_id: NodeId::mint(),
+            name: "mesh1.rpc.2".parse().unwrap(),
+            incarnation_id: IncarnationId::mint(),
+            runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("dep-1")).unwrap(),
+            data_dir: Some("/tmp/mesh1.rpc.2".into()),
+        };
+        let build = crate::build::BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap();
+        let context = rdm_core::context::CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), ..Default::default() };
+        {
+            let b = backend.open(first, None).await.unwrap_or_else(|e| panic!("the first birth opens: {e}"));
+            b.nodes.put_runtime(&runtime).await.unwrap();
+            b.builds.put_attempt_context(&build, Some("mesh1"), 2, &context).await.unwrap();
+        }
+        let b = backend.open(reborn, None).await.unwrap_or_else(|e| panic!("the re-born birth opens over the inherited data dir: {e}"));
+        assert_eq!(b.nodes.runtimes().await.unwrap(), vec![runtime.clone()], "the re-born admin holds its predecessor's runtime rows");
+        assert_eq!(b.nodes.runtime(&runtime.node_id, &runtime.incarnation_id).await.unwrap(), Some(runtime.clone()), "a point read by the birth finds it");
+        assert_eq!(b.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), Some(context.clone()), "and its predecessor's attempt context");
+        let o = backend.open(other, None).await.unwrap_or_else(|e| panic!("another admin opens over its own data dir: {e}"));
+        assert!(o.nodes.runtimes().await.unwrap().is_empty(), "another data dir holds none of them");
+        assert_eq!(o.builds.attempt_context(&build, Some("mesh1"), 2).await.unwrap(), None, "nor the attempt context");
+    }
+
+    /// CONTRACT (node-recovery.md: recovery retains the inherited data dir and creates a new node.id
+    /// and incarnation; R-FM2 `inherited = true`): on the file backend, the runtime rows and attempt
+    /// contexts an admin wrote are its data dir's, read back by the admin re-born at the same
+    /// path.name over that data dir, so it still holds the handles of the runtimes it must inspect and
+    /// terminate; another admin's data dir reads none. Must NOT happen: a re-birth losing them because
+    /// they were keyed by the birth that wrote them. Rafka's backend runs the same script.
+    #[cfg(feature = "file-backend")]
+    #[tokio::test]
+    async fn a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts_on_the_file_backend() {
+        let store = crate::test_support::tempdir("file-backend-reborn-store");
+        let data_dir = crate::test_support::tempdir("file-backend-reborn-data");
+        let fabric_id = FabricId::mint();
+        let at = |data_dir: PathBuf| StorageScope { data_dir, fabric_id: fabric_id.clone(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() };
+        a_birth_re_born_over_its_inherited_data_dir_reads_its_predecessors_runtimes_and_contexts(&FileBackend::at(&store), &at(data_dir.clone()), &at(data_dir), &at(crate::test_support::tempdir("file-backend-reborn-other"))).await;
+    }
+
     fn scope(data_dir: PathBuf) -> StorageScope {
         StorageScope { data_dir, fabric_id: FabricId::mint(), own_mesh: "mesh1".into(), writer: IncarnationId::mint() }
     }
