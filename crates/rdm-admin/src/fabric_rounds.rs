@@ -1245,6 +1245,160 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0, "the application was asked to sync no round");
     }
 
+    /// The rounds of the admin `me`, as `view` holds it, over `builds` and `records`: a client on an
+    /// endpoint of its own whose resolver names nobody, and `actions` for its own round work.
+    async fn rounds_of(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, actions: Arc<dyn RoundActions>) -> Arc<FabricRounds> {
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        FabricRounds::new(RoundEnv {
+            me: me.name.clone(),
+            node_id: me.node_id.clone(),
+            incarnation: me.incarnation_id.clone().expect("a birth"),
+            fabric_id,
+            topology: Arc::new(RwLock::new(view)),
+            client: Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new()))),
+            builds,
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            declarer: Declarer::new(),
+            wake: records.wake.clone(),
+            records,
+            hooks: FabricHooks { sync_state: Some(SyncState::NoAppWork), traffic_opened: None },
+            actions,
+        })
+    }
+
+    /// The two-mesh fabric's accepted Build, with attempts 1 to `attempts` claimed.
+    async fn two_mesh_build(attempts: u32) -> (Arc<crate::build_state::MemoryBuildStateAdapter>, crate::build::BuildId) {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
+        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1"), mesh("mesh2")].into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        for attempt in 1..=attempts {
+            claim(&builds, &id, attempt).await;
+        }
+        (builds, id)
+    }
+
+    /// Open (after the first) and claim `attempt` of `id`.
+    async fn claim(builds: &crate::build_state::MemoryBuildStateAdapter, id: &crate::build::BuildId, attempt: u32) {
+        use crate::build_state::{AttemptOpened, AttemptReason, BuildAttemptClaim};
+        if attempt > 1 {
+            builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
+        }
+        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    }
+
+    /// The fabric-primary `mesh1.admin.1` and mesh2's primary, both ready-for-traffic.
+    fn fabric_primary_and_mesh2() -> (Node, Node) {
+        let mut fp = node("mesh1.admin.1", NodeStatus::ReadyForTraffic, true);
+        fp.is_fabric_primary = true;
+        (fp, node("mesh2.admin.1", NodeStatus::ReadyForTraffic, true))
+    }
+
+    /// The round commands spans this capture holds toward `to`, by the event that made each due.
+    fn commands_to(capture: &crate::span_capture::Capture, to: &str) -> Vec<String> {
+        capture.named("rdm.node_admin.fabric.update.via-round-command").into_iter().filter(|s| s.attributes.get("to").map(String::as_str) == Some(to)).map(|s| s.attributes.get("event").cloned().unwrap_or_default()).collect()
+    }
+
+    /// CONTRACT (i146 R7, the round commands' owner; states.md, The round checklist: "A new primary,
+    /// through election or recovery, re-sends the current round. Members already done check in again,
+    /// and the checklist rebuilds itself"; node-rpc.md §43: "Each owner defines how its pending
+    /// commands, check-ins and responses are reconstructed from durable evidence with their operation
+    /// identity"): a fabric-primary that holds no round book (a restart) and hears its fabric in
+    /// state-commit reconstructs its pending commands from the published state and the accepted Build.
+    /// It opens the round of the accepted Build's current attempt and commands mesh2's primary under
+    /// that round's key. Must NOT happen: a round of another attempt, or a planned primary left
+    /// uncommanded because the book that commanded it before is gone.
+    #[tokio::test]
+    async fn a_fabric_primary_with_no_round_book_reconstructs_its_round_commands_from_the_published_state_and_the_accepted_build() {
+        let capture = crate::span_capture::Capture::new("i146-e3-round-commands-reconstructed");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (builds, id) = two_mesh_build(2).await;
+        let (fp, m2) = fabric_primary_and_mesh2();
+        let view = projected(vec![fp.clone(), m2.clone()]);
+        let records = Arc::new(Records::default());
+        let rounds = rounds_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
+        rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        assert_eq!(records.fabric_state(), FabricState::StateCommit, "the published state is adopted");
+        tokio::task::yield_now().await;
+        rounds.fabric_book_reset();
+        tokio::task::yield_now().await;
+        let opened = capture.named("rdm.node_admin.fabric.update.via-round-opened");
+        assert!(opened.iter().any(|s| s.attributes.get("round").map(String::as_str) == Some("commit-state") && s.attributes.get("build_id") == Some(&id.to_string()) && s.attributes.get("attempt").map(String::as_str) == Some("2")), "the round of the accepted Build's attempt 2 is opened: {opened:?}");
+        assert_eq!(commands_to(&capture, "mesh2.admin.1"), ["first"], "mesh2's primary is commanded once, under the reconstructed round");
+    }
+
+    /// CONTRACT (i146 R7; node-rpc-envelope.md, Fabric status rounds: "The round is scoped to the
+    /// accepted Build, attempt and planned exact births"): a lifecycle operation on a primary runs as an
+    /// attempt of the accepted Build, and a new attempt re-keys the round: every planned primary is
+    /// commanded again under the new attempt, one whose command the old attempt's round had answered
+    /// among them. Must NOT happen: a primary left uncommanded because the old attempt's round answered it.
+    #[tokio::test]
+    async fn a_new_attempt_of_the_accepted_build_commands_every_planned_primary_again_under_its_own_round() {
+        let capture = crate::span_capture::Capture::new("i146-e3-round-commands-new-attempt");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (builds, id) = two_mesh_build(1).await;
+        let (fp, m2) = fabric_primary_and_mesh2();
+        let view = projected(vec![fp.clone(), m2.clone()]);
+        let fabric_id = FabricId::mint();
+        let records = Arc::new(Records::default());
+        let rounds = rounds_of(&fp, view.clone(), builds.clone(), records.clone(), fabric_id.clone(), Arc::new(NoScratchpad)).await;
+        rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        let first = RoundKey { kind: RoundKind::StateCommit, fabric_id, build_id: id.to_string(), attempt: 1 };
+        rounds.fabric_book.answered(&first, &m2.node_id, m2.incarnation_id.as_ref().unwrap());
+        claim(&builds, &id, 2).await;
+        rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        tokio::task::yield_now().await;
+        rounds.fabric_book_reset();
+        tokio::task::yield_now().await;
+        let attempts: Vec<String> = capture.named("rdm.node_admin.fabric.update.via-round-opened").into_iter().filter_map(|s| s.attributes.get("attempt").cloned()).collect();
+        assert_eq!(attempts, ["1", "2"], "a round per attempt");
+        assert_eq!(commands_to(&capture, "mesh2.admin.1"), ["first", "first"], "mesh2's primary is commanded again under attempt 2's round");
+    }
+
+    /// The round actions this cell counts.
+    #[derive(Default)]
+    struct Counted(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl RoundActions for Counted {
+        async fn commit_state(&self, _node: &PathName) -> Result<(), String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn open_traffic(&self, _node: &PathName) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// CONTRACT (i146 R7: the already-applied answer by operation identity to a resend; node-rpc-envelope.md,
+    /// Fabric status rounds: a successful admission reply is Applied or AlreadyApplied): a mesh primary
+    /// that holds a round answers the same round's command again `AlreadyApplied`, by the round's key,
+    /// and runs its own action once. A lost reply to the command is regenerated so: the resend is
+    /// answered from the round this admin holds. Must NOT happen: `Applied` twice, or the action twice.
+    #[tokio::test]
+    async fn a_mesh_primary_answers_a_round_it_holds_already_applied_and_runs_its_action_once() {
+        let (builds, id) = two_mesh_build(1).await;
+        let (fp, m2) = fabric_primary_and_mesh2();
+        let view = projected(vec![fp.clone(), m2.clone()]);
+        let fabric_id = FabricId::mint();
+        let actions = Arc::new(Counted::default());
+        let rounds = rounds_of(&m2, view.clone(), builds, Arc::new(Records::default()), fabric_id.clone(), actions.clone()).await;
+        let key = RoundKey { kind: RoundKind::StateCommit, fabric_id, build_id: id.to_string(), attempt: 1 };
+        let req = RoundKind::StateCommit.down(&key, m2.node_id.clone(), m2.incarnation_id.clone().unwrap());
+        assert_eq!(rounds.serve(&view, Some(&fp), None, &req, None).await, StatusReply::Applied, "the round's first command is admitted");
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(rounds.serve(&view, Some(&fp), None, &req, None).await, StatusReply::AlreadyApplied, "the same round again is the round already held");
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(actions.0.load(std::sync::atomic::Ordering::SeqCst), 1, "the mesh primary's own action runs once for the round");
+    }
+
     /// CONTRACT (R-S2): only an admission ends a round command. A refusal by name rests on the receiver's own view, which
     /// heals, and a call that got no reply never reached it: both wait for an eligible event. Must NOT happen: a
     /// refusal that is final, which strands the round when a new primary commands members that still name the old one.
