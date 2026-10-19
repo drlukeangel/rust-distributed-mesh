@@ -442,6 +442,48 @@ fn an_undeclared_wire_type_is_dropped_by_name_and_the_next_event_applies() {
     });
 }
 
+/// CONTRACT (one error arm per fact; the type's one receiver): a second join of a type whose
+/// receiver an earlier join holds is refused `ReceiverHeld` naming the type, never `Left`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_join_of_a_held_type_is_refused_receiver_held_by_name() {
+    let n = node(&FabricId::mint(), &MeshId::mint(), "mesh1.rpc.1", vec![]).await;
+    let _first = n.membership.join_channel(TYPE).await.unwrap();
+    assert!(matches!(n.membership.join_channel(TYPE).await, Err(ChannelError::ReceiverHeld { r#type }) if r#type == TYPE));
+}
+
+/// CONTRACT (an event's `sequence` is 20 decimal digits, gossip.md's app event attributes): a frame
+/// whose sequence is not is dropped by name (`rdm.mesh.channel.reject.via-malformed-sequence`,
+/// naming the type and the event id), and the next well-formed event applies. Must NOT happen: a
+/// silent drop.
+#[test]
+fn a_malformed_sequence_is_dropped_by_name_and_the_next_event_applies() {
+    if crate::own_process::delegated(
+        module_path!(),
+        "a_malformed_sequence_is_dropped_by_name_and_the_next_event_applies",
+    ) {
+        return;
+    }
+    let capture =
+        rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "app-channel-sequence").unwrap();
+    capture.run(4, async {
+        let (a, _b, _unused, mut receiver, raw, _events) = pair().await;
+        let mut bad: (Vec<(String, String)>, Vec<u8>) = postcard::from_bytes(&encoded(&a, TYPE, "bad", "bad", vec![1], false)).unwrap();
+        for (k, v) in bad.0.iter_mut() {
+            if k == "sequence" {
+                *v = "1".into();
+            }
+        }
+        raw.broadcast(postcard::to_allocvec(&bad).unwrap().into()).await.unwrap();
+        raw.broadcast(encoded(&a, TYPE, "next", "next", vec![2], false).into())
+            .await
+            .unwrap();
+        assert_eq!(receive(&mut receiver).await.subject, "next");
+        let spans = capture.spans().unwrap();
+        let dropped: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.channel.reject.via-malformed-sequence").collect();
+        assert_eq!(dropped.len(), 1, "the malformed frame is dropped by name, once");
+    });
+}
+
 /// Compile a positive control first, then reject each forbidden receiver ownership shape.
 #[test]
 fn a_second_recv_owner_is_refused_by_the_type_system_and_split_is_once() {

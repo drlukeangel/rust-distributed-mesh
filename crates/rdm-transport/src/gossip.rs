@@ -83,6 +83,36 @@ pub enum ChannelError {
     /// The receiver left, or its transport ended.
     #[error("channel left")]
     Left,
+    /// This birth's author identity is not set yet: nothing can name the event's source.
+    #[error("no author set for this birth")]
+    NoAuthor,
+    /// The event or one of its chunks could not be encoded.
+    #[error("event encode failed: {0}")]
+    Encode(String),
+    /// Gossip refused the event, or its chunk `chunk` of `of` (a chunked event part-way through).
+    #[error("broadcast of chunk {chunk} of {of} failed: {detail}")]
+    Broadcast {
+        /// The chunk gossip refused (0 for a whole event).
+        chunk: usize,
+        /// The event's chunk count (1 for a whole event).
+        of: usize,
+        /// Gossip's error.
+        detail: String,
+    },
+    /// The channel's gossip topic could not be subscribed.
+    #[error("subscribe to {} failed: {detail}", .r#type)]
+    Subscribe {
+        /// The type whose topic was refused.
+        r#type: String,
+        /// Gossip's error.
+        detail: String,
+    },
+    /// The type's one receiver is already held by an earlier join.
+    #[error("the receiver of {} is already held", .r#type)]
+    ReceiverHeld {
+        /// The type joined again.
+        r#type: String,
+    },
 }
 
 struct State {
@@ -826,6 +856,34 @@ mod tests {
         assert!(golden.len() <= MAX);
         assert!(golden.len() > 3900);
         println!("complete chunk golden: {} / {} bytes", golden.len(), MAX);
+    }
+
+    /// CONTRACT (one error arm per fact): a publish before this birth's author identity is set is
+    /// refused `NoAuthor`, never `Left`: the channel has not ended, its event has no source yet.
+    #[tokio::test]
+    async fn a_publish_with_no_author_set_is_refused_no_author_not_left() {
+        let state = State {
+            sender: Mutex::new(None),
+            left: AtomicBool::new(false),
+            stop: Notify::new(),
+            dropped: AtomicU64::new(0),
+            lost: watch::channel(0).0,
+            kind: "app.author".into(),
+            publish_declared: true,
+            author: Default::default(),
+            clock: crate::clock::os_clock(),
+            ids: Arc::new(AtomicU64::new(1)),
+            id_nonce: [0; 32],
+            finished: watch::channel(false).0,
+            neighbours: AtomicUsize::new(0),
+            #[cfg(feature = "testkit-gossip")]
+            chunk_cut: std::sync::atomic::AtomicUsize::new(usize::MAX),
+        };
+        let event = Event { subject: "s".into(), sequence: None, dataschema: None, data: Bytes::from_static(b"x") };
+        assert!(matches!(state.publish(event).await, Err(ChannelError::NoAuthor)), "no author: refused NoAuthor");
+        state.close();
+        let event = Event { subject: "s".into(), sequence: None, dataschema: None, data: Bytes::from_static(b"x") };
+        assert!(matches!(state.publish(event).await, Err(ChannelError::Left)), "a left channel: Left");
     }
 
     /// Exercise the actual receive queue, without depending on best-effort network throughput.
