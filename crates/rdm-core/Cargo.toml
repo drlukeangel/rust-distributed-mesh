@@ -16,8 +16,10 @@ blake3 = "1"
 sha2 = "0.11"
 tracing = { workspace = true }
 # The cert chain's keys (fabric-certs.md): the ed25519 keys iroh's are made of, taken directly, since
-# the contract crate reaches no iroh crate (mesh-audit dependency rule 2).
-ed25519-dalek = { version = "=3.0.0-rc.0", features = ["serde"] }
+# the contract crate reaches no iroh crate (mesh-audit dependency rule 2). The requirement is iroh's
+# own (>=3.0.0-rc.0, <4), never an exact pin, so it unifies with the version a consumer's lock
+# resolves for iroh.
+ed25519-dalek = { version = "3.0.0-rc.0", features = ["serde"] }
 
 [dev-dependencies]
 # One cell proves an iroh SecretKey and the ed25519 key of its bytes are one secret (dev-only: rule 2
