@@ -1033,7 +1033,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     topology: control.topology.clone(),
                                     declared: records.declared.clone(),
                                     mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
-                                    durable: Default::default(),
+                                    durable: records.durable.clone(),
                                     republish: republish.clone(),
                                     commands: commands.clone(),
                                     own: own_commands.clone(),
@@ -2015,6 +2015,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     let planned = records.planned();
                                                     durable_births(&view, &rows, &|p| planned.get(&p.mesh).is_some_and(|m| m.contains(p)), &|id| recovery.book.is_departed(id))
                                                 };
+                                                *records.durable.lock().unwrap() = durable.clone();
                                                 let mut watched = watched_births(&view, &me_id, &mesh, &durable);
                                                 // One reading of the clocks for the tick: each birth's mark is read from the book at it.
                                                 let (now, now_ms) = (std::time::Instant::now(), local_now_ms());

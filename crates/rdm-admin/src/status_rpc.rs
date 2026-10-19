@@ -332,7 +332,8 @@ pub struct StatusAuthority {
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
     /// The births this admin's offline tick watches through durable rows alone (`durable_births`: a
     /// birth of a planned path its view holds nothing at, one born while this admin was silent),
-    /// refreshed every tick (`Records::durable`).
+    /// refreshed every tick (`Records::durable`): a declaration for one is decided as for a birth the
+    /// view holds (Q11).
     pub durable: Arc<Mutex<Vec<crate::model::Node>>>,
     /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
     /// digest published), filled once it has joined: what a node-admin's status kick asks of it.
@@ -409,9 +410,19 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
     let me_name = auth.held_name_in(view);
     match req {
         StatusRequest::DeclareNodeState { node_id, incarnation, state, operation } => {
-            // The subject, as this admin's view holds it.
-            let Some(subject) = view.births().find(|n| n.node_id == *node_id) else {
-                return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None);
+            // The subject, as this admin's view holds it, else as its offline tick watches it through
+            // durable rows alone (a birth born while this admin was silent, Q11): this admin is its
+            // authority all the same, and its view takes the birth in once its digest is installed.
+            let watched;
+            let subject = match view.births().find(|n| n.node_id == *node_id) {
+                Some(n) => n,
+                None => {
+                    watched = auth.durable.lock().unwrap().iter().find(|n| n.node_id == *node_id).cloned();
+                    match watched.as_ref() {
+                        Some(n) => n,
+                        None => return (rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown), None),
+                    }
+                }
             };
             // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
             // which sets its status (node-status.md "Status report").
