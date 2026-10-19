@@ -144,17 +144,26 @@ impl Group {
 fn exact_group(proc: &str, pid: u32, start: Option<u64>) -> Group {
     if let Some(s) = start {
         let path = format!("{proc}/{pid}/stat");
-        match std::fs::read_to_string(&path) {
-            Ok(stat) => match rdm_core::runtime::start_token_of_stat(&stat) {
-                Some(t) if t != s => return Group::Gone,
-                Some(_) => {}
-                None => return Group::unreadable(path, format!("no start token in {stat:?}")),
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Group::Gone,
-            Err(e) => return Group::unreadable(path, e),
+        if let Some(g) = start_token_group(&path, std::fs::read_to_string(&path), s) {
+            return g;
         }
     }
     group(proc, pid)
+}
+
+/// The leader's `stat` read at `path` against the handle's start token `start`: `None` when it names
+/// that process, so its thread group is read; `Gone` when it names another process or the pid no
+/// longer exists; `Unreadable` when no start token can be read from it.
+fn start_token_group(path: &str, read: std::io::Result<String>, start: u64) -> Option<Group> {
+    match read {
+        Ok(stat) => match rdm_core::runtime::start_token_of_stat(&stat) {
+            Some(t) if t != start => Some(Group::Gone),
+            Some(_) => None,
+            None => Some(Group::unreadable(path, format!("no start token in {stat:?}"))),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Group::Gone),
+        Err(e) => Some(Group::unreadable(path, e)),
+    }
 }
 
 /// The state of `pid`'s whole thread group. A task listed and gone before its `stat` was read has
@@ -689,6 +698,23 @@ mod tests {
         assert!(task_exited(&std::io::Error::from(std::io::ErrorKind::NotFound)), "gone before the open");
         assert!(task_exited(&std::io::Error::from_raw_os_error(libc::ESRCH)), "released between the open and the read");
         assert!(!task_exited(&std::io::Error::from_raw_os_error(libc::EACCES)), "a denied read says nothing of the task: Unreadable");
+    }
+
+    /// CONTRACT (deployment-provider.md §2.6: "`/proc/<pid>` gone with the start identity matched, is
+    /// `Exited`"; task files "present but unreadable or partial" are `Unknown`): the leader's `stat`
+    /// gone before its open (`NotFound`) or released between the open and the read (`ESRCH`, the node
+    /// exiting after its stop) is `Gone`; a read denied any other way (`EACCES`) is `Unreadable`.
+    /// Must NOT happen: `ESRCH` read as `Unreadable`, so inspect answers `Unknown` after the stop
+    /// ladder and the terminate is refused (soak seed 1432787 round 113, `node.delete:mesh1.admin.2`).
+    #[test]
+    fn a_leader_released_during_its_start_token_read_is_gone_and_a_denied_read_is_unreadable() {
+        let path = "/proc/7/stat";
+        let read = |e: std::io::Error| start_token_group(path, Err(e), 1);
+        assert_eq!(read(std::io::Error::from(std::io::ErrorKind::NotFound)), Some(Group::Gone), "gone before the open");
+        assert_eq!(read(std::io::Error::from_raw_os_error(libc::ESRCH)), Some(Group::Gone), "released between the open and the read");
+        assert!(matches!(read(std::io::Error::from_raw_os_error(libc::EACCES)), Some(Group::Unreadable { .. })), "a denied read says nothing of the process");
+        assert_eq!(start_token_group(path, Ok(stat_line(7, "node", 'S', 1)), 1), None, "the handle's own process: its thread group is read");
+        assert_eq!(start_token_group(path, Ok(stat_line(7, "node", 'S', 2)), 1), Some(Group::Gone), "another process at the pid");
     }
 
     /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
