@@ -96,6 +96,8 @@ mod primary_loss_takeover;
 mod supplied_clock;
 #[path = "gossip/delta_gap_recovery.rs"]
 mod delta_gap_recovery;
+#[path = "gossip/channel_member.rs"]
+mod channel_member;
 #[path = "gossip/held_status_join.rs"]
 mod held_status_join;
 #[path = "gossip/partition_rejoin.rs"]

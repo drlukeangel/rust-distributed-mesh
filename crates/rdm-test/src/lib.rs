@@ -26,6 +26,7 @@ pub mod test_app;
 
 /// The launcher half of a functional fabric, shared by test crates.
 pub mod rig;
+pub mod channel_member;
 
 // ── Scenario & Replay Harness (from former rafka-test-scenario) ──
 #[allow(missing_docs)]
