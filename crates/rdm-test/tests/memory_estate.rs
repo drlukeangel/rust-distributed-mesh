@@ -10,7 +10,7 @@
 use rdm_admin::admin::{start_on, AdminConfig};
 use rdm_admin::storage_backend::MemoryBackend;
 use rdm_admin::wiring::{FabricHooks, Wiring};
-use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeSelector, NodeSpec, NodeStatus, Nodes, PathName};
+use rdm_client::{BuildCarrier, BuildId, Builds, Fabrics, LaunchKind, NodeSelector, NodeSpec, NodeStatus, Nodes, PathName, ScopeStatus};
 use rdm_core::build::BuildPhase;
 use rdm_test::estate::{bin_dir, named, Estate};
 use rdm_transport::{NodeRpcClient, ResolvedNode, StaticResolver};
@@ -102,12 +102,31 @@ async fn until_status(nodes: &Nodes, node: &PathName, want: NodeStatus) {
     .unwrap_or_else(|_| panic!("{node} never listed {want:?}"));
 }
 
+/// The fabric's own status, as the admin's `fabric.get` answers it, once it is ready-for-traffic: the
+/// initial fabric's first ready-for-traffic, until which `node.stop` is refused `fabric-not-ready`
+/// (node-rpc-envelope.md, the node workflows; states.md, "The initial fabric before
+/// ready-for-traffic"). A node's own ready-for-traffic and a Build's `Complete` are not it: a
+/// `node.create` changes the accepted topology, which takes the fabric's rounds back to pending
+/// before the fabric first reaches it.
+async fn until_fabric_ready(fabrics: &Fabrics) {
+    tokio::time::timeout(WRONG, async {
+        loop {
+            if fabrics.get().await.unwrap_or_else(|e| panic!("fabric.get: {e}")).status == ScopeStatus::ReadyForTraffic {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the fabric never first reached ready-for-traffic"));
+}
+
 /// CONTRACT (i143 1b, Arch: "the single-admin memory estate (birth, node.create, node.stop,
 /// node.restart, build.get, from the scenario crate, file feature off) is the runtime proof"): a
 /// Day-0 node-admin started on the memory storage backend comes up ready in both seats, its storage
 /// step spanned `writes_to = "memory"`; `node.create` of two rpc nodes in mesh1 completes and lists
-/// them ready-for-traffic; `node.stop` of the first parks it (its cohort seat moving to the second)
-/// and `node.start` brings it back; `node.restart` completes and it is ready again; `build.get` of the
+/// them ready-for-traffic; once the fabric has first reached ready-for-traffic, `node.stop` of the
+/// first stops it (its cohort seat moving to the second) and `node.start` brings it back; `node.restart` completes and it is ready again; `build.get` of the
 /// first create's Build answers it Complete with its step receipts. Through all of it the admin
 /// writes nothing of its own to disk:
 /// its data dir holds no store (no `nodes/`, no `attempt-context/`), and every file under the fabric's
@@ -157,6 +176,7 @@ fn a_node_admin_on_the_memory_backend_runs_the_node_lifecycle_and_writes_nothing
         // A stop moves the stopped node's cohort seat to a secondary of its type: a second rpc node.
         Estate::workflow("node.create of a second rpc node in mesh1", nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: LaunchKind::RpcNode }).await).await;
         until_status(&nodes, &"mesh1.rpc.2".parse().unwrap(), NodeStatus::ReadyForTraffic).await;
+        until_fabric_ready(&fabrics).await;
         Estate::workflow("node.stop of mesh1.rpc.1", nodes.stop(&node).await).await;
         Estate::workflow("node.start of mesh1.rpc.1", nodes.start(&node).await).await;
         until_status(&nodes, &node, NodeStatus::ReadyForTraffic).await;
