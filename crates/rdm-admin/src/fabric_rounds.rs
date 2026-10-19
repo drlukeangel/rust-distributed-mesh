@@ -1248,6 +1248,11 @@ mod tests {
     /// The rounds of the admin `me`, as `view` holds it, over `builds` and `records`: a client on an
     /// endpoint of its own whose resolver names nobody, and `actions` for its own round work.
     async fn rounds_of(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, actions: Arc<dyn RoundActions>) -> Arc<FabricRounds> {
+        rounds_resolving(me, view, builds, records, fabric_id, actions, Arc::new(rdm_transport::StaticResolver::new())).await
+    }
+
+    /// [`rounds_of`] whose client resolves through `resolver`.
+    async fn rounds_resolving(me: &Node, view: Topology, builds: Arc<dyn BuildStateAdapter>, records: Arc<Records>, fabric_id: FabricId, actions: Arc<dyn RoundActions>, resolver: Arc<rdm_transport::StaticResolver>) -> Arc<FabricRounds> {
         let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         FabricRounds::new(RoundEnv {
             me: me.name.clone(),
@@ -1255,7 +1260,7 @@ mod tests {
             incarnation: me.incarnation_id.clone().expect("a birth"),
             fabric_id,
             topology: Arc::new(RwLock::new(view)),
-            client: Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new()))),
+            client: Arc::new(NodeRpcClient::new(ep, resolver)),
             builds,
             contexts: Arc::new(AttemptContexts::in_memory()),
             declarer: Declarer::new(),
@@ -1356,6 +1361,53 @@ mod tests {
         let attempts: Vec<String> = capture.named("rdm.node_admin.fabric.update.via-round-opened").into_iter().filter_map(|s| s.attributes.get("attempt").cloned()).collect();
         assert_eq!(attempts, ["1", "2"], "a round per attempt");
         assert_eq!(commands_to(&capture, "mesh2.admin.1"), ["first", "first"], "mesh2's primary is commanded again under attempt 2's round");
+    }
+
+    /// CONTROL (i146 e3, R8; node-rpc.md §43: "Retry stops on the ack, on the receiver's proven exit or
+    /// accepted removal, or on explicit cancellation or retargeting by the owning workflow; never on a
+    /// timer, never on absence from a view"): a round command is one Owed call the delivery layer
+    /// resends until the commanded primary answers. mesh2's primary is planned and never answers (its
+    /// endpoint is unknown to the client); the one call is resent past any bounded call's deadline,
+    /// the target reads unreachable and then reachable again in the view, and the round book sends
+    /// nothing beside the call: one command hook, no `reachable-again`. Closing the round cancels the
+    /// call. Must NOT happen: the call ending on its own deadline and the book commanding the
+    /// primary again when its route returns (the per-protocol retry loop this owner had).
+    #[tokio::test]
+    async fn a_round_command_is_one_owed_call_and_a_returned_route_sends_nothing_beside_it() {
+        let capture = crate::span_capture::Capture::new("i146-e3-round-command-control");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (builds, _) = two_mesh_build(1).await;
+        let (fp, m2) = fabric_primary_and_mesh2();
+        let ready = projected(vec![fp.clone(), m2.clone()]);
+        let gone = projected(vec![fp.clone(), Node { status: NodeStatus::PendingReconnect, ..m2.clone() }]);
+        // mesh2's primary resolves to an endpoint nobody holds, at a port nobody listens on.
+        let resolver = Arc::new(rdm_transport::StaticResolver::new());
+        let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        resolver.insert(rdm_transport::ResolvedNode { node_id: m2.node_id.clone(), name: m2.name.clone(), endpoint_id: iroh::SecretKey::generate().public(), transport_addr: silent.local_addr().unwrap(), incarnation: m2.incarnation_id.clone().unwrap() });
+        let rounds = rounds_resolving(&fp, ready.clone(), builds, Arc::new(Records::default()), FabricId::mint(), Arc::new(NoScratchpad), resolver).await;
+        rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &ready }).await;
+        let resends = || rdm_transport::DeliveryStats::get(&rounds.env.client.delivery().stats().resends);
+        // Past the 10 s a bounded call would have ended on.
+        tokio::time::timeout(std::time::Duration::from_secs(40), async {
+            while resends() < 5 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the command to mesh2's primary is still out and resent: one call carries every resend ({} resends)", resends()));
+        for view in [&gone, &gone, &ready, &ready] {
+            rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view }).await;
+            tokio::task::yield_now().await;
+        }
+        let hooks = || capture.named("rdm.node_admin.fabric.update.via-round-hook").into_iter().filter(|s| s.attributes.get("round").map(String::as_str) == Some("commit-state")).count();
+        assert_eq!(hooks(), 1, "one command was sent to mesh2's primary: the returned route sends nothing beside the call");
+        rounds.fabric_book_reset();
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        let commands = capture.named("rdm.node_admin.fabric.update.via-round-command");
+        assert_eq!(commands.len(), 1, "one command, ended by the round's close: {commands:?}");
+        assert!(commands[0].attributes.get("outcome").is_some_and(|o| o.contains("cancelled")), "closing the round cancels the owed call: {commands:?}");
     }
 
     /// The round actions this cell counts.
