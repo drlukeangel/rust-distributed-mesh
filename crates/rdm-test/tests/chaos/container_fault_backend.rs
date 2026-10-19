@@ -1268,3 +1268,68 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&own).unwrap()).unwrap();
 }
+
+const HELD_CELL: &str = "container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value";
+
+/// CONTRACT (R-FM1, node-recovery.md step 4; i143 Q50's flame): an rpc node whose container runs but is
+/// silenced against the rest of the estate past the held-running hold (`RDM_HUNG_HOLD_FLOORS`) is held
+/// running by its mesh-primary, surfaced on `node.get`; when the hold expires its exact container is
+/// terminated (`TerminateRuntime`), the provider's exit proof is taken, and the mesh-primary recovers the
+/// path as a new birth (a new node.id) over the inherited data dir: ready for traffic, serving the value
+/// stored before the silence. Must NOT happen: a terminate before the hold expires, a recovery without
+/// the terminate, the old container left running, or the stored value lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value() {
+    if crate::own_process::delegated(module_path!(), HELD_CELL) {
+        return;
+    }
+    assert_eq!(std::env::var("MESH_SPAWN_TYPE").as_deref(), Ok("container"), "this cell runs only on the container provider (MESH_SPAWN_TYPE=container); a process run never stands in for it");
+    let dir = acceptance_dir(HELD_CELL);
+    std::fs::create_dir_all(&dir).unwrap();
+    let hold_floors = 2u32;
+    let mut estate = Estate::bootstrap_with_env(owner(HELD_CELL), "fabric1", "mesh1", &[("RDM_HUNG_HOLD_FLOORS", "2")]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    let nodes = values(&estate.settled_views(&[("mesh1", 2, 2)]).await);
+    let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("the view names a fabric primary");
+    // The held node holds no cohort seat: its termination moves none.
+    let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] != true).cloned().expect("an rpc node that holds no seat");
+    let (name, id, inc) = (s(&target["name"]), s(&target["node_id"]), s(&target["incarnation_id"]));
+    let put = estate.probe(&["put", "--target", &format!("exact:{id}"), "--key", "held", "--value", "before-hold"]);
+    assert_eq!(put["outcome"], "Reply", "{put}");
+    assert_eq!(put["reply"]["incarnation_id"], inc.as_str(), "{put}");
+    let container = estate.container_of(&name).unwrap_or_else(|| panic!("{name}: no running container"));
+
+    // The silence, never lifted: the terminate ends the container that holds it.
+    let silenced = container_faults::prepare_silence(&estate, &[name.clone()], &fabric_primary).expect("the exact container and its addresses are resolved before the cut");
+    silenced.install().expect("the node's container is silenced");
+    let cut_at = now_nanos();
+    let held = wait_for(&format!("{name} surfaces held_running on node.get"), crate::node_recovery_due(), || async {
+        estate.node_value_opt(&name).await.filter(|n| n["node_id"] == id.as_str() && n["held_running"]["since"].as_u64().unwrap_or(0) > 0)
+    })
+    .await;
+    let recovered = wait_for(&format!("{name} recovered as a new birth after the hold expired"), Duration::from_secs(180), || async {
+        let n = estate.node_value_opt(&name).await?;
+        (n["status"] == "ready-for-traffic" && n["node_id"] != id.as_str() && n["held_running"].is_null()).then_some(n)
+    })
+    .await;
+    let old = container_faults::inspect(&container);
+    assert!(old.as_ref().map_or(true, |i| !i.running), "the held birth's container no longer runs: {old:?}");
+    let value = estate.probe(&["get", "--target", &format!("path:{name}"), "--key", "held"]);
+    assert_eq!(value["reply"]["result"], json!({"found": true, "value": "before-hold"}), "the new birth serves the store of the data dir it inherited: {value}");
+    assert_eq!(value["reply"]["executing_node"], recovered["node_id"], "the new birth serves it: {value}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let floor = rdm_transport::membership::staleness_floor();
+    let hold = floor * hold_floors;
+    let terminated: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "node") == name && attr(sp, "step") == "TerminateRuntime" && attr(sp, "outcome") == "complete").collect();
+    assert_eq!(terminated.len(), 1, "{name}'s exact container is terminated once: {terminated:#?}");
+    let after_ns = start(terminated[0]).saturating_sub(cut_at);
+    assert!(Duration::from_nanos(after_ns) >= hold, "the terminate waits out the hold ({hold:?}): {:?} after the cut", Duration::from_nanos(after_ns));
+    let recovery: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| attr(sp, "node") == name && attr(sp, "node_id") == id && attr(sp, "outcome").starts_with("complete")).collect();
+    assert_eq!(recovery.len(), 1, "one recovery of the terminated birth: {recovery:#?}");
+    assert!(terminated[0]["trace_id"] == recovery[0]["trace_id"] && attr(terminated[0], "attempt") == attr(recovery[0], "attempt"), "the terminate is a step of the recovery's attempt: {:#} {:#}", terminated[0]["attributes"], recovery[0]["attributes"]);
+    let trace = s(&terminated[0]["trace_id"]);
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&json!({"cell": HELD_CELL, "node": name, "old_node_id": id, "new_node_id": recovered["node_id"], "held_running": held["held_running"], "terminate_after_ms": after_ns / 1_000_000, "hold_ms": hold.as_millis() as u64, "trace": trace})).unwrap()).unwrap();
+    println!("held past the hold: terminate {}ms after the cut, flame http://192.168.68.99:16687/trace/{trace}", after_ns / 1_000_000);
+}

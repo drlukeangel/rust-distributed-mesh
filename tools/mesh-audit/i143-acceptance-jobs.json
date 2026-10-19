@@ -458,6 +458,12 @@
           "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
           "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth/estate cargo test -p rdm-test --test main container_fault_backend::container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth -- --exact",
           "dir": "target/i143-acceptance/2784/chaos-container/container_fault_backend_pauses_and_kills_exact_container_recovers_current_birth"
+        },
+        {
+          "name": "container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value",
+          "source": "crates/rdm-test/tests/chaos/container_fault_backend.rs",
+          "command": "RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2784/chaos-container/container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value/estate cargo test -p rdm-test --test main container_fault_backend::container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value -- --exact",
+          "dir": "target/i143-acceptance/2784/chaos-container/container_node_held_past_the_hold_is_terminated_and_recovered_serving_its_value"
         }
       ]
     },
