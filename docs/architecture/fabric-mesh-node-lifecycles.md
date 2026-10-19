@@ -89,7 +89,7 @@ Callers use the [typed node and Build objects](node-rpc-envelope.md#typed-object
 | [node.delete](lifecycles/node-delete.md) | Removing a node and releasing its identity |
 | [node.connections.delete](lifecycles/node-connections-delete.md) | Closing a node's connections while its process keeps running: all of them gracefully, or exactly the named ones |
 | [node recovery (RDM)](lifecycles/node-recovery.md) | Replacing a member whose exit its mesh-primary proved |
-| [Rafka replace](lifecycles/node-replace.md) | Replacing a node with a `<name>.new` successor under Rafka's recipe |
+| [Rafka replace](lifecycles/node-replace.md) | Replacing a node under Rafka's recipe: the predecessor renamed `<name>.old` live and stopped, the successor re-born at `<name>` |
 | [node status (internal)](lifecycles/node-status.md) | The node's status report and its mesh-primary's apply; not a caller op |
 | [node.topology.get](lifecycles/node-topology-get.md) | Reading a node's held topology; a [running node's reconnect](lifecycles/node-topology-get.md#running-node-reconnect) |
 | [node.name.update](lifecycles/node-name-update.md) | Renaming a node |

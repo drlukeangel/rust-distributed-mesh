@@ -58,8 +58,7 @@ Those pages link here and restate nothing.
    identity, shutdown if any, the Build floor, rafka-time now, the member cert, the row's name,
    the row's config) and the statuses it holds with their original authors and instants. An
    authority that holds no rafka-time answers `NotReady` naming why and builds no answer.
-7. The node installs the handed name, the row's, at every join, so a node renamed while stopped
-   comes back under it (R-JN1); adopts the rafka-time as it stands, at every join
+7. The node installs the handed name, the row's, at every join (R-JN1); adopts the rafka-time as it stands, at every join
    (origin-ordering.md); and on a first start installs the member cert.
 8. The node joins its mesh, `f(FabricId, MeshId)`; a node-admin joins the backbone too. Each one
    joined emits `via-joined`. A mesh with no live listener is created again under its own MeshId

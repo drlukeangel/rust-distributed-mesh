@@ -96,8 +96,9 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   stores the `path.name`, so a new `endpoint_id` or minted id has no effect on it.
   A re-attach or a growth changes nothing: the nodes are created at the same `path.name`s, and the
   routes to the new nodes materialize with no update to any topic. There are two renames, both
-  node.name.update under its [rename precondition](lifecycles/node-name-update.md): a stopped predecessor to or from
-  `<name>.old`, and a stopped successor created as `<name>.new` to or from `<name>` ([node replace](lifecycles/node-replace.md)). Nodes are system
+  node.name.update under its [rename precondition](lifecycles/node-name-update.md), always of a live node whose
+  connections are deleted and which has left its mesh: a replace's predecessor to `<name>.old`, and a rollback's
+  back to `<name>` ([node replace](lifecycles/node-replace.md)). A stopped node is never renamed. Nodes are system
   entities, never renamed by hand.
 - **A path is a path.** A path is dotted segments, minted once and immutable, with no structural meaning. The segments in use are a convention (`mesh1.broker`, `fabric1.meshes`). The link from a node to its mesh is the `MeshId` on the node row, and where a row is stored says nothing about the entity's path.
 - **The external form appears only on public interfaces** (an API answer, a log line, a span) and
@@ -123,8 +124,8 @@ a node is its `path.name` (`mesh1.broker.1`), not its minted id or its iroh key.
   member never writes its row merely because it is the subject (§2.5).
 - **A 64-hex `endpoint_id` or a minted node id in a stored reference is a defect** and is refused
   by name at the reader.
-- **The stored `path.name` does not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path.name`; a stopped predecessor is renamed
-  `<path.name>.old` and its successor, created as `<path.name>.new`, takes the `path.name`. No stored
+- **The stored `path.name` does not change on a RESTART, a RE-ATTACH, a GROWTH or a REPLACE** (§2.3): a re-attached or grown node is created at its `path.name`; a replaced predecessor, live and
+  out of its mesh, is renamed `<path.name>.old` and stopped, and its successor is created at the `path.name`: a re-birth. No stored
   reference to it is ever rewritten.
 
 ### 2.3 A new node is a new id — a REPLACE takes the old node's `path.name`, an ADD takes its own
@@ -140,7 +141,7 @@ follows the `path.name` (§2.2), so nothing stored changes when a node is replac
 
 | a new node that… | its id | its `path.name` | the node it relieves | placement |
 |---|---|---|---|---|
-| REPLACES a node in the topology | fresh | created as `mesh1.broker.1.new`, then takes over `mesh1.broker.1` | stopped, renamed `mesh1.broker.1.old` or deleted | stays as it is |
+| REPLACES a node in the topology | fresh | created at `mesh1.broker.1` once the predecessor released it | out of its mesh, renamed `mesh1.broker.1.old` then stopped, or deleted | stays as it is |
 | is ADDED | fresh | its own next one (`mesh1.broker.4`) | none | an application refers to it only by an explicit change of its own configuration |
 
 - **A replace is [node replace](lifecycles/node-replace.md).** Insert-and-fail on each of its

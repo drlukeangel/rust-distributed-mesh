@@ -23,8 +23,7 @@ runtime. Create composes it with FirstStart; restart composes it with AfterStop.
 2. Run [node.mesh.join](node-mesh-join.md): `JoinNode` on the accepting authority, the answer's name, cert
    and rafka-time installed, the mesh channel joined (and the backbone, a node-admin), `node.mesh.joined`. FirstStart makes it the process's first
    outbound call; AfterStop rejoins the same `(node.id, incarnation)` over the endpoint and path of
-   the call that commanded it, and learns who answered from the answer. A node renamed while
-   stopped starts with its old name in its digest and is admitted under the row's. Emit
+   the call that commanded it, and learns who answered from the answer. Emit
    `NodeJoined` (Data) only after the accepted join and channel join; the mesh-primary records
    pending from that frame. node.start clears NodeStopped at NodeJoined. No state is written
    before `CommandAccepted`; starting remains the executing authority's overlay.
