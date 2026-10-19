@@ -539,7 +539,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   wait fails naming the node.started its primary never took; mesh2's primary is stopped and the seat
   moves; the node's call is cancelled at the move and its node.started applied once by the new holder,
   never sent to it before its install; flame `89914ed455aa3e71a5a12b46220078f7`). The old holder's late
-  delivery refused by its store fence (Q28) is e6's: the fence is built there, and that cell with it.
+  delivery refused by its store fence (Q28) is e6's: the fence is built there, and that cell with it. Cell (2026-10-18, lane e6s4): `status_rpc::tests::a_declaration_late_to_the_old_mesh_primary_is_refused_by_its_store_and_the_new_holder_applies_it_once`. The old holder's view still names it the holder; its status store holds the seat move's cut-off (`SeatCutOff`, `WriteCutOff::Set` then `Committed`, the mesh-primary seat's scope, R14 item 4). The late node.started is answered `NotReady` naming the cut-off, no declared row is written and nothing is held applied, and its repeat is refused the same way. The new holder applies it once and answers the repeat `AlreadyApplied`, one row. Green on main: the status rows are guarded by the seat move's write cut-off, as the Build lanes are by Q28's seal.
   `node_restart::a_restart_whose_stop_was_never_admitted_resumes_stop_then_start_on_resubmission` red
   once before this landing at :220 (the member listed Leaving, not Restarting): its attempt went out at
   the unheard mark, and the stop-node committed on a connection still alive (`indeterminate`, attempt
@@ -892,7 +892,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
 - [ ] e1, e2, e3 green in the RDM gate (`rdm-gate-at.sh <lane> fast`, then `release`); each landing's
   flame cited in its row.
 - [ ] The Q13 cell (`accepted_topology::the_build_fabric_build_id_names_is_the_one_accepted_topology`)
-  green under suspension across the reconcile, in the release run.
+  green under suspension across the reconcile, in the release run. Its suspension (read 2026-10-18 on main `d9c54b38`, lane e6s4, fast run 1/1 in 31 s) is step 5: `mesh1.rpc.3` is SIGSTOPped until the view reads it silent, then 4 s more, and in this run that window spans the commit-state round of the Build before (3, 4). The command to the stopped member rode one Owed call across it (span `790fe82415d84daa`, 6.413 s, two resends of one delivery id), was applied after SIGCONT, its check-in applied (`e814cd4b4af1eb91`), and the fabric entered ready-for-traffic (`044a4c082ddc7520`; trace `bdbbd547d9598ca6e0ca1db58e785c2f`). Step 6's SIGSTOP of a seatless admin across the (3, 4) reconcile ends when the reconcile returns at its acceptance and spans no round; under (3, 4) the round held through `mesh1.rpc.2`'s kill (one Owed command ended `Indeterminate` at the birth's exit, then its new birth was commanded `first`). Which round step 5 spans is timing, not asserted. The deterministic form of a member's check-in owed across a suspension is `owed_check_ins:72` (release stem, 5/5 with the Owed round commands before `d9c54b38` landed). Left: this cell green in the release run.
 - [x] No per-protocol retry loop remains in rdm-node or rdm-admin (the e3 controls): the round commands' was the last (`fabric_rounds::tests::a_round_command_is_one_owed_call_and_a_returned_route_sends_nothing_beside_it`).
 
 ## § Dispatch ordering
