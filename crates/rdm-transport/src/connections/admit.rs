@@ -4,7 +4,7 @@
 //! or gossip connection (RDM never registers it for its own two ALPNs, `validate_alpns`). Not Node
 //! RPC's execution-capacity admission (`crate::admission`, node-rpc.md §17).
 
-use super::{read_control_msg, write_control_msg, Alpn, Birth, ConnectionsRegistry, CLOSE_CODE_REFUSED};
+use super::{write_control_msg, Alpn, Birth, ConnectionsRegistry, CLOSE_CODE_REFUSED, MAX_CONTROL_FRAME};
 use rdm_core::connections::{ConnectionKind as CoreKind, ConnectionState, NodeConnection};
 use rdm_core::ConnectionId;
 use serde::{Deserialize, Serialize};
@@ -50,54 +50,73 @@ pub(super) struct Admitted {
     pub(super) present: PresentFrame,
 }
 
+/// The one reason a dialer that presented no cert is refused under (node-connections-admit.md,
+/// Failure and receipts; empty and undecodable bytes alike).
+pub(super) const NO_CREDENTIAL: &str = "no-credential";
+
+/// What the dialer presented on the control stream.
+enum Presented {
+    Frame(PresentFrame),
+    /// The stream finished with nothing, or with bytes that are no presentation.
+    Nothing,
+    /// The read could not complete (the stream reset, the connection gone): neither verdict.
+    Gone,
+}
+
+async fn read_present(recv: &mut iroh::endpoint::RecvStream) -> Presented {
+    use iroh::endpoint::ReadExactError;
+    let ended = |e: ReadExactError| match e {
+        ReadExactError::FinishedEarly(_) => Presented::Nothing,
+        ReadExactError::ReadError(_) => Presented::Gone,
+    };
+    let mut len_buf = [0u8; 4];
+    match recv.read(&mut len_buf[..1]).await {
+        Ok(None) | Ok(Some(0)) => return Presented::Nothing,
+        Ok(Some(_)) => {}
+        Err(_) => return Presented::Gone,
+    }
+    if let Err(e) = recv.read_exact(&mut len_buf[1..]).await {
+        return ended(e);
+    }
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_CONTROL_FRAME {
+        return Presented::Nothing;
+    }
+    let mut buf = vec![0u8; len];
+    if let Err(e) = recv.read_exact(&mut buf).await {
+        return ended(e);
+    }
+    postcard::from_bytes(&buf).map_or(Presented::Nothing, Presented::Frame)
+}
+
 /// Run the step on one inbound `connection` of `alpn`: `Some` when it is admitted and its verdict
-/// written; `None` when it was refused (the verdict written, the `Refused` fact recorded, the
-/// connection closed) or never presented.
+/// written; `None` when it was refused or the dialer left before presenting. The dialer has one
+/// staleness floor from the accept to open the control stream and present on it.
 pub(super) async fn admit(registry: &ConnectionsRegistry, alpn: &Alpn, connection: &iroh::endpoint::Connection) -> Option<Admitted> {
     let floor = rdm_core::cadence::staleness_floor();
-    let Ok(Ok((mut ctrl_send, mut ctrl_recv))) = tokio::time::timeout(floor, connection.accept_bi()).await else {
-        return None;
+    let deadline = tokio::time::Instant::now() + floor;
+    let (mut ctrl_send, mut ctrl_recv) = match tokio::time::timeout_at(deadline, connection.accept_bi()).await {
+        Ok(Ok(bi)) => bi,
+        Ok(Err(_)) => return None,
+        Err(_) => {
+            refuse(registry, alpn, connection, None, None, NO_CREDENTIAL).await;
+            return None;
+        }
     };
-    let present: PresentFrame = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
-        Ok(Ok(Some(p))) => p,
-        _ => return None,
+    let present = match tokio::time::timeout_at(deadline, read_present(&mut ctrl_recv)).await {
+        Ok(Presented::Frame(p)) => p,
+        Ok(Presented::Gone) => return None,
+        Ok(Presented::Nothing) | Err(_) => {
+            refuse(registry, alpn, connection, Some(&mut ctrl_send), None, NO_CREDENTIAL).await;
+            return None;
+        }
     };
     let own = registry.inner.sink.own_birth();
     let alpn_str = String::from_utf8_lossy(&alpn.name).into_owned();
     let verify_res = registry.inner.admitter.lock().unwrap().verify(&present.caller, &alpn.name, &present.cert);
     match verify_res {
         Err(reason) => {
-            let span = tracing::info_span!(
-                "rdm.node.connections.reject.via-refused",
-                source = %present.caller.name,
-                destination = %own.name,
-                connection = connection.stable_id(),
-                alpn = %alpn_str,
-                cert_expires_at = 0u64,
-                clock = "no-certs",
-                reason = %reason,
-            );
-            if let Some(tp) = present.traceparent.as_deref() {
-                crate::set_parent(&span, tp);
-            }
-            span.in_scope(|| tracing::info!("inbound connection refused at node.connections.admit"));
-            let refused_row = NodeConnection {
-                id: ConnectionId::mint(),
-                source: present.caller.to_end(),
-                destination: own.to_end(),
-                kind: CoreKind::Direct,
-                alpn: alpn.name.clone(),
-                state: ConnectionState::Refused,
-                carrier: None,
-                recovery: None,
-                reason: Some(reason.clone()),
-                logged_at_ms: 0,
-            };
-            let _ = registry.inner.sink.record_row(refused_row).await;
-            let _ = write_control_msg(&mut ctrl_send, &AdmitVerdict::Refused { reason: reason.clone() }).await;
-            let _ = ctrl_send.finish();
-            let _ = tokio::time::timeout(floor, connection.closed()).await;
-            connection.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED), reason.as_bytes());
+            refuse(registry, alpn, connection, Some(&mut ctrl_send), Some(&present), &reason).await;
             None
         }
         Ok((cert_expires_at, clock)) => {
@@ -120,4 +139,62 @@ pub(super) async fn admit(registry: &ConnectionsRegistry, alpn: &Alpn, connectio
             Some(Admitted { ctrl_send, ctrl_recv, present })
         }
     }
+}
+
+/// Refuse `connection` with `reason` (node-connections-admit.md step 4): the verdict written back on
+/// the control stream when there is one, the `Refused` fact recorded with the birth this node's
+/// membership names for the dialer's key as its source (a key it cannot name gets the span and no
+/// row), then the connection closed with 412 carrying the reason. A dialer that presented waits for
+/// its verdict, so the close waits up to a floor for the dialer to read it and leave first.
+async fn refuse(
+    registry: &ConnectionsRegistry,
+    alpn: &Alpn,
+    connection: &iroh::endpoint::Connection,
+    ctrl_send: Option<&mut iroh::endpoint::SendStream>,
+    present: Option<&PresentFrame>,
+    reason: &str,
+) {
+    let floor = rdm_core::cadence::staleness_floor();
+    let own = registry.inner.sink.own_birth();
+    let key = connection.remote_id();
+    let dialer = registry.inner.resolver.by_endpoint(&key).map(|r| Birth { name: r.name, node_id: r.node_id, incarnation: r.incarnation });
+    let source = dialer.as_ref().map_or_else(|| key.fmt_short().to_string(), |b| b.name.to_string());
+    let span = tracing::info_span!(
+        "rdm.node.connections.reject.via-refused",
+        source = %source,
+        destination = %own.name,
+        connection = connection.stable_id(),
+        alpn = %String::from_utf8_lossy(&alpn.name),
+        cert_expires_at = 0u64,
+        clock = "no-certs",
+        reason = %reason,
+    );
+    if let Some(tp) = present.and_then(|p| p.traceparent.as_deref()) {
+        crate::set_parent(&span, tp);
+    }
+    span.in_scope(|| tracing::info!("inbound connection refused at node.connections.admit"));
+    let answered = ctrl_send.is_some();
+    if let Some(send) = ctrl_send {
+        let _ = write_control_msg(send, &AdmitVerdict::Refused { reason: reason.to_string() }).await;
+        let _ = send.finish();
+    }
+    if let Some(dialer) = dialer {
+        let refused_row = NodeConnection {
+            id: ConnectionId::mint(),
+            source: dialer.to_end(),
+            destination: own.to_end(),
+            kind: CoreKind::Direct,
+            alpn: alpn.name.clone(),
+            state: ConnectionState::Refused,
+            carrier: None,
+            recovery: None,
+            reason: Some(reason.to_string()),
+            logged_at_ms: 0,
+        };
+        let _ = tracing::Instrument::instrument(registry.inner.sink.record_row(refused_row), span.clone()).await;
+    }
+    if answered && present.is_some() {
+        let _ = tokio::time::timeout(floor, connection.closed()).await;
+    }
+    connection.close(iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED), reason.as_bytes());
 }
