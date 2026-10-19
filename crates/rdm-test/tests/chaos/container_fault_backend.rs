@@ -371,6 +371,19 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         isolated_names.iter().all(|n| node_in(&nodes, n).is_some_and(unheard)).then_some(nodes)
     })
     .await;
+    // A whole-mesh cut is heard from both sides, each on its own clock: every silenced admin marks the
+    // other mesh silent by its own staleness floor, which can come after the kept side's mark. The samples
+    // below read each silenced admin's own view, so they wait for that admin's own mark first.
+    if cut == Cut::PeerMesh {
+        for admin in &isolated_admins {
+            wait_for(&format!("{admin} hears its own mesh ready and the other mesh unheard"), Duration::from_secs(90), || async {
+                let own = local_nodes_at(&nodes, &silenced, admin).await?;
+                let isolated = |n: &Value| isolated_names.iter().any(|i| *i == s(&n["name"]));
+                (isolated_names.iter().all(|i| node_in(&own, i).is_some_and(|n| n["status"] == "ready-for-traffic")) && own.iter().filter(|n| !isolated(n)).all(unheard)).then_some(())
+            })
+            .await;
+        }
+    }
 
     // Three independent observations run together; each retains all three routes,
     // exact provider reads, filters and both sides' own views.
