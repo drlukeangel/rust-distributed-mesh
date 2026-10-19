@@ -132,7 +132,8 @@ impl Full {
     /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
     /// `node.joined` ended the stop. It clears that exact birth's restart overlay too, which the
     /// delta carries again while the source holds it open ([`Full::delta_to`]): one node.started
-    /// ended at the source ends here. A deleting overlay ends with its departure.
+    /// ended at the source ends here. A departure ends every overlay of its exact birth, its stop
+    /// included: node.delete replaces NodeStopped with the deleted retention (gossip.md §3.1).
     pub fn apply(&mut self, delta: &Delta) {
         for d in &delta.changed {
             self.in_flight.retain(|_, o| !((o.is_stop() || o.is_restart()) && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
@@ -145,7 +146,7 @@ impl Full {
             self.in_flight.insert(o.key(), o.clone());
         }
         for o in &delta.departed {
-            self.in_flight.remove(&o.key());
+            self.in_flight.retain(|_, x| !(x.node_id == o.node_id && x.incarnation == o.incarnation));
             self.departed.insert(o.node_id.to_string(), o.clone());
         }
     }
