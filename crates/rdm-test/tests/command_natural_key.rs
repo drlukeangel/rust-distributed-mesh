@@ -643,8 +643,24 @@ fn a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next
         birth.seat(&admin2, 2).await;
         assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's command is admitted");
         actions.entered.notified().await;
-        // admin2 goes away; the check-in is owed to it and resent.
+        // admin2 goes away; the check-in is owed to it and resent. Dropping admin2 does not wait for it to
+        // stop serving, so the action is released only once the birth's own call to admin2 (the
+        // connection the check-in rides) is answered by no one: the check-in then meets an admin2 that
+        // is gone, never one still closing (which answers `applied`). admin2 serves no Ping: its
+        // `Unserved` is an answer, so alive.
+        let gone = NodeTarget::ExactNode(gone_id.clone());
+        let probe = rdm_core::ping::PingRequest::Ping { payload: b"gone?".to_vec() };
+        let opts = CallOptions { budget: rdm_transport::Budget::Overall(Duration::from_millis(500)), ..CallOptions::default() };
+        let answers = || async { matches!(birth.running.node_rpc.client.call::<rdm_core::ping::Ping>(&gone, &probe, &opts).await.0, RpcOutcome::Reply(_) | RpcOutcome::Unserved(_)) };
+        assert!(answers().await, "admin2 answers the birth while it lives");
         drop(admin2);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while answers().await {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("admin2 stops answering the birth once it is dropped");
         let delivery = birth.running.node_rpc.client.delivery().clone();
         let resent_before = rdm_transport::DeliveryStats::get(&delivery.stats().resends);
         actions.gate.send_replace(true);
