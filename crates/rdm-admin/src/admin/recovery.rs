@@ -971,6 +971,30 @@ mod os_stopped_clear_tests {
         async fn put_node_held_running_of(&self, mesh: &str, row: &NodeHeldRunningRow) -> Result<(), StorageError> {
             self.0.put_node_held_running_of(mesh, row).await
         }
+        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, StorageError> {
+            self.0.node_certs_of(mesh).await
+        }
+        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), StorageError> {
+            self.0.put_node_cert_of(mesh, row).await
+        }
+        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, StorageError> {
+            self.0.node_cert_receipts_of(mesh).await
+        }
+        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), StorageError> {
+            self.0.put_node_cert_receipt_of(mesh, row).await
+        }
+        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, StorageError> {
+            self.0.mesh_issuers_of(mesh).await
+        }
+        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), StorageError> {
+            self.0.put_mesh_issuer_of(mesh, row).await
+        }
+        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, StorageError> {
+            self.0.mesh_issuer_receipts_of(mesh).await
+        }
+        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), StorageError> {
+            self.0.put_mesh_issuer_receipt_of(mesh, row).await
+        }
         async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
             self.0.remove_node_held_running_of(mesh, node_id, incarnation_id).await
         }

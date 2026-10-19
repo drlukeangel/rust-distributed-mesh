@@ -362,6 +362,43 @@ impl NodeSelf {
         *self.data_connections.lock().unwrap() = Some(registry);
     }
 
+    /// `node.cert.renew` on this birth (node-cert-renew.md step 4, Reply): the cert must decode and
+    /// name this exact birth; it is installed, so every connection this birth opens from now on
+    /// presents it, and answered `node.cert.renewed`. Nothing is closed, set or published. A cert
+    /// that does not decode, or names another birth, is refused by name and the held one kept.
+    pub fn renew_cert(&self, cert: &[u8]) -> StatusReply {
+        let me = self.held_name();
+        // The refusal is the reply's: the authority's `via-renewal` span names it.
+        let refuse = rdm_core::reply::status::rejected_cert;
+        let signed = match rdm_core::certs::cert_from_bytes(cert) {
+            Ok(s) => s,
+            Err(e) => return refuse(format!("{me} ({} {}): the cert does not decode: {e}", self.node_id, self.incarnation.as_str())),
+        };
+        if signed.cert.node_id != self.node_id || signed.cert.incarnation != self.incarnation {
+            return refuse(format!(
+                "the cert names {} ({} {}), not this birth {me} ({} {})",
+                signed.cert.name,
+                signed.cert.node_id,
+                signed.cert.incarnation.as_str(),
+                self.node_id,
+                self.incarnation.as_str()
+            ));
+        }
+        let Some(registry) = self.data_connections.lock().unwrap().clone() else {
+            return rdm_core::reply::status::not_ready(format!("{me} is still starting: it holds no connections registry to present a cert from"));
+        };
+        registry.set_member_cert(cert.to_vec());
+        tracing::info_span!("rdm.node.cert.update.via-installed", node = %me, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), expires_at = signed.cert.expiry_ms)
+            .in_scope(|| tracing::info!("the renewed member cert is installed: every connection opened from now presents it"));
+        StatusReply::CertRenewed { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), expires_at: signed.cert.expiry_ms }
+    }
+
+    /// The fabric's root set this birth admits on (`node.connections.admit`): the one its admissions
+    /// read.
+    pub fn roots(&self) -> Vec<rdm_core::certs::VerifyingKey> {
+        self.data_connections.lock().unwrap().as_ref().map(|r| r.roots().current()).unwrap_or_default()
+    }
+
     /// The connections this birth holds now (R-CR1), from its connections writer; refused by name
     /// when the process has not handed it one, so nothing is decided on a set it cannot read.
     pub async fn held_routes(&self) -> Result<Vec<rdm_core::connections::NodeConnection>, String> {

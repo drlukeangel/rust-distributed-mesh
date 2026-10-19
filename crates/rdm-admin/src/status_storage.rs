@@ -500,37 +500,21 @@ pub trait StatusStorage: Send + Sync {
     /// status rows of the mesh named `mesh` (R-FM2).
     async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError>;
     /// Every cert row among the status rows of the mesh named `mesh` (fabric-certs.md §Tracking).
-    async fn node_certs_of(&self, _mesh: &str) -> Result<Vec<NodeCertRow>, StorageError> {
-        Ok(Vec::new())
-    }
+    async fn node_certs_of(&self, mesh: &str) -> Result<Vec<NodeCertRow>, StorageError>;
     /// A blind put of a cert row among the status rows of the mesh named `mesh`.
-    async fn put_node_cert_of(&self, _mesh: &str, _row: &NodeCertRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_node_cert_of(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError>;
     /// Every cert receipt row among the status rows of the mesh named `mesh`.
-    async fn node_cert_receipts_of(&self, _mesh: &str) -> Result<Vec<NodeCertReceiptRow>, StorageError> {
-        Ok(Vec::new())
-    }
+    async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<NodeCertReceiptRow>, StorageError>;
     /// A blind put of a cert receipt row among the status rows of the mesh named `mesh`.
-    async fn put_node_cert_receipt_of(&self, _mesh: &str, _row: &NodeCertReceiptRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_node_cert_receipt_of(&self, mesh: &str, row: &NodeCertReceiptRow) -> Result<(), StorageError>;
     /// Every issuer row of the mesh named `mesh`.
-    async fn mesh_issuers_of(&self, _mesh: &str) -> Result<Vec<MeshIssuerRow>, StorageError> {
-        Ok(Vec::new())
-    }
+    async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<MeshIssuerRow>, StorageError>;
     /// A blind put of an issuer row of the mesh named `mesh`.
-    async fn put_mesh_issuer_of(&self, _mesh: &str, _row: &MeshIssuerRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_mesh_issuer_of(&self, mesh: &str, row: &MeshIssuerRow) -> Result<(), StorageError>;
     /// Every issuer receipt row of the mesh named `mesh`.
-    async fn mesh_issuer_receipts_of(&self, _mesh: &str) -> Result<Vec<MeshIssuerReceiptRow>, StorageError> {
-        Ok(Vec::new())
-    }
+    async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<MeshIssuerReceiptRow>, StorageError>;
     /// A blind put of an issuer receipt row of the mesh named `mesh`.
-    async fn put_mesh_issuer_receipt_of(&self, _mesh: &str, _row: &MeshIssuerReceiptRow) -> Result<(), StorageError> {
-        Ok(())
-    }
+    async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &MeshIssuerReceiptRow) -> Result<(), StorageError>;
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {
@@ -571,6 +555,14 @@ pub struct MemoryStatusStorage {
     data_dir_lost_at: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirLostRow>>>,
     /// The `path.name` index of each mesh's data-dir-unreadable rows.
     data_dir_unreadable_at: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeDataDirUnreadableRow>>>,
+    /// The cert rows of each mesh, by row key.
+    certs_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeCertRow>>>,
+    /// The cert receipt rows of each mesh, by row key.
+    cert_receipts_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeCertReceiptRow>>>,
+    /// The issuer rows of each mesh, by row key.
+    issuers_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, MeshIssuerRow>>>,
+    /// The issuer receipt rows of each mesh, by row key.
+    issuer_receipts_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, MeshIssuerReceiptRow>>>,
     /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
     /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
     events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
@@ -720,6 +712,38 @@ impl StatusStorage for MemoryStatusStorage {
         self.held_running_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
         Ok(())
     }
+    async fn node_certs_of(&self, mesh: &str) -> Result<Vec<NodeCertRow>, StorageError> {
+        Ok(self.certs_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    }
+    async fn put_node_cert_of(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError> {
+        self.row_write(mesh, "node-certs")?;
+        self.certs_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<NodeCertReceiptRow>, StorageError> {
+        Ok(self.cert_receipts_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    }
+    async fn put_node_cert_receipt_of(&self, mesh: &str, row: &NodeCertReceiptRow) -> Result<(), StorageError> {
+        self.row_write(mesh, "node-cert-receipts")?;
+        self.cert_receipts_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<MeshIssuerRow>, StorageError> {
+        Ok(self.issuers_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    }
+    async fn put_mesh_issuer_of(&self, mesh: &str, row: &MeshIssuerRow) -> Result<(), StorageError> {
+        self.row_write(mesh, "issuers")?;
+        self.issuers_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
+    async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<MeshIssuerReceiptRow>, StorageError> {
+        Ok(self.issuer_receipts_named.lock().unwrap().get(mesh).map(|rows| rows.values().cloned().collect()).unwrap_or_default())
+    }
+    async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &MeshIssuerReceiptRow) -> Result<(), StorageError> {
+        self.row_write(mesh, "issuer-receipts")?;
+        self.issuer_receipts_named.lock().unwrap().entry(mesh.to_string()).or_default().insert(row.key(), row.clone());
+        Ok(())
+    }
     async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         self.row_write(mesh, "held-running")?;
         let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);
@@ -799,6 +823,14 @@ const NODE_OS_STOPPED_FORMAT: &str = "node-os-stopped/1";
 const NODE_DATA_DIR_LOST_FORMAT: &str = "node-data-dir-lost/1";
 #[cfg(feature = "file-backend")]
 const NODE_DATA_DIR_UNREADABLE_FORMAT: &str = "node-data-dir-unreadable/1";
+/// The format a [`NodeCertRow`] is written in (fabric-certs.md §Tracking).
+const NODE_CERT_FORMAT: &str = "node-cert/1";
+/// The format a [`NodeCertReceiptRow`] is written in.
+const NODE_CERT_RECEIPT_FORMAT: &str = "node-cert-receipt/1";
+/// The format a [`MeshIssuerRow`] is written in.
+const MESH_ISSUER_FORMAT: &str = "mesh-issuer/1";
+/// The format a [`MeshIssuerReceiptRow`] is written in.
+const MESH_ISSUER_RECEIPT_FORMAT: &str = "mesh-issuer-receipt/1";
 
 #[cfg(feature = "file-backend")]
 /// One row per file under `status/<mesh>/` of the fabric's store root (`crate::store_root`):
@@ -825,6 +857,14 @@ pub struct FileStatusStorage {
     data_dir_lost_at: FileRecords,
     /// The `path.name` index of the data-dir-unreadable rows.
     data_dir_unreadable_at: FileRecords,
+    /// The cert rows of this mesh's births, keyed (birth, `issued_at`).
+    certs: FileRecords,
+    /// Their receipts, under the same keys.
+    cert_receipts: FileRecords,
+    /// This mesh's issuer rows, keyed (mesh, `issued_at`).
+    issuers: FileRecords,
+    /// Their receipts, one per admin.
+    issuer_receipts: FileRecords,
     /// This store's own mesh: its rows are the fields above.
     mesh: String,
     root: crate::store_root::StoreRoot,
@@ -858,6 +898,10 @@ impl FileStatusStorage {
             data_dir_unreadable: root.records(&base, "data-dir-unreadable", writer).await?,
             data_dir_lost_at: root.records(&base, "data-dir-lost-at", writer).await?,
             data_dir_unreadable_at: root.records(&base, "data-dir-unreadable-at", writer).await?,
+            certs: root.records(&base, "node-certs", writer).await?,
+            cert_receipts: root.records(&base, "node-cert-receipts", writer).await?,
+            issuers: root.records(&base, "issuers", writer).await?,
+            issuer_receipts: root.records(&base, "issuer-receipts", writer).await?,
             mesh: mesh.to_string(),
             root: root.clone(),
             writer: writer.clone(),
@@ -868,7 +912,7 @@ impl FileStatusStorage {
 
     /// The records the mesh-primary seat writes (every status row of the mesh): what a seat
     /// transfer moving that seat cuts off (R14 item 4).
-    pub fn mesh_primary_records(&self) -> [&FileRecords; 12] {
+    pub fn mesh_primary_records(&self) -> [&FileRecords; 16] {
         [
             &self.meshes,
             &self.fabric,
@@ -882,6 +926,10 @@ impl FileStatusStorage {
             &self.data_dir_unreadable,
             &self.data_dir_lost_at,
             &self.data_dir_unreadable_at,
+            &self.certs,
+            &self.cert_receipts,
+            &self.issuers,
+            &self.issuer_receipts,
         ]
     }
 
@@ -1047,6 +1095,54 @@ impl StatusStorage for FileStatusStorage {
             return self.held_running.write(&row.key(), NODE_HELD_RUNNING_FORMAT, row).await;
         }
         self.other(mesh, "held-running").await?.write(&row.key(), NODE_HELD_RUNNING_FORMAT, row).await
+    }
+    async fn node_certs_of(&self, mesh: &str) -> Result<Vec<NodeCertRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.certs.list(NODE_CERT_FORMAT).await;
+        }
+        self.other(mesh, "node-certs").await?.list(NODE_CERT_FORMAT).await
+    }
+    async fn put_node_cert_of(&self, mesh: &str, row: &NodeCertRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.certs.write(&row.key(), NODE_CERT_FORMAT, row).await;
+        }
+        self.other(mesh, "node-certs").await?.write(&row.key(), NODE_CERT_FORMAT, row).await
+    }
+    async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<NodeCertReceiptRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.cert_receipts.list(NODE_CERT_RECEIPT_FORMAT).await;
+        }
+        self.other(mesh, "node-cert-receipts").await?.list(NODE_CERT_RECEIPT_FORMAT).await
+    }
+    async fn put_node_cert_receipt_of(&self, mesh: &str, row: &NodeCertReceiptRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.cert_receipts.write(&row.key(), NODE_CERT_RECEIPT_FORMAT, row).await;
+        }
+        self.other(mesh, "node-cert-receipts").await?.write(&row.key(), NODE_CERT_RECEIPT_FORMAT, row).await
+    }
+    async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<MeshIssuerRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.issuers.list(MESH_ISSUER_FORMAT).await;
+        }
+        self.other(mesh, "issuers").await?.list(MESH_ISSUER_FORMAT).await
+    }
+    async fn put_mesh_issuer_of(&self, mesh: &str, row: &MeshIssuerRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.issuers.write(&row.key(), MESH_ISSUER_FORMAT, row).await;
+        }
+        self.other(mesh, "issuers").await?.write(&row.key(), MESH_ISSUER_FORMAT, row).await
+    }
+    async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<MeshIssuerReceiptRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.issuer_receipts.list(MESH_ISSUER_RECEIPT_FORMAT).await;
+        }
+        self.other(mesh, "issuer-receipts").await?.list(MESH_ISSUER_RECEIPT_FORMAT).await
+    }
+    async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &MeshIssuerReceiptRow) -> Result<(), StorageError> {
+        if mesh == self.mesh {
+            return self.issuer_receipts.write(&row.key(), MESH_ISSUER_RECEIPT_FORMAT, row).await;
+        }
+        self.other(mesh, "issuer-receipts").await?.write(&row.key(), MESH_ISSUER_RECEIPT_FORMAT, row).await
     }
     async fn remove_node_held_running_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), StorageError> {
         let key = NodeHeldRunningRow::key_of(node_id, incarnation_id);

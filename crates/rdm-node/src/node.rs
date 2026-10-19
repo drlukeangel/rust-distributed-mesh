@@ -1427,7 +1427,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 return Ok(crate::node_self::refuse_node_left(&me.membership.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
             let incarnation = match &req {
-                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::GetConnections { incarnation, .. } => incarnation,
+                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::GetConnections { incarnation, .. } | StatusRequest::RenewCert { incarnation, .. } => incarnation,
                 // No handler on this door for the request: not handled here (R24), decided by dispatch alone.
                 _ => return Ok(crate::node_self::request_not_handled(&me.membership.held_name(&me.digest.node.name).to_string(), &req)),
             };
@@ -1440,6 +1440,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             match req {
                 // node.connections.get: what this birth holds, under the name it holds; a read.
                 StatusRequest::GetConnections { .. } => Ok(me.own.connections_get().await),
+                // node.cert.renew: its issuing authority installs a fresh member cert on this birth.
+                StatusRequest::RenewCert { cert, .. } => Ok(me.own.renew_cert(&cert)),
                 StatusRequest::ProbeNodeState { .. } => {
                     // A parked node is Leaving with a live process: it says so and presents nothing.
                     if me.own.is_parked() {

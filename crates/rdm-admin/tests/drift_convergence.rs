@@ -2249,6 +2249,30 @@ impl rdm_admin::status_storage::StatusStorage for CountsExitPuts {
     async fn put_node_held_running_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeHeldRunningRow) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.put_node_held_running_of(mesh, row).await
     }
+    async fn node_certs_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_certs_of(mesh).await
+    }
+    async fn put_node_cert_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeCertRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_cert_of(mesh, row).await
+    }
+    async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::NodeCertReceiptRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.node_cert_receipts_of(mesh).await
+    }
+    async fn put_node_cert_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::NodeCertReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_node_cert_receipt_of(mesh, row).await
+    }
+    async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::MeshIssuerRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.mesh_issuers_of(mesh).await
+    }
+    async fn put_mesh_issuer_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_mesh_issuer_of(mesh, row).await
+    }
+    async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<rdm_admin::status_storage::MeshIssuerReceiptRow>, rdm_admin::storage_error::StorageError> {
+        self.inner.mesh_issuer_receipts_of(mesh).await
+    }
+    async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &rdm_admin::status_storage::MeshIssuerReceiptRow) -> Result<(), rdm_admin::storage_error::StorageError> {
+        self.inner.put_mesh_issuer_receipt_of(mesh, row).await
+    }
     async fn remove_node_held_running_of(&self, mesh: &str, node_id: &rdm_admin::model::NodeId, incarnation_id: &rdm_admin::model::IncarnationId) -> Result<(), rdm_admin::storage_error::StorageError> {
         self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
     }

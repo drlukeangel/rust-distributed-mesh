@@ -299,6 +299,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     // The cert material, chosen explicitly (fabric-certs.md "How RDM is instantiated"): a node-admin
     // started with no choice is refused here, by name, before it touches anything.
     let issuer = Arc::new(std::mem::take(&mut wiring.certs).issuer(rafka_time.clone()).map_err(|e| format!("{}: {e}", cfg.launch.as_ref().map(|l| l.name.to_string()).unwrap_or_else(|| "node-admin".into())))?);
+    // The fabric's cert policy is the bootstrap admin's own (fabric-certs.md §Tracking: read once by
+    // the bootstrap admin); a launched admin takes it from its entry pull below.
+    if cfg.launch.is_none() {
+        issuer.set_policy(cfg.cert_policy);
+    }
     let key_file = cfg.data_dir.join("node-key");
     let key_held = crate::blocking::blocking_io(move || key_file.try_exists()).await.map_err(|e| format!("{}: {e}", cfg.data_dir.join("node-key").display()))?;
     let step = if key_held {
@@ -942,6 +947,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     take_entry_control(&answer, &accepted, &entry_floor, &records, &cfg.mesh, &mesh_id).await;
                                     tracing::info_span!("rdm.node_admin.fabric.update.via-join", node = %name, joined = %answer.served_by)
                                         .in_scope(|| tracing::info!("entry pulled; eligible to execute Builds"));
+                                    // The cert policy rides the entry pull, as the provider does.
+                                    if let Some(p) = answer.control.cert_policy {
+                                        issuer.set_policy(p);
+                                    }
                                     FabricPolicy { provider: answer.control.provider }
                                 }
                                 None => {
@@ -1085,6 +1094,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     republish: republish.clone(),
                                     commands: commands.clone(),
                                     own: own_commands.clone(),
+                                    certs: Some(issuer.clone()),
                                     mesh_deleter: mesh_deleter.clone(),
                                     hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                                     wake: records.wake.clone(),
@@ -1410,6 +1420,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 builds: builds_dyn.clone(),
                                 membership: membership.clone(),
                                 time: rafka_time.clone(),
+                                issuer: issuer.clone(),
                             });
                             // The join door: this admin verifies a node's digest against what it deployed, installs the
                             // address for its key and answers what it holds.
@@ -1452,6 +1463,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     known: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                     primary: Arc::new(move || topo.mesh_primary().ok().map(|p| p.node.name.to_string())),
                                     issuer: issuer.clone(),
+                                    status_storage: Some(status_storage.clone()),
                                     row: Arc::new({
                                         let rows = nodes_storage.clone();
                                         move |name: PathName| {
@@ -1908,6 +1920,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         };
                                         let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, Some(declare), cfg.connections_delete_deadline).with_retire(before_ready_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
                                         own.set_connections(connections.clone());
+                                        // The app protocols this admin opens connections on: what a renewed member cert
+                                        // is installed on, and what node.connections.delete closes, as on every node.
+                                        own.set_data_connections(data_connections.clone());
                                         own.set_session(Arc::new(AdminSession {
                                             gate: park_gate.clone(),
                                             node_id: node_id.clone(),
@@ -2283,6 +2298,38 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     _ = cadence.next() => {}
                                                     _ = heard_changes.changed() => {}
                                                 }
+                                            }
+                                        }));
+                                    }
+
+                                    // Cert renewal (node-cert-renew.md, mesh-issuer-renew.md): on every gossip interval, the
+                                    // births this admin's seats make it the issuing authority of are renewed from their cert rows,
+                                    // and, holding the fabric seat, each mesh's issuer. Whoever holds a seat continues the schedule
+                                    // from the rows; a stopped admin renews nothing.
+                                    {
+                                        let own_cert = own_commands.clone();
+                                        let renewals = crate::cert_renewal::Renewals::new(
+                                            name.clone(),
+                                            node_id.clone(),
+                                            issuer.clone(),
+                                            status_storage.clone(),
+                                            node_rpc.client.clone(),
+                                            Arc::new(move |bytes: Vec<u8>| {
+                                                if let Some(own) = own_cert.get() {
+                                                    let _ = own.renew_cert(&bytes);
+                                                }
+                                            }),
+                                        );
+                                        let (topology, gate) = (control.topology.clone(), park_gate.clone());
+                                        let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
+                                        tasks.push(tokio::spawn(async move {
+                                            loop {
+                                                let turn = gate.turn("cert-renewal").await;
+                                                let view = topology.read().await.clone();
+                                                crate::cert_renewal::renew_issuers(&renewals, &view).await;
+                                                crate::cert_renewal::renew_members(&renewals, &view).await;
+                                                drop(turn);
+                                                cadence.next().await;
                                             }
                                         }));
                                     }

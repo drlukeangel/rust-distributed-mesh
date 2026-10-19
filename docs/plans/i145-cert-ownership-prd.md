@@ -203,9 +203,23 @@ No new gossip frame and no new `MemberStatus`.
   (`RenewCert`, `UpdateIssuer`, `CertRenewed`, `IssuerUpdated`, `RejectedCert`; `JoinControl::cert_policy`)
   and the rows (`NodeCertRow`, its receipt, `MeshIssuerRow`, its receipts) appended, the goldens and
   the mesh-audit lock resealed. The cells run a Day-0 node-admin in process with births deployed by
-  hand; a member's calls are cut by its admin's client admission block; the successor cell installs
-  the seat move's outcome in the successor's seat book once the holder has left (the election is
-  elections' business). Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
+  hand; a member's calls are cut by its admin's client admission block (a fault on the send path, the
+  member gossiping on); the successor cell is a process estate in which `node.stop` of the holder of
+  both seats moves them first (node-stop.md Seat holder), by the lead's word. GREEN 2026-10-19 on the
+  same branch, decided by the lead: the policy is the bootstrap admin's (`AdminConfig::cert_policy`)
+  and every entry answer carries it (`JoinControl::cert_policy`), the issuer holding it and minting
+  every issuer at one site (`mint_issuer`: the policy's issuing TTL; the CA's expiry cuts it once e5.1
+  lands); an issuer's row is put where it is minted (`mesh.issuer.create`: the join that mints it, and
+  the node-admin launch, before the launch carries it), never back-filled by a tick; a join puts the
+  birth's cert row and its receipt before the birth is admitted; the issuing authority's tick
+  (`cert_renewal::renew_members`, every gossip interval, while the admin is not stopped) renews from the
+  rows alone, a renewal not received sent again, the same issue, until the held cert expires (the
+  page's stop; changing it is Luke's, with a run that shows a birth stuck); the fabric-primary's tick
+  (`renew_issuers`) mints at the newest issuer row's point and carries it to each admin of the mesh,
+  the mesh-primary first, the fabric-primary itself in process; `node.get` shows the held issue,
+  `fabric.get` the next expiry and each mesh's stalled births. An admin's own `NodeSelf` now holds its
+  app-protocol registry (as a node's does): a renewed cert is installed on it, and its
+  `node.connections.delete` closes those connections too. Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
   Known gap, held: the policy has no durable row (`FabricIdentity` is `{ fabric_id, name }`, `model.rs:317`), and a recovered root admin with no maker reads its own env (`boot.rs:924`), as it does `MESH_SPAWN_TYPE`; nothing shows a recovery changing the TTLs.
   Two cells assert admission and are green only once e2 lands: `a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admitted`, `an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_peer_holding_the_old`.
   Page lines for e5's text: mesh-issuer-renew.md:20 ("the root rotated (a fabric re-birth)") against `fabric.root.update`; fabric-certs.md:28-31 and :50 against §Custody.

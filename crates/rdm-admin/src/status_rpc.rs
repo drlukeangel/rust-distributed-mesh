@@ -348,6 +348,10 @@ pub struct StatusAuthority {
     /// This admin as the subject of `node.connections.delete` / `stop-node` from its own mesh-admin; filled once
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
+    /// What this admin signs with: the issuing key `node.issuer.update` installs, and the rafka-time
+    /// `fabric.get` judges a stalled renewal on. `None` for an authority that holds no certs (a
+    /// testkit admin side).
+    pub certs: Option<Arc<crate::certs::CertIssuer>>,
     /// What serves `DeleteMesh` (as a leaving mesh's primary) and `MeshDeleted` (as the
     /// fabric-primary); filled once the runner exists.
     pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
@@ -771,7 +775,7 @@ impl StatusAuthority {
                     return match self.builds.current_build().await {
                         Ok(current) => {
                             let takeover = self.held_takeover.lock().unwrap().clone();
-                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage, takeover).await
+                            crate::views::fabric_answer_with_status(&me_name, &view, current.into_build_id().map(|b| b.to_string()), &*self.status_storage, takeover, self.certs.as_ref().and_then(|c| c.now_ms())).await
                         }
                         Err(e) => rdm_core::reply::status::bounded_source_failed("builds.storage", "fabric.get", &format!("{me_name} could not read its current Build: {e}")),
                     };
@@ -779,6 +783,8 @@ impl StatusAuthority {
                 return crate::views::view_answer(&me_name, &view, req).unwrap_or_else(|| rdm_core::reply::status::not_ready(format!("{me_name} answers no {} from its view", req.op())));
             }
             StatusRequest::GetConnections { incarnation, .. } => return self.read_connections(&view, incarnation).await,
+            StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert),
+            StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => return self.update_own_issuer(&view, incarnation, key, cert),
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
@@ -826,6 +832,70 @@ impl StatusAuthority {
 }
 
 impl StatusAuthority {
+    /// This admin's exact birth in `view`, when `incarnation` is it; else the reply that refuses the
+    /// call naming the birth held (R-RX5: the birth the call reached answers it).
+    fn own_birth(&self, view: &Topology, incarnation: &IncarnationId) -> Result<crate::model::Node, StatusReply> {
+        let Some(me) = view.own(&self.node_id) else {
+            return Err(rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() }));
+        };
+        match me.incarnation_id.as_ref() {
+            None => Err(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown)),
+            Some(held) if held != incarnation => Err(rdm_core::reply::stale(held.clone())),
+            Some(_) => Ok(me.clone()),
+        }
+    }
+
+    /// `node.cert.renew` of this admin's exact birth (node-cert-renew.md step 4): installed on the
+    /// app protocols it opens connections on, as a node installs it.
+    fn renew_own_cert(&self, view: &Topology, incarnation: &IncarnationId, cert: &[u8]) -> StatusReply {
+        if let Err(refused) = self.own_birth(view, incarnation) {
+            return refused;
+        }
+        match self.own.get() {
+            Some(own) => own.renew_cert(cert),
+            None => rdm_core::reply::status::not_ready(format!("{} is still starting: it holds no connections registry yet", self.me)),
+        }
+    }
+
+    /// `node.issuer.update` of this admin's exact birth (node-issuer-update.md step 3): the material must
+    /// decode, name this admin's mesh, be the key its cert names, and verify to a root this admin
+    /// holds; it is installed, so every member cert it signs from now carries it, and answered
+    /// `node.issuer.updated`. Anything else is refused by name and what it holds is kept.
+    fn update_own_issuer(&self, view: &Topology, incarnation: &IncarnationId, key: &rdm_core::status::IssuingKeyHex, cert: &str) -> StatusReply {
+        let me = match self.own_birth(view, incarnation) {
+            Ok(me) => me,
+            Err(refused) => return refused,
+        };
+        let Some(certs) = &self.certs else {
+            return rdm_core::reply::status::rejected_cert(format!("{}: this admin holds no certs", self.me));
+        };
+        let checked = (|| {
+            let secret = rdm_core::certs::decode_key(&key.0).map_err(|e| format!("the issuing key: {e}"))?;
+            let signed = rdm_core::certs::decode_issuing_cert(cert).map_err(|e| format!("the issuing cert: {e}"))?;
+            if signed.cert.mesh != me.mesh {
+                return Err(format!("the issuing cert is mesh {}'s, and {} is of mesh {}", signed.cert.mesh, self.me, me.mesh));
+            }
+            if signed.cert.issuer_pub != secret.verifying_key() {
+                return Err("the issuing key is not the key its cert names".to_string());
+            }
+            let roots: Vec<rdm_core::certs::VerifyingKey> = certs.root().into_iter().chain(self.own.get().map(|o| o.roots()).unwrap_or_default()).collect();
+            if !roots.iter().any(|r| rdm_core::certs::verify_issuer(&signed, r).is_ok()) {
+                return Err(format!("{}: no root this admin holds verifies the issuing cert", rdm_core::certs::CertError::IssuerBadSignature));
+            }
+            Ok(rdm_core::certs::IssuingKey::from_parts(secret, signed))
+        })();
+        match checked {
+            Ok(key) => {
+                let expiry = key.expiry_ms();
+                let previous = certs.install_issuer(key);
+                tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %self.me, node_id = %self.node_id, mesh = %me.mesh, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
+                    .in_scope(|| tracing::info!("the mesh's new issuer is installed: member certs are signed with it from now"));
+                StatusReply::IssuerUpdated { node_id: self.node_id.clone(), incarnation: incarnation.clone(), issuer_expires_at: expiry }
+            }
+            Err(reason) => rdm_core::reply::status::rejected_cert(format!("{}: {reason}", self.me)),
+        }
+    }
+
     /// `node.connections.get` of this admin's exact birth: the connections it holds, under the name
     /// it holds. The birth the call reached answers it (R-RX5: no receiver refuses a call for the
     /// node id it names); another incarnation is refused naming the one held.
@@ -1722,6 +1792,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
@@ -1788,6 +1859,7 @@ mod tests {
             nodes: vec![admin.clone(), declared_first.clone(), stream_first.clone(), measured.clone(), restarted.clone()],
         }));
         let authority = StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
@@ -1864,6 +1936,7 @@ mod tests {
     /// The status authority of `admin`, with `topology` as its view and `status` as its status store.
     fn authority_with_store(admin: &crate::model::Node, topology: Arc<tokio::sync::RwLock<Topology>>, fabric_id: FabricId, status: Arc<crate::status_storage::MemoryStatusStorage>) -> StatusAuthority {
         StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
@@ -2025,6 +2098,30 @@ mod tests {
         async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_held_running_of(mesh, row).await
         }
+        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.inner.node_certs_of(mesh).await
+        }
+        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert_of(mesh, row).await
+        }
+        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
+            self.inner.node_cert_receipts_of(mesh).await
+        }
+        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert_receipt_of(mesh, row).await
+        }
+        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
+            self.inner.mesh_issuers_of(mesh).await
+        }
+        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_mesh_issuer_of(mesh, row).await
+        }
+        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
+            self.inner.mesh_issuer_receipts_of(mesh).await
+        }
+        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
+        }
         async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
         }
@@ -2081,6 +2178,7 @@ mod tests {
         }));
         let status: Arc<RacingPuts> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
@@ -2149,6 +2247,7 @@ mod tests {
     /// The status authority of the admin born as `me`, deciding over `view`.
     fn authority_of(me: &crate::model::Node, view: Topology) -> StatusAuthority {
         StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
@@ -2512,6 +2611,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,
@@ -2611,6 +2711,7 @@ mod tests {
         }));
         let status: Arc<crate::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
         let authority = StatusAuthority {
+            certs: None,
             app_channels: None,
             held_takeover: Default::default(),
             declaration_seam: None,

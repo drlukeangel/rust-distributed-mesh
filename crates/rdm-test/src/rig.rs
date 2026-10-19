@@ -106,6 +106,7 @@ impl NodeObserver for LiveMesh {
             me.is_primary = true;
             let fabric_id = self.membership.book.get(node.node_id.as_str()).expect("the fixture holds its commanded birth").0.fabric_id;
             let authority = rdm_admin::status_rpc::StatusAuthority {
+                certs: None,
                 app_channels: None,
                 held_takeover: Default::default(),
                 me: me.name.clone(), node_id: me.node_id.clone(), fabric_id: fabric_id.clone(),
@@ -437,7 +438,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
     let join_slot: rdm_admin::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let door = {
         let learner = membership.clone();
-        Arc::new(rdm_admin::join::JoinDoor { types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
+        Arc::new(rdm_admin::join::JoinDoor { status_storage: None, types: Arc::new(|_, _| Box::pin(async { Ok(()) })),
             me: name.parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new({

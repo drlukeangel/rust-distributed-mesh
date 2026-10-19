@@ -815,6 +815,9 @@ pub(crate) struct EntryState {
     pub(crate) membership: Membership,
     /// The rafka-time this admin adopted: a join is answered with it, never with the OS clock.
     pub(crate) time: rdm_transport::clock::RafkaTime,
+    /// What this admin signs with: its cert policy rides every entry answer (fabric-certs.md
+    /// §Tracking: "carried to every later admin in its entry pull").
+    pub(crate) issuer: Arc<crate::certs::CertIssuer>,
 }
 
 impl EntryState {
@@ -833,7 +836,7 @@ impl EntryState {
         // an admin that holds no Build or no Fabric.
         let build = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
-        let control = crate::wire::JoinControl { cert_policy: None, provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
+        let control = crate::wire::JoinControl { cert_policy: Some(e.issuer.policy()), provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
         let me_str = me.to_string();
         Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.membership.status_frames(&me_str) })
     }

@@ -219,6 +219,10 @@ pub struct JoinDoor {
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     /// The signer this admin issues each accepted birth's member cert with, on its rafka-time.
     pub issuer: Arc<crate::certs::CertIssuer>,
+    /// Where each issue's cert row is put before the birth is admitted (fabric-certs.md §Tracking),
+    /// and the issuer row of a mesh issuer the issue minted first; `None` for a door that keeps no
+    /// rows (a testkit admin side).
+    pub status_storage: Option<Arc<dyn crate::status_storage::StatusStorage>>,
     /// The node row at a `path.name`: a point read through the store's `path.name` key (`Ok(None)`
     /// when none was ever written). The join answer hands the row's config beside its name.
     pub row: Arc<dyn Fn(PathName) -> Pin<Box<dyn Future<Output = Result<Option<crate::storage::NodeRow>, String>> + Send>> + Send + Sync>,
@@ -311,7 +315,7 @@ impl JoinDoor {
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.
                 let birth = crate::certs::BirthIdentity { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), mesh: d.node.name.mesh.clone(), endpoint_key: d.node.endpoint_id.clone() };
-                let cert = match self.issuer.member(&birth) {
+                let issue = match self.issuer.issue_member(&birth) {
                     Ok(c) => c,
                     Err(crate::certs::IssueFailure::NoRafkaTime(why)) => {
                         span.record("outcome", "not-ready");
@@ -322,6 +326,24 @@ impl JoinDoor {
                         return rdm_core::reply::join::cert_refused(error.as_str().to_string(), detail);
                     }
                 };
+                // The issue's row, and its receipt (the join admits the birth holding it), are put
+                // before the birth is admitted, and the row of an issuer the issue minted first: a
+                // put refused leaves nothing installed, and the join is retried.
+                if let (Some(storage), false) = (&self.status_storage, issue.bytes.is_empty()) {
+                    let row = crate::cert_renewal::row_of(&birth, &issue);
+                    let put = async {
+                        if let Some(mint) = &issue.minted {
+                            storage.put_mesh_issuer_of(&mint.mesh, &crate::cert_renewal::issuer_row(mint)).await.map_err(|e| format!("the issuer row of mesh {}: {e}", mint.mesh))?;
+                        }
+                        storage.put_node_cert_of(&birth.mesh, &row).await.map_err(|e| format!("the cert row: {e}"))?;
+                        storage.put_node_cert_receipt_of(&birth.mesh, &crate::cert_renewal::receipt_of(&row)).await.map_err(|e| format!("the cert receipt: {e}"))
+                    };
+                    if let Err(why) = put.await {
+                        span.record("outcome", "not-ready");
+                        return rdm_core::reply::join::not_ready(format!("{}: {} ({}): {why}", self.me, birth.name, birth.node_id));
+                    }
+                }
+                let cert = issue.bytes;
                 span.record("cert_len", cert.len() as u64);
                 if let Err(why) = (self.types)(d.clone(), types).await {
                     return rdm_core::reply::join::not_ready(format!("{}: the app declaration could not be joined and recorded: {why}", self.me));

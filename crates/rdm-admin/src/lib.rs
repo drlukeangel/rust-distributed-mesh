@@ -16,6 +16,7 @@ pub use rdm_node::before_ready;
 pub mod accepted;
 pub mod build;
 pub mod certs;
+pub mod cert_renewal;
 pub mod build_claim;
 pub mod build_drive;
 pub mod build_op;

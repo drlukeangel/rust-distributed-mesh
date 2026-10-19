@@ -286,10 +286,15 @@ impl AdminRunner {
 
     /// `template` for the launch of a node-admin of `mesh`: it carries the mesh's issuing material
     /// (fabric-certs.md "Where a node-admin's signing material comes from"), the issuer this admin
-    /// holds or, holding the root, mints once for the mesh. A refusal fails the create by name: the
-    /// admin is never launched without it.
-    pub(crate) fn with_issuing_material(&self, mut t: LaunchTemplate, mesh: &str) -> Result<LaunchTemplate, String> {
-        t.issuing = self.issuer.issuing_material(mesh).map_err(|e| format!("{mesh}: the mesh's issuing material: {e}"))?;
+    /// holds or, holding the root, mints once for the mesh (`mesh.issuer.create`), whose issuer row is
+    /// put right after the mint, before the launch carries it (mesh-issuer-renew.md step 1). A
+    /// refusal fails the create by name: the admin is never launched without it.
+    pub(crate) async fn with_issuing_material(&self, mut t: LaunchTemplate, mesh: &str) -> Result<LaunchTemplate, String> {
+        let (material, minted) = self.issuer.issuing_material_minting(mesh).map_err(|e| format!("{mesh}: the mesh's issuing material: {e}"))?;
+        if let Some(mint) = minted {
+            self.status_storage.put_mesh_issuer_of(&mint.mesh, &crate::cert_renewal::issuer_row(&mint)).await.map_err(|e| format!("{mesh}: the issuer row of the mesh's new issuer: {e}"))?;
+        }
+        t.issuing = material;
         Ok(t)
     }
 
@@ -473,7 +478,7 @@ impl AdminRunner {
         }
         let mut template = self.template_for(node.kind, &node.mesh).await?;
         if node.kind == NodeKind::NodeAdmin {
-            template = self.with_issuing_material(template, &node.mesh)?;
+            template = self.with_issuing_material(template, &node.mesh).await?;
         }
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: None, held_runtimes };
@@ -641,7 +646,7 @@ impl AdminRunner {
         // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
         let mut template = self.template_for(node.kind, &node.mesh).await?;
         if node.kind == NodeKind::NodeAdmin {
-            template = self.with_issuing_material(template, &node.mesh)?;
+            template = self.with_issuing_material(template, &node.mesh).await?;
         }
         let pipeline = self.pipeline_with(&template, builds);
         let data_dir = pipeline.birth_dir(&exited);

@@ -191,6 +191,17 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
             Chosen::Ids(ids) => ids.contains(&n.node_id),
         })
         .collect();
+    // Each chosen mesh's cert rows, folded once (fabric-certs.md §Tracking: `node.get` surfaces the
+    // birth's held cert as `cert { issued_at, expires_at, issuer_expires_at }`).
+    let mut certs: BTreeMap<String, std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), crate::cert_renewal::BirthCert>> = BTreeMap::new();
+    if let Some(s) = status_storage {
+        for mesh in births.iter().map(|n| n.mesh.clone()).collect::<BTreeSet<String>>() {
+            if let Ok(folded) = crate::cert_renewal::fold_of(s, &mesh).await {
+                certs.insert(mesh, folded);
+            }
+        }
+    }
+    let certs = &certs;
     let read = births.iter().map(|n| async move {
         let (row, held_running, data_dir_lost, data_dir_unreadable) =
             futures_util::join!(row_of(storage, n), held_running_of(status_storage, n), data_dir_lost_of(status_storage, n), data_dir_unreadable_of(status_storage, n));
@@ -203,6 +214,7 @@ async fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Opti
         }
         v.held_hash = rdm_core::app_types::hash(&v.held);
         v.held_running = held_running;
+        v.cert = n.incarnation_id.as_ref().and_then(|i| certs.get(&n.mesh)?.get(&(n.node_id.clone(), i.clone()))).map(|c| rdm_core::views::NodeCertView { issued_at: c.held.issued_at, expires_at: c.held.expires_at, issuer_expires_at: c.held.issuer_expires_at });
         v.data_dir_lost = data_dir_lost;
         v.data_dir_unreadable = data_dir_unreadable;
         Ok::<_, ReadFailed>(v)
@@ -416,14 +428,22 @@ pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>) -
 /// [`fabric_answer`] with `status_storage` supplying the fabric-primary's durable `held-running` fact
 /// (R-FM1), and `takeover` the fabric-seat takeover this admin holds because the store could not
 /// commit it (elections §5).
-pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, status_storage: &dyn StatusStorage, takeover: Option<rdm_core::views::HeldTakeover>) -> StatusReply {
+///
+/// The cert rows give the next expiry across the fabric and each mesh whose renewals stall at
+/// `now_ms`, this admin's rafka-time (fabric-certs.md §Tracking).
+pub async fn fabric_answer_with_status(me: &PathName, view: &Topology, build_id: Option<String>, status_storage: &dyn StatusStorage, takeover: Option<rdm_core::views::HeldTakeover>, now_ms: Option<u64>) -> StatusReply {
     let held = match view.fabric_primary() {
         Some(fp) => held_running_of(Some(status_storage), fp).await,
         None => None,
     };
+    let (next_expiry, stalled) = crate::cert_renewal::fabric_watch(view, status_storage, now_ms).await;
     let mut reply = fabric_answer_with_held(me, view, build_id, held);
-    if let (StatusReply::Fabric { fabric }, Some(t)) = (&mut reply, takeover) {
-        fabric.takeover = Some(t);
+    if let StatusReply::Fabric { fabric } = &mut reply {
+        fabric.takeover = takeover;
+        fabric.next_expiry = next_expiry;
+        for m in fabric.meshes.iter_mut() {
+            m.renewals = stalled.get(&m.name).map(|nodes| rdm_core::views::Renewals::Stalled { nodes: nodes.clone() });
+        }
     }
     reply
 }

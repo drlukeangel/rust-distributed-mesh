@@ -368,9 +368,29 @@ impl CertPolicy {
 /// TTL. Computed from those fields alone, so a successor authority reading the cert row computes the
 /// same point.
 pub fn renew_at(node_id: &NodeId, incarnation: &IncarnationId, issued_at_ms: u64, expires_at_ms: u64, renew_at_permille: u32) -> u64 {
-    // RED (i145 e3): not computed yet.
-    let _ = (node_id, incarnation, issued_at_ms, renew_at_permille);
-    expires_at_ms
+    renew_point(&[node_id.as_str().as_bytes(), incarnation.as_str().as_bytes()], issued_at_ms, expires_at_ms, renew_at_permille)
+}
+
+/// The renew point of an issue that names `of` (a birth, a mesh), issued at `issued_at_ms` and
+/// expiring at `expires_at_ms`: `renew_at_permille` thousandths of its life, plus a jitter of up to
+/// 5 % of its life fixed by `of` and the two times. The jitter is FNV-1a over them, the same on every
+/// admin and every Rust release (never `DefaultHasher`, whose output may change).
+pub fn renew_point(of: &[&[u8]], issued_at_ms: u64, expires_at_ms: u64, renew_at_permille: u32) -> u64 {
+    let life = expires_at_ms.saturating_sub(issued_at_ms);
+    let point = issued_at_ms.saturating_add(life.saturating_mul(u64::from(renew_at_permille)) / 1000);
+    let span = life / 20;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes.iter().copied().chain([0xff]) {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for part in of {
+        eat(part);
+    }
+    eat(&issued_at_ms.to_be_bytes());
+    eat(&expires_at_ms.to_be_bytes());
+    point.saturating_add(if span == 0 { 0 } else { h % (span + 1) }).min(expires_at_ms)
 }
 
 #[cfg(test)]

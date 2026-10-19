@@ -222,6 +222,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                 projected.sort_by(|a, b| a.0.cmp(&b.0));
                 // rpc.1 declares to its new primary.
                 let authority = rdm_admin::status_rpc::StatusAuthority {
+                    certs: None,
                     app_channels: None,
                     held_takeover: Default::default(),
                     declaration_seam: None,
@@ -342,6 +343,7 @@ fn an_acknowledged_ready_birth_is_in_its_successors_first_complete_projection() 
                 let held_root = rdm_admin::store_root::StoreRoot::held_at(&dir, pad.clone());
                 let storage = Arc::new(FileStatusStorage::open(&held_root, "mesh1", a.incarnation_id.as_ref().unwrap()).await.unwrap());
                 let authority = rdm_admin::status_rpc::StatusAuthority {
+                    certs: None,
                     app_channels: None,
                     held_takeover: Default::default(), declaration_seam: None, command_frame_seam: None,
                     operation_effects: Default::default(), stopped: Default::default(),

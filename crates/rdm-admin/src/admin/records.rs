@@ -96,6 +96,11 @@ pub struct AdminConfig {
     /// launch's when launched): this admin's own, every birth it launches carries it in its launch,
     /// and a command this admin sends that runs one is answered within it.
     pub connections_delete_deadline: Duration,
+    /// The fabric's cert policy (fabric-certs.md §Tracking: `RDM_MEMBER_CERT_TTL_SECS`,
+    /// `RDM_ISSUING_CERT_TTL_SECS`, `RDM_CA_CERT_TTL_SECS`, `RDM_CERT_RENEW_AT`), read once by the
+    /// bootstrap admin. A launched admin's is the defaults here: it takes the fabric's from its entry
+    /// pull, never from its environment.
+    pub cert_policy: rdm_core::certs::CertPolicy,
 }
 
 impl AdminConfig {
@@ -178,9 +183,14 @@ impl AdminConfig {
             Some(l) => l.connections_delete_deadline,
             None => rdm_core::launch::decode_connections_delete_deadline(get(rdm_core::launch::ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         };
+        let cert_policy = match &launch {
+            Some(_) => rdm_core::certs::CertPolicy::default(),
+            None => rdm_core::certs::CertPolicy::from_env(&get)?,
+        };
         Ok(Self {
             stopped_node_ttl,
             connections_delete_deadline,
+            cert_policy,
             fabric,
             fabric_id,
             mesh_primary,

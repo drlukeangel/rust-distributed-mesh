@@ -601,10 +601,13 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
 
         let rotated = until("the fabric-primary re-mints mesh1's issuer", BOUND, async || named(&spans, "rdm.fabric.issuer.update.via-renewal").into_iter().find(|f| f.get("mesh").map(String::as_str) == Some("mesh1") && f.contains_key("outcome"))).await;
         assert_eq!(num(&rotated, "previous_issuer_expires_at"), old.cert.expiry_ms, "{rotated:?}");
-        let installed = until("mesh1.admin.2 installs the new issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2"))).await;
+        until("mesh1.admin.2 installs the new issuer", BOUND, async || named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2"))).await;
         // From here the old issuer's holder is not reached by its own renewal.
         cut_calls(&root, &holder);
-        let update = named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("outcome").map(String::as_str) == Some("installed")).unwrap_or_else(|| panic!("the fabric-primary's update of mesh1.admin.2 is spanned installed beside {installed:?}"));
+        let update = until("the fabric-primary's update of mesh1.admin.2 is received", BOUND, async || {
+            named(&spans, "rdm.node_admin.issuer.update.via-renewal").into_iter().find(|f| f.get("node").map(String::as_str) == Some("mesh1.admin.2") && f.get("outcome").map(String::as_str) == Some("installed"))
+        })
+        .await;
         assert_eq!(num(&update, "issuer_expires_at"), num(&rotated, "issuer_expires_at"));
 
         let newer = member(&admin2, &dir, "mesh1.rpc.2").await;

@@ -154,6 +154,7 @@ async fn rig_with_book(book: Option<rdm_transport::membership::DigestBook>) -> (
     let mesh_ids: BTreeMap<String, MeshId> = [("mesh1".to_string(), m1id.clone()), ("mesh2".to_string(), m2id.clone())].into_iter().collect();
     let rig_mesh_ids = mesh_ids.clone();
     let authority = Arc::new(StatusAuthority {
+        certs: None,
         app_channels: None,
         held_takeover: Default::default(),
         declaration_seam: None,
@@ -2082,6 +2083,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
         let admin = admin.node.clone();
         async move {
             let authority = StatusAuthority {
+                certs: None,
                 app_channels: None,
                 held_takeover: Default::default(),
                 declaration_seam: None,

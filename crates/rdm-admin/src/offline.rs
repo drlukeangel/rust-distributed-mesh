@@ -1410,6 +1410,30 @@ pub(crate) mod tests {
         async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_held_running_of(mesh, row).await
         }
+        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.inner.node_certs_of(mesh).await
+        }
+        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert_of(mesh, row).await
+        }
+        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
+            self.inner.node_cert_receipts_of(mesh).await
+        }
+        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert_receipt_of(mesh, row).await
+        }
+        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
+            self.inner.mesh_issuers_of(mesh).await
+        }
+        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_mesh_issuer_of(mesh, row).await
+        }
+        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
+            self.inner.mesh_issuer_receipts_of(mesh).await
+        }
+        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
+        }
         async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await
         }
@@ -1559,6 +1583,30 @@ pub(crate) mod tests {
         }
         async fn put_node_held_running_of(&self, mesh: &str, row: &crate::status_storage::NodeHeldRunningRow) -> Result<(), crate::storage_error::StorageError> {
             self.inner.put_node_held_running_of(mesh, row).await
+        }
+        async fn node_certs_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertRow>, crate::storage_error::StorageError> {
+            self.inner.node_certs_of(mesh).await
+        }
+        async fn put_node_cert_of(&self, mesh: &str, row: &crate::status_storage::NodeCertRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert_of(mesh, row).await
+        }
+        async fn node_cert_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::NodeCertReceiptRow>, crate::storage_error::StorageError> {
+            self.inner.node_cert_receipts_of(mesh).await
+        }
+        async fn put_node_cert_receipt_of(&self, mesh: &str, row: &crate::status_storage::NodeCertReceiptRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_node_cert_receipt_of(mesh, row).await
+        }
+        async fn mesh_issuers_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerRow>, crate::storage_error::StorageError> {
+            self.inner.mesh_issuers_of(mesh).await
+        }
+        async fn put_mesh_issuer_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_mesh_issuer_of(mesh, row).await
+        }
+        async fn mesh_issuer_receipts_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::MeshIssuerReceiptRow>, crate::storage_error::StorageError> {
+            self.inner.mesh_issuer_receipts_of(mesh).await
+        }
+        async fn put_mesh_issuer_receipt_of(&self, mesh: &str, row: &crate::status_storage::MeshIssuerReceiptRow) -> Result<(), crate::storage_error::StorageError> {
+            self.inner.put_mesh_issuer_receipt_of(mesh, row).await
         }
         async fn remove_node_held_running_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<(), crate::storage_error::StorageError> {
             self.inner.remove_node_held_running_of(mesh, node_id, incarnation_id).await

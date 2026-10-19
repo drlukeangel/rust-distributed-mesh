@@ -1858,6 +1858,9 @@ mod tests {
             (StatusReply::MeshJoined { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, ReplyKind::Success),
             (StatusReply::MeshLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::Success),
             (StatusReply::RequestNotHandled { request: "declare-node-state".into() }, ReplyKind::new(crate::outcome::Code::Unimplemented)),
+            (StatusReply::CertRenewed { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), expires_at: 7 }, ReplyKind::Success),
+            (StatusReply::IssuerUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), issuer_expires_at: 7 }, ReplyKind::Success),
+            (StatusReply::RejectedCert { reason: "x".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1905,6 +1908,8 @@ mod tests {
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
             StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "join-mesh:mesh1.rpc.1".into() },
             StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() },
+            StatusRequest::RenewCert { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), cert: vec![1, 2, 3] },
+            StatusRequest::UpdateIssuer { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), key: IssuingKeyHex("ab".into()), cert: "cd".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

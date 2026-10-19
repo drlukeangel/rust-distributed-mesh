@@ -183,6 +183,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let installed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = installed.clone();
         let door = JoinDoor {
+            status_storage: None,
             me: "mesh1.admin.1".parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new(|| Box::pin(async { Err("a refused join is never answered".to_string()) })),

@@ -24,6 +24,9 @@ pub fn rejected_stale_fabric(held: FabricId) -> StatusReply { StatusReply::Rejec
 pub fn rejected_not_authority(why: NotAuthority) -> StatusReply { StatusReply::RejectedNotAuthority { why } }
 /// Construct the typed rejected-invalid-node-transition outcome.
 pub fn rejected_invalid_node_transition(current: NodeState) -> StatusReply { StatusReply::RejectedInvalidNodeTransition { current } }
+/// Construct the typed rejected-cert outcome: a renewed member cert or an issuer update refused by
+/// name, what the receiver holds kept (node-cert-renew.md, node-issuer-update.md).
+pub fn rejected_cert(reason: String) -> StatusReply { StatusReply::RejectedCert { reason } }
 /// Construct the typed rejected-invalid-mesh-transition outcome.
 pub fn rejected_invalid_mesh_transition(current: MeshState) -> StatusReply { StatusReply::RejectedInvalidMeshTransition { current } }
 /// Construct the typed peer-unresolved outcome.

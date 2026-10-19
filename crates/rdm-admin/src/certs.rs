@@ -159,6 +159,22 @@ pub struct MemberIssue {
     /// When its issuing authority renews it: the policy's point plus the birth's fixed jitter
     /// ([`rdm_core::certs::renew_at`]).
     pub renew_at: u64,
+    /// The mesh issuer this issue minted first (`mesh.issuer.create`), whose row the caller puts.
+    pub minted: Option<IssuerMint>,
+}
+
+/// A mesh issuer minted under the root (`mesh.issuer.create`, `mesh.issuer.renew`): what the mesh's
+/// issuer row records of it (mesh-issuer-renew.md step 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuerMint {
+    /// The mesh it signs for.
+    pub mesh: String,
+    /// When it was minted, on the minting admin's rafka-time.
+    pub issued_at: u64,
+    /// When its issuing cert expires.
+    pub expires_at: u64,
+    /// When the fabric-primary renews it: the policy's point of its life plus its fixed jitter.
+    pub renew_at: u64,
 }
 
 /// A node-admin's cert material together with the rafka-time it issues on: what the join door and
@@ -169,38 +185,152 @@ pub struct CertIssuer {
     /// The issuing key of each mesh this admin signs for: minted once from the root, or the one it
     /// was given.
     issuers: Mutex<BTreeMap<String, IssuingKey>>,
+    /// The fabric's cert policy this admin issues under: the defaults until it is set.
+    policy: Mutex<rdm_core::certs::CertPolicy>,
 }
 
 impl CertIssuer {
     /// The explicit choice of no certs, on `time`.
     pub fn no_certs(time: RafkaTime) -> Self {
-        Self { material: Material::NoCerts, time, issuers: Mutex::default() }
+        Self { material: Material::NoCerts, time, issuers: Mutex::default(), policy: Mutex::default() }
     }
 
     /// An issuer holding the fabric's root `secret`, and its own mesh's issuing key `issuing` when its
     /// launch gave it one, on `time`.
     pub fn with_root(secret: SigningKey, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
         let issuers = issuing.into_iter().map(|k| (k.mesh().to_string(), k)).collect();
-        Self { material: Material::Root(secret), time, issuers: Mutex::new(issuers) }
+        Self { material: Material::Root(secret), time, issuers: Mutex::new(issuers), policy: Mutex::default() }
     }
 
     /// Hold `policy`, the fabric's cert policy, from now on (fabric-certs.md §Tracking: read once by
     /// the bootstrap admin, carried to every later admin in its entry pull). Until it is set, the
     /// policy is the defaults.
     pub fn set_policy(&self, policy: rdm_core::certs::CertPolicy) {
-        let _ = policy;
+        *self.policy.lock().unwrap() = policy;
     }
 
     /// The cert policy this admin issues under.
     pub fn policy(&self) -> rdm_core::certs::CertPolicy {
-        rdm_core::certs::CertPolicy::default()
+        *self.policy.lock().unwrap()
     }
 
-    /// [`Self::member`], with what the birth's cert row records of the issue.
+    /// Whether this admin was started with no certs: it issues nothing and renews nothing.
+    pub fn is_no_certs(&self) -> bool {
+        matches!(self.material, Material::NoCerts)
+    }
+
+    /// This admin's rafka-time now, when it holds one: what its issues and renewals are judged on.
+    pub fn now_ms(&self) -> Option<u64> {
+        self.time.try_now_ms()
+    }
+
+    /// The member cert of `birth` issued at its join, with what the birth's cert row records of it:
+    /// [`Self::member`], spanned `rdm.node_admin.cert.create.via-join`.
     pub fn issue_member(&self, birth: &BirthIdentity) -> Result<MemberIssue, IssueFailure> {
-        let bytes = self.member(birth)?;
-        let cert = rdm_core::certs::cert_from_bytes(&bytes).map(|s| (s.cert.expiry_ms, s.issuer.cert.expiry_ms)).unwrap_or_default();
-        Ok(MemberIssue { bytes, issued_at: 0, expires_at: cert.0, issuer_expires_at: cert.1, renew_at: cert.0 })
+        if matches!(self.material, Material::NoCerts) {
+            let now = self.time.try_now_ms().unwrap_or(0);
+            tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
+                .in_scope(|| tracing::info!("this node-admin is configured with no certs: the member cert is empty"));
+            return Ok(MemberIssue { bytes: Vec::new(), issued_at: now, expires_at: 0, issuer_expires_at: 0, renew_at: 0, minted: None });
+        }
+        let span = tracing::info_span!(
+            "rdm.node_admin.cert.create.via-join",
+            node = %birth.name,
+            node_id = %birth.node_id,
+            incarnation_id = %birth.incarnation.as_str(),
+            issued_at_rafka_ms = tracing::field::Empty,
+            expires_at_rafka_ms = tracing::field::Empty,
+            issuer_expires_at_rafka_ms = tracing::field::Empty,
+            cert_len = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        let _g = span.enter();
+        let issued = self.now("a member cert").and_then(|now_ms| {
+            span.record("issued_at_rafka_ms", now_ms);
+            self.sign(birth, now_ms, None)
+        });
+        match &issued {
+            Ok(i) => {
+                span.record("issuer_expires_at_rafka_ms", i.issuer_expires_at);
+                span.record("expires_at_rafka_ms", i.expires_at);
+                span.record("cert_len", i.bytes.len() as u64);
+                span.record("outcome", "issued");
+            }
+            Err(IssueFailure::NoRafkaTime(_)) => {
+                span.record("outcome", "no-rafka-time");
+            }
+            Err(IssueFailure::Refused { error, detail }) => {
+                span.record("outcome", "refused");
+                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %error, detail = %detail)
+                    .in_scope(|| tracing::warn!("the member cert is refused: the join is refused"));
+            }
+        }
+        issued
+    }
+
+    /// A fresh member cert of `birth`, issued now for its renewal (node-cert-renew.md step 2).
+    pub fn renewal(&self, birth: &BirthIdentity) -> Result<MemberIssue, IssueFailure> {
+        let now_ms = self.now("a member cert")?;
+        self.sign(birth, now_ms, None)
+    }
+
+    /// The member cert of `birth` its renewal issued at `issued_at`, expiring at `expires_at`, signed
+    /// again for a renewal that did not reach it (node-cert-renew.md step 3): the same issue, the same
+    /// row, signed with the mesh's current issuing key (cut to its expiry, should it expire first).
+    pub fn renewal_again(&self, birth: &BirthIdentity, issued_at: u64, expires_at: u64) -> Result<MemberIssue, IssueFailure> {
+        self.sign(birth, issued_at, Some(expires_at))
+    }
+
+    /// Sign `birth`'s member cert as issued at `issued_at`: expiring the policy's member TTL from it, or
+    /// at `expires_at` when it is an issue signed again, cut to its issuer's expiry when the issuer
+    /// expires first (fabric-certs.md §Tracking: "A member cert never outlives its issuer").
+    fn sign(&self, birth: &BirthIdentity, issued_at: u64, expires_at: Option<u64>) -> Result<MemberIssue, IssueFailure> {
+        let policy = self.policy();
+        let (issuer, minted) = self.issuer_for(&birth.mesh, issued_at)?;
+        let wanted = expires_at.unwrap_or_else(|| issued_at.saturating_add(policy.member_ttl_secs.saturating_mul(1000)));
+        let expiry_ms = wanted.min(issuer.expiry_ms());
+        let signed = rdm_core::certs::issue(&issuer, birth, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("the member cert of {} ({} {})", birth.name, birth.node_id, birth.incarnation.as_str()) })?;
+        Ok(MemberIssue {
+            bytes: rdm_core::certs::cert_to_bytes(&signed),
+            issued_at,
+            expires_at: signed.cert.expiry_ms,
+            issuer_expires_at: issuer.expiry_ms(),
+            renew_at: rdm_core::certs::renew_at(&birth.node_id, &birth.incarnation, issued_at, signed.cert.expiry_ms, policy.renew_at_permille),
+            minted,
+        })
+    }
+
+    /// The issuing key this admin holds for `mesh`, if any.
+    pub fn held_issuer(&self, mesh: &str) -> Option<IssuingKey> {
+        self.issuers.lock().unwrap().get(mesh).cloned()
+    }
+
+    /// `mesh.issuer.renew` step 1: a new issuing key of `mesh` minted under the root now, held from now
+    /// on in place of the one held.
+    pub fn renew_issuer(&self, mesh: &str) -> Result<(IssuingKey, IssuerMint), IssueFailure> {
+        let now_ms = self.now("a mesh's issuing material")?;
+        let Material::Root(root) = &self.material else {
+            unreachable!("a no-certs admin renews no issuer of mesh {mesh}: its caller reads is_no_certs first")
+        };
+        let (key, mint) = self.mint_issuer(root, mesh, now_ms);
+        self.issuers.lock().unwrap().insert(mesh.to_string(), key.clone());
+        Ok((key, mint))
+    }
+
+    /// `node.issuer.update` step 3's install: hold `key` as its mesh's issuing key from now on. The
+    /// caller has checked it is its own mesh's and that the root verifies it. Returns the expiry of the
+    /// one it replaces.
+    pub fn install_issuer(&self, key: IssuingKey) -> Option<u64> {
+        self.issuers.lock().unwrap().insert(key.mesh().to_string(), key).map(|old| old.expiry_ms())
+    }
+
+    /// The one place an issuing key is minted (`mesh.issuer.create`, `mesh.issuer.renew`): under
+    /// `root`, at `now_ms`, living the policy's issuing TTL.
+    fn mint_issuer(&self, root: &SigningKey, mesh: &str, now_ms: u64) -> (IssuingKey, IssuerMint) {
+        let policy = self.policy();
+        let key = IssuingKey::mint(root, mesh, policy.issuing_ttl_secs, now_ms);
+        let mint = IssuerMint { mesh: mesh.to_string(), issued_at: now_ms, expires_at: key.expiry_ms(), renew_at: issuer_renew_at(mesh, now_ms, key.expiry_ms(), policy.renew_at_permille) };
+        (key, mint)
     }
 
     /// The fabric root's public key, when this admin holds the root.
@@ -217,79 +347,57 @@ impl CertIssuer {
 
     /// The issuing key of `mesh`: the one held, or one minted now from the root (`mesh.issuer.create`)
     /// and held from then on.
-    fn issuer_for(&self, root: &SigningKey, mesh: &str, now_ms: u64) -> IssuingKey {
+    fn issuer_for(&self, mesh: &str, now_ms: u64) -> Result<(IssuingKey, Option<IssuerMint>), IssueFailure> {
         let mut issuers = self.issuers.lock().unwrap();
         if let Some(key) = issuers.get(mesh) {
-            return key.clone();
+            return Ok((key.clone(), None));
         }
-        let key = IssuingKey::mint(root, mesh, rdm_core::certs::ISSUING_CERT_TTL_SECS, now_ms);
-        tracing::info_span!("rdm.node_admin.cert.create.via-mesh-birth", mesh, issued_at_rafka_ms = now_ms, issuer_expires_at_rafka_ms = key.expiry_ms(), outcome = "issued")
-            .in_scope(|| tracing::info!("the mesh's issuing key is minted under the fabric's root (mesh.issuer.create)"));
-        issuers.insert(mesh.to_string(), key.clone());
-        key
+        match &self.material {
+            Material::Root(root) => {
+                let (key, mint) = self.mint_issuer(root, mesh, now_ms);
+                tracing::info_span!("rdm.node_admin.cert.create.via-mesh-birth", mesh, issued_at_rafka_ms = now_ms, issuer_expires_at_rafka_ms = key.expiry_ms(), outcome = "issued")
+                    .in_scope(|| tracing::info!("the mesh's issuing key is minted under the fabric's root (mesh.issuer.create)"));
+                issuers.insert(mesh.to_string(), key.clone());
+                Ok((key, Some(mint)))
+            }
+            Material::NoCerts => unreachable!("a no-certs issuer issues nothing"),
+        }
     }
 
     /// The member cert of the exact birth `birth`, as `JoinControl::member_cert` carries it: signed by
-    /// `birth`'s mesh's issuing key, expiring [`rdm_core::certs::MEMBER_CERT_TTL_SECS`] from now on
-    /// this admin's rafka-time, cut to its issuer's expiry. Empty when configured with no certs.
+    /// `birth`'s mesh's issuing key, expiring the policy's member TTL from now on this admin's
+    /// rafka-time, cut to its issuer's expiry. Empty when configured with no certs.
     pub fn member(&self, birth: &BirthIdentity) -> Result<Vec<u8>, IssueFailure> {
-        let Material::Root(root) = &self.material else {
-            let now = self.time.try_now_ms().unwrap_or(0);
-            tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now)
-                .in_scope(|| tracing::info!("this node-admin is configured with no certs: the member cert is empty"));
-            return Ok(Vec::new());
-        };
-        let span = tracing::info_span!(
-            "rdm.node_admin.cert.create.via-join",
-            node = %birth.name,
-            node_id = %birth.node_id,
-            incarnation_id = %birth.incarnation.as_str(),
-            issued_at_rafka_ms = tracing::field::Empty,
-            expires_at_rafka_ms = tracing::field::Empty,
-            issuer_expires_at_rafka_ms = tracing::field::Empty,
-            cert_len = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-        );
-        let _g = span.enter();
-        let issued = (|| {
-            let now_ms = self.now("a member cert")?;
-            span.record("issued_at_rafka_ms", now_ms);
-            let issuer = self.issuer_for(root, &birth.mesh, now_ms);
-            span.record("issuer_expires_at_rafka_ms", issuer.expiry_ms());
-            let expiry_ms = now_ms.saturating_add(rdm_core::certs::MEMBER_CERT_TTL_SECS.saturating_mul(1000)).min(issuer.expiry_ms());
-            let signed = rdm_core::certs::issue(&issuer, birth, expiry_ms).map_err(|error| IssueFailure::Refused { error, detail: format!("the member cert of {} ({} {})", birth.name, birth.node_id, birth.incarnation.as_str()) })?;
-            span.record("expires_at_rafka_ms", signed.cert.expiry_ms);
-            Ok(rdm_core::certs::cert_to_bytes(&signed))
-        })();
-        match &issued {
-            Ok(bytes) => {
-                span.record("cert_len", bytes.len() as u64);
-                span.record("outcome", "issued");
-            }
-            Err(IssueFailure::NoRafkaTime(_)) => {
-                span.record("outcome", "no-rafka-time");
-            }
-            Err(IssueFailure::Refused { error, detail }) => {
-                span.record("outcome", "refused");
-                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %error, detail = %detail)
-                    .in_scope(|| tracing::warn!("the member cert is refused: the join is refused"));
-            }
-        }
-        issued
+        self.issue_member(birth).map(|i| i.bytes)
     }
 
     /// The issuing material of `mesh` a node-admin of it is launched with (`RDM_ISSUING_KEY`,
     /// `RDM_ISSUING_CERT`), with the root beside it (`RDM_CA_SECRET`, fabric-certs.md §Custody); `None`
     /// when configured with no certs.
     pub fn issuing_material(&self, mesh: &str) -> Result<Option<IssuingMaterial>, IssueFailure> {
-        let Material::Root(root) = &self.material else {
+        self.issuing_material_minting(mesh).map(|(m, _)| m)
+    }
+
+    /// [`Self::issuing_material`], with the issuer it minted first, if any (`mesh.issuer.create`):
+    /// the caller puts that issuer's row before the launch carries it.
+    pub fn issuing_material_minting(&self, mesh: &str) -> Result<(Option<IssuingMaterial>, Option<IssuerMint>), IssueFailure> {
+        if matches!(self.material, Material::NoCerts) {
             tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", mesh)
                 .in_scope(|| tracing::info!("this node-admin is configured with no certs: the admin is launched with no issuing material"));
-            return Ok(None);
-        };
+            return Ok((None, None));
+        }
         let now_ms = self.now("a mesh's issuing material")?;
-        Ok(Some(IssuingMaterial::of(&self.issuer_for(root, mesh, now_ms), root)))
+        let (key, minted) = self.issuer_for(mesh, now_ms)?;
+        let Material::Root(root) = &self.material else { unreachable!("a no-certs issuer hands no issuing material") };
+        Ok((Some(IssuingMaterial::of(&key, root)), minted))
     }
+}
+
+/// When the fabric-primary renews `mesh`'s issuer minted at `issued_at`, expiring at `expires_at`:
+/// the policy's point of its life plus a jitter fixed for that issue, up to 5 % (mesh-issuer-renew.md;
+/// [`rdm_core::certs::renew_at`]'s rule, over the mesh's name).
+pub fn issuer_renew_at(mesh: &str, issued_at: u64, expires_at: u64, renew_at_permille: u32) -> u64 {
+    rdm_core::certs::renew_point(&[mesh.as_bytes()], issued_at, expires_at, renew_at_permille)
 }
 
 #[cfg(test)]
