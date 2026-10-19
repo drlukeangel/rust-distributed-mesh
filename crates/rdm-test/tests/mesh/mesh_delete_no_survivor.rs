@@ -32,9 +32,11 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
         .filter(|sp| start_ns(sp) < start_ns(created[0]))
         .collect();
     assert!(declared.iter().any(|sp| sp["attributes"]["state"] == "Leaving"), "the fabric-primary applied mesh2's declared Leaving before it created the admin: {declared:?}");
-    // The created admin is handed the mesh's current state before its Ready: mesh2 is leaving, and
-    // a mesh's state only moves forward (states.md), never back to Pending or ready-for-traffic.
-    let handed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-state-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2" && sp["attributes"]["outcome"] == "applied").collect();
+    // The created admin holds the mesh's current state before its Ready: mesh2 is leaving, and a
+    // mesh's state only moves forward (states.md), never back to Pending or ready-for-traffic. It
+    // takes it from its maker's topology at entry or from the hand-off, which answers
+    // already-applied when the entry pull brought it first.
+    let handed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-state-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2" && (sp["attributes"]["outcome"] == "applied" || sp["attributes"]["outcome"] == "already-applied")).collect();
     assert!(!handed.is_empty() && handed.iter().all(|sp| sp["attributes"]["state"] == "Leaving"), "the created admin is handed mesh2's Leaving: {handed:?}");
     let pending: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|sp| sp["attributes"]["target"] == "mesh2.admin.2").collect();
     assert!(pending.is_empty(), "the created admin is never handed Pending: {pending:?}");
