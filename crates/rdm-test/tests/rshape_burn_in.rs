@@ -6755,7 +6755,9 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         let v = f.estate.node_values_at(&st.fp_name()).await;
         let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
         let b = build_attempt(&f.estate, &st, &formation).await;
-        (b["state"] == "complete" && b["attempt"].as_u64() == Some(attempt_c)).then_some(n)
+        // The restart moves the carrier's seat to the second gateway first, and the committed seat move
+        // seals its attempt's revision: the stop and start may complete under the next attempt.
+        (b["state"] == "complete" && b["attempt"].as_u64().is_some_and(|x| x >= attempt_c)).then_some(n)
     })
     .await;
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -6830,10 +6832,13 @@ async fn mock_direct_edge_loss_to_a_mesh_primary_declares_no_death() {
 /// to the destination's exact birth. Canon: connections.md section 8 (a carrier incarnation change invalidates a
 /// Proxy that names the old carrier) and section 9 H, I, K (a retirement write failure is safe and retried; a
 /// sent request is never rerouted). What must NOT happen: a second durable retirement, a call sent twice, a
-/// Direct route chosen while the retirement is owed, an answer from a superseded birth.
+/// Direct route chosen while the retirement is owed, an answer from a superseded birth. Each mesh holds a
+/// second gateway: the restarted carrier may hold its type's seat, and a restart of a seat holder with no
+/// successor is refused by name (node-restart.md, Seat holder), so its seat moves to the second gateway first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once() {
-    cutback_restart_run("mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once", any_tier()).await;
+    let tier = any_tier();
+    cutback_restart_run("mock_carrier_restart_with_a_cutback_owed_retires_the_proxy_once", Shape { gateway: tier.gateway.max(2), ..tier }).await;
 }
 
 /// CONTRACT: in the formed estate the carrier of a compute's Proxy loses its own edge to the destination (cut
