@@ -717,7 +717,9 @@ async fn a_lost_ack_of_a_response_frame_is_repaired_by_its_resend() {
 
 /// Cell 11. CONTRACT: a response written after the request's connection is gone is delivered on a
 /// new stream once the caller reconnects; the handler ran once. Its trace: the responder's
-/// `via-response-resend`, its cause named, ending `acked`, in the caller's trace.
+/// `via-response-resend`, its cause named, ending `acked`, in the caller's trace. The cut races the
+/// reply's write, so the cause is either of the server's two names for an unacked response: the ack
+/// reader saw the request direction end first (server.rs, `read_acks`), or the reply's write did.
 #[test]
 fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-response-resend").expect("the cell's evidence file can be created");
@@ -753,7 +755,11 @@ fn a_response_is_delivered_on_a_new_stream_after_a_reconnect() {
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let resends: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_rpc.delivery.update.via-response-resend" && s["trace_id"] == trace.as_str()).collect();
     assert!(
-        resends.iter().any(|s| s["attributes"]["outcome"] == "acked" && s["attributes"]["reason"].as_str().is_some_and(|r| r.starts_with("the reply's write"))),
+        resends.iter().any(|s| s["attributes"]["outcome"] == "acked"
+            && s["attributes"]["reason"].as_str().is_some_and(|r| {
+                r.starts_with("the reply's write")
+                    || (r.starts_with("the request direction ended") && r.ends_with("with a response frame unacked"))
+            })),
         "the response resend, its cause named and acked, in the caller's trace: {resends:#?}"
     );
     println!("delivery flame (a response resent on a new stream after a reconnect): {}", flame(&trace));
