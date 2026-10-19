@@ -495,10 +495,10 @@ impl RecoverySubmitter {
             // A refused put confirms nothing: the next tick records or revalidates it again.
             Err(e) => span("refused", since, &format!("the os-stopped row could not be written: {e}")),
             // Heard again between the read above and this put: the tick's clear may have run before
-            // the put, so the row this inspection wrote is removed here.
+            // the put, so the row this inspection wrote is removed here, spanned `cleared` when this
+            // removal took the row.
             Ok(()) if !self.still_offline(n) => {
-                let _ = self.status_storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, &inc).await;
-                tracing::info!(node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), "the birth was heard again during its inspection: the os-stopped row this inspection wrote is removed");
+                remove_os_stopped(&*self.status_storage, n, "returned").await;
                 return;
             }
             Ok(()) => {
