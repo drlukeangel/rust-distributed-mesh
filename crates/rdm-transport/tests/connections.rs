@@ -2213,13 +2213,13 @@ async fn refusal_of(tamper: impl FnOnce(&Chain, &TestPeer) -> rdm_core::certs::S
 /// connection on a registered ALPN whose dialer presents a correctly signed, unexpired member cert of
 /// this fabric is admitted on the acceptor's root set, judged on its rafka-time: the
 /// `via-admitted` span names the cert's expiry and the clock `rafka-time`, and the connection is
-/// served. A cert one floor past its expiry is still admitted (the skew on either side).
+/// served. A cert past its expiry by less than one floor is still admitted (the skew on either side).
 #[test]
 fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
     let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-valid-cert").expect("the cell's evidence file can be created");
     let expiries = capture.run(4, async {
         let mut expiries = Vec::new();
-        for expiry in [CHAIN_NOW_MS + 60_000, CHAIN_NOW_MS - floor_ms() + 1] {
+        for expiry in [CHAIN_NOW_MS + 60_000, CHAIN_NOW_MS - floor_ms() + 2_000] {
             let chain = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
             let root = chain.root.verifying_key();
             let admitted = dial_presenting(vec![root], |dialer| rdm_core::certs::cert_to_bytes(&chain.member(dialer, expiry))).await;
@@ -2332,4 +2332,59 @@ async fn a_root_set_replaced_at_runtime_is_read_by_the_next_admission() {
     dialer.shutdown().await;
     acceptor.shutdown().await;
     served.abort();
+}
+
+/// CONTRACT (node-connections-admit.md `NoCerts`: "A node-admin started `NoCerts` admits every
+/// connection by name, spanned `via-no-certs-configured`"): an acceptor admitting on no root set (its
+/// launcher holds no certs) admits a dialer whatever it presents, a cert of no fabric and empty bytes
+/// alike. Each admission is spanned `rdm.node.connections.create.via-no-certs-configured` (source,
+/// destination, alpn) and never `via-admitted`: no cert was judged, so none is named admitted.
+#[test]
+fn a_no_certs_acceptor_admits_by_name() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-no-certs").expect("the cell's evidence file can be created");
+    let (dialer_name, acceptor_name) = capture.run(4, async {
+        let mut names = (String::new(), String::new());
+        for some_cert in [true, false] {
+            let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+            let presented = if some_cert { rdm_core::certs::cert_to_bytes(&Chain::minted("mesh1", 3_600, CHAIN_NOW_MS).member(&dialer, CHAIN_NOW_MS + 60_000)) } else { Vec::new() };
+            let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+            dialer.know(&acceptor);
+            acceptor.know(&dialer);
+            acceptor.registry.admit_on(vec![], chain_time());
+            dialer.registry.set_member_cert(presented.clone());
+            let (opener, _) = dialer.registry.connections(ALPN_A).unwrap().split();
+            let (_, mut accepts) = acceptor.registry.connections(ALPN_A).unwrap().split();
+            let accepted = tokio::spawn(async move { accepts.accept().await.map(|c| c.id().clone()) });
+            let conn = opener.open(&acceptor.birth).await.unwrap_or_else(|e| panic!("a no-certs acceptor admits {} presented bytes: {e:?}", presented.len()));
+            let served = tokio::time::timeout(Duration::from_secs(10), accepted).await.expect("the admitted connection reaches accept").unwrap().unwrap();
+            assert_eq!(&served, conn.id());
+            names = (dialer.birth.name.to_string(), acceptor.birth.name.to_string());
+            dialer.shutdown().await;
+            acceptor.shutdown().await;
+        }
+        names
+    });
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["attributes"]["destination"] == acceptor_name.as_str()).collect::<Vec<_>>();
+    let by_name = named("rdm.node.connections.create.via-no-certs-configured");
+    assert_eq!(by_name.len(), 2, "each admission is spanned by name: {by_name:#?}");
+    let product = String::from_utf8_lossy(ALPN_A).into_owned();
+    assert!(by_name.iter().all(|s| s["attributes"]["source"] == dialer_name.as_str() && s["attributes"]["alpn"] == product.as_str()), "{by_name:#?}");
+    assert_eq!(named("rdm.node.connections.create.via-admitted"), Vec::<&serde_json::Value>::new(), "no cert was judged admitted");
+}
+
+/// CONTRACT (fabric-certs.md §On a connection: "RDM never registers the step for its own two ALPNs: a
+/// registration naming `rdm_transport::ALPN` or `iroh_gossip::ALPN` is refused by name at `bind`";
+/// node-connections-admit.md): binding the app's protocols on an endpoint with either of RDM's own
+/// ALPNs among them is refused, naming which, and no registry is made.
+#[tokio::test]
+async fn registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind() {
+    let ep = rdm_transport::endpoint::bind_with_alpns(SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    let sink = Arc::new(MemoryConnectionsSink::new(Birth { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() }));
+    for (own, says) in [(rdm_transport::ALPN, "RDM's own Node RPC ALPN"), (iroh_gossip::ALPN, "RDM's own gossip ALPN")] {
+        let refused = ConnectionsRegistry::new(ep.clone(), resolver.clone(), sink.clone(), &[alpn(ALPN_A), alpn(own)], Vec::new()).err().unwrap_or_else(|| panic!("binding {} must be refused", String::from_utf8_lossy(own)));
+        assert!(refused.contains(says) && refused.contains(&*String::from_utf8_lossy(own)), "the refusal names the ALPN and whose it is: {refused}");
+    }
+    ep.close().await;
 }
