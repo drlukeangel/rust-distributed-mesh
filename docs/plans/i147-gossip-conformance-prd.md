@@ -220,6 +220,18 @@ dedupe can suppress re-entry of the same operation from a successor publisher; t
 revision is still judged and recorded (`membership.rs:1428–1430`). That is a changed receive
 path relevant to further reproduction; the all-GREEN matrix does not establish that it caused
 or could not cause the original failures.
+**Read closed (lane e6s7, 2026-10-18).** The dedupe does suppress a successor's re-entry, as the
+receive rules say it must: the identity is the kind and the complete operation identity, never the
+publisher (`receive_order.rs` `LifecycleIdentity`; gossip.md's lifecycle-fact row), and a resumed
+attempt does re-publish its predecessor's receipted NodeDeleting or NodeRestarting under that
+identity (`pipeline.rs`, the publish after the receipt). Cells
+`lifecycle_facts::{deleting,restarting,stopped}_reentered_by_a_successor_applies_once`: the first
+publisher's copy applies once, the successor's copy is `via-duplicate`, the held operation evidence is
+unchanged, and the successor's next frame below the revision its duplicate carried is refused
+`via-stale` under its own subject. A receiver that refused the first copy as stale never applies the
+operation from any publisher (row 523's "including when the carried version is refused", and
+`membership.rs`'s `a_status_event_is_taken_whoever_published_it_…`); whether that is the intent or a lost fact against gossip.md's "no
+required fact may be lost" is a page question, raised only if a run shows it.
 
 **Precise provider-state observation for the i144 owner, from the original RED gate.**
 The fixture suspends the exact runtime, waits for its os-stopped row, then calls Kill and asserts
@@ -305,6 +317,14 @@ No new ruling question is raised by this comparison; R10 remains open and no e3 
 - **Acceptance cells.** Every e2 cell green unchanged on the envelope (the proof it changes no
   behaviour); `a_delayed_predecessors_status_is_refused_by_revision` (R10 closed);
   `the_classifier_decides_every_category_from_the_envelope_alone` (no handler reads identity);
+  **held (lane e6s7, 2026-10-18; the lead: no production path makes the frame, so it waits)**. Its
+  MeshStatus case is RED on the landed code: a frame with the held status's id, source, subject and
+  sequence and different content installs when its body names another publisher (`StatusBook::take`
+  falls back from `admit_status_context`, equal source and seat revision, to `admit_status`, which
+  compares the body's publisher name), where the receive rules say equal sequence with different
+  content is inconsistent. Trace `952a44c23599f96b83127023ffb63892` (`via-mesh-status` taken,
+  `publisher=mesh1.admin.9`), spans in `kept/e6s7-classifier-status-body-name-red/`; the RED cell is on
+  the unlanded branch `e6s7-classifier-red`. The finding waits until a run shows such a frame;
   the recovery cell (topology read, then stale gossip of each category: no rollback) as the flame.
 - **Page text.** gossip.md §3.1's catalog rows and the receive-rules table restated on the envelope's
   fields; exact old → new to Luke at e3's landing. A gossip change: Luke's permission is Q20.
