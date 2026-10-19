@@ -613,6 +613,27 @@ mod tests {
         assert!(in_window(&cut) && cut.renew_at < 16_000, "the renew point is taken from the cut life: {cut:?}");
     }
 
+    /// CONTRACT (fabric-certs.md "The chain": the fabric CA is "minted by the fabric-primary on day 0
+    /// (`fabric.ca.create`)"; §Custody: "Only the fabric-primary mints"; fabric-create.md step 1): the
+    /// bootstrap admin mints the fabric CA once, on day 0, and the same admin started again over its data
+    /// dir holds that CA: an issuer it mints after the restart is under the day-0 CA. Must NOT happen: a
+    /// second `rdm.node_admin.cert.create.via-ca-create`, or an issuer under a CA minted after day 0.
+    #[test]
+    fn a_restarted_bootstrap_admin_mints_issuers_under_its_day_zero_ca() {
+        let capture = crate::span_capture::Capture::new("i145-e5-ca-restart");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let dir = crate::test_support::tempdir("cert-ca-restart");
+        let nothing = |_: &str| None;
+        let day0 = CertChoice::from_material(&dir, "mesh1", true, nothing).unwrap().issuer(time_at(1_000)).unwrap();
+        let before = day0.issuing_material("mesh2").unwrap().expect("mesh2's issuer, minted on day 0");
+        // The same admin started again over its data dir: not day 0, nothing in its environment.
+        let restarted = CertChoice::from_material(&dir, "mesh1", false, nothing).unwrap().issuer(time_at(2_000)).unwrap();
+        let after = restarted.issuing_material("mesh3").unwrap().expect("mesh3's issuer, minted after the restart");
+        let ca_of = |m: &IssuingMaterial| rdm_core::certs::decode_issuing_cert(&m.cert).unwrap().ca;
+        assert_eq!(ca_of(&after), ca_of(&before), "the issuer minted after the restart is under the day-0 CA");
+        assert_eq!(capture.named("rdm.node_admin.cert.create.via-ca-create").len(), 1, "the fabric CA is minted once");
+    }
+
     fn tempdir_in(dir: &Path, name: &str) -> std::path::PathBuf {
         let d = dir.join(name);
         std::fs::create_dir_all(&d).unwrap();
