@@ -6711,6 +6711,41 @@ mod tests {
         assert!(book.routable(id.as_str()), "the started birth of a ready mesh is routable");
     }
 
+    /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary" from "the node's node.started report, after every start gate"; Q80 = a): a
+    /// mesh-primary that takes the node.started of a birth of its own mesh it holds no digest of yet (a
+    /// primary born while the member was silent decides its declaration from durable rows, Q11) holds the
+    /// birth ready-for-traffic and spans `from-node-started`. The birth's digest, arriving after, finds
+    /// its status held: a join digest seeds nothing (no `from-join-report`), a heartbeat moves nothing,
+    /// and every read hands the birth out ready-for-traffic. Must NOT happen: the re-born primary applying
+    /// a resumed member's ReadyForTraffic, authoring nothing, then publishing the member Pending for good
+    /// (kept/e6s7-i144-e4-re-born-admin-start-unheld, traces 8e6533b70a42c1e26c5786b9de02718a and
+    /// b9363650a79356392e9361154673417d).
+    #[test]
+    fn a_node_started_taken_before_the_births_digest_holds_it_ready_when_the_digest_arrives() {
+        let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        book.primary.store(true, Ordering::Relaxed);
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.get(id.as_str()).is_none(), "the book holds no digest of the birth");
+        assert!(book.started(&id, &inc), "node.started of a birth not held yet");
+        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::ReadyForTraffic), "held ready-for-traffic before its digest");
+        let started = spans.named("rdm.mesh.membership.update.from-node-started");
+        assert_eq!(started.iter().map(|f| f["member"].clone()).collect::<Vec<_>>(), vec!["mesh1.rpc.1".to_string()], "from-node-started names the birth: {started:#?}");
+        assert!(book.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "its digest arrives with no status");
+        assert!(spans.named("rdm.mesh.membership.update.from-join-report").is_empty(), "nothing is seeded Pending");
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 101)), "a heartbeat");
+        let ready = Some(MemberStatus::ReadyForTraffic);
+        assert_eq!(book.member_status(&id, &inc), ready, "the held status stands");
+        assert_eq!(book.get(id.as_str()).map(|(d, _)| d.status), ready, "get hands it out ready-for-traffic");
+        assert_eq!(book.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
+        assert!(book.routable(id.as_str()), "the started birth of a ready mesh is routable");
+    }
+
     /// CONTRACT: an overlay that ended stays ended: a restart node.started of its birth ended, the
     /// primary re-applying the operation each round or the Build facts still naming it open (its
     /// `Complete` is not receipted yet), and a stop its mesh-primary's node.joined ended, re-sent by a
