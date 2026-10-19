@@ -424,8 +424,8 @@ fn parent_of(pid: u32) -> Option<u32> {
 /// signal masks and their CPU ticks. Through a seat hand-over and its return, through the death of the
 /// admin that launched them, and through RDM's inspections on every tick, neither member is continued,
 /// sent a signal or run: it stays `T`, nothing pending, no CPU. Then an explicit `node.delete` of one
-/// member ends it by its terminate alone (`TerminateRuntime`, `Immediate`): it goes from `T` to gone with no
-/// signal pending before and no CPU. The other is continued by the cell, never by RDM. Must NOT happen: a
+/// member ends it by its terminate alone (`TerminateRuntime`, `Immediate`): it goes from `T`, with no signal
+/// pending and no CPU, to a zombie holding at most the terminate's SIGKILL, and is gone once reaped. The other is continued by the cell, never by RDM. Must NOT happen: a
 /// member's state other than `T` before the cell continues it or its terminate ends it, a pending signal
 /// (SIGTERM, SIGHUP, SIGCONT), CPU used while suspended, or a `TerminateRuntime` of the member not deleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -483,12 +483,16 @@ async fn the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate() {
     let kept_cpu = held_cpu(&kept.0);
     let bad: Vec<_> = kept_seen.iter().filter(|(_, _, v)| !matches!(v, Some((st, sig, shd, cpu)) if *st == 'T' && sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == kept_cpu)).collect();
     assert!(bad.is_empty() && suspended_still.is_some(), "{}: RDM never continued, signalled or ran the suspended member, through the hand-overs and the death of its launcher {launcher_name} (killed at {launcher_killed_at}): {bad:?}; at the end {suspended_still:?}", kept.0);
-    // The deleted member: suspended, nothing pending, no CPU, then gone: its terminate alone ended it.
+    // The deleted member: suspended, nothing pending, no CPU, until its terminate ends it. That SIGKILL is the
+    // only signal it is ever sent: from then on it is a zombie (`Z`, `X`) holding at most that SIGKILL pending
+    // until its parent reaps it, or gone.
     let deleted_seen = before(&deleted.0, continued_at);
     let deleted_cpu = held_cpu(&deleted.0);
-    let alive: Vec<_> = deleted_seen.iter().filter(|(_, _, v)| v.is_some()).collect();
-    assert!(alive.iter().all(|(_, _, v)| matches!(v, Some((st, sig, shd, cpu)) if *st == 'T' && sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == deleted_cpu)), "{}: suspended, nothing pending and no CPU until its terminate: {alive:?}", deleted.0);
-    assert!(deleted_seen.last().is_some_and(|(_, _, v)| v.is_none()), "{}: gone after its terminate: {deleted_seen:?}", deleted.0);
+    let only_kill = |mask: &str| u64::from_str_radix(mask, 16).is_ok_and(|bits| bits & !(1 << (libc::SIGKILL - 1)) == 0);
+    let ended_at = deleted_seen.iter().position(|(_, _, v)| !matches!(v, Some((st, ..)) if *st == 'T')).unwrap_or_else(|| panic!("{}: its terminate ended it: {deleted_seen:?}", deleted.0));
+    let (held_part, ended) = deleted_seen.split_at(ended_at);
+    assert!(held_part.iter().all(|(_, _, v)| matches!(v, Some((_, sig, shd, cpu)) if sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == deleted_cpu)), "{}: suspended, nothing pending and no CPU until its terminate: {held_part:?}", deleted.0);
+    assert!(ended.iter().all(|(_, _, v)| match v { None => true, Some((st, sig, shd, _)) => matches!(st, 'Z' | 'X') && only_kill(sig) && only_kill(shd) }), "{}: ended by its terminate's SIGKILL alone, never running again: {ended:?}", deleted.0);
     let terminates: Vec<(String, String)> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "step") == "TerminateRuntime" && members.iter().any(|(n, _, _)| attr(sp, "node") == *n)).map(|sp| (attr(sp, "node"), attr(sp, "build_id"))).collect();
     assert!(terminates.len() == 1 && terminates[0].0 == deleted.0 && same_build(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == deleted.0).unwrap(), &delete_build), "one TerminateRuntime of a member, the delete's of {}: {terminates:?}", deleted.0);
     println!("watched {} changes of the suspended members", seen.len());
