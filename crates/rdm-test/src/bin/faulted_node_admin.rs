@@ -33,7 +33,7 @@ async fn main() {
                 "rdm.testkit.cert.resolve.via-launch",
                 node = %name,
                 issuing = l.issuing.is_some(),
-                root = l.issuing.as_ref().is_some_and(|m| m.root.is_some()),
+                root = l.issuing.is_some(),
                 issuing_cert = %l.issuing.as_ref().map(|m| m.cert.as_str()).unwrap_or(""),
             )
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));

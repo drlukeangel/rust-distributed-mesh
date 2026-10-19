@@ -179,8 +179,6 @@ pub enum CertError {
     IssuerMeshMismatch,
     /// The member cert would expire after its issuer.
     MemberOutlivesIssuer,
-    /// A node-admin without the root was asked to sign for another mesh.
-    NoRootToMint,
 }
 
 impl CertError {
@@ -193,7 +191,6 @@ impl CertError {
             CertError::IssuerExpired => "issuer-expired",
             CertError::IssuerMeshMismatch => "issuer-mesh-mismatch",
             CertError::MemberOutlivesIssuer => "member-outlives-issuer",
-            CertError::NoRootToMint => "no-root-to-mint",
         }
     }
 }
@@ -513,7 +510,6 @@ mod tests {
             (CertError::IssuerExpired, "issuer-expired"),
             (CertError::IssuerMeshMismatch, "issuer-mesh-mismatch"),
             (CertError::MemberOutlivesIssuer, "member-outlives-issuer"),
-            (CertError::NoRootToMint, "no-root-to-mint"),
         ];
         for (error, name) in named {
             assert_eq!((error.as_str(), error.to_string()), (name, name.to_string()), "{error:?}");

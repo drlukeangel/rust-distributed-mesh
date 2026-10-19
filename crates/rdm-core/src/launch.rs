@@ -84,14 +84,15 @@ pub struct IssuingMaterial {
     pub key: SecretHex,
     /// The issuing cert, signed by the fabric's root.
     pub cert: String,
-    /// The fabric's root, written beside them by a launcher that holds it.
-    pub root: Option<SecretHex>,
+    /// The fabric's root, written beside them: every node-admin RDM launches holds it (fabric-certs.md
+    /// §Custody).
+    pub root: SecretHex,
 }
 
 impl IssuingMaterial {
-    /// The material of `key`, with no root, as a launch writes it.
-    pub fn of(key: &crate::certs::IssuingKey) -> Self {
-        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()), root: None }
+    /// The material of `key` with the fabric's `root` beside it, as a launch writes it.
+    pub fn of(key: &crate::certs::IssuingKey, root: &crate::certs::SigningKey) -> Self {
+        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()), root: SecretHex(crate::certs::encode_key(root)) }
     }
 }
 
@@ -204,8 +205,11 @@ pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<St
         (Some(key), Some(cert)) => {
             decode_hex(ENV_ISSUING_KEY, &key)?;
             decode_hex(ENV_ISSUING_CERT, &cert)?;
-            let root = present(root).map(|r| decode_hex(ENV_CA_SECRET, &r).map(|_| SecretHex(r))).transpose()?;
-            Ok(Some(IssuingMaterial { key: SecretHex(key), cert, root }))
+            let Some(root) = present(root) else {
+                return Err(format!("{ENV_ISSUING_KEY} and {ENV_ISSUING_CERT} are set without {ENV_CA_SECRET}: a node-admin is launched with the fabric's root beside its mesh's issuing material (fabric-certs.md §Custody)"));
+            };
+            decode_hex(ENV_CA_SECRET, &root)?;
+            Ok(Some(IssuingMaterial { key: SecretHex(key), cert, root: SecretHex(root) }))
         }
         (Some(_), None) => Err(format!("{ENV_ISSUING_KEY} is set without {ENV_ISSUING_CERT}: issuing material is the key and its cert together")),
         (None, Some(_)) => Err(format!("{ENV_ISSUING_CERT} is set without {ENV_ISSUING_KEY}: issuing material is the key and its cert together")),
@@ -263,9 +267,7 @@ impl Launch {
         if let Some(issuing) = &self.issuing {
             m.insert(ENV_ISSUING_KEY.into(), issuing.key.0.clone());
             m.insert(ENV_ISSUING_CERT.into(), issuing.cert.clone());
-            if let Some(root) = &issuing.root {
-                m.insert(ENV_CA_SECRET.into(), root.0.clone());
-            }
+            m.insert(ENV_CA_SECRET.into(), issuing.root.0.clone());
         }
         m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
@@ -315,7 +317,7 @@ mod tests {
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
-            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: Some(SecretHex("0b".repeat(32))) }),
+            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: SecretHex("0b".repeat(32)) }),
             connections_delete_deadline: Duration::from_millis(750),
         };
         let env = l.to_env();
@@ -334,7 +336,7 @@ mod tests {
         assert!(!format!("{l:?}").contains(&"0b".repeat(32)), "the root never prints: {l:?}");
         let mut no_root = env.clone();
         no_root.remove(ENV_CA_SECRET);
-        assert_eq!(Launch::from_env(|k| no_root.get(k).cloned()).unwrap().issuing.unwrap().root, None, "issuing material from a launcher with no root");
+        assert!(Launch::from_env(|k| no_root.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY and RDM_ISSUING_CERT are set without RDM_CA_SECRET"), "issuing material without the root is refused by name");
         let mut odd = env.clone();
         odd.insert(ENV_ISSUING_CERT.into(), "abc".into());
         assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_CERT has an odd number"));

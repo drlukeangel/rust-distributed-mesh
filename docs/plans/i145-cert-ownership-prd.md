@@ -28,7 +28,7 @@ gossip.
 
 | # | Requirement | State | Evidence today | Epic |
 |---|---|---|---|---|
-| R1 | the cert format, sign and verify live in `rdm_core::certs`; `CertChoice` is `Ca` / `Issuer` / `NoCerts`; `CertSigner` is gone | BUILD | `crates/rdm-admin/src/certs.rs:29` the trait; rafka `rafka-node-transport/src/cert.rs` the format | e1 |
+| R1 | the cert format, sign and verify live in `rdm_core::certs`; `CertChoice` is `Ca` / `NoCerts`; `CertSigner` is gone | BUILD | `crates/rdm-admin/src/certs.rs:29` the trait; rafka `rafka-node-transport/src/cert.rs` the format | e1 |
 | R2 | the accept loop is rdm-transport's: every connection on the endpoint, dispatched by ALPN; Rafka's loop deleted | BUILD | rafka `rafka-node-base/src/lib.rs:10748 start_accept_loop` | e2 |
 | R3 | `node.connections.admit` on every inbound connection of a registered product ALPN: the exchange on the first bi-stream, the verification, the verdict written back, admit or drop | BUILD | rafka `lib.rs:2817 dialer_send_svid`, `:3056 acceptor_verify_svid` | e2 |
 | R4 | registration is per ALPN at `bind`; RDM's own two ALPNs are refused by name | BUILD | `crates/rdm-transport/src/endpoint.rs:30` `bind` takes no admission | e2 |
@@ -100,7 +100,7 @@ No new gossip frame and no new `MemberStatus`.
 
 #### e1 — the format moves into RDM; `CertChoice` is the material, not a signer
 
-- **Goal → gap.** fabric-certs.md §"How RDM is instantiated" (`CertChoice::Ca` / `Issuer` / `NoCerts`).
+- **Goal → gap.** fabric-certs.md §"How RDM is instantiated" (`CertChoice::Ca` / `NoCerts`).
   The tree has `CertSigner` and no format.
 - **Requirements, with coordinates.** R1: `certs.rs:29` (the trait, deleted), rafka `cert.rs` (the
   types, moved to `rdm_core::certs` with their tests), `CertChoice` (`certs.rs:58`). R14's launch
@@ -114,7 +114,6 @@ No new gossip frame and no new `MemberStatus`.
 - **Acceptance cells.** `a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root`;
   `each_refusal_is_named` (one per reason); `a_member_cert_never_outlives_its_issuer`;
   `a_node_admin_started_with_no_cert_choice_is_refused_at_start` (exists, kept);
-  `a_launched_admin_signs_only_its_own_mesh`;
   `a_launched_admin_holds_the_root_beside_its_meshs_issuer_and_mints_no_second_one`; the successor
   fabric-primary cells green again (`build_op::a_successor_fabric_primary_*` ×2,
   `fabric_primary::losing_the_fabric_primary_mesh_moves_control`). RED first.

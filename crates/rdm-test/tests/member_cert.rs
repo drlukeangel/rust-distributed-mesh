@@ -10,9 +10,8 @@ use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_admin::before_ready::BeforeReadyHook;
 use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use rdm_test::node;
-use rdm_core::certs::{self, IssuingKey};
-use rdm_test::test_certs::{root_choice, test_root, test_root_public};
-use std::time::Duration;
+use rdm_core::certs;
+use rdm_test::test_certs::{root_choice, test_root_public};
 
 /// A reference no OS clock reads: 1970-03-23.
 const AUTHORITY_REFERENCE_MS: u64 = 7_000_000_000;
@@ -121,46 +120,6 @@ fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation() {
         assert!(second_cert.expiry_ms > first_cert.expiry_ms, "issued later on rafka-time: expiring {} then {}", first_cert.expiry_ms, second_cert.expiry_ms);
 
         second.stop().await;
-        let _ = std::fs::remove_dir_all(&dir);
-    })
-}
-
-// @feature: node-lifecycle
-/// CONTRACT (fabric-certs.md: "A refused issuance refuses the join by name; the birth gets no cert and
-/// is not admitted"): an authority that holds another mesh's issuing material and no root is refused
-/// the member cert (`no-root-to-mint`), and that refuses the join by name. The node ends at start
-/// naming the refusal, is never ready, and the authority installed nothing for its key: its
-/// membership book holds no digest of the node. What must NOT happen: the join retried as if the
-/// authority were not ready, or the birth admitted without a cert.
-#[test]
-fn a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted() {
-    // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
-    // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted") {
-        return;
-    }
-    let cap = crate::common::capture("a_refused_issuance_refuses_the_join_by_name_and_the_node_is_never_admitted");
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Current, async move {
-        let dir = birth_dir("member-cert-refused");
-        let fabric = FabricId::mint();
-        // mesh2's issuing material and no root: it signs nothing for mesh1.
-        let mesh2 = IssuingKey::mint(&test_root(), "mesh2", certs::ISSUING_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS);
-        let admin = admin_side_issuing("127.0.0.1".parse().unwrap(), &fabric, Some(AUTHORITY_REFERENCE_MS), rdm_admin::certs::CertChoice::Issuer { key: mesh2 }).await;
-        let key = node::load_or_mint_key(&dir).unwrap();
-        let launch = launch_in(&dir, &fabric, &admin, IncarnationId::mint(), None, NodeId::mint());
-        admin.deployed(&launch, &key);
-
-        let started = tokio::time::timeout(Duration::from_secs(4), node::start(&launch, |b, _| b)).await.expect("the refusal ends the start at once; it is not retried as a not-ready join");
-        let why = started.err().expect("a refused issuance must end the node").to_string();
-        assert!(why.contains("was refused its join") && why.contains("no-root-to-mint") && why.contains("signs nothing for mesh mesh1"), "the refusal names the chain's refusal: {why}");
-        assert!(admin.observer.membership.book.get(launch.node_id.as_str()).is_none(), "nothing was installed for the refused birth");
-        let refusals: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.cert.reject.via-refused").map(|(_, _, f)| f.clone()).collect();
-        assert_eq!(refusals.len(), 1, "one refusal span: {refusals:?}");
-        assert_eq!(refusals[0]["refusal"], "no-root-to-mint");
-        let joins: Vec<_> = spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-join").map(|(_, _, f)| f.clone()).collect();
-        assert_eq!(joins.len(), 1, "the join was answered once: {joins:?}");
-        assert_eq!(joins[0]["outcome"], "cert-refused");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

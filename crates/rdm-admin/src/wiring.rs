@@ -206,8 +206,8 @@ pub struct Wiring {
     pub serve_app: Option<ServeApp>,
     /// Hooks registered, in order, before the lifecycle registry seals.
     pub hooks: Vec<(LifecycleHookSpec, Arc<dyn LifecycleHook>)>,
-    /// The cert material: the fabric's root ([`CertChoice::Ca`]), a mesh's issuing material
-    /// ([`CertChoice::Issuer`]), or no certs by name ([`CertChoice::NoCerts`]). There is no default: a
+    /// The cert material: the fabric's root ([`CertChoice::Ca`]) or no certs by name
+    /// ([`CertChoice::NoCerts`]). There is no default: a
     /// node-admin started with [`CertChoice::Unchosen`] is refused at start by name.
     pub certs: crate::certs::CertChoice,
 }

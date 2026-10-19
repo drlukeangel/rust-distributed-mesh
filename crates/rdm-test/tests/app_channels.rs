@@ -288,7 +288,7 @@ fn a_node_admin_reports_a_members_new_type_on_its_held_watch_and_its_app_receive
             data_dir: member_dir.clone(),
             store_dir: dir.clone(),
             mesh_id: d.mesh_id.clone(),
-            mesh_issuer: None,
+            issuing: None,
             connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let _report = root.runner.joins.expect(rdm_admin::join::Deployed {
