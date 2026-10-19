@@ -418,10 +418,11 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
             let id = n.node_id.to_string();
             let until = std::time::Instant::now() + floor * 12 + Duration::from_secs(60);
             let mut back = false;
+            // The handback row is read the moment it is durable, from the fabric's seat moves.
             while !back && std::time::Instant::now() < until {
-                back = estate.node_views().await.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary);
+                back = seat_moves(&estate).iter().any(|m| m["cause"]["handover"].is_object() && m["seats"].as_array().into_iter().flatten().any(|x| x["seat"] == "FabricPrimary" && s(&x["holder"]["node_id"]) == id));
                 if !back {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
             back
