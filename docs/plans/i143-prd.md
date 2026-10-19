@@ -2814,7 +2814,7 @@ The parity scan has run before (a ledger row per boundary commit, no MIRROR pend
 
 - [ ] Every open e12 builder block has landed.
 - [ ] One RDM main SHA on which the fast gate and the release suite are green (§14 every subsection), with no red anywhere left without an owning block.
-- [ ] The import manifest names that SHA; the parity ledger has zero blocking gaps (**2026-10-18: zero**, review-through tip `77fdfd4948`, 256 boundary commits, 256 rows, 0 MIRROR pending, `eligible=true`; the 52 rows after `67755f3cdf` read by the rafka-v2 agent, U5, and applied by the lead; the scanner's ledger and connections defaults now RDM's own copies); i141 pins exactly that SHA, once.
+- [ ] The import manifest names that SHA; the parity ledger has zero blocking gaps (**2026-10-19: zero**, review-through tip `2a02378db4`, 262 boundary commits, 262 rows, 0 MIRROR pending, `eligible=true`, ledger `sha256:48b134a2…`; the six rows after `77fdfd4948` read by the lead (`d280bf4d`): `267fadf88e` MIRROR on RDM's own endpoint dial and dispatch cells, five RAFKA DOMAIN; 2026-10-18: zero through `77fdfd4948`, 256 rows; the 52 rows after `67755f3cdf` read by the rafka-v2 agent, U5, and applied by the lead; the scanner's ledger and connections defaults now RDM's own copies); i141 pins exactly that SHA, once.
 
 ### Acceptance criteria
 
