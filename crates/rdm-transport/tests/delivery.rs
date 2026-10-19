@@ -525,23 +525,74 @@ fn a_repeat_during_execution_stays_pending_and_unacked_then_is_acked_without_dis
     println!("delivery flame (a repeat held pending, then acked without dispatch): {}", flame(&trace));
 }
 
-/// Cell 4. CONTRACT: a read-only request is acked as it is dispatched: no resend while its handler
-/// holds its reply.
-#[tokio::test]
-async fn a_read_only_request_is_acked_at_once() {
-    let s = served().await;
-    let (client, _) = client_of(&[&s.node]).await;
-    let cd = client.delivery().clone();
-    let call = tokio::spawn({
-        let target = s.target();
-        async move { client.call::<Command>(&target, &CommandRequest::Read { tag: 4, hold: true }, &budget(Duration::from_secs(5))).await.0 }
+/// Cell 4. CONTRACT: a read-only request is acked as it is dispatched: its ack reaches the caller
+/// while its handler still holds its reply, and once acked it is never resent; the receiver
+/// dispatched it once. A resend sent before the ack arrived is the delivery rule's own (node-rpc.md
+/// §43: without an ack, the first retry at the publish cadence, this file's `CADENCE`), suppressed
+/// at the receiver, never dispatched. The cell runs on one thread, as a `#[tokio::test]` does, and
+/// prints the ack's arrival against the request's write and every `via-resend`, read from its trace.
+#[test]
+fn a_read_only_request_is_acked_at_once() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-delivery-read-only-ack").expect("the cell's evidence file can be created");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the cell's runtime");
+    let (trace, (at_ack, after, dispatched)) = rt.block_on(async {
+        let root = tracing::info_span!("rdm.test.delivery.serve.via-read-only-ack");
+        let trace = trace_of(&root);
+        let seen = tracing::Instrument::instrument(
+            async {
+                let s = served().await;
+                let (client, _) = client_of(&[&s.node]).await;
+                let cd = client.delivery().clone();
+                let call = tokio::spawn(tracing::Instrument::instrument(
+                    {
+                        let target = s.target();
+                        async move { client.call::<Command>(&target, &CommandRequest::Read { tag: 4, hold: true }, &budget(Duration::from_secs(5))).await.0 }
+                    },
+                    tracing::Span::current(),
+                ));
+                let until = Instant::now() + Duration::from_secs(1);
+                while get(&cd.stats().acks_received) == 0 {
+                    assert!(Instant::now() < until, "the read was not acked within 1 s while its handler held its reply");
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                tracing::info!(step = "ack-observed", "the read's ack reached the caller while its handler holds the reply");
+                let at_ack = get(&cd.stats().resends);
+                tokio::time::sleep(CADENCE * 4).await;
+                let after = get(&cd.stats().resends);
+                let dispatched = get(&s.stats.dispatched);
+                s.release();
+                let out = call.await.unwrap();
+                assert_eq!(ran(&out), Some((4, 0)), "{out:?}");
+                (at_ack, after, dispatched)
+            },
+            root,
+        )
+        .await;
+        (trace, seen)
     });
-    eventually("the read is acked", Duration::from_secs(1), || get(&cd.stats().acks_received) == 1).await;
-    tokio::time::sleep(CADENCE * 4).await;
-    assert_eq!(get(&cd.stats().resends), 0, "an acked request is never resent");
-    s.release();
-    let out = call.await.unwrap();
-    assert_eq!(ran(&out), Some((4, 0)), "{out:?}");
+    drop(rt);
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let in_trace = |name: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace.as_str()).collect() };
+    let nano = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+    let written = in_trace("rdm.node_rpc.request.update.via-call")
+        .iter()
+        .flat_map(|c| c["events"].as_array().cloned().unwrap_or_default())
+        .find(|e| e["attributes"]["step"] == "stream-opened")
+        .map(|e| nano(&e["time_unix_nano"]))
+        .unwrap_or(0);
+    let acked = in_trace("rdm.test.delivery.serve.via-read-only-ack")
+        .iter()
+        .flat_map(|r| r["events"].as_array().cloned().unwrap_or_default())
+        .find(|e| e["attributes"]["step"] == "ack-observed")
+        .map(|e| nano(&e["time_unix_nano"]))
+        .unwrap_or(0);
+    let at = |t: u64| (i128::from(t) - i128::from(written)) / 1_000_000;
+    let served_at: Vec<i128> = in_trace("rdm.node_rpc.request.serve.via-direct").iter().map(|s| at(nano(&s["start_unix_nano"]))).collect();
+    let resent_at: Vec<i128> = in_trace("rdm.node_rpc.delivery.update.via-resend").iter().map(|s| at(nano(&s["start_unix_nano"]))).collect();
+    let timeline = format!("from the request's stream open: dispatched at {served_at:?} ms, ack observed at {} ms, resends at {resent_at:?} ms (cadence {} ms)", at(acked), CADENCE.as_millis());
+    assert_eq!(after, at_ack, "an acked request is never resent: {at_ack} resends when its ack arrived, {after} after; {timeline}");
+    assert_eq!(dispatched, 1, "dispatched once: a resend before the ack is suppressed at the receiver; {timeline}");
+    println!("delivery flame (a read-only request acked as it is dispatched): {}; {timeline}", flame(&trace));
 }
 
 /// Cell 5. CONTRACT: a named refusal ends the request's retry, and the refusal is itself delivered
