@@ -485,6 +485,10 @@ pub async fn run_due_at(
                         "this node dialled its own connection toward the destination birth"
                     )
                 });
+                // The span's lifetime is the outcome it records: it is closed (handed to the
+                // exporter) before the item this dial spends is spent, so whoever waits for the
+                // spend finds it ended.
+                drop(span);
                 match latest {
                     Some(r)
                         if Some(&r.id) != basis.as_ref()
