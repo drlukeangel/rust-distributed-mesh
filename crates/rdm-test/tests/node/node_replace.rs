@@ -1372,7 +1372,16 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
         .find(|sp| sp["attributes"]["winner_path"] == standby.as_str())
         .cloned()
         .expect("R-EL1 election span seating standby after exit proof");
-    assert!(start(&proof_span) <= end(&seat_span), "R-EL1 seats the successor only on the exit proof: proof={proof_span} seat={seat_span}");
+    // The exit proof is the durable exit-proof row of the hung birth, read before any seat moves; the
+    // delete step's own via-exit-proof span follows the same row and may come after the election (the
+    // release at 8535b44d: row read +27.4 ms, seat +35.5 ms, delete step's proof +64.4 ms).
+    let proof_row = named(&spans, "rdm.node_admin.node.resolve.via-exit-proof-row")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == mp_name.as_str() && sp["attributes"]["node_id"] == mp["node_id"])
+        .min_by_key(|sp| start(sp))
+        .cloned()
+        .expect("the hung mesh-primary's exit-proof row is read");
+    assert!(start(&proof_row) <= end(&seat_span), "R-EL1 seats the successor only on the exit proof: proof row={proof_row} seat={seat_span} (delete step's proof={proof_span})");
     eprintln!(
         "R-FM1 mesh-primary cell: {mp_name} (birth {}) held_running={} then terminated and recovered by {fp} at attempt {attempt}: trace {} | TerminateRuntime {:?} | exit_proof {} | {standby} seated (span {}) | new birth {}",
         s(&mp["node_id"]),
