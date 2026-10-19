@@ -1013,6 +1013,50 @@ mod tests {
         );
     }
 
+    /// CONTRACT (fabric.delete is its own Build compiled from the current topology plus its change;
+    /// lifecycles/fabric-delete.md, "Numbered end-to-end sequence"): a `DeleteFabric` change compiles
+    /// the current topology to the Fabric with no mesh, and that Build's plan is the page's sequence:
+    /// step 1, `mesh.delete` (`ShutdownMesh`) of each mesh, the fabric-primary's own mesh last (here
+    /// mesh2, so the order is not the names' order); step 2, once a mesh's `mesh.deleted` stands (its
+    /// `MeshDeleted` receipt), `node.delete` (`RetireNode`) of that mesh's mesh-primary in its place;
+    /// step 3, `fabric.deleted` (`DeleteFabric`) last. The fabric-primary's own `node.delete` (step 4)
+    /// is a separate call from outside the fabric, never this Build's. Must NOT happen: the
+    /// fabric-primary's own mesh deleted before another, a deleted mesh's mesh.delete planned again,
+    /// or fabric.deleted planned before the meshes.
+    // @feature: mesh-lifecycle
+    #[test]
+    fn a_fabric_delete_compiles_to_the_build_its_page_names() {
+        use NodeStatus::ReadyForTraffic as R;
+        let cur = t(&[("mesh1", 1, 1), ("mesh2", 1, 1), ("mesh3", 1, 1)]);
+        let compiled = compile(&cur, &TopologyChange::DeleteFabric, &mn()).unwrap();
+        assert_eq!((compiled.fabric.as_str(), compiled.meshes.len()), ("fabric1", 0), "the Fabric with no mesh");
+        let mut fabric_primary = n("mesh2.admin.1", R, true);
+        fabric_primary.is_fabric_primary = true;
+        let o = observed(vec![n("mesh1.admin.1", R, true), n("mesh1.rpc.1", R, false), fabric_primary, n("mesh2.rpc.1", R, false), n("mesh3.admin.1", R, true), n("mesh3.rpc.1", R, false)], &["mesh1", "mesh2", "mesh3"]);
+        let id = |m: &str| o.meshes.iter().find(|x| x.name == m).and_then(|x| x.id.clone()).unwrap();
+        let shutdown = |m: &str| BuildOperation::ShutdownMesh { mesh: m.into(), mesh_id: id(m) };
+        let deleted = BuildOperation::DeleteFabric { fabric_id: o.fabric.id.clone() };
+        assert_eq!(plan(&compiled, &o, None).operations, vec![shutdown("mesh1"), shutdown("mesh3"), shutdown("mesh2"), deleted.clone()], "step 1, the fabric-primary's own mesh last, then step 3");
+
+        let primary = o.node(&"mesh1.admin.1".parse().unwrap()).unwrap();
+        let manifest = crate::mesh_delete::ExitManifest { mesh_id: id("mesh1").to_string(), roster: vec![], final_primary: crate::mesh_delete::RosterBirth::of(primary).unwrap(), final_runtime: None, receipts: vec![] };
+        let mesh_deleted = crate::build_state::BuildStepReceipt {
+            mesh: None,
+            build_id: BuildId::mint(),
+            attempt: 1,
+            operation: crate::mesh_delete::operation(&id("mesh1")),
+            step: crate::mesh_delete::STEP_MESH_DELETED.into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: serde_json::to_value(&manifest).ok(),
+            executor: Some("mesh2.admin.1".into()),
+        };
+        assert_eq!(
+            plan_with(&compiled, &o, None, ActionProgress::default(), &BTreeSet::new(), &[mesh_deleted], None).operations,
+            vec![BuildOperation::RetireNode { node: "mesh1.admin.1".parse().unwrap(), exited: None }, shutdown("mesh3"), shutdown("mesh2"), deleted],
+            "step 2: mesh1's mesh.deleted stands, so its mesh-primary's node.delete takes its place"
+        );
+    }
+
     /// CONTRACT (node-identity-and-state.md §2.7, "Who mints it": "The Build that creates a mesh's first
     /// node-admin mints the mesh id, never reissued"; R-MN1: "A mesh created again under the same name is
     /// a new mesh with a new id"): a mesh's id is minted once, when the mesh enters the accepted topology
