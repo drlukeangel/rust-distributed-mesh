@@ -94,6 +94,19 @@ async fn pending_contract(cell: &str) {
             assert_eq!(r["container"].as_str().map(str::len), Some(64), "an immutable container id: {r}");
         }
     }
+    // The fabric-primary owes the fabric's readiness to mesh2's primary once the fabric first reaches
+    // ready-for-traffic, after the nodes settle: the estate stops once that declaration is applied there,
+    // read from the exported spans.
+    if !fabric_primary.starts_with("mesh2.") {
+        rdm_test::estate::wait_for(&format!("the fabric's readiness is applied at {mesh2_primary}"), Duration::from_secs(60), || async {
+            let spans = estate.spans();
+            named(&spans, DECLARATION)
+                .into_iter()
+                .any(|d| d["attributes"]["op"] == "apply-fabric-event" && d["attributes"]["sender"] == fabric_primary.as_str() && d["attributes"]["node"] == mesh2_primary.as_str() && d["attributes"]["outcome"] == "applied")
+                .then_some(())
+        })
+        .await;
+    }
     estate.stop().await;
     let spans = estate.spans();
 
@@ -194,37 +207,40 @@ async fn pending_contract(cell: &str) {
 }
 
 
-/// The sole admin of mesh2 or mesh3 that does not hold the fabric seat.
-fn sole_admin_off_the_seat(settled: &[NodeView]) -> String {
+/// The bootstrap admin (the one handed Pending) of mesh2 or mesh3 that does not hold the fabric seat.
+fn bootstrap_admin_off_the_seat(settled: &[NodeView]) -> String {
     ["mesh2.admin.1", "mesh3.admin.1"]
         .into_iter()
         .find(|a| settled.iter().any(|n| n.name.to_string() == *a && !n.is_fabric_primary))
-        .expect("at most one admin holds the seat, so one of the two sole admins is off it")
+        .expect("at most one admin holds the seat, so one of the two bootstrap admins is off it")
         .to_string()
 }
 
-/// CONTRACT (#2805, acceptance 8): the sole node-admin of a peer mesh (mesh2 or mesh3, whichever does not hold the fabric seat) is restarted through the
-/// Build rectifier (never the fabric-primary): it comes back as the same birth, the same node and
-/// incarnation (node-restart.md: a restart introduces no new incarnation), and reaches Ready without a fabric-primary hand-off, because the Pending it was
-/// applied before the restart is its own durable status row, folded at boot. Ready is never
-/// granted by election authority it lacks; mesh2's primary is the restarted admin only through
-/// the ordinary election afterwards. What must NOT happen: the restarted admin stuck holding its
-/// Ready for a Pending nobody will re-apply, or a second Pending hand-off applied for the same
-/// MeshId, or a replacement MeshId.
+/// CONTRACT (#2805, acceptance 8; R-SB1: a restart keeps node.id and incarnation, and a restart of a
+/// mesh's only admin is refused; node-restart.md Seat holder): the bootstrap node-admin of a peer mesh
+/// of two admins (mesh2 or mesh3, whichever does not hold the fabric seat), the admin Pending was handed
+/// to, is restarted through the Build rectifier (never the fabric-primary), its mesh's seat moving to the
+/// other admin first when it holds it: it comes back as the same birth, the same node and incarnation
+/// (node-restart.md: a restart introduces no new incarnation), and reaches Ready without a fabric-primary
+/// hand-off, because the Pending it was applied before the restart is its own durable status row, folded
+/// at boot. Ready is never granted by election authority it lacks; its mesh's primary is the restarted
+/// admin only through the ordinary election afterwards. What must NOT happen: the restarted admin stuck
+/// holding its Ready for a Pending nobody will re-apply, or a second Pending hand-off applied for the
+/// same MeshId, or a replacement MeshId.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
-    let cell = "sole_peer_admin_restarts_ready_from_its_durable_pending";
+async fn a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending() {
+    let cell = "a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let mesh = |m: &'static str, admins: u32| (m, admins, 1);
     estate.reconcile_shape("fabric1", &[mesh("mesh1", 2)]).await;
-    let shape = [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)];
+    let shape = [mesh("mesh1", 2), mesh("mesh2", 2), mesh("mesh3", 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let settled = estate.settled_views(&shape).await;
-    // The sole admin restarted is one that does not hold the fabric seat (the seat goes to the
+    // The bootstrap admin restarted is one that does not hold the fabric seat (the seat goes to the
     // lowest node id fabric-wide, and the fabric primary is never restarted by this cell).
-    let target = sole_admin_off_the_seat(&settled);
+    let target = bootstrap_admin_off_the_seat(&settled);
     let before = estate.node_view(&target).await;
 
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
@@ -288,7 +304,7 @@ async fn recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id()
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
     // The lost mesh is a sole-admin mesh that does not hold the fabric seat.
-    let lost_admin = sole_admin_off_the_seat(&before);
+    let lost_admin = bootstrap_admin_off_the_seat(&before);
     let lost = lost_admin.split('.').next().unwrap().to_string();
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();

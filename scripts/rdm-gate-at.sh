@@ -340,9 +340,11 @@ per_exe mesh-transport rafka-mesh-transport
 per_exe rdm-transport rdm-transport
 echo "i143-2777-process sh:scripts/i143-acceptance-gate.sh i143-2777-process" >> $D/jobs
 echo "i143-2780-process sh:scripts/i143-acceptance-gate.sh i143-2780-process" >> $D/jobs
+echo "i143-2805-process sh:scripts/i143-acceptance-gate.sh i143-2805-process" >> $D/jobs
 # R14 item 6: the provider mounts one qualified store namespace in every container.
 export RDM_CONTAINER_STORE_QUALIFIED=1
 echo "i143-2777-container sh:scripts/i143-acceptance-gate.sh i143-2777-container" >> $D/jobs
+echo "i143-2805-container sh:scripts/i143-acceptance-gate.sh i143-2805-container" >> $D/jobs
 echo "i143-2784-chaos-container sh:scripts/i143-acceptance-gate.sh i143-2784-chaos-container" >> $D/jobs
 echo "doctests cargo:--doc $PKGS" >> $D/jobs
 echo "workspace-check sh:cargo check --workspace --tests --no-default-features" >> $D/jobs

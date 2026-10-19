@@ -186,10 +186,10 @@
           "dir": "target/i143-acceptance/2805/process/bootstrap_admin_receives_pending_before_own_mesh_attempt"
         },
         {
-          "name": "sole_peer_admin_restarts_ready_from_its_durable_pending",
+          "name": "a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending",
           "source": "crates/rdm-test/tests/mesh/bootstrap_pending.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending/estate cargo test -p rdm-test --test main bootstrap_pending::sole_peer_admin_restarts_ready_from_its_durable_pending -- --exact",
-          "dir": "target/i143-acceptance/2805/process/sole_peer_admin_restarts_ready_from_its_durable_pending"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2805/process/a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending/estate cargo test -p rdm-test --test main bootstrap_pending::a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending -- --exact",
+          "dir": "target/i143-acceptance/2805/process/a_peer_meshs_bootstrap_admin_restarts_ready_from_its_durable_pending"
         },
         {
           "name": "recovery_admin_adopts_the_held_mesh_status_under_the_existing_mesh_id",
