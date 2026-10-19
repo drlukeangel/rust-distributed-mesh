@@ -5777,8 +5777,8 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
         let opened: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty() && start_ns(sp) >= marks.0).collect();
         assert_eq!(opened.len(), 1, "exactly the one restart was accepted: {opened:?}");
         assert_eq!(opened[0]["attributes"]["node"], victim_c.as_str(), "the accepted request is the restart of {victim_c}");
-        let fence_prefix = format!("{far_c}.");
-        let far_launched: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&fence_prefix) && start_ns(sp) >= marks.0).map(|sp| format!("{} {}", sp["attributes"]["node"], sp["attributes"]["pipeline"])).collect();
+        let far_prefix = format!("{far_c}.");
+        let far_launched: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&far_prefix) && start_ns(sp) >= marks.0).map(|sp| format!("{} {}", sp["attributes"]["node"], sp["attributes"]["pipeline"])).collect();
         assert!(far_launched.is_empty(), "no far-side node was launched or retired through cut and heal: {far_launched:?}");
         let drift = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start_ns(sp) >= marks.0).count();
         assert_eq!(drift, 0, "silence across the cut and the restart proved nothing to act on: no proven-drift attempt");
@@ -5885,7 +5885,8 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
 
     // The same door serves its own side with a change that stops no runtime: a gateway is added to the near mesh
     // (a topology Build the near mesh's primary executes), a second topology Build sent while that one is in
-    // flight is refused by name (one Build at a time), and the first completes on the near side. (A restart or
+    // flight is refused by name (one Build at a time), and the gateway the first adds is ready on the near side
+    // while its drive holds the far mesh's operations until the heal (R-D1). (A restart or
     // replace across a cut stops a runtime whose exit the far side's provider also proves, so it is no
     // cut-local operation on a host the two sides share.)
     let added = format!("{near_mesh}.gateway.{}", f.shape.gateway + 1);
@@ -5895,13 +5896,16 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let v = ask(&f.estate, &st.fp_name(), BuildChange::AddNode { mesh: near_mesh.clone(), node_kind: LaunchKind::Gateway }).await;
     assert_eq!((v["reply"].as_str(), v["current_build_id"].as_str()), (Some("build-in-progress"), Some(spawn.as_str())), "a topology Build while the first is in flight is refused naming that Build: {v}");
     a.refused_writes.push(json!({"sent_to": near_fp, "reply": v["reply"], "path": near_mesh, "route": "create", "t_ms": now_ms()}));
+    // The Build plans the far members too, and its drive claims and dispatches nothing for the mesh the
+    // investigation holds unheard (R-D1): it stays in progress until the heal, while the gateway it added on
+    // the near side is ready there.
     let joined = wait_for(&format!("{added} ready on the near side under the cut"), Duration::from_secs(120), || async {
         let v = f.estate.node_values_at(&st.fp_name()).await;
-        let n = v.iter().find(|n| n["name"] == added.as_str() && n["status"] == "ready-for-traffic").cloned()?;
-        let b = build_attempt(&f.estate, &st, &spawn).await;
-        (b["state"] == "complete").then_some(n)
+        v.iter().find(|n| n["name"] == added.as_str() && n["status"] == "ready-for-traffic").cloned()
     })
     .await;
+    let held = build_attempt(&f.estate, &st, &spawn).await;
+    assert_ne!(held["state"], "complete", "the Build that names the unheard far mesh's members is not complete under the cut (R-D1): {held}");
     // Each side holds the Build it accepted: the near side the added gateway's, the far side the formation's.
     let near_fabric = fabric_at(&f.estate, &st.fp_name()).await.expect("the near writer answers fabric.get");
     let far_fp = far_admins.iter().find(|n| n["name"] == far_primary["name"]).unwrap();
@@ -5958,14 +5962,12 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
         // the added gateway's and its retirement.
         let opened: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).collect();
         assert!(opened.is_empty(), "no restart or replace was accepted: {opened:?}");
-        // The Build the near side accepted plans a create for every member its executor holds unheard; the
-        // fence holds each (its runtime runs), so no far node is launched or retired.
-        let fence_prefix = format!("{far_c}.");
-        let far_fences: Vec<&Value> = named(spans, "rdm.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&fence_prefix) && start_ns(sp) >= marks.0).collect();
-        assert!(!far_fences.is_empty(), "the near side's Build reached the fence for the far members it holds unheard");
-        let cleared: Vec<String> = far_fences.iter().filter(|sp| !s(&sp["attributes"]["outcome"]).starts_with("held")).map(|sp| format!("{} {}", sp["attributes"]["node"], sp["attributes"]["outcome"])).collect();
-        assert!(cleared.is_empty(), "the fence held every far member, none was cleared for a new birth: {cleared:?}");
-        let far_launched: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&fence_prefix) && start_ns(sp) >= marks.0).map(|sp| format!("{} {}", sp["attributes"]["node"], sp["attributes"]["pipeline"])).collect();
+        // The Build the near side accepted plans the members its executor holds unheard, and its drive refuses
+        // each by name and claims nothing for that mesh until it is heard again (R-D1).
+        let far_prefix = format!("{far_c}.");
+        let refused: Vec<&Value> = named(spans, "rdm.node_admin.build.reject.via-unheard-mesh-drive").into_iter().filter(|sp| sp["attributes"]["mesh"] == far_c.as_str() && start_ns(sp) >= marks.0 && start_ns(sp) < marks.1).collect();
+        assert!(!refused.is_empty(), "the near side's drive refused the unheard far mesh's operations by name under the cut");
+        let far_launched: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&far_prefix) && start_ns(sp) >= marks.0).map(|sp| format!("{} {}", sp["attributes"]["node"], sp["attributes"]["pipeline"])).collect();
         assert!(far_launched.is_empty(), "no far-side node was launched or retired through cut and heal: {far_launched:?}");
         let drift = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start_ns(sp) >= marks.0).count();
         assert_eq!(drift, 0, "silence across the cut proved nothing: no proven-drift attempt");
@@ -5986,9 +5988,11 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
 /// refuses a topology request naming it. The near writer refuses a
 /// restart of each far node it holds unheard (a gateway, both node-admins) by name `node-not-live` and opens no
 /// attempt. The same writer adds a gateway to the near mesh: a second topology Build sent while that one is in
-/// flight is refused by name `build-in-progress` naming the Build, the near mesh's primary executes it, the near
-/// side names the Build it accepted and the far side the one it holds, and no far node changed. The cut is
-/// dropped: every admin holds every member ready, the added gateway included, one fabric-primary, every admin
+/// flight is refused by name `build-in-progress` naming the Build, the near mesh's primary creates the gateway
+/// and it is ready on the near side, while the Build stays in progress: its drive refuses the unheard far
+/// mesh's operations by name and claims nothing for that mesh until it is heard again (R-D1). The near side
+/// names the Build it accepted and the far side the one it holds, and no far node changed. The cut is
+/// dropped: the Build completes, every admin holds every member ready, the added gateway included, one fabric-primary, every admin
 /// names the Build the near side accepted, every pre-cut node is the birth it was, and the healed fabric takes
 /// the added gateway's retirement. Canon: fabric-node-lifecycle-elections.md section 1 (a partition may produce
 /// different local candidate sets) and node-admin-lifecycle.md rule 4 (silence is not departure; only exact
@@ -6145,15 +6149,22 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let mut far_new_id = String::new();
     if fault == NearFault::HardKill {
         let rt_far = exact_runtime(&f, &far_victim).await;
-        let attempt_h = build_attempt(&f.estate, &st2, &formation).await["attempt"].as_u64().unwrap();
+        let b_h = build_attempt(&f.estate, &st2, &formation).await;
+        let attempt_h = b_h["attempt"].as_u64().unwrap();
+        let far_lane_h = b_h["lanes"][far_mesh.as_str()]["attempt"].as_u64().unwrap_or(0);
         far_kill = kill_exact_runtime(&far_victim, &rt_far);
+        // Node recovery is the next attempt of the current Build in the far mesh's own lane (node-recovery.md,
+        // R-BI7); the fabric lane gains no attempt.
         let born = wait_for(&format!("{far_mesh}'s mesh-primary recovers {far_victim} after the heal"), Duration::from_secs(120), || async {
             let v = f.estate.node_values_at(&st2.fp_name()).await;
             let n = v.iter().find(|n| n["name"] == far_victim.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != far_before["node_id"]).cloned()?;
             let b = build_attempt(&f.estate, &st2, &formation).await;
-            (b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) > attempt_h).then_some(n)
+            let lane = &b["lanes"][far_mesh.as_str()];
+            (lane["state"] == "complete" && lane["attempt"].as_u64().unwrap_or(0) > far_lane_h).then_some(n)
         })
         .await;
+        let b = build_attempt(&f.estate, &st2, &formation).await;
+        assert_eq!(b["attempt"].as_u64(), Some(attempt_h), "{far_victim}: the fabric lane of the formation Build gained no attempt: {b}");
         far_new_id = s(&born["node_id"]);
     }
     let gone: BTreeSet<String> = if fault == NearFault::HardKill { BTreeSet::from([victim.clone(), far_victim.clone()]) } else { BTreeSet::new() };
@@ -6189,13 +6200,18 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             let late = since("rdm.node_admin.node.create.via-build", cut_at).len();
             assert_eq!(late, 2, "no other node was created");
         }
-        // The far side's hold carries the evidence it held, once per birth.
+        // The far side's hold carries the evidence it held, once per birth. A restart is stop then start on the
+        // parked process (node-restart.md): no runtime exits, so the far side holds nothing for it.
         let holds: Vec<&Value> = since(HOLD, cut_at).into_iter().filter(|sp| sp["attributes"]["node"] == victim_c.as_str() && sp["attributes"]["node_id"] == vid.as_str()).collect();
-        assert_eq!(holds.len(), 1, "the far side held the exited birth of {victim_c} once, naming it: {holds:?}");
-        let h = &holds[0]["attributes"];
-        assert!(s(&h["authority"]).starts_with(&format!("{far_c}.")) && h["mesh"] == near_c.as_str() && h["incarnation_id"] == vinc.as_str(), "the hold names the far authority, the held mesh and the exact birth: {h}");
-        assert!(["provider", "exit-record", "none"].contains(&s(&h["exit_proof"]).as_str()), "the hold names the source of the exit proof it did not act on: {h}");
-        assert!(s(&h["unheard_ms"]).parse::<u64>().is_ok(), "the hold carries how long the mesh was unheard: {h}");
+        if fnew.is_empty() {
+            assert!(holds.is_empty(), "a restart exits no runtime: the far side held nothing for {victim_c}: {holds:?}");
+        } else {
+            assert_eq!(holds.len(), 1, "the far side held the exited birth of {victim_c} once, naming it: {holds:?}");
+            let h = &holds[0]["attributes"];
+            assert!(s(&h["authority"]).starts_with(&format!("{far_c}.")) && h["mesh"] == near_c.as_str() && h["incarnation_id"] == vinc.as_str(), "the hold names the far authority, the held mesh and the exact birth: {h}");
+            assert!(["provider", "exit-record", "none"].contains(&s(&h["exit_proof"]).as_str()), "the hold names the source of the exit proof it did not act on: {h}");
+            assert!(s(&h["unheard_ms"]).parse::<u64>().is_ok(), "the hold carries how long the mesh was unheard: {h}");
+        }
         // After the heal the restarted birth is not refused as departed anywhere.
         let departed = since("rdm.mesh.membership.reject.via-departed-birth", cut_at);
         assert!(departed.is_empty(), "no admin refused the live birth as departed: {} refusals, first {:?}", departed.len(), departed.first());
@@ -6227,9 +6243,9 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
 }
 
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped. The near side's writer is
-/// asked to restart a near gateway; the provider's exit of the old birth is visible on the shared host to the
-/// far side as well. The far side holds every node of the unheard near mesh as a mesh: its fabric-primary
-/// records the exit evidence it held (`build.reject.via-unheard-mesh`) once, opens no attempt, emits no
+/// asked to restart a near gateway. A restart is stop then start on the parked process (node-restart.md): no
+/// runtime exits, so the far side has no exit to hold. The far side holds every node of the unheard near mesh
+/// as a mesh: its fabric-primary holds nothing for the restarted gateway, opens no attempt, emits no
 /// NodeDeleted and creates no birth, and its Build, its view of the victim and its node count stay as they
 /// were. The near side restarts the gateway under the same NodeId. The cut is dropped: every admin holds the
 /// restarted birth ready under its NodeId and no admin refuses it as departed. Canon: node-admin-lifecycle.md
@@ -6279,7 +6295,10 @@ async fn mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_t
 /// is not the birth it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own() {
-    cut_ops_run("mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own", any_tier()).await;
+    // The near gateway the writer restarts may hold its type's seat: each mesh holds a second gateway to take
+    // it first (node-stop.md, Seat holder).
+    let tier = any_tier();
+    cut_ops_run("mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own", Shape { gateway: tier.gateway.max(2), ..tier }).await;
 }
 
 

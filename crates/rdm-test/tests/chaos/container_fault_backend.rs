@@ -644,8 +644,12 @@ const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 /// exact container ids) while its two rpc nodes run. The provider shows each admin not running. The
 /// fabric primary hears nothing of the mesh; its investigation asks the members, which cannot reach
 /// their own node-admin, and it keeps the seat, opens a later attempt of the SAME accepted Build and
-/// runs the mesh-create flow for the lost mesh's first admin under its EXISTING MeshId; the new mesh
-/// primary creates the second admin. A mesh whose every container is gone has no member to say so and is
+/// runs the mesh-create flow for the lost mesh's first admin under its EXISTING MeshId. The second admin
+/// is created after the first, in the same accepted Build, by one of the two paths of mesh-investigation.md
+/// "A node-admin joins the live mesh": step 5, the new mesh primary's node recovery of the admin its sweep
+/// did not reach (an attempt of its mesh's lane, over the exited birth), or step 6, the fabric primary's
+/// claim of a missing secondary that the new mesh primary executes. The cell waits for every lane of the
+/// Build to end before it stops the estate. A mesh whose every container is gone has no member to say so and is
 /// held, never reborn (the process cell `peer_mesh_whose_members_all_stay_silent_is_held_not_reborn`).
 /// Afterwards both admins are new births in new containers, the lost mesh's rpc nodes and the surviving
 /// mesh's births are the births they were (never re-created), the current build_id is the accepted Build, no
@@ -719,7 +723,10 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
             let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).ok()?).await.ok()?;
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
-            (later && reborn).then_some(b)
+            // A node recovery runs in its mesh's lane of the Build (R-BI7): none still running.
+            let held = crate::build_log::build_value(&estate.carrier().await, &accepted).await;
+            let lanes_ended = held["lanes"].as_object().is_none_or(|lanes| lanes.values().all(|l| l["state"] != "running" && l["state"] != "pending"));
+            (later && reborn && lanes_ended).then_some(b)
         }
     })
     .await;
@@ -775,11 +782,18 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         .expect("the recovery admin adopted its mesh's held state after the fault");
     assert_eq!(attr(adopted, "mesh_id"), lost_mesh_id, "the adopted state names the same MeshId: it joined, it never minted");
     assert_eq!(attr(adopted, "served_by"), holder, "the first admin adopted its mesh's state from the surviving fabric primary's answer");
-    // The second admin is created by the NEW mesh primary, never by the fabric primary.
+    // The second admin is created after the first by the NEW mesh primary, never by the fabric primary:
+    // step 5, its node recovery of the admin its sweep did not reach (admitted in its mesh's lane, the create
+    // over the exited birth), or step 6, the fabric primary's claim of a missing secondary it executes.
     let creates: Vec<&Value> = admin_creates.iter().copied().filter(|c| attr(c, "node") != recovery_admin && at(c) > at(first)).collect();
     assert!(!creates.is_empty(), "the second admin of {lost_mesh} was created after the first: {creates:?}");
     for c in &creates {
-        assert_eq!(executor_of(c), recovery_admin, "{} was created by the new mesh primary, not by {holder}", attr(c, "node"));
+        let recovered = named(&spans, "rdm.node_admin.build.update.via-recovery")
+            .into_iter()
+            .any(|r| attr(r, "node") == attr(c, "node") && attr(r, "mesh") == lost_mesh && attr(r, "outcome") == "admitted" && at(r) > at(first) && at(r) <= at(c));
+        if !recovered {
+            assert_eq!(executor_of(c), recovery_admin, "{} was created by the new mesh primary, not by {holder}", attr(c, "node"));
+        }
     }
     // No survivor was created or deleted by any attempt after the fault.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")

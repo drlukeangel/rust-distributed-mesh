@@ -112,8 +112,9 @@ fn docker(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// This cell's containers (any state) with a bind mount whose source is one of `paths`: each also
-/// mounts a directory under one of this cell's estate roots (its data dir).
+/// This cell's containers (any state) with a bind mount whose source is one of `paths` or the directory
+/// that holds one (a node mounts its executable, the Day-0 admin the executables' directory, as
+/// [`observe_launch`] reads them): each also mounts a directory under one of this cell's estate roots (its data dir).
 fn containers_mounting(paths: &[PathBuf], cell: &str) -> Vec<String> {
     let mine = my_estate_roots(cell);
     let ids = docker(&["ps", "-a", "-q", "--no-trunc"]);
@@ -121,7 +122,8 @@ fn containers_mounting(paths: &[PathBuf], cell: &str) -> Vec<String> {
     for id in ids.lines().filter(|l| !l.is_empty()) {
         let Ok(m) = std::process::Command::new("docker").args(["inspect", "--format", "{{range .Mounts}}{{.Source}}\n{{end}}", id]).output() else { continue };
         let sources = String::from_utf8_lossy(&m.stdout).to_string();
-        if sources.lines().any(|s| paths.iter().any(|p| p.as_os_str() == s)) && sources.lines().any(|s| s.starts_with(&mine)) {
+        let bound = |s: &str| paths.iter().any(|p| p.as_os_str() == s || p.parent().is_some_and(|d| d.as_os_str() == s));
+        if sources.lines().any(bound) && sources.lines().any(|s| s.starts_with(&mine)) {
             out.push(id.to_string());
         }
     }
