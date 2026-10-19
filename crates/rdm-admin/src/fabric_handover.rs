@@ -655,7 +655,16 @@ impl HandoverDoor {
                         refused("holder", "conflict", &format!("{me_name}: the command names the {} seat of {mesh} with other seats; a cohort's seat moves in its own row", kind.name()), &of, None);
                         return rdm_core::reply::handover::rejected_conflict(operation);
                     }
-                    let holder = self.topology.read().await.cohort_primary(mesh, *kind).cloned();
+                    // A later attempt or an identical retry after the row: the row names the holder it moved
+                    // the seat from, whoever the view names primary since (node-primary-update.md: "the row
+                    // resolves it. An identical retry of the call replays the committed result before any
+                    // revision check"). With no row, the holder is the cohort's primary in the view.
+                    let view = self.topology.read().await.clone();
+                    let from_row = match self.storage.seat_transfer(&operation).await {
+                        Ok(Some(row)) => view.births().find(|n| n.node_id == row.holder.node_id && n.incarnation_id.as_ref() == Some(&row.holder.incarnation)).cloned(),
+                        _ => None,
+                    };
+                    let holder = from_row.or_else(|| view.cohort_primary(mesh, *kind).cloned());
                     let Some(holder) = holder.filter(|_| *mesh == self.me.mesh) else {
                         let reason = format!("{me_name}: the command names the {} seat of {mesh}; this admin, of mesh {}, names no holder of it in its view", kind.name(), self.me.mesh);
                         refused("holder", "not-authority", &reason, &of, None);
