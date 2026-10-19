@@ -7,8 +7,8 @@ holds each level, where a node-admin's signing material comes from, when a cert 
 and to which exact birth, where the app reads it, and on which connections it is checked.
 
 The embedding app starts the bootstrap node-admin with the fabric's CA material (`CertChoice::Ca`),
-or a launched node-admin with its mesh's issuing material (`CertChoice::Issuer`), or neither by name
-(`NoCerts`). RDM owns the cert format (`rdm_core::certs`), mints the issuing certs, signs every member
+or with neither by name (`NoCerts`). RDM owns the cert format (`rdm_core::certs`), mints the issuing
+certs, signs every member
 cert, renews it before expiry ([node.cert.renew](lifecycles/node-cert-renew.md)), carries it to the
 exact birth, and verifies the cert a dialer presents on every connection of a registered product ALPN
 ([node.connections.admit](lifecycles/node-connections-admit.md)). The app owns the CA material it
@@ -25,10 +25,8 @@ passes in and what the cert means outward, to clients and other systems. The who
 | member cert `SignedCert { cert: NodeCert, sig, issuer: SignedIssuingCert }` | the birth it was issued to | nothing |
 
 The chain verifies member → issuer → CA → root against the fabric's root set, the anchors every
-node holds (one, or two during a root rotation). A mesh's node-admin without the root signs only members of its own mesh
-(`NoRootToMint`), and never issues a member cert that outlives its issuer
-(`MemberOutlivesIssuer`). The root stays where its launcher put it: a node-admin of another mesh
-holds its mesh's issuing key, never the root.
+node holds (one, or two during a root rotation). A node-admin never issues a member cert that
+outlives its issuer (`MemberOutlivesIssuer`). Every node-admin holds the root (§Custody).
 
 Verification (Rafka's accept loop today, RDM's at i145 e2) checks the chain in this order and
 refuses at the first failure:
@@ -41,29 +39,30 @@ refuses at the first failure:
 
 ## Where a node-admin's signing material comes from
 
-The bootstrap admin is started with the fabric root (`CertChoice::Ca { secret }`: `RDM_CA_SECRET`,
+The bootstrap admin is started with the fabric root (`CertChoice::Ca`: `RDM_CA_SECRET`,
 else `ca-secret` beside its data dir, else minted on day 0 when it has no seeds and no anchor:
 `fabric.ca.create`, a step of [fabric.create](lifecycles/fabric-create.md)). A launched admin is
-started with its mesh's issuing material, written by the launching admin into its environment at
-launch (`RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`), the way `RDM_MESH_ID` is (`mesh.issuer.create`, a step
-of [mesh.create](lifecycles/mesh-create.md)). An admin with seeds or an anchor and neither refuses to
-start by name. The root never leaves the fabric-primary; a mesh's admin signs only members of its own
-mesh (`NoRootToMint`) and never a member cert that outlives its issuer (`MemberOutlivesIssuer`).
+started with the root and its mesh's issuing material, written by the launching admin into its
+environment at launch (`RDM_CA_SECRET`, `RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`), the way `RDM_MESH_ID`
+is (`mesh.issuer.create`, a step of [mesh.create](lifecycles/mesh-create.md)). It holds its mesh's
+issuer as given and mints no second one; it mints another mesh's issuer from its own copy of the root
+only while it holds the fabric seat (§Custody: only the fabric-primary mints). An admin with seeds or
+an anchor and no root refuses to start by name. No admin signs a member cert that outlives its issuer
+(`MemberOutlivesIssuer`).
 
 ## How RDM is instantiated
 
 ```rust
 pub enum CertChoice {
-    /// The fabric root: the bootstrap admin.
-    Ca { secret: CaSecret },
-    /// A mesh's issuing material: a launched admin.
-    Issuer { key: IssuingKey, cert: SignedIssuingCert },
+    /// The fabric root: the bootstrap admin, and every admin RDM launches, with its mesh's issuing
+    /// material as its launch gave it.
+    Ca { secret: CaSecret, issuing: Option<(IssuingKey, SignedIssuingCert)> },
     /// No certs, by explicit choice: every issuance is empty and every admission admits, each by name.
     NoCerts,
 }
 ```
 
-A node-admin started with none of the three is refused at start. RDM signs and verifies with what it
+A node-admin started with neither is refused at start. RDM signs and verifies with what it
 was given; the app never signs or verifies anything.
 
 ## When a cert is issued
