@@ -241,6 +241,16 @@ pub fn check_graph(g: &Graph) -> Vec<Violation> {
             }
         }
     }
+    // Rule 6.
+    for id in &g.members {
+        for (dep, kinds) in g.edges.get(id).into_iter().flatten() {
+            let shipped = kinds.iter().any(|k| SHIPPED_KINDS.contains(&k.as_str()));
+            let n = g.name(dep);
+            if shipped && TLS_STACKS.contains(&n) {
+                out.push(Violation::SecondTlsStack { package: g.name(id).into(), tls: n.into() });
+            }
+        }
+    }
     // Rule 4.
     for &pkg in PUBLIC_INTERFACE_CONSUMERS {
         let Some(id) = g.member_id(pkg) else { continue };
