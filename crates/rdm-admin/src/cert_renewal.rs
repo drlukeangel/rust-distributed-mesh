@@ -15,9 +15,10 @@
 //!   the held cert expires, and marks the birth nothing.
 //! - The fabric-primary's tick ([`renew_issuers`]): a mesh whose newest issuer row has passed its renew
 //!   point is given a new issuer (the row put first), held in process by the fabric-primary, and sent
-//!   by `node.issuer.update` to that mesh's primary alone. Commands go down (fabric-primary →
-//!   mesh-primary → node): each mesh-primary's tick ([`carry_issuer`]) carries the issuer it installed
-//!   to the other admins of its mesh, the fabric-primary's own mesh included.
+//!   by `node.issuer.update` to that mesh's primary directly; once that receipt is held, to each other
+//!   admin of the mesh as a command forwarded through the mesh-primary (Forward 0x1A, the mesh-primary
+//!   the exact carrier; fabric-authority.md §1.1). The fabric-primary originates every update and
+//!   records every receipt; its own mesh's admins it calls directly, itself in process.
 //! - `fabric.get`'s next expiry and a mesh's stalled renewals are read from the same fold
 //!   ([`fabric_watch`]).
 
@@ -322,8 +323,10 @@ fn newest_two(rows: &[MeshIssuerRow]) -> Option<(MeshIssuerRow, Option<MeshIssue
 /// One tick of `mesh.issuer.renew` (mesh-issuer-renew.md) on `view`, run while this admin holds the
 /// fabric seat: each mesh whose newest issuer row has passed its renew point is given a new issuer, its
 /// row put first (through the mesh's `_of` door) and held here. Until the issuer it replaces expires,
-/// the newest one is sent by `node.issuer.update` to the mesh's primary alone while it holds no
-/// receipt; the fabric-primary's own mesh is its own to hold (in process), and to carry.
+/// the newest one is sent by `node.issuer.update` to the mesh's primary directly while it holds no
+/// receipt, then to each other admin of the mesh without one as a command forwarded through the
+/// mesh-primary (fabric-authority.md §1.1). The fabric-primary's own mesh: itself in process, its other
+/// admins directly.
 pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
     if r.issuer.is_no_certs() || r.issuer.root().is_none() || !view.fabric_primary().is_some_and(|f| f.node_id == r.node_id) {
         return;
@@ -345,30 +348,17 @@ pub async fn renew_issuers(r: &Arc<Renewals>, view: &Topology) {
             continue;
         }
         let Some(primary) = view.cohort_primary(&m.name, NodeKind::NodeAdmin).cloned() else { continue };
-        update_admins(r, &m.name, vec![primary], &current, previous.as_ref()).await;
+        let others: Vec<Node> = view.births().filter(|n| n.mesh == m.name && n.kind == NodeKind::NodeAdmin && n.node_id != primary.node_id).cloned().collect();
+        let received: HashSet<(NodeId, IncarnationId)> = r.status_storage.mesh_issuer_receipts_of(&m.name).await.unwrap_or_default().into_iter().filter(|x| x.issued_at == current.issued_at).map(|x| (x.node_id, x.incarnation_id)).collect();
+        let sends: Vec<(Node, Option<NodeId>)> = if primary.node_id == r.node_id {
+            std::iter::once(primary).chain(others).map(|a| (a, None)).collect()
+        } else if primary.incarnation_id.as_ref().is_some_and(|i| received.contains(&(primary.node_id.clone(), i.clone()))) {
+            others.into_iter().map(|a| (a, Some(primary.node_id.clone()))).collect()
+        } else {
+            vec![(primary, None)]
+        };
+        update_admins(r, &m.name, sends, &received, &current, previous.as_ref()).await;
     }
-}
-
-/// One tick of the mesh-primary's carry of its mesh's issuer (node-issuer-update.md; commands go down):
-/// while this admin holds its mesh's primary seat and holds the newest issuer its mesh's rows name, and
-/// the issuer it replaces has not expired, each other admin of the mesh without a receipt for it is
-/// sent `node.issuer.update`.
-pub async fn carry_issuer(r: &Arc<Renewals>, view: &Topology) {
-    if r.issuer.is_no_certs() {
-        return;
-    }
-    let Some(mesh) = view.own(&r.node_id).map(|n| n.mesh.clone()) else { return };
-    if !view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == r.node_id) {
-        return;
-    }
-    let Some(now) = r.issuer.now_ms() else { return };
-    let Ok(rows) = r.status_storage.mesh_issuers_of(&mesh).await else { return };
-    let Some((current, previous)) = newest_two(&rows) else { return };
-    if previous.as_ref().is_none_or(|p| now >= p.expires_at) || !r.issuer.held_issuer(&mesh).is_some_and(|k| k.expiry_ms() == current.expires_at) {
-        return;
-    }
-    let others: Vec<Node> = view.births().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin && n.node_id != r.node_id).cloned().collect();
-    update_admins(r, &mesh, others, &current, previous.as_ref()).await;
 }
 
 /// Mint the next issuer of `mesh` after `newest`, put its row and hold it here.
@@ -396,30 +386,32 @@ async fn mint_next(r: &Renewals, mesh: &str, newest: &MeshIssuerRow) -> Option<M
     Some(row)
 }
 
-/// `node.issuer.update` of `current` to each of `admins` without a receipt for it, each on its own
-/// task; this admin itself in process.
-async fn update_admins(r: &Arc<Renewals>, mesh: &str, admins: Vec<Node>, current: &MeshIssuerRow, previous: Option<&MeshIssuerRow>) {
+/// `node.issuer.update` of `current` to each of `admins` without a receipt for it (`received`), each on
+/// its own task: through its carrier when one is named, else directly; this admin itself in process.
+async fn update_admins(r: &Arc<Renewals>, mesh: &str, admins: Vec<(Node, Option<NodeId>)>, received: &HashSet<(NodeId, IncarnationId)>, current: &MeshIssuerRow, previous: Option<&MeshIssuerRow>) {
     let Some(key) = r.issuer.held_issuer(mesh).filter(|k| k.expiry_ms() == current.expires_at) else { return };
-    let received: HashSet<(NodeId, IncarnationId)> = r.status_storage.mesh_issuer_receipts_of(mesh).await.unwrap_or_default().into_iter().filter(|x| x.issued_at == current.issued_at).map(|x| (x.node_id, x.incarnation_id)).collect();
-    for admin in admins {
+    for (admin, carrier) in admins {
         let Some(incarnation) = admin.incarnation_id.clone() else { continue };
         if received.contains(&(admin.node_id.clone(), incarnation.clone())) || !r.updating.lock().unwrap().insert((admin.node_id.clone(), incarnation.clone())) {
             continue;
         }
         let (r2, current, previous_expiry, key, mesh) = (r.clone(), current.clone(), previous.map(|p| p.expires_at), key.clone(), mesh.to_string());
         tokio::spawn(async move {
-            update_one(&r2, &mesh, &admin, &incarnation, &current, previous_expiry, &key).await;
+            update_one(&r2, &mesh, &admin, carrier.as_ref(), &incarnation, &current, previous_expiry, &key).await;
             r2.updating.lock().unwrap().remove(&(admin.node_id.clone(), incarnation));
         });
     }
 }
 
-async fn update_one(r: &Renewals, mesh: &str, admin: &Node, incarnation: &IncarnationId, current: &MeshIssuerRow, previous_expiry: Option<u64>, key: &rdm_core::certs::IssuingKey) {
+#[allow(clippy::too_many_arguments)]
+async fn update_one(r: &Renewals, mesh: &str, admin: &Node, carrier: Option<&NodeId>, incarnation: &IncarnationId, current: &MeshIssuerRow, previous_expiry: Option<u64>, key: &rdm_core::certs::IssuingKey) {
     let span = tracing::info_span!(
         "rdm.node_admin.issuer.update.via-renewal",
         node = %admin.name,
         node_id = %admin.node_id,
         incarnation_id = %incarnation.as_str(),
+        sender = %r.me,
+        carrier = %carrier.map(|c| c.to_string()).unwrap_or_default(),
         mesh,
         issuer_expires_at = current.expires_at,
         previous_issuer_expires_at = previous_expiry.unwrap_or(0),
@@ -439,7 +431,13 @@ async fn update_one(r: &Renewals, mesh: &str, admin: &Node, incarnation: &Incarn
             key: IssuingKeyHex(rdm_core::certs::encode_key(key.secret())),
             cert: rdm_core::certs::encode_issuing_cert(key.cert()),
         };
-        let (out, _) = tracing::Instrument::instrument(r.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), &req, &CallOptions::default()), span.clone()).await;
+        let call = async {
+            match carrier {
+                Some(carrier) => r.client.call_via::<Status>(&NodeTarget::ExactNode(carrier.clone()), &admin.node_id, &req, &CallOptions::default()).await,
+                None => r.client.call::<Status>(&NodeTarget::ExactNode(admin.node_id.clone()), &req, &CallOptions::default()).await,
+            }
+        };
+        let (out, _) = tracing::Instrument::instrument(call, span.clone()).await;
         let shown = format!("{out:?}");
         match out {
             RpcOutcome::Reply(reply) => match reply.into_value() {

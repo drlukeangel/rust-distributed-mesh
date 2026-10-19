@@ -215,11 +215,12 @@ No new gossip frame and no new `MemberStatus`.
   (`cert_renewal::renew_members`, every gossip interval, while the admin is not stopped) renews from the
   rows alone, a renewal not received sent again, the same issue, until the held cert expires (the
   page's stop; changing it is Luke's, with a run that shows a birth stuck); the fabric-primary's tick
-  (`renew_issuers`, the fabric seat's) mints at the newest issuer row's point and sends it to the
-  mesh's primary alone, the fabric-primary's own mesh held in process; each mesh-primary's tick
-  (`carry_issuer`) carries the issuer it installed to its mesh's other admins (decided by the lead:
-  commands go down, fabric-primary → mesh-primary → node; the drafted "forwarded through the
-  mesh-primary" line goes to Luke with e3's packet); an admin's install names its sender; `node.get` shows the held issue,
+  (`renew_issuers`, the fabric seat's) mints at the newest issuer row's point and sends
+  `node.issuer.update` to the mesh's primary directly, then, once it holds that receipt, to each other
+  admin of the mesh as a Forward through the mesh-primary (`call_via`), recording every receipt itself
+  (Luke 2026-10-19: "FP -> node.issuer.update to MP >> FP issue forward(node.issue.update > NA) >> MP
+  --> node.issue.update > node-admin-x"; the page lines are 9da85bb5, Q82); in the fabric-primary's own
+  mesh its install stays in process and it calls its other admins directly; an admin's install names its sender; `node.get` shows the held issue,
   `fabric.get` the next expiry and each mesh's stalled births. An admin's own `NodeSelf` now holds its
   app-protocol registry (as a node's does): a renewed cert is installed on it, and its
   `node.connections.delete` closes those connections too (node-connections-delete.md: every open
@@ -235,6 +236,7 @@ No new gossip frame and no new `MemberStatus`.
   its flush; the dials ran; green 4 of 4 alone; no cert path), recorded and not chased. The stack
   (e1, e2, e3) is kept rebased on main: on d55112a6 at 8e932eea the fast gate is green
   (gates-e6s4-8e932eea) and the three process cells pass. Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
+  The issuer hop, to Luke's model (2026-10-19, lane e7s3): RED 277c802b, `an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary` asserting the fabric-primary's Forward (op 26, carrier mesh2's primary) and the carried Status `UpdateIssuer` (op 27) to the secondary in one trace, the secondary's install naming mesh2's primary as sender, and every update to the secondary sent by the fabric-primary; red on the `carry_issuer` model at `cert_renewal.rs:710` (no via-renewal names the fabric-primary as sender). GREEN deletes `carry_issuer` and its tick.
   Known gap, held: the policy has no durable row (`FabricIdentity` is `{ fabric_id, name }`, `model.rs:317`), and a recovered root admin with no maker reads its own env (`boot.rs:924`), as it does `MESH_SPAWN_TYPE`; nothing shows a recovery changing the TTLs.
   Two cells assert admission and are green only once e2 lands: `a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admitted`, `an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_peer_holding_the_old`.
   Page lines for e5's text: mesh-issuer-renew.md:20 ("the root rotated (a fabric re-birth)") against `fabric.root.update`; fabric-certs.md:28-31 and :50 against §Custody.

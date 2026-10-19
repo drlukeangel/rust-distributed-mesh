@@ -2328,7 +2328,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let turn = gate.turn("cert-renewal").await;
                                                 let view = topology.read().await.clone();
                                                 crate::cert_renewal::renew_issuers(&renewals, &view).await;
-                                                crate::cert_renewal::carry_issuer(&renewals, &view).await;
                                                 crate::cert_renewal::renew_members(&renewals, &view).await;
                                                 drop(turn);
                                                 cadence.next().await;
