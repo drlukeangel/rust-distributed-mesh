@@ -485,6 +485,131 @@ async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dia
     acceptor.shutdown().await;
 }
 
+/// One process endpoint serving Node RPC, gossip and a registered product ALPN, as a node does.
+struct Process {
+    peer: TestPeer,
+    ep: iroh::Endpoint,
+    gossip: iroh_gossip::net::Gossip,
+    _server: rdm_transport::NodeRpcServer,
+}
+
+async fn process(name: &str) -> Process {
+    use rdm_core::ping::{Ping, PingReply, PingRequest};
+    let key = SecretKey::generate();
+    let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let birth = Birth { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+    let resolved = ResolvedNode { node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation: birth.incarnation.clone() };
+    let resolver = Arc::new(StaticResolver::new());
+    let sink = Arc::new(MemoryConnectionsSink::new(birth.clone()));
+    let (registry, handlers) = ConnectionsRegistry::new(ep.clone(), resolver.clone(), sink.clone(), &[alpn(ALPN_A)], b"cert-v1".to_vec()).unwrap();
+    let server = rdm_transport::ServerBuilder::new()
+        .serve::<Ping, _, _>(rdm_core::catalog::OpOwner::Core, |_peer, req: PingRequest| async move {
+            let PingRequest::Ping { payload, .. } = req;
+            Ok(PingReply::Pong { payload })
+        })
+        .seal(rdm_transport::ServedBirth { node_id: birth.node_id.to_string(), incarnation: birth.incarnation.to_string() })
+        .unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+    let mut rb = Router::builder(ep.clone()).accept(rdm_transport::ALPN, server.clone()).accept(iroh_gossip::ALPN, gossip.clone());
+    for (alpn_bytes, handler) in handlers {
+        rb = rb.accept(alpn_bytes, handler);
+    }
+    let router = rb.spawn();
+    Process { peer: TestPeer { birth, resolved, resolver, sink, registry, router }, ep, gossip, _server: server }
+}
+
+/// CONTRACT (node-connections-admit.md, Observability, the control; fabric-certs.md §On a
+/// connection): the step runs on no Node RPC and no gossip connection. A Node RPC call and a gossip
+/// connection to a process whose endpoint also serves a registered product ALPN carry no admission
+/// span, while the one product dial on the same endpoint carries exactly one.
+#[test]
+fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-admit-control").expect("the cell's evidence file can be created");
+    let (acceptor_birth, rpc_served, heard) = capture.run(4, async {
+        let acceptor = process("mesh1.rpc.2").await;
+        let dialer = process("mesh1.rpc.1").await;
+        dialer.peer.know(&acceptor.peer);
+        acceptor.peer.know(&dialer.peer);
+
+        // Node RPC: one call from the dialer's endpoint to the acceptor's.
+        let rpc_resolver = Arc::new(StaticResolver::new());
+        rpc_resolver.insert(acceptor.peer.resolved.clone());
+        let client = rdm_transport::NodeRpcClient::new(dialer.ep.clone(), rpc_resolver);
+        let ping = rdm_core::ping::PingRequest::Ping { payload: b"control".to_vec() };
+        let (out, _) = client
+            .call::<rdm_core::ping::Ping>(&rdm_transport::NodeTarget::ExactNode(acceptor.peer.birth.node_id.clone()), &ping, &rdm_transport::CallOptions::default())
+            .await;
+        let rpc_served = matches!(out, rdm_core::outcome::RpcOutcome::Reply(_));
+
+        // Gossip: the dialer joins the acceptor's mesh channel through it and is heard there.
+        let fabric = rdm_core::FabricId::parse("fab000000001").unwrap();
+        let mesh_id = rdm_core::MeshId::mint();
+        let clock = rdm_transport::clock::os_clock;
+        let on_acceptor = rdm_transport::membership::Membership::join(&acceptor.gossip, &acceptor.ep, &fabric, "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![], &[]).await.unwrap();
+        let seed = iroh::EndpointAddr::new(acceptor.ep.id()).with_ip_addr(acceptor.peer.resolved.transport_addr);
+        let on_dialer = rdm_transport::membership::Membership::join(&dialer.gossip, &dialer.ep, &fabric, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![seed], &[]).await.unwrap();
+        let own = rdm_core::MeshDigest {
+            held_hash: Default::default(),
+            fabric_id: fabric.clone(),
+            node: rdm_core::MeshNode {
+                node_id: dialer.peer.birth.node_id.clone(),
+                name: dialer.peer.birth.name.clone(),
+                endpoint_id: rdm_core::EndpointId(dialer.ep.id().to_string()),
+                transport_addr: dialer.peer.resolved.transport_addr,
+                incarnation: dialer.peer.birth.incarnation.clone(),
+                supersedes: None,
+                runtime: None,
+            },
+            status: rdm_core::MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 0,
+            emitted_at_rafka_ms: 0,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            config: Default::default(),
+        };
+        let publishing = on_dialer.publish_every(Duration::from_millis(100), move || own.clone());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        let mut heard = false;
+        while tokio::time::Instant::now() < deadline && !heard {
+            heard = on_acceptor.book.current(on_acceptor.book.staleness_floor()).iter().any(|d| d.node.node_id == dialer.peer.birth.node_id);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        publishing.abort();
+
+        // The product ALPN on the same endpoint: one dial, admitted.
+        let (opener, _) = dialer.peer.registry.connections(ALPN_A).unwrap().split();
+        let (_, mut accepts) = acceptor.peer.registry.connections(ALPN_A).unwrap().split();
+        let accepted = tokio::spawn(async move { accepts.accept().await.unwrap() });
+        let conn = opener.open(&acceptor.peer.birth).await.unwrap();
+        assert_eq!(accepted.await.unwrap().id(), conn.id());
+        let name = acceptor.peer.birth.name.to_string();
+        drop((on_acceptor, on_dialer));
+        dialer.peer.shutdown().await;
+        acceptor.peer.shutdown().await;
+        (name, rpc_served, heard)
+    });
+    assert!(rpc_served, "the Node RPC call was served on the acceptor's endpoint");
+    assert!(heard, "the gossip connection formed: the acceptor heard the dialer's digest");
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let admission: Vec<&serde_json::Value> = spans
+        .iter()
+        .filter(|s| matches!(s["name"].as_str(), Some("rdm.node.connections.create.via-admitted" | "rdm.node.connections.reject.via-refused" | "rdm.node.connections.update.via-presented")))
+        .collect();
+    let product = String::from_utf8_lossy(ALPN_A).into_owned();
+    assert!(
+        admission.iter().all(|s| s["attributes"]["alpn"] == product.as_str()),
+        "no admission span names Node RPC's or gossip's ALPN: {admission:#?}"
+    );
+    let admitted: Vec<_> = admission.iter().filter(|s| s["name"] == "rdm.node.connections.create.via-admitted" && s["attributes"]["destination"] == acceptor_birth.as_str()).collect();
+    assert_eq!(admitted.len(), 1, "exactly the one product dial was admitted: {admission:#?}");
+}
+
 /// A dialer that holds a raw QUIC connection on a registered ALPN and presents what the cell says.
 struct RawDialer {
     ep: iroh::Endpoint,
