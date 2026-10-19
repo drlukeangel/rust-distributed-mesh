@@ -833,7 +833,7 @@ impl EntryState {
         // an admin that holds no Build or no Fabric.
         let build = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
         let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
-        let control = crate::wire::JoinControl { provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
+        let control = crate::wire::JoinControl { cert_policy: None, provider: e.provider, fabric, build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
         let me_str = me.to_string();
         Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.membership.status_frames(&me_str) })
     }

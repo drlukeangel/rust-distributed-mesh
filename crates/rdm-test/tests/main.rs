@@ -58,6 +58,8 @@ mod await_attempt;
 mod build_op;
 #[path = "fabric/issuance.rs"]
 mod issuance;
+#[path = "fabric/cert_renewal.rs"]
+mod cert_renewal;
 #[path = "fabric/seeded.rs"]
 mod seeded;
 #[path = "fabric/rounds.rs"]

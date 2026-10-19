@@ -3156,7 +3156,7 @@ mod tests {
                 Box::pin(async {
                     Ok(crate::wire::JoinAnswer {
                         served_by: "mesh1.admin.1".into(),
-                        control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+                        control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
                 })
@@ -4111,7 +4111,7 @@ mod tests {
     fn entry_answer(frames: Vec<rdm_transport::membership::Frame>) -> crate::wire::JoinAnswer {
         crate::wire::JoinAnswer {
             served_by: "mesh1.admin.1".into(),
-            control: crate::wire::JoinControl { provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
+            control: crate::wire::JoinControl { cert_policy: None, provider: ProviderKind::Process, fabric: None, build: None, rafka_time_ms: 1_000, member_cert: Vec::new(), name: None, config: None },
             statuses: frames,
         }
     }

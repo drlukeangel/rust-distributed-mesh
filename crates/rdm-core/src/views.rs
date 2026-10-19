@@ -205,7 +205,34 @@ pub struct NodeView {
     /// Canonical held-set hash carried by this birth's digest.
     #[serde(default)]
     pub held_hash: [u8; 32],
+    /// The birth's member cert as its newest cert row holds it (fabric-certs.md §Tracking): `None`
+    /// when no row names it (an admin configured with no certs issues none).
+    #[serde(default)]
+    pub cert: Option<NodeCertView>,
+}
 
+/// A birth's member cert as `node.get` surfaces it (fabric-certs.md §Tracking: `cert { issued_at,
+/// expires_at, issuer_expires_at }`), each rafka-time ms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCertView {
+    /// When the cert the row names was issued.
+    pub issued_at: u64,
+    /// When it expires.
+    pub expires_at: u64,
+    /// When its issuing cert expires.
+    pub issuer_expires_at: u64,
+}
+
+/// A mesh whose member renewals stall (fabric-certs.md §Tracking: a row past `renew_at` by more than
+/// a floor with no `node.cert.renewed`), surfaced on `fabric.get` as `renewals: stalled`, the way
+/// `held-running` is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Renewals {
+    /// At least one birth's renewal is past its point by more than a floor with no receipt.
+    Stalled {
+        /// The births whose renewals stall.
+        nodes: Vec<PathName>,
+    },
 }
 
 impl NodeView {
@@ -240,6 +267,9 @@ pub struct MeshView {
     pub admin_api_base: Option<String>,
     /// The `path.name` of every node of the mesh.
     pub nodes: Vec<PathName>,
+    /// The mesh's member renewals, when they stall (fabric-certs.md §Tracking).
+    #[serde(default)]
+    pub renewals: Option<Renewals>,
 }
 
 /// The fabric as the answering node-admin's view holds it (`fabric.get`).
@@ -270,6 +300,10 @@ pub struct FabricView {
     /// A fabric-seat takeover the store could not commit, while it is held (elections §5).
     #[serde(default)]
     pub takeover: Option<HeldTakeover>,
+    /// The next member cert expiry across the fabric's cert rows, rafka-time ms (fabric-certs.md
+    /// §Tracking); `None` while no row names one.
+    #[serde(default)]
+    pub next_expiry: Option<u64>,
 }
 
 /// One connection fact a node holds (`node.connections.get`).

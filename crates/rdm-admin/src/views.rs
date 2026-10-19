@@ -62,7 +62,7 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
 /// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
 /// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
-    NodeView { types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: n.name.clone(),
         kind: n.kind,
         mesh: n.mesh.clone(),
@@ -94,7 +94,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
 }
 
 fn mesh_view(m: crate::topology::MeshView) -> MeshView {
-    MeshView { id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
+    MeshView { renewals: None, id: m.id, name: m.name, status: scope_status(m.status), primary_admin: m.primary_admin, admin_api_base: m.admin_api_base, nodes: m.nodes }
 }
 
 /// The paths the current Build plans in each mesh, by mesh: where `node.get` names a birth its view
@@ -343,7 +343,7 @@ pub fn meshes(view: &Topology, mesh: Option<&str>) -> Option<Vec<MeshView>> {
 /// fabric record holds it.
 pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
     let f = view.fabric_view();
-    FabricView {
+    FabricView { next_expiry: None,
         id: f.id,
         name: f.name,
         status: scope_status(f.status),

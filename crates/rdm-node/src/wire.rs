@@ -47,8 +47,13 @@ pub struct JoinControl {
     /// door for the accepted birth; a node refuses an answer without it.
     pub name: Option<PathName>,
     /// The config the birth's row holds, handed beside its name; `None` when no row was ever
-    /// written at the name. Appended last: it is the control frame's final field.
+    /// written at the name.
     pub config: Option<std::collections::BTreeMap<String, String>>,
+    /// The fabric's cert policy (fabric-certs.md §Tracking): its TTLs and renewal point, read once by
+    /// the bootstrap admin and carried to every later admin in its entry pull the way the provider is.
+    /// `None` from an admin that answers with none. Appended last: it is the control frame's final
+    /// field.
+    pub cert_policy: Option<rdm_core::certs::CertPolicy>,
 }
 
 /// The answering admin's current Build, and the attempt a joiner's copy of it must reach before Ready.
@@ -77,6 +82,7 @@ struct WireControl {
     member_cert: Vec<u8>,
     name: Option<PathName>,
     config: Option<std::collections::BTreeMap<String, String>>,
+    cert_policy: Option<rdm_core::certs::CertPolicy>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -98,6 +104,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
             member_cert: c.member_cert.clone(),
             name: c.name.clone(),
             config: c.config.clone(),
+            cert_policy: c.cert_policy,
         },
         statuses: answer.statuses.clone(),
     };
@@ -109,7 +116,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
     let w: WireJoinAnswer = rdm_transport::wire::decode(bytes).map_err(|e| e.to_string())?;
     Ok(JoinAnswer {
         served_by: w.served_by,
-        control: JoinControl {
+        control: JoinControl { cert_policy: w.control.cert_policy,
             provider: w.control.provider,
             fabric: w.control.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),

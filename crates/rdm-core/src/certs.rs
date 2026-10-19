@@ -297,6 +297,82 @@ pub fn decode_key(hex_str: &str) -> Result<SigningKey, String> {
     Ok(SigningKey::from_bytes(&bytes))
 }
 
+/// `RDM_MEMBER_CERT_TTL_SECS`: a member cert's TTL, fabric policy.
+pub const ENV_MEMBER_CERT_TTL_SECS: &str = "RDM_MEMBER_CERT_TTL_SECS";
+/// `RDM_ISSUING_CERT_TTL_SECS`: a mesh issuing cert's TTL, fabric policy.
+pub const ENV_ISSUING_CERT_TTL_SECS: &str = "RDM_ISSUING_CERT_TTL_SECS";
+/// `RDM_CA_CERT_TTL_SECS`: RDM's CA TTL, fabric policy.
+pub const ENV_CA_CERT_TTL_SECS: &str = "RDM_CA_CERT_TTL_SECS";
+/// `RDM_CERT_RENEW_AT`: the fraction of a cert's TTL after which its issuer renews it, fabric policy.
+pub const ENV_CERT_RENEW_AT: &str = "RDM_CERT_RENEW_AT";
+/// RDM's CA TTL's default, in seconds (365 days).
+pub const CA_CERT_TTL_SECS: u64 = 365 * 86_400;
+/// The renew point's default, in thousandths of a cert's TTL (`RDM_CERT_RENEW_AT` 0.67).
+pub const RENEW_AT_PERMILLE: u32 = 670;
+
+/// The fabric's cert policy (fabric-certs.md §Tracking): the TTLs and the renewal point, read once by
+/// the bootstrap admin and fixed for the fabric, carried to every later admin in its entry pull the
+/// way `MESH_SPAWN_TYPE` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertPolicy {
+    /// A member cert's TTL, seconds.
+    pub member_ttl_secs: u64,
+    /// A mesh issuing cert's TTL, seconds.
+    pub issuing_ttl_secs: u64,
+    /// RDM's CA TTL, seconds.
+    pub ca_ttl_secs: u64,
+    /// The fraction of a cert's TTL after which its issuer renews it, in thousandths.
+    pub renew_at_permille: u32,
+}
+
+impl Default for CertPolicy {
+    fn default() -> Self {
+        Self { member_ttl_secs: MEMBER_CERT_TTL_SECS, issuing_ttl_secs: ISSUING_CERT_TTL_SECS, ca_ttl_secs: CA_CERT_TTL_SECS, renew_at_permille: RENEW_AT_PERMILLE }
+    }
+}
+
+impl CertPolicy {
+    /// The policy `get` (the bootstrap admin's environment) names, each unset value its default. A
+    /// value that does not parse, a TTL of zero, and a renewal point outside (0, 1) are refused by
+    /// name.
+    pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let present = |k: &str| get(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let secs = |k: &str, default: u64| -> Result<u64, String> {
+            match present(k) {
+                None => Ok(default),
+                Some(v) => match v.parse::<u64>() {
+                    Ok(0) | Err(_) => Err(format!("{k}={v}: a TTL is a whole number of seconds above zero")),
+                    Ok(n) => Ok(n),
+                },
+            }
+        };
+        let renew_at_permille = match present(ENV_CERT_RENEW_AT) {
+            None => RENEW_AT_PERMILLE,
+            Some(v) => match v.parse::<f64>() {
+                Ok(f) if f > 0.0 && f < 1.0 => (f * 1000.0).round() as u32,
+                _ => return Err(format!("{ENV_CERT_RENEW_AT}={v}: the renewal point is a fraction of the TTL between 0 and 1")),
+            },
+        };
+        Ok(Self {
+            member_ttl_secs: secs(ENV_MEMBER_CERT_TTL_SECS, MEMBER_CERT_TTL_SECS)?,
+            issuing_ttl_secs: secs(ENV_ISSUING_CERT_TTL_SECS, ISSUING_CERT_TTL_SECS)?,
+            ca_ttl_secs: secs(ENV_CA_CERT_TTL_SECS, CA_CERT_TTL_SECS)?,
+            renew_at_permille,
+        })
+    }
+}
+
+/// When the issuer renews the cert of the exact birth `(node_id, incarnation)` issued at
+/// `issued_at_ms` and expiring at `expires_at_ms` (node-cert-renew.md "When"): once it has lived
+/// `renew_at_permille` thousandths of its TTL, plus a jitter fixed for that issue, up to 5 % of the
+/// TTL. Computed from those fields alone, so a successor authority reading the cert row computes the
+/// same point.
+pub fn renew_at(node_id: &NodeId, incarnation: &IncarnationId, issued_at_ms: u64, expires_at_ms: u64, renew_at_permille: u32) -> u64 {
+    // RED (i145 e3): not computed yet.
+    let _ = (node_id, incarnation, issued_at_ms, renew_at_permille);
+    expires_at_ms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,5 +620,50 @@ mod tests {
         assert!(key.verifying_key().verify(msg, &Signature::from_bytes(&by_iroh.to_bytes())).is_ok(), "iroh's signature verifies under the ed25519 key");
         let by_rdm = key.sign(msg);
         assert!(iroh_key.public().verify(msg, &iroh_base::Signature::from_bytes(&by_rdm.to_bytes())).is_ok(), "the ed25519 signature verifies under iroh's key");
+    }
+}
+
+#[cfg(test)]
+mod renewal_tests {
+    use super::*;
+
+    /// CONTRACT (node-cert-renew.md "When"; fabric-certs.md §Tracking: "RDM_CERT_RENEW_AT (default
+    /// 0.67; the jitter, up to 5 % of the TTL, is fixed)"): the renew point of one issue lies at the
+    /// policy's fraction of its TTL plus a jitter of at most 5 % of the TTL, and is the same every time
+    /// it is computed from the same row; two births' points differ by their jitter.
+    #[test]
+    fn the_renew_point_is_the_policys_fraction_plus_a_fixed_jitter_within_five_percent() {
+        let (issued, ttl) = (1_000_000u64, 86_400_000u64);
+        let expires = issued + ttl;
+        let floor = issued + ttl * 670 / 1000;
+        let ceiling = floor + ttl / 20;
+        let mut points = std::collections::BTreeSet::new();
+        for _ in 0..64 {
+            let (n, i) = (NodeId::mint(), IncarnationId::mint());
+            let at = renew_at(&n, &i, issued, expires, 670);
+            assert!((floor..=ceiling).contains(&at), "{at} lies outside [{floor}, {ceiling}]");
+            assert_eq!(at, renew_at(&n, &i, issued, expires, 670), "the same row gives the same point");
+            points.insert(at);
+        }
+        assert!(points.len() > 1, "the jitter differs between births: {points:?}");
+        let short = renew_at(&NodeId::mint(), &IncarnationId::mint(), issued, issued + 12_000, 670);
+        assert!((issued + 8_040..=issued + 8_640).contains(&short), "a seconds-long TTL renews at its own fraction: {short}");
+    }
+
+    /// CONTRACT (fabric-certs.md §Tracking): the policy reads `RDM_MEMBER_CERT_TTL_SECS`,
+    /// `RDM_ISSUING_CERT_TTL_SECS`, `RDM_CA_CERT_TTL_SECS` and `RDM_CERT_RENEW_AT`, each unset value its
+    /// default, and refuses a value it cannot use by name.
+    #[test]
+    fn the_cert_policy_reads_its_four_values_and_refuses_one_it_cannot_use() {
+        assert_eq!(CertPolicy::from_env(|_| None).unwrap(), CertPolicy::default());
+        let set = CertPolicy::from_env(|k| match k {
+            "RDM_MEMBER_CERT_TTL_SECS" => Some("12".into()),
+            "RDM_CERT_RENEW_AT" => Some("0.5".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!((set.member_ttl_secs, set.renew_at_permille, set.issuing_ttl_secs), (12, 500, ISSUING_CERT_TTL_SECS));
+        assert!(CertPolicy::from_env(|k| (k == "RDM_CERT_RENEW_AT").then(|| "1.5".into())).unwrap_err().contains("RDM_CERT_RENEW_AT"));
+        assert!(CertPolicy::from_env(|k| (k == "RDM_MEMBER_CERT_TTL_SECS").then(|| "0".into())).unwrap_err().contains("RDM_MEMBER_CERT_TTL_SECS"));
     }
 }

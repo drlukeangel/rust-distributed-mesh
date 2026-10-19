@@ -144,6 +144,23 @@ enum Material {
     Root(SigningKey),
 }
 
+/// One member cert issue (fabric-certs.md §Tracking): the bytes the birth is handed, and what its cert
+/// row records of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberIssue {
+    /// The signed cert's bytes, as `JoinControl::member_cert` and `RenewCert` carry them.
+    pub bytes: Vec<u8>,
+    /// When it was issued, on the issuing admin's rafka-time.
+    pub issued_at: u64,
+    /// When it expires: the policy's member TTL from `issued_at`, cut to its issuer's expiry.
+    pub expires_at: u64,
+    /// When its issuing cert expires.
+    pub issuer_expires_at: u64,
+    /// When its issuing authority renews it: the policy's point plus the birth's fixed jitter
+    /// ([`rdm_core::certs::renew_at`]).
+    pub renew_at: u64,
+}
+
 /// A node-admin's cert material together with the rafka-time it issues on: what the join door and
 /// the deployment executor call.
 pub struct CertIssuer {
@@ -165,6 +182,25 @@ impl CertIssuer {
     pub fn with_root(secret: SigningKey, issuing: Option<IssuingKey>, time: RafkaTime) -> Self {
         let issuers = issuing.into_iter().map(|k| (k.mesh().to_string(), k)).collect();
         Self { material: Material::Root(secret), time, issuers: Mutex::new(issuers) }
+    }
+
+    /// Hold `policy`, the fabric's cert policy, from now on (fabric-certs.md §Tracking: read once by
+    /// the bootstrap admin, carried to every later admin in its entry pull). Until it is set, the
+    /// policy is the defaults.
+    pub fn set_policy(&self, policy: rdm_core::certs::CertPolicy) {
+        let _ = policy;
+    }
+
+    /// The cert policy this admin issues under.
+    pub fn policy(&self) -> rdm_core::certs::CertPolicy {
+        rdm_core::certs::CertPolicy::default()
+    }
+
+    /// [`Self::member`], with what the birth's cert row records of the issue.
+    pub fn issue_member(&self, birth: &BirthIdentity) -> Result<MemberIssue, IssueFailure> {
+        let bytes = self.member(birth)?;
+        let cert = rdm_core::certs::cert_from_bytes(&bytes).map(|s| (s.cert.expiry_ms, s.issuer.cert.expiry_ms)).unwrap_or_default();
+        Ok(MemberIssue { bytes, issued_at: 0, expires_at: cert.0, issuer_expires_at: cert.1, renew_at: cert.0 })
     }
 
     /// The fabric root's public key, when this admin holds the root.
@@ -389,6 +425,40 @@ mod tests {
         let mixed = IssuingMaterial { root: material.root.clone(), ..stranger };
         let refused = CertChoice::from_material(&tempdir_in(&dir, "mixed"), "mesh1", false, launch_env(&mixed)).err().expect("refused");
         assert!(refused.contains("issuer-bad-signature") && refused.contains("not signed by the fabric's root"), "{refused}");
+    }
+
+    // @feature: node-lifecycle
+    /// CONTRACT (fabric-certs.md §Tracking: "A member cert never outlives its issuer ... whatever the
+    /// policy says"; node-cert-renew.md Request: "its expiry cut to the issuer's when the issuer expires
+    /// first"; mesh-issuer-renew.md step 3): an admin under a 12 s member TTL issues a member cert that
+    /// lives 12 s while its issuer outlives that, and its row's renew point is the policy's fraction
+    /// of that life plus the birth's jitter. A member due near the issuer's expiry (the issuer has 6 s
+    /// left) is cut to it: the cert, the row's `expires_at` and its `issuer_expires_at` are the
+    /// issuer's expiry, and the renew point is taken from the cut life, so the birth is renewed before
+    /// its issuer expires.
+    #[test]
+    fn a_member_due_near_the_issuers_expiry_is_cut_to_it() {
+        let root = rdm_core::certs::mint_key();
+        let issuer = rdm_core::certs::IssuingKey::mint(&root, "mesh1", 15, 1_000);
+        let policy = rdm_core::certs::CertPolicy { member_ttl_secs: 12, ..Default::default() };
+        let in_window = |issue: &MemberIssue| {
+            let life = issue.expires_at - issue.issued_at;
+            (issue.issued_at + life * 670 / 1000..=issue.issued_at + life * 720 / 1000).contains(&issue.renew_at)
+        };
+
+        let early = CertIssuer::with_root(root.clone(), Some(issuer.clone()), time_at(1_000));
+        early.set_policy(policy);
+        assert_eq!(early.policy(), policy, "the admin holds the policy it was given");
+        let first = early.issue_member(&birth("mesh1.rpc.1")).unwrap();
+        assert_eq!((first.issued_at, first.expires_at, first.issuer_expires_at), (1_000, 13_000, 16_000), "the policy's 12 s, inside the issuer's life: {first:?}");
+        assert!(in_window(&first), "renewed at two thirds of its life plus at most 5 %: {first:?}");
+
+        let late = CertIssuer::with_root(root, Some(issuer), time_at(10_000));
+        late.set_policy(policy);
+        let cut = late.issue_member(&birth("mesh1.rpc.2")).unwrap();
+        assert_eq!((cut.issued_at, cut.expires_at, cut.issuer_expires_at), (10_000, 16_000, 16_000), "cut to the issuer's expiry: {cut:?}");
+        assert_eq!(rdm_core::certs::cert_from_bytes(&cut.bytes).unwrap().cert.expiry_ms, 16_000, "the bytes carry the cut expiry");
+        assert!(in_window(&cut) && cut.renew_at < 16_000, "the renew point is taken from the cut life: {cut:?}");
     }
 
     fn tempdir_in(dir: &Path, name: &str) -> std::path::PathBuf {

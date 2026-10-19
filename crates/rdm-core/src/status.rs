@@ -486,6 +486,43 @@ pub enum StatusRequest {
         /// The operation: `leave-mesh:<path.name>` or `node.stop:<path.name>`.
         operation: String,
     },
+    /// Downward (`node.cert.renew`; node-cert-renew.md): the birth's issuing authority installs a
+    /// fresh member cert on the exact running birth, answered [`StatusReply::CertRenewed`], or
+    /// [`StatusReply::RejectedCert`] for a cert that does not decode or names another birth.
+    RenewCert {
+        /// The birth renewed.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The member cert, as the join carries it (`rdm_core::certs::cert_to_bytes`).
+        cert: Vec<u8>,
+    },
+    /// Downward (`node.issuer.update`; node-issuer-update.md): the fabric-primary installs its mesh's
+    /// issuing material on one node-admin of that mesh, answered [`StatusReply::IssuerUpdated`], or
+    /// [`StatusReply::RejectedCert`] for material of another mesh or birth, or one the root does not
+    /// verify.
+    UpdateIssuer {
+        /// The node-admin.
+        node_id: NodeId,
+        /// The incarnation of that node-admin.
+        incarnation: IncarnationId,
+        /// The issuing key's secret, as hex.
+        key: IssuingKeyHex,
+        /// The root-signed issuing cert, as hex (`rdm_core::certs::encode_issuing_cert`).
+        cert: String,
+    },
+}
+
+/// An issuing key's secret carried by [`StatusRequest::UpdateIssuer`], as hex: its debug form names its
+/// length, never its value.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct IssuingKeyHex(pub String);
+
+impl std::fmt::Debug for IssuingKeyHex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "IssuingKeyHex({} hex digits)", self.0.len())
+    }
 }
 
 /// Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
@@ -778,6 +815,8 @@ impl StatusRequest {
             Self::DeleteTags { .. } => "node.tags.delete",
             Self::JoinMesh { .. } => "node.mesh.join",
             Self::LeaveMesh { .. } => "node.mesh.leave",
+            Self::RenewCert { .. } => "node.cert.renew",
+            Self::UpdateIssuer { .. } => "node.issuer.update",
         }
     }
 }
@@ -1264,6 +1303,32 @@ pub enum StatusReply {
         /// The request's op name.
         request: String,
     },
+    /// `node.cert.renewed`: the exact birth holds and presents the new member cert.
+    CertRenewed {
+        /// The birth renewed.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// When the installed cert expires, rafka-time ms.
+        expires_at: u64,
+    },
+    /// `node.issuer.updated`: the node-admin holds its mesh's new issuing material and signs member
+    /// certs with it from now.
+    IssuerUpdated {
+        /// The node-admin.
+        node_id: NodeId,
+        /// The incarnation of that node-admin.
+        incarnation: IncarnationId,
+        /// When the installed issuing cert expires, rafka-time ms.
+        issuer_expires_at: u64,
+    },
+    /// A cert or issuing material refused by name (node-cert-renew.md, node-issuer-update.md): it does
+    /// not decode, names another birth or mesh, or the root does not verify it. The receiver keeps
+    /// what it holds.
+    RejectedCert {
+        /// Why, by name; within [`MAX_REFUSAL_REASON_BYTES`].
+        reason: String,
+    },
 }
 
 /// The event a Blocked `before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1492,6 +1557,9 @@ impl StatusReply {
             Self::MeshJoined { .. } => "mesh-joined",
             Self::MeshLeft { .. } => "mesh-left",
             Self::RequestNotHandled { .. } => "request-not-handled",
+            Self::CertRenewed { .. } => "cert-renewed",
+            Self::IssuerUpdated { .. } => "issuer-updated",
+            Self::RejectedCert { .. } => "rejected-cert",
         }
     }
 }
@@ -1532,8 +1600,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 30;
-    const REPLY_VARIANTS: u32 = 52;
+    const REQUEST_VARIANTS: u32 = 32;
+    const REPLY_VARIANTS: u32 = 55;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1592,6 +1660,9 @@ impl NodeProtocol for Status {
             StatusReply::MeshJoined { .. } => "mesh-joined",
             StatusReply::MeshLeft { .. } => "mesh-left",
             StatusReply::RequestNotHandled { .. } => "request-not-handled",
+            StatusReply::CertRenewed { .. } => "cert-renewed",
+            StatusReply::IssuerUpdated { .. } => "issuer-updated",
+            StatusReply::RejectedCert { .. } => "rejected-cert",
         }
     }
 
@@ -1653,6 +1724,9 @@ impl NodeProtocol for Status {
             StatusReply::MeshJoined { .. } => ReplyKind::Success,
             StatusReply::MeshLeft { .. } => ReplyKind::Success,
             StatusReply::RequestNotHandled { .. } => ReplyKind::new(crate::outcome::Code::Unimplemented),
+            StatusReply::CertRenewed { .. } => ReplyKind::Success,
+            StatusReply::IssuerUpdated { .. } => ReplyKind::Success,
+            StatusReply::RejectedCert { .. } => ReplyKind::new(crate::outcome::Code::InvalidArgument),
         }
     }
 
@@ -1767,7 +1841,7 @@ mod tests {
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::new(crate::outcome::Code::InvalidArgument)),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
-            (StatusReply::Fabric { fabric: crate::views::FabricView { id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()), held_running: None, takeover: None } }, ReplyKind::Success),
+            (StatusReply::Fabric { fabric: crate::views::FabricView { next_expiry: None, id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()), held_running: None, takeover: None } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::new(crate::outcome::Code::NotFound)),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::new(crate::outcome::Code::ResourceExhausted)),
@@ -1979,7 +2053,7 @@ mod tests {
     }
 
     fn node_view() -> crate::views::NodeView {
-        crate::views::NodeView { types: Default::default(), held: Default::default(), held_hash: Default::default(),
+        crate::views::NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
             name: "mesh1.rpc.12".parse().unwrap(),
             kind: crate::NodeKind::RpcNode,
             mesh: "mesh1".into(),
@@ -2009,7 +2083,7 @@ mod tests {
     }
 
     fn mesh_view() -> crate::views::MeshView {
-        crate::views::MeshView { id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap(), "mesh1.rpc.1".parse().unwrap()] }
+        crate::views::MeshView { renewals: None, id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap(), "mesh1.rpc.1".parse().unwrap()] }
     }
 
     fn connection_view() -> crate::views::ConnectionView {

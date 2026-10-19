@@ -308,6 +308,111 @@ impl NodeDataDirUnreadableRow {
     }
 }
 
+/// A birth's cert row (fabric-certs.md §Tracking, `node-cert/1`): the issuer puts one at every
+/// issue and renew of the exact birth's member cert, keyed by the birth and `issued_at`, so two puts
+/// commute; its receipt is a [`NodeCertReceiptRow`] under the same key. The birth's newest issue and
+/// whether it has a receipt are its renewal state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCertRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The node's `path.name`.
+    pub name: PathName,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// When the cert was issued, rafka-time ms.
+    pub issued_at: u64,
+    /// When it expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When its issuing cert expires, rafka-time ms.
+    pub issuer_expires_at: u64,
+    /// When its issuer renews it (`rdm_core::certs::renew_at`), rafka-time ms.
+    pub renew_at: u64,
+}
+
+impl NodeCertRow {
+    /// The row's key: the exact birth and the issue.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.node_id, &self.incarnation_id, self.issued_at)
+    }
+
+    /// The key of the birth `(node_id, incarnation_id)`'s cert row issued at `issued_at`.
+    pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId, issued_at: u64) -> String {
+        format!("{node_id}--{}--{issued_at:020}", incarnation_id.as_str())
+    }
+}
+
+/// The receipt of one issue (`node.cert.renewed`; `node-cert-receipt/1`), under its [`NodeCertRow`]'s
+/// key: the exact birth answered that it holds and presents that cert.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCertReceiptRow {
+    /// The node.
+    pub node_id: NodeId,
+    /// The exact birth.
+    pub incarnation_id: IncarnationId,
+    /// The issue the receipt answers.
+    pub issued_at: u64,
+    /// The expiry the birth answered it holds, rafka-time ms.
+    pub expires_at: u64,
+}
+
+impl NodeCertReceiptRow {
+    /// The row's key: its issue's.
+    pub fn key(&self) -> String {
+        NodeCertRow::key_of(&self.node_id, &self.incarnation_id, self.issued_at)
+    }
+}
+
+/// A mesh's issuer row (mesh-issuer-renew.md, `mesh-issuer/1`): the fabric-primary puts one at every
+/// mint of the mesh's issuing cert, keyed by the mesh and `issued_at`; each node-admin's
+/// `node.issuer.updated` is a [`MeshIssuerReceiptRow`] beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshIssuerRow {
+    /// The mesh.
+    pub mesh: String,
+    /// When the issuing cert was minted, rafka-time ms.
+    pub issued_at: u64,
+    /// When it expires, rafka-time ms.
+    pub expires_at: u64,
+    /// When the fabric-primary renews it, rafka-time ms.
+    pub renew_at: u64,
+}
+
+impl MeshIssuerRow {
+    /// The row's key: the mesh and the mint.
+    pub fn key(&self) -> String {
+        Self::key_of(&self.mesh, self.issued_at)
+    }
+
+    /// The key of `mesh`'s issuer row minted at `issued_at`.
+    pub fn key_of(mesh: &str, issued_at: u64) -> String {
+        format!("{mesh}--{issued_at:020}")
+    }
+}
+
+/// One node-admin's receipt of a mesh's issuing material (`node.issuer.updated`;
+/// `mesh-issuer-receipt/1`), keyed by its issuer row's key and the exact admin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeshIssuerReceiptRow {
+    /// The mesh.
+    pub mesh: String,
+    /// The mint the receipt answers.
+    pub issued_at: u64,
+    /// The node-admin.
+    pub node_id: NodeId,
+    /// The exact birth of that admin.
+    pub incarnation_id: IncarnationId,
+    /// The issuing cert's expiry the admin answered it holds, rafka-time ms.
+    pub issuer_expires_at: u64,
+}
+
+impl MeshIssuerReceiptRow {
+    /// The row's key: its issuer row's key and the exact admin.
+    pub fn key(&self) -> String {
+        format!("{}--{}--{}", MeshIssuerRow::key_of(&self.mesh, self.issued_at), self.node_id, self.incarnation_id.as_str())
+    }
+}
+
 /// The durable record of the status facts this admin holds.
 #[async_trait]
 pub trait StatusStorage: Send + Sync {
@@ -394,6 +499,38 @@ pub trait StatusStorage: Send + Sync {
     /// Remove the `data-dir-unreadable` row of the birth `(node_id, incarnation_id)` among the
     /// status rows of the mesh named `mesh` (R-FM2).
     async fn remove_node_data_dir_unreadable_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId, name: &PathName) -> Result<(), StorageError>;
+    /// Every cert row among the status rows of the mesh named `mesh` (fabric-certs.md §Tracking).
+    async fn node_certs_of(&self, _mesh: &str) -> Result<Vec<NodeCertRow>, StorageError> {
+        Ok(Vec::new())
+    }
+    /// A blind put of a cert row among the status rows of the mesh named `mesh`.
+    async fn put_node_cert_of(&self, _mesh: &str, _row: &NodeCertRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// Every cert receipt row among the status rows of the mesh named `mesh`.
+    async fn node_cert_receipts_of(&self, _mesh: &str) -> Result<Vec<NodeCertReceiptRow>, StorageError> {
+        Ok(Vec::new())
+    }
+    /// A blind put of a cert receipt row among the status rows of the mesh named `mesh`.
+    async fn put_node_cert_receipt_of(&self, _mesh: &str, _row: &NodeCertReceiptRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// Every issuer row of the mesh named `mesh`.
+    async fn mesh_issuers_of(&self, _mesh: &str) -> Result<Vec<MeshIssuerRow>, StorageError> {
+        Ok(Vec::new())
+    }
+    /// A blind put of an issuer row of the mesh named `mesh`.
+    async fn put_mesh_issuer_of(&self, _mesh: &str, _row: &MeshIssuerRow) -> Result<(), StorageError> {
+        Ok(())
+    }
+    /// Every issuer receipt row of the mesh named `mesh`.
+    async fn mesh_issuer_receipts_of(&self, _mesh: &str) -> Result<Vec<MeshIssuerReceiptRow>, StorageError> {
+        Ok(Vec::new())
+    }
+    /// A blind put of an issuer receipt row of the mesh named `mesh`.
+    async fn put_mesh_issuer_receipt_of(&self, _mesh: &str, _row: &MeshIssuerReceiptRow) -> Result<(), StorageError> {
+        Ok(())
+    }
 }
 
 fn fold_meshes(rows: impl IntoIterator<Item = MeshStatusRow>) -> HashMap<MeshId, MeshState> {

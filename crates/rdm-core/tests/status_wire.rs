@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_thirty_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_two_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Stopped, operation: None }, "000c3031323334353637383961620c3977637072666777767468790300"),
@@ -80,6 +80,10 @@ fn requests_match_the_frozen_thirty_variant_wire_schema() {
         (JoinMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "join-mesh:mesh1.rpc.1".into() }, "1c0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201156a6f696e2d6d6573683a6d657368312e7270632e31"),
         // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.rpc.1"
         (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166c656176652d6d6573683a6d657368312e7270632e31"),
+        // node_id | incarnation | cert (len 3) (i145 e3, node.cert.renew)
+        (RenewCert { node_id: node(), incarnation: birth(), cert: vec![1, 2, 3] }, "1e0c3031323334353637383961620c39776370726667777674687903010203"),
+        // node_id | incarnation | key "ab" | cert "cd" (node.issuer.update)
+        (UpdateIssuer { node_id: node(), incarnation: birth(), key: rdm_core::status::IssuingKeyHex("ab".into()), cert: "cd".into() }, "1f0c3031323334353637383961620c397763707266677776746879026162026364"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -97,7 +101,7 @@ fn held_takeover() -> rdm_core::views::HeldTakeover {
 }
 
 #[test]
-fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
+fn replies_match_the_frozen_fifty_five_variant_wire_schema() {
     let mut variants = std::collections::BTreeSet::new();
     use StatusReply::*;
     let fixtures = [
@@ -143,13 +147,15 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
                 "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64", "00", "00", "00",
                 // os_stopped None, then types and held lengths, and the fixed 32-byte held hash.
                 "00", "00", "00", "0000000000000000000000000000000000000000000000000000000000000000",
+                // cert None (i145 e3)
+                "00",
             ),
         ),
-        (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
+        (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31", "00")),
         (
-            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | held_running None | takeover None
-            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None, takeover: None } },
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00", "00"),
+            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b") | held_running None | takeover None | next_expiry None
+            Fabric { fabric: FabricView { next_expiry: None, id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None, takeover: None } },
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00", "00", "00"),
         ),
         (
             Connections {
@@ -188,6 +194,12 @@ fn replies_match_the_frozen_fifty_two_variant_wire_schema() {
         // node_id | incarnation | left (len 1: Own (0))
         (MeshLeft { node_id: node(), incarnation: birth(), left: vec![WhichMesh::Own] }, "320c3031323334353637383961620c3977637072666777767468790100"),
         (RequestNotHandled { request: "declare-node-state".into() }, "33126465636c6172652d6e6f64652d7374617465"),
+        // node_id | incarnation | expires_at 7 (i145 e3, node.cert.renewed)
+        (CertRenewed { node_id: node(), incarnation: birth(), expires_at: 7 }, "340c3031323334353637383961620c39776370726667777674687907"),
+        // node_id | incarnation | issuer_expires_at 7 (node.issuer.updated)
+        (IssuerUpdated { node_id: node(), incarnation: birth(), issuer_expires_at: 7 }, "350c3031323334353637383961620c39776370726667777674687907"),
+        // reason "x"
+        (RejectedCert { reason: "x".into() }, "360178"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -208,11 +220,11 @@ fn a_fabric_reply_carries_its_held_takeover_in_frozen_bytes() {
     use StatusReply::Fabric;
     let (reply, hex) = (
         // ... | takeover Some: lost (m, 0123456789ab, i) | expected_revision 7 | winner (m, 0123456789cd, j) | proposer = lost | since 5 | reason "r"
-        Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None, takeover: Some(held_takeover()) } },
+        Fabric { fabric: FabricView { next_expiry: None, id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()), held_running: None, takeover: Some(held_takeover()) } },
         concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162", "00", "01",
             "016d", "0c303132333435363738396162", "0c79727a34396a333033796834", "07",
             "016d", "0c303132333435363738396364", "0c79727a37396a3330337a7378",
-            "016d", "0c303132333435363738396162", "0c79727a34396a333033796834", "05", "0172"),
+            "016d", "0c303132333435363738396162", "0c79727a34396a333033796834", "05", "0172", "00"),
     );
     let expected = bytes(hex);
     assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
@@ -274,7 +286,7 @@ fn the_largest_mesh_deleted_fits_the_request_ceiling() {
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
 /// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
-    NodeView { types: Default::default(), held: Default::default(), held_hash: Default::default(),
+    NodeView { cert: None, types: Default::default(), held: Default::default(), held_hash: Default::default(),
         name: "mesh1.rpc.1".parse().unwrap(),
         kind: rdm_core::NodeKind::RpcNode,
         mesh: "mesh1".into(),
@@ -305,7 +317,7 @@ fn node_view() -> NodeView {
 
 /// One mesh as a `mesh.get` answer carries it.
 fn mesh_view() -> MeshView {
-    MeshView { id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap()] }
+    MeshView { renewals: None, id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap()] }
 }
 
 fn golden<T: serde::Serialize>(value: T, expected: &str) {
@@ -366,5 +378,5 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
 
 #[test]
 fn every_reply_variant_of_status_classifies_to_one_code() {
-    replies_match_the_frozen_fifty_two_variant_wire_schema();
+    replies_match_the_frozen_fifty_five_variant_wire_schema();
 }
