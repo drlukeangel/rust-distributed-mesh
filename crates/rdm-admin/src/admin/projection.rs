@@ -112,12 +112,14 @@ impl ViewReads {
     }
 
     /// The read phase of the admin `me`'s rebuild over `book`'s births of `fabric_id`, as of now: first
-    /// the exit-proof rows of the births `book` and `records` name ([`Records::read_exits`]), then the
+    /// each birth `book` holds deleted leaves `records` ([`Records::remove_deleted`]), then the
+    /// exit-proof rows of the births `book` and `records` name ([`Records::read_exits`]), then the
     /// row of every birth that does not publish its own name, from `records`' nodes store (no store:
     /// nothing is read). The exits are read first: a birth proven exited does not publish its name, so
     /// its row is read with the rest.
     pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId) -> Self {
         let me = book.held_path_name().unwrap_or_else(|| me.clone());
+        records.remove_deleted(book);
         records.read_exits(book).await;
         records.read_os_stopped(book).await;
         let at = std::time::Instant::now();

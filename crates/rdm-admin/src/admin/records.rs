@@ -796,6 +796,28 @@ impl Records {
         let _ = self.book.set(book);
     }
 
+    /// Every birth `book` holds deleted leaves these records, one part of the view's read phase
+    /// ([`ViewReads::read`], [`Self::install_projected`]) as of the resolver's feed
+    /// (`rdm_node::node_rpc::feed_once`): gossip.md §3.1 `NodeDeleted`, "the birth is removed". A launch
+    /// record or an entry sweep's record of a deleted birth never stands in for it again, after the
+    /// book forgets the departure too.
+    pub fn remove_deleted(&self, book: &DigestBook) {
+        let deleted = book.departed();
+        if deleted.is_empty() {
+            return;
+        }
+        let holder = book.holder_name().unwrap_or_default();
+        let mut nodes = self.nodes.lock().unwrap();
+        for op in deleted {
+            let before = nodes.len();
+            nodes.retain(|_, n| !(n.node_id == op.node_id && n.incarnation_id.as_ref() == Some(&op.incarnation)));
+            if nodes.len() < before {
+                tracing::info_span!("rdm.node_admin.topology.remove.via-node-deleted", node = %holder, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, operation = %op.operation)
+                    .in_scope(|| tracing::info!("the deleted birth's record leaves this admin's records"));
+            }
+        }
+    }
+
     /// The read of the exit-proof rows, one part of the view's read phase (taken before the view's
     /// write lock, [`ViewReads::read`], [`Self::install_projected`]): the row of every birth a projection draws from `book`
     /// and these records (each digest held, each stopped birth with or without a digest, each launch
@@ -938,12 +960,14 @@ impl Records {
     /// again. The declarer wakes when the view changed; a write of the same view wakes nothing.
     ///
     /// The view's read phase runs first, before its write lock is taken: no disk read holds a
-    /// reader of the view. It reads the exit-proof rows of the births the book this admin's
+    /// reader of the view. Each birth the book holds deleted leaves these records
+    /// ([`Self::remove_deleted`]); then it reads the exit-proof rows of the births the book this admin's
     /// membership holds and these records name ([`Self::read_exits`]); the projection taken under
     /// the lock reads the exits held. A birth that enters the book between the two is read at the
     /// next rebuild.
     pub async fn install_projected(&self, topology: &RwLock<Topology>, project: impl FnOnce() -> Topology) -> Topology {
         if let Some(book) = self.book.get() {
+            self.remove_deleted(book);
             self.read_exits(book).await;
         }
         let held = topology.write().await;
