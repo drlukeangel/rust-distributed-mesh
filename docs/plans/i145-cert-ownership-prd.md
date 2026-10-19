@@ -128,8 +128,23 @@ No new gossip frame and no new `MemberStatus`.
   `a_no_certs_acceptor_admits_by_name`. RED first.
 - **Page text.** None beyond the set.
 - **Sizing.** Two seats (the loop's move; the admission step). `rdm-transport/src/endpoint.rs`,
-  `server.rs`, `admission.rs` (new), `membership.rs` (the gossip arm).
-- **State.** not started.
+  `server.rs`, `connections.rs` with the step beside it under its page name, `node.connections.admit`
+  (new; not `admission.rs`, which is Node RPC's execution-capacity admission, node-rpc.md §17),
+  `membership.rs` (the gossip arm), `rdm-node/src/node.rs` (the admitter built from the launch),
+  `rdm-admin/src/wiring.rs` and `admin/boot.rs` (the admin's ALPNs through the registry),
+  `deployment/pipeline.rs` (the one-root launch write).
+- **State.** not started. Prep read 2026-10-19 (lane e6s4), decided by the lead: the six reasons are a
+  typed outcome in the admit page's order (`no-credential`, then fabric-certs.md §chain 1-5), and
+  undecodable or empty bytes are `no-credential`; a dialer silent for one floor from the accept is
+  `no-credential` (today two floors and a silent `Ok`, `connections.rs:850-856`); a refusal is a
+  Direct `Failed` row on the dialer, so its §9 series continues (today the probe writes nothing and
+  the series ends `no-fact`, `connection_reconnect.rs:500`); the `Refused` row's source is the birth
+  membership names for the dialer's endpoint key, else a span with no row; the verifier is built by
+  rdm-node from its launch roots and rafka-time, and `set_admitter` is test-only; the one-root launch
+  write (`RDM_ROOTS`) moves here from e5; the node-admin's raw ALPN handlers (`wiring.rs:171`,
+  `boot.rs:555`, which also skip `validate_alpns`) go through the registry in the first step. To Luke
+  when e2 starts: connections.md §1.2's reason list (four, against the admit page's six) and the
+  spelling of a launched node's `NoCerts` in its launch.
 
 #### e3 — the cert row, `node.cert.renew`, `mesh.issuer.renew`, `node.issuer.update`, policy, the watch
 
@@ -168,9 +183,9 @@ No new gossip frame and no new `MemberStatus`.
 - **Goal → gap.** fabric-ca-renew.md; fabric-certs.md §chain, §Custody. The root signs issuers directly;
   there is no CA level; verifiers hold one key; a launched admin is not written the root.
 - **Requirements, with coordinates.** R13 the fabric-primary's tick (e3's issuer renewal is the
-  pattern), `status.rs` (`UpdateRoots` / `RootsUpdated` appended), the node's root set in
-  `rdm-transport/src/admission.rs`, the launch env (`RDM_ROOTS`, `pipeline.rs` writes it like
-  `RDM_MESH_ID`), the fabric's roots row; R13b the caller op on the fabric-primary's door
+  pattern), `status.rs` (`UpdateRoots` / `RootsUpdated` appended), the node's root set beside
+  `node.connections.admit` in `rdm-transport` (not `admission.rs`), the launch env's second root
+  (`RDM_ROOTS`; its one-root write lands with e2), the fabric's roots row; R13b the caller op on the fabric-primary's door
   (`fabric.update` is the pattern); R14 the launch env (`RDM_CA_SECRET` written for a launched admin
   beside `RDM_ISSUING_KEY`), `node.roots.update`'s admin arm carrying the secret.
 - **Wire note.** `RenewCert`, `UpdateIssuer` and `UpdateRoots` are single-reply installs on Status 0x1B, the `ApplyNodeConfig` shape; they are not progress streams, so 0x22 NodeCommand (the streaming mesh-primary→node command hop) is not theirs. `fabric.root.update` is a caller op to the fabric-primary like `fabric.update`.
@@ -210,7 +225,7 @@ No new gossip frame and no new `MemberStatus`.
 ### Files likely to touch
 
 RDM: `crates/rdm-core/src/certs.rs` (new), `status.rs`, `views.rs`; `crates/rdm-transport/src/endpoint.rs`,
-`server.rs`, `admission.rs` (new), `membership.rs`, `wire.rs`; `crates/rdm-admin/src/certs.rs`,
+`server.rs`, `connections.rs` (`node.connections.admit`, new), `membership.rs`, `wire.rs`; `crates/rdm-admin/src/certs.rs`,
 `wiring.rs`, `status_storage.rs`, `admin/boot.rs`, `admin/rows_writer.rs`, `join.rs`;
 `crates/rdm-node/src/node.rs`, `wire.rs`; `crates/rdm-test/src/test_certs.rs`. Rafka: `node-admin/src/`,
 `crates/rafka-node-base/src/lib.rs`, `crates/rafka-node-transport/src/cert.rs` (deleted),
