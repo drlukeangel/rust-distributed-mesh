@@ -2303,9 +2303,10 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     }
 
                                     // Cert renewal (node-cert-renew.md, mesh-issuer-renew.md): on every gossip interval, the
-                                    // births this admin's seats make it the issuing authority of are renewed from their cert rows,
-                                    // and, holding the fabric seat, each mesh's issuer. Whoever holds a seat continues the schedule
-                                    // from the rows; a stopped admin renews nothing.
+                                    // births this admin's seats make it the issuing authority of are renewed from their cert rows;
+                                    // holding the fabric seat, each mesh's issuer, sent to that mesh's primary; holding a mesh's
+                                    // primary seat, the issuer it installed carried to its mesh's other admins. Whoever holds a
+                                    // seat continues the schedule from the rows; a stopped admin renews nothing.
                                     {
                                         let own_cert = own_commands.clone();
                                         let renewals = crate::cert_renewal::Renewals::new(
@@ -2327,6 +2328,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let turn = gate.turn("cert-renewal").await;
                                                 let view = topology.read().await.clone();
                                                 crate::cert_renewal::renew_issuers(&renewals, &view).await;
+                                                crate::cert_renewal::carry_issuer(&renewals, &view).await;
                                                 crate::cert_renewal::renew_members(&renewals, &view).await;
                                                 drop(turn);
                                                 cadence.next().await;

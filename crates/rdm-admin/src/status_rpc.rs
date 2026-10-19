@@ -784,7 +784,10 @@ impl StatusAuthority {
             }
             StatusRequest::GetConnections { incarnation, .. } => return self.read_connections(&view, incarnation).await,
             StatusRequest::RenewCert { incarnation, cert, .. } => return self.renew_own_cert(&view, incarnation, cert),
-            StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => return self.update_own_issuer(&view, incarnation, key, cert),
+            StatusRequest::UpdateIssuer { incarnation, key, cert, .. } => {
+                let from = sender.as_ref().map(|n| n.name.to_string()).or_else(|| peer.map(|k| k.fmt_short().to_string())).unwrap_or_default();
+                return self.update_own_issuer(&view, &from, incarnation, key, cert);
+            }
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
@@ -861,7 +864,7 @@ impl StatusAuthority {
     /// decode, name this admin's mesh, be the key its cert names, and verify to a root this admin
     /// holds; it is installed, so every member cert it signs from now carries it, and answered
     /// `node.issuer.updated`. Anything else is refused by name and what it holds is kept.
-    fn update_own_issuer(&self, view: &Topology, incarnation: &IncarnationId, key: &rdm_core::status::IssuingKeyHex, cert: &str) -> StatusReply {
+    fn update_own_issuer(&self, view: &Topology, sender: &str, incarnation: &IncarnationId, key: &rdm_core::status::IssuingKeyHex, cert: &str) -> StatusReply {
         let me = match self.own_birth(view, incarnation) {
             Ok(me) => me,
             Err(refused) => return refused,
@@ -888,7 +891,7 @@ impl StatusAuthority {
             Ok(key) => {
                 let expiry = key.expiry_ms();
                 let previous = certs.install_issuer(key);
-                tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %self.me, node_id = %self.node_id, mesh = %me.mesh, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
+                tracing::info_span!("rdm.node_admin.issuer.update.via-installed", node = %self.me, node_id = %self.node_id, mesh = %me.mesh, sender, issuer_expires_at = expiry, previous_issuer_expires_at = previous.unwrap_or(0))
                     .in_scope(|| tracing::info!("the mesh's new issuer is installed: member certs are signed with it from now"));
                 StatusReply::IssuerUpdated { node_id: self.node_id.clone(), incarnation: incarnation.clone(), issuer_expires_at: expiry }
             }
