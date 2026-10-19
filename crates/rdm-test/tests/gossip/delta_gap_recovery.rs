@@ -382,7 +382,11 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let by_mesh1 = reads_after_gap("mesh1.admin.1");
     assert_eq!(by_mesh1.len(), 1, "one top-up, one topology read after the gap: {by_mesh1:?}");
     assert_eq!((attr(by_mesh1[0], "requested"), attr(by_mesh1[0], "snapshots")), ("mesh2".to_string(), "1".to_string()));
-    assert!(reads_after_gap("mesh2.admin.1").is_empty(), "the remote Mesh's primary is never queried");
+    // The member never queries the remote Mesh's primary: a read mesh2.admin.1 serves its own mesh's
+    // members (a mesh2 node reading mesh2 after a re-feed) is theirs, not the member's top-up.
+    let caller = |sp: &Value| spans.iter().find(|p| p["span_id"] == sp["parent_span_id"]).map(|p| attr(p, "peer")).unwrap_or_default();
+    let by_member: Vec<&Value> = reads_after_gap("mesh2.admin.1").into_iter().filter(|sp| { let c = caller(sp); c.is_empty() || member_peer.starts_with(&c) }).collect();
+    assert!(by_member.is_empty(), "the remote Mesh's primary is never queried by the member: {by_member:?}");
     let topup_install = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().find(|sp| attr(sp, "node") == MEMBER && at(sp) >= t_gap).expect("the member installed the top-up by a topology read");
     assert_eq!((attr(topup_install, "mesh"), num(topup_install, "topology_version")), ("mesh2".to_string(), latest));
     // The primary's evidence: the full it put in on a join, and its bytes.
