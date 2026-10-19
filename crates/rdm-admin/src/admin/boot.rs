@@ -2249,7 +2249,11 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // once over the facts held before the hierarchy's first round, then on every fact.
                                     {
                                         let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
-                                        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap()))).await;
+                                        // The Builds the book holds overlays of are read with the current Build and the new
+                                        // facts' own, so an overlay heard by gossip ends on its own Build's facts.
+                                        let holds = book.clone();
+                                        let held = move || holds.in_flight().into_iter().filter_map(|o| crate::build::BuildId::parse(&o.build_id).ok()).collect::<Vec<_>>();
+                                        journal.derive_on_every_fact(crate::build_state::FactDerivation::new(held, move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap()))).await;
                                     }
 
                                     let hierarchy;

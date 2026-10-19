@@ -1342,9 +1342,51 @@ pub struct BirthIndex {
 /// or `Some(mesh)` for that mesh's drift lane (R-BI7). One attempt number names one attempt per lane.
 type LaneOf = (BuildId, Option<String>);
 
-/// A derivation over the whole fact log, run before any reader sees the facts a writer adds
-/// ([`LocalBuildLog::derive_on_every_fact`]).
-pub type FactDerivation = Arc<dyn Fn(&[BuildFact]) + Send + Sync>;
+/// A derivation over the Build facts, run before any reader sees the facts a writer adds
+/// ([`LocalBuildLog::derive_on_every_fact`]): `derive` over the facts of the Builds it reads, never
+/// the whole log. It reads the Builds the new facts belong to, the current Build, and the Builds
+/// `held` names (those whose derived state its caller still holds). Only the current Build carries
+/// open attempts (build.md: a second topology change is refused while the current Build reconciles,
+/// and every stop, start, restart, recovery and drift is an attempt of the current Build), so an
+/// adapter that keeps no log in memory serves it with per-Build reads.
+#[derive(Clone)]
+pub struct FactDerivation {
+    /// The Builds whose derived state the caller holds now.
+    held: Arc<dyn Fn() -> Vec<BuildId> + Send + Sync>,
+    /// The derivation, over the facts of the Builds it reads, in log order.
+    derive: Arc<dyn Fn(&[BuildFact]) + Send + Sync>,
+}
+
+impl FactDerivation {
+    /// `derive` over the facts of the Builds it reads, `held` naming the Builds its caller holds
+    /// derived state of.
+    pub fn new(held: impl Fn() -> Vec<BuildId> + Send + Sync + 'static, derive: impl Fn(&[BuildFact]) + Send + Sync + 'static) -> Self {
+        Self { held: Arc::new(held), derive: Arc::new(derive) }
+    }
+
+    /// The Builds the derivation reads when `new` enters the log: theirs, the current Build and the
+    /// held ones.
+    pub fn reads(&self, new: &[BuildFact], current: Option<&BuildId>) -> std::collections::HashSet<BuildId> {
+        let mut reads: std::collections::HashSet<BuildId> = new.iter().map(|f| f.build_id().clone()).collect();
+        reads.extend((self.held)());
+        reads.extend(current.cloned());
+        reads
+    }
+
+    /// Run the derivation over `facts`, the facts of the Builds it reads ([`FactDerivation::reads`]).
+    pub fn derive(&self, facts: &[BuildFact]) {
+        (self.derive)(facts)
+    }
+
+    /// Run it on `log`, whose facts will stand as `all` once `new` enters: over the facts of the
+    /// Builds it reads, in log order.
+    fn run(&self, log: &Mutex<FactLog>, all: &[BuildFact], new: &[BuildFact]) {
+        let current = current_build(log);
+        let reads = self.reads(new, current.build_id());
+        let facts: Vec<BuildFact> = all.iter().filter(|f| reads.contains(f.build_id())).cloned().collect();
+        self.derive(&facts);
+    }
+}
 
 /// The derivation a log runs on every publication, when one is installed: held with the writer's turn.
 #[derive(Default)]
@@ -1777,7 +1819,7 @@ fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<Build
     drop(held);
     let next = Arc::new(next);
     if let Some(derive) = derive {
-        derive(&next);
+        derive.run(log, &next, &new);
     }
     let mut log = log.lock().unwrap();
     let base = log.facts.len();
@@ -2002,10 +2044,12 @@ pub trait LocalBuildLog: BuildStateAdapter {
     /// Merge facts heard from the fabric (append the unseen ones; intents, opens and claims are
     /// insert-and-fail, receipts deduplicate).
     async fn absorb_facts(&self, facts: &[BuildFact]);
-    /// Run `derive` over the facts held now, then over the whole log each time facts enter it,
-    /// whoever put them there (an own append or an absorbed fact), before any reader sees them and
-    /// before the append returns: what is derived from the facts never lags a reader of them. It runs
-    /// under the writer's turn, never under the lock readers take.
+    /// Run `derive` over the facts of the Builds it reads ([`FactDerivation::reads`]: the current
+    /// Build and the held ones, then also those the new facts belong to), once now and again each
+    /// time facts enter the log, whoever put them there (an own append or an absorbed fact), before
+    /// any reader sees them and before the append returns: what is derived from the facts never lags
+    /// a reader of them. Never the whole log: an adapter that keeps none in memory reads those Builds
+    /// one by one. It runs under the writer's turn, never under the lock readers take.
     async fn derive_on_every_fact(&self, derive: FactDerivation);
     /// Put the context attempt `(build_id, lane, attempt)` carries ([`crate::build_claim`]): a blind
     /// put of its own key. Local to this admin: never a Build fact, never gossiped, never read by
@@ -2056,7 +2100,7 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
 
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
         let mut w = self.writer.lock().await;
-        derive(&snapshot(&self.log));
+        derive.run(&self.log, &snapshot(&self.log), &[]);
         w.0 = Some(derive);
     }
 
@@ -2080,7 +2124,7 @@ impl LocalBuildLog for FileJournal {
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
         let mut w = self.turn("derive_on_every_fact").await;
         let _ = self.sync(&w).await;
-        derive(&snapshot(&self.log));
+        derive.run(&self.log, &snapshot(&self.log), &[]);
         w.0 = Some(derive);
     }
 
@@ -3393,6 +3437,31 @@ mod tests {
     /// derivation ends, the push returns and the reader sees the fact. Must NOT happen: a reader
     /// waiting on a std lock behind a writer's whole-log derivation (a worker thread taken from the
     /// runtime for as long as the fold and its book locks take).
+    /// The derivation reads the Builds the new facts belong to, the current Build and the Builds its
+    /// caller holds derived state of, never another Build of the log: an adapter that keeps no log
+    /// in memory serves it with per-Build reads.
+    #[tokio::test]
+    async fn the_derivation_reads_the_new_facts_builds_the_current_build_and_the_held_ones_only() {
+        let m = MemoryBuildStateAdapter::new();
+        m.absorb(&[BuildFact::Accepted(intent("b1"))]).await;
+        let seen: Arc<Mutex<Vec<std::collections::BTreeSet<String>>>> = Arc::default();
+        let held: Arc<Mutex<Vec<BuildId>>> = Arc::default();
+        let (s2, h2) = (seen.clone(), held.clone());
+        m.derive_on_every_fact(FactDerivation::new(move || h2.lock().unwrap().clone(), move |facts: &[BuildFact]| {
+            s2.lock().unwrap().push(facts.iter().map(|f| f.build_id().to_string()).collect());
+        }))
+        .await;
+        let (b1, b2) = (BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap().to_string(), BuildId::parse(&rdm_core::fixture_crockford60("b2")).unwrap().to_string());
+        assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1.clone()].into_iter().collect(), "installed: the current Build, b1");
+        m.absorb(&[BuildFact::Accepted(BuildAccepted { submitted_at_ms: 2, ..intent("b2") })]).await;
+        assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1.clone(), b2.clone()].into_iter().collect(), "b2's acceptance: b2's own, and b1 still current until it is indexed");
+        m.absorb(&[BuildFact::Claim(claim("b2", 1, "mesh1.admin.1"))]).await;
+        assert_eq!(seen.lock().unwrap().last().unwrap(), &[b2.clone()].into_iter().collect(), "a fact of the current Build b2: b2 alone, b1 is neither touched, current nor held");
+        held.lock().unwrap().push(BuildId::parse(&b1).unwrap());
+        m.absorb(&[BuildFact::Claim(claim("b2", 2, "mesh1.admin.1"))]).await;
+        assert_eq!(seen.lock().unwrap().last().unwrap(), &[b1, b2].into_iter().collect(), "b1 held: read with b2");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reader_of_the_journal_never_waits_behind_a_push_held_mid_derivation() {
         let dir = tmp();
@@ -3404,7 +3473,7 @@ mod tests {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (entered_tx, release_rx) = (Mutex::new(entered_tx), Mutex::new(release_rx));
-        j.derive_on_every_fact(Arc::new(move |facts: &[BuildFact]| {
+        j.derive_on_every_fact(FactDerivation::new(Vec::new, move |facts: &[BuildFact]| {
             if facts.iter().any(|f| matches!(f, BuildFact::Step(s) if s.operation == held_op)) {
                 let _ = entered_tx.lock().unwrap().send(());
                 let _ = release_rx.lock().unwrap().recv();
