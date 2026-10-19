@@ -34,6 +34,8 @@ async fn main() {
                 node = %name,
                 issuing = l.issuing.is_some(),
                 root = l.issuing.is_some(),
+                ca_key = l.issuing.as_ref().is_some_and(|m| m.ca_key.is_some()),
+                ca_cert = %l.issuing.as_ref().and_then(|m| rdm_core::certs::decode_issuing_cert(&m.cert).ok()).map(|c| rdm_core::certs::encode_ca_cert(&c.ca)).unwrap_or_default(),
                 issuing_cert = %l.issuing.as_ref().map(|m| m.cert.as_str()).unwrap_or(""),
             )
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));

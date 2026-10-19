@@ -2131,15 +2131,18 @@ const CHAIN_NOW_MS: u64 = 7_000_000_000;
 /// A testkit fabric chain (`rdm_core::certs`): a root and its mesh's issuing key.
 struct Chain {
     root: rdm_core::certs::SigningKey,
+    ca: rdm_core::certs::CaKey,
     issuer: rdm_core::certs::IssuingKey,
 }
 
 impl Chain {
-    /// A fresh root and `mesh`'s issuing key under it, minted at `at_ms` for `ttl_secs`.
+    /// A fresh root, a fabric CA under it, and `mesh`'s issuing key under that CA, minted at `at_ms`
+    /// for `ttl_secs`.
     fn minted(mesh: &str, ttl_secs: u64, at_ms: u64) -> Self {
         let root = rdm_core::certs::mint_key();
-        let issuer = rdm_core::certs::IssuingKey::mint(&root, mesh, ttl_secs, at_ms);
-        Self { root, issuer }
+        let ca = rdm_core::certs::CaKey::mint(&root, rdm_core::certs::CA_CERT_TTL_SECS, at_ms);
+        let issuer = rdm_core::certs::IssuingKey::mint(&ca, mesh, at_ms + ttl_secs * 1000).expect("within the CA's life");
+        Self { root, ca, issuer }
     }
 
     /// The signed member cert of `peer`'s birth, expiring at `expiry_ms`.
@@ -2239,7 +2242,7 @@ fn an_inbound_connection_on_a_registered_alpn_is_admitted_on_a_valid_cert() {
     assert_eq!(admitted, expiries.iter().map(|e| (*e, "rafka-time".to_string())).collect::<Vec<_>>(), "each admission names the presented cert's expiry and the clock it was judged on");
 }
 
-/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 4): a member cert the issuing
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 6): a member cert the issuing
 /// key does not verify (its signed payload altered) is refused `bad-signature`.
 #[tokio::test]
 async fn an_inbound_connection_is_refused_by_name_on_bad_signature() {
@@ -2252,16 +2255,47 @@ async fn an_inbound_connection_is_refused_by_name_on_bad_signature() {
     assert_eq!(reason, "bad-signature");
 }
 
-/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 1): a member cert whose issuing
-/// cert no root of the acceptor's set signed (another fabric's chain) is refused `issuer-bad-signature`.
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 1): a member cert whose CA cert
+/// no root of the acceptor's set signed (another fabric's chain) is refused `ca-bad-signature`.
 #[tokio::test]
-async fn an_inbound_connection_is_refused_by_name_on_issuer_bad_signature() {
+async fn an_inbound_connection_is_refused_by_name_on_ca_bad_signature() {
     let other = Chain::minted("mesh1", 3_600, CHAIN_NOW_MS);
     let reason = refusal_of(move |_, dialer| other.member(dialer, CHAIN_NOW_MS + 60_000)).await;
+    assert_eq!(reason, "ca-bad-signature");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 2, §Time): a member cert whose
+/// CA cert is past its expiry by more than one floor is refused `ca-expired`, before its issuer is
+/// judged.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_ca_expired() {
+    let reason = refusal_of(|chain, dialer| {
+        let ca = rdm_core::certs::CaKey::mint(&chain.root, 1, CHAIN_NOW_MS - 2 * floor_ms() - 1_000);
+        let lapsed = Chain { root: chain.root.clone(), issuer: rdm_core::certs::IssuingKey::mint(&ca, "mesh1", ca.expiry_ms()).expect("within the CA's life"), ca };
+        lapsed.member(dialer, lapsed.issuer.expiry_ms())
+    })
+    .await;
+    assert_eq!(reason, "ca-expired");
+}
+
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 3): a member cert whose issuing
+/// cert carries the fabric's CA cert but was signed by another CA is refused `issuer-bad-signature`:
+/// its CA verifies to the acceptor's root, and that CA does not verify the issuing cert.
+#[tokio::test]
+async fn an_inbound_connection_is_refused_by_name_on_issuer_bad_signature() {
+    let reason = refusal_of(|chain, dialer| {
+        let stranger = rdm_core::certs::CaKey::mint(&rdm_core::certs::mint_key(), rdm_core::certs::CA_CERT_TTL_SECS, CHAIN_NOW_MS);
+        let signed_by_stranger = rdm_core::certs::IssuingKey::mint(&stranger, "mesh1", CHAIN_NOW_MS + 3_600_000).expect("within the CA's life");
+        let mut forged = signed_by_stranger.cert().clone();
+        forged.ca = chain.ca.cert().clone();
+        let forged = Chain { root: chain.root.clone(), ca: chain.ca.clone(), issuer: rdm_core::certs::IssuingKey::from_parts(signed_by_stranger.secret().clone(), forged) };
+        forged.member(dialer, CHAIN_NOW_MS + 60_000)
+    })
+    .await;
     assert_eq!(reason, "issuer-bad-signature");
 }
 
-/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 3): a member cert whose mesh is
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 5): a member cert whose mesh is
 /// not its issuer's is refused `issuer-mesh-mismatch`, before its signature is judged.
 #[tokio::test]
 async fn an_inbound_connection_is_refused_by_name_on_issuer_mesh_mismatch() {
@@ -2274,7 +2308,7 @@ async fn an_inbound_connection_is_refused_by_name_on_issuer_mesh_mismatch() {
     assert_eq!(reason, "issuer-mesh-mismatch");
 }
 
-/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 5, §Time): a member cert past
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 7, §Time): a member cert past
 /// its expiry by more than one floor on the acceptor's rafka-time is refused `expired`.
 #[tokio::test]
 async fn an_inbound_connection_is_refused_by_name_on_expired() {
@@ -2282,12 +2316,12 @@ async fn an_inbound_connection_is_refused_by_name_on_expired() {
     assert_eq!(reason, "expired");
 }
 
-/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 2, §Time): a member cert whose
+/// CONTRACT (node-connections-admit.md Result; fabric-certs.md §chain 4, §Time): a member cert whose
 /// issuing cert is past its expiry by more than one floor is refused `issuer-expired`.
 #[tokio::test]
 async fn an_inbound_connection_is_refused_by_name_on_issuer_expired() {
     let reason = refusal_of(|chain, dialer| {
-        let lapsed = Chain { root: chain.root.clone(), issuer: rdm_core::certs::IssuingKey::mint(&chain.root, "mesh1", 1, CHAIN_NOW_MS - 2 * floor_ms() - 1_000) };
+        let lapsed = Chain { root: chain.root.clone(), ca: chain.ca.clone(), issuer: rdm_core::certs::IssuingKey::mint(&chain.ca, "mesh1", CHAIN_NOW_MS - 2 * floor_ms()).expect("within the CA's life") };
         lapsed.member(dialer, lapsed.issuer.expiry_ms())
     })
     .await;
@@ -2296,7 +2330,7 @@ async fn an_inbound_connection_is_refused_by_name_on_issuer_expired() {
 
 /// CONTRACT (fabric-certs.md §Custody: a root rotation refreshes "the public set to every other node"
 /// through `node.roots.update`; fabric-ca-renew.md): the acceptor's root set is one holder its
-/// admissions read afresh. A cert of a second root is refused `issuer-bad-signature` while the set
+/// admissions read afresh. A cert of a second root is refused `ca-bad-signature` while the set
 /// holds only the first; once the holder is replaced by both, the next admission admits it, and once
 /// replaced by the second alone, a cert of the first is refused.
 #[tokio::test]
@@ -2318,7 +2352,7 @@ async fn a_root_set_replaced_at_runtime_is_read_by_the_next_admission() {
     });
 
     dialer.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&second.member(&dialer, CHAIN_NOW_MS + 60_000)));
-    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::Refused { reason: "issuer-bad-signature".into() }, "the second root is not in the set");
+    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::Refused { reason: "ca-bad-signature".into() }, "the second root is not in the set");
 
     let holder = acceptor.registry.roots();
     holder.replace(vec![first.root.verifying_key(), second.root.verifying_key()]);
@@ -2328,7 +2362,7 @@ async fn a_root_set_replaced_at_runtime_is_read_by_the_next_admission() {
     holder.replace(vec![second.root.verifying_key()]);
     dialer.registry.set_member_cert(rdm_core::certs::cert_to_bytes(&first.member(&dialer, CHAIN_NOW_MS + 60_000)));
     match dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await {
-        Err(ConnectError::Refused { reason }) => assert_eq!(reason, "issuer-bad-signature", "the first root left the set"),
+        Err(ConnectError::Refused { reason }) => assert_eq!(reason, "ca-bad-signature", "the first root left the set"),
         other => panic!("a cert of a root no longer in the set must be refused: {other:?}"),
     }
     dialer.shutdown().await;

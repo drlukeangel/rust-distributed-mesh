@@ -1,9 +1,10 @@
 //! The fabric's cert chain (fabric-certs.md): its format, issue and verify.
 //!
-//! The chain is root → mesh issuing cert → member cert. The root signs each mesh's
-//! [`IssuingCert`]; a mesh's [`IssuingKey`] signs its members' [`NodeCert`]s; every [`SignedCert`]
-//! carries its whole chain (the member cert signed by the issuing key, and the issuing cert signed
-//! by the root), so a verifier holds only the root's public key. Keys are ed25519
+//! The chain is root → fabric CA → mesh issuing cert → member cert. The root signs the fabric's
+//! [`CaCert`] and nothing else; the CA ([`CaKey`]) signs each mesh's [`IssuingCert`]; a mesh's
+//! [`IssuingKey`] signs its members' [`NodeCert`]s. Every [`SignedCert`] carries its whole chain (the
+//! member cert signed by the issuing key, the issuing cert signed by the CA, the CA cert signed by the
+//! root), so a verifier holds only the root set's public keys: one root, or two during a rotation. Keys are ed25519
 //! (`ed25519-dalek`, the keys iroh's are made of: the same 32 secret bytes are the same key).
 //!
 //! A member cert names its exact birth: `path.name`, mesh, node id, incarnation and endpoint key,
@@ -23,6 +24,9 @@ pub const MEMBER_CERT_TTL_SECS: u64 = 86_400;
 /// A mesh issuing cert's lifetime, in seconds (fabric-certs.md §Tracking,
 /// `RDM_ISSUING_CERT_TTL_SECS`'s default).
 pub const ISSUING_CERT_TTL_SECS: u64 = 30 * 86_400;
+
+/// The fabric CA's lifetime, in seconds (fabric-certs.md §Tracking, `RDM_CA_CERT_TTL_SECS`'s default).
+pub const CA_CERT_TTL_SECS: u64 = 365 * 86_400;
 
 /// The exact birth a member cert is issued to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +71,69 @@ pub fn mint_key() -> SigningKey {
     SigningKey::from_bytes(&rand::random::<[u8; 32]>())
 }
 
-/// The root-signed issuing certificate binding a mesh to its issuing public key.
+/// The root-signed certificate of the fabric's CA: the key every mesh's issuing cert is signed with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaCert {
+    /// The CA key's public half.
+    pub ca_pub: VerifyingKey,
+    /// When the CA cert expires, rafka-time ms.
+    pub expiry_ms: u64,
+}
+
+/// A [`CaCert`] and the root's signature over its postcard bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedCaCert {
+    /// The CA cert.
+    pub cert: CaCert,
+    /// The root's signature.
+    pub sig: Signature,
+}
+
+/// The fabric's CA material: the key every mesh's issuing cert is signed with, and its root-signed
+/// cert. Minted by the fabric-primary under the root (`fabric.ca.create`); held by every node-admin.
+#[derive(Clone)]
+pub struct CaKey {
+    secret: SigningKey,
+    cert: SignedCaCert,
+}
+
+impl std::fmt::Debug for CaKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaKey").field("cert", &self.cert).finish_non_exhaustive()
+    }
+}
+
+impl CaKey {
+    /// A fresh CA, its cert signed by `root` and valid `ttl_secs` from `now_ms`.
+    pub fn mint(root: &SigningKey, ttl_secs: u64, now_ms: u64) -> CaKey {
+        let secret = mint_key();
+        let cert = CaCert { ca_pub: secret.verifying_key(), expiry_ms: now_ms.saturating_add(ttl_secs.saturating_mul(1000)) };
+        let sig = root.sign(&ca_cert_bytes(&cert));
+        CaKey { secret, cert: SignedCaCert { cert, sig } }
+    }
+
+    /// The CA material `secret` and `cert` make, as a launched admin reads them.
+    pub fn from_parts(secret: SigningKey, cert: SignedCaCert) -> CaKey {
+        CaKey { secret, cert }
+    }
+
+    /// The root-signed CA cert.
+    pub fn cert(&self) -> &SignedCaCert {
+        &self.cert
+    }
+
+    /// When it expires, rafka-time ms.
+    pub fn expiry_ms(&self) -> u64 {
+        self.cert.cert.expiry_ms
+    }
+
+    /// The CA key's secret.
+    pub fn secret(&self) -> &SigningKey {
+        &self.secret
+    }
+}
+
+/// The CA-signed issuing certificate binding a mesh to its issuing public key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssuingCert {
     /// The mesh whose members the issuing key signs.
@@ -78,17 +144,19 @@ pub struct IssuingCert {
     pub expiry_ms: u64,
 }
 
-/// An [`IssuingCert`] and the root's signature over its postcard bytes.
+/// An [`IssuingCert`], the CA's signature over its postcard bytes, and the root-signed CA cert.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedIssuingCert {
     /// The issuing cert.
     pub cert: IssuingCert,
-    /// The root's signature.
+    /// The CA's signature.
     pub sig: Signature,
+    /// The CA cert, signed by the root.
+    pub ca: SignedCaCert,
 }
 
 /// A mesh's issuing material: the key a node-admin of the mesh signs member certs with, and its
-/// root-signed cert. Held in memory; handed to a launched admin in its environment.
+/// CA-signed cert. Held in memory; handed to a launched admin in its environment.
 #[derive(Clone)]
 pub struct IssuingKey {
     secret: SigningKey,
@@ -102,12 +170,16 @@ impl std::fmt::Debug for IssuingKey {
 }
 
 impl IssuingKey {
-    /// A fresh issuing key for `mesh`, its cert signed by `root` and valid `ttl_secs` from `now_ms`.
-    pub fn mint(root: &SigningKey, mesh: &str, ttl_secs: u64, now_ms: u64) -> IssuingKey {
+    /// A fresh issuing key for `mesh`, its cert signed by `ca` and expiring at `expiry_ms`. The minting
+    /// admin cuts the expiry to its CA's first; one that still outlives it is refused.
+    pub fn mint(ca: &CaKey, mesh: &str, expiry_ms: u64) -> Result<IssuingKey, CertError> {
+        if expiry_ms > ca.expiry_ms() {
+            return Err(CertError::IssuerOutlivesCa);
+        }
         let secret = mint_key();
-        let cert = IssuingCert { mesh: mesh.to_string(), issuer_pub: secret.verifying_key(), expiry_ms: now_ms.saturating_add(ttl_secs.saturating_mul(1000)) };
-        let sig = root.sign(&issuing_cert_bytes(&cert));
-        IssuingKey { secret, cert: SignedIssuingCert { cert, sig } }
+        let cert = IssuingCert { mesh: mesh.to_string(), issuer_pub: secret.verifying_key(), expiry_ms };
+        let sig = ca.secret.sign(&issuing_cert_bytes(&cert));
+        Ok(IssuingKey { secret, cert: SignedIssuingCert { cert, sig, ca: ca.cert.clone() } })
     }
 
     /// The issuing material `secret` and `cert` make, as a launched admin reads them.
@@ -115,7 +187,7 @@ impl IssuingKey {
         IssuingKey { secret, cert }
     }
 
-    /// The root-signed issuing cert.
+    /// The CA-signed issuing cert.
     pub fn cert(&self) -> &SignedIssuingCert {
         &self.cert
     }
@@ -160,7 +232,7 @@ pub struct SignedCert {
     pub cert: NodeCert,
     /// The issuing key's signature.
     pub sig: Signature,
-    /// The issuing cert, signed by the root.
+    /// The issuing cert, signed by the CA, with the CA cert.
     pub issuer: SignedIssuingCert,
 }
 
@@ -171,7 +243,11 @@ pub enum CertError {
     BadSignature,
     /// The member cert has expired.
     Expired,
-    /// The root does not verify the issuing cert.
+    /// No root in the verifier's set verifies the CA cert.
+    CaBadSignature,
+    /// The CA cert has expired.
+    CaExpired,
+    /// The CA does not verify the issuing cert.
     IssuerBadSignature,
     /// The issuing cert has expired.
     IssuerExpired,
@@ -179,6 +255,8 @@ pub enum CertError {
     IssuerMeshMismatch,
     /// The member cert would expire after its issuer.
     MemberOutlivesIssuer,
+    /// The issuing cert would expire after its CA.
+    IssuerOutlivesCa,
 }
 
 impl CertError {
@@ -186,11 +264,14 @@ impl CertError {
     pub fn as_str(&self) -> &'static str {
         match self {
             CertError::BadSignature => "bad-signature",
+            CertError::CaBadSignature => "ca-bad-signature",
+            CertError::CaExpired => "ca-expired",
             CertError::Expired => "expired",
             CertError::IssuerBadSignature => "issuer-bad-signature",
             CertError::IssuerExpired => "issuer-expired",
             CertError::IssuerMeshMismatch => "issuer-mesh-mismatch",
             CertError::MemberOutlivesIssuer => "member-outlives-issuer",
+            CertError::IssuerOutlivesCa => "issuer-outlives-ca",
         }
     }
 }
@@ -208,9 +289,14 @@ pub fn cert_bytes(cert: &NodeCert) -> Vec<u8> {
     postcard::to_allocvec(cert).expect("a member cert encodes")
 }
 
-/// The bytes the root signs and a verifier checks: the issuing cert's postcard.
+/// The bytes the CA signs and a verifier checks: the issuing cert's postcard.
 pub fn issuing_cert_bytes(cert: &IssuingCert) -> Vec<u8> {
     postcard::to_allocvec(cert).expect("an issuing cert encodes")
+}
+
+/// The bytes the root signs and a verifier checks: the CA cert's postcard.
+pub fn ca_cert_bytes(cert: &CaCert) -> Vec<u8> {
+    postcard::to_allocvec(cert).expect("a CA cert encodes")
 }
 
 /// The member cert for the exact birth `birth`, signed by `issuer`, expiring at `expiry_ms`. The
@@ -227,14 +313,21 @@ pub fn issue(issuer: &IssuingKey, birth: &BirthIdentity, expiry_ms: u64) -> Resu
     Ok(SignedCert { cert, sig, issuer: issuer.cert.clone() })
 }
 
-/// Verify `signed`'s chain to `root` at `now_ms`, refusing at the first failure, in
-/// fabric-certs.md's order: the root verifies the issuing cert ([`CertError::IssuerBadSignature`]);
+/// Verify `signed`'s chain to the root set `roots` at `now_ms`, refusing at the first failure: a root
+/// of the set verifies the CA cert ([`CertError::CaBadSignature`]); the CA cert has not expired
+/// ([`CertError::CaExpired`]); the CA verifies the issuing cert ([`CertError::IssuerBadSignature`]);
 /// the issuing cert has not expired ([`CertError::IssuerExpired`]); the member's mesh is the issuing
 /// cert's ([`CertError::IssuerMeshMismatch`]); the issuing key verifies the member cert
 /// ([`CertError::BadSignature`]); the member cert has not expired ([`CertError::Expired`]). An expiry
 /// is passed only when `now_ms` is past it by more than `skew_ms` (one staleness floor).
-pub fn verify(signed: &SignedCert, root: &VerifyingKey, now_ms: u64, skew_ms: u64) -> Result<(), CertError> {
-    verify_issuer(&signed.issuer, root)?;
+pub fn verify(signed: &SignedCert, roots: &[VerifyingKey], now_ms: u64, skew_ms: u64) -> Result<(), CertError> {
+    if !roots.iter().any(|root| root.verify(&ca_cert_bytes(&signed.issuer.ca.cert), &signed.issuer.ca.sig).is_ok()) {
+        return Err(CertError::CaBadSignature);
+    }
+    if now_ms > signed.issuer.ca.cert.expiry_ms.saturating_add(skew_ms) {
+        return Err(CertError::CaExpired);
+    }
+    signed.issuer.ca.cert.ca_pub.verify(&issuing_cert_bytes(&signed.issuer.cert), &signed.issuer.sig).map_err(|_| CertError::IssuerBadSignature)?;
     if now_ms > signed.issuer.cert.expiry_ms.saturating_add(skew_ms) {
         return Err(CertError::IssuerExpired);
     }
@@ -248,9 +341,14 @@ pub fn verify(signed: &SignedCert, root: &VerifyingKey, now_ms: u64, skew_ms: u6
     Ok(())
 }
 
-/// The root verifies the issuing cert ([`CertError::IssuerBadSignature`]): the first check of [`verify`].
-pub fn verify_issuer(issuer: &SignedIssuingCert, root: &VerifyingKey) -> Result<(), CertError> {
-    root.verify(&issuing_cert_bytes(&issuer.cert), &issuer.sig).map_err(|_| CertError::IssuerBadSignature)
+/// A root of the set `roots` verifies the issuing cert's CA ([`CertError::CaBadSignature`]) and the CA
+/// the issuing cert ([`CertError::IssuerBadSignature`]): [`verify`]'s signature checks of the chain
+/// above the member, with no expiry judged.
+pub fn verify_issuer(issuer: &SignedIssuingCert, roots: &[VerifyingKey]) -> Result<(), CertError> {
+    if !roots.iter().any(|root| root.verify(&ca_cert_bytes(&issuer.ca.cert), &issuer.ca.sig).is_ok()) {
+        return Err(CertError::CaBadSignature);
+    }
+    issuer.ca.cert.ca_pub.verify(&issuing_cert_bytes(&issuer.cert), &issuer.sig).map_err(|_| CertError::IssuerBadSignature)
 }
 
 /// A signed member cert's bytes, as `JoinControl::member_cert` carries them.
@@ -284,6 +382,17 @@ pub fn decode_issuing_cert(hex_str: &str) -> Result<SignedIssuingCert, String> {
     postcard::from_bytes(&bytes).map_err(|e| format!("not a signed issuing cert ({} bytes): {e}", bytes.len()))
 }
 
+/// A signed CA cert, hex-encoded for an environment variable or a file.
+pub fn encode_ca_cert(signed: &SignedCaCert) -> String {
+    hex::encode(postcard::to_allocvec(signed).expect("a signed CA cert encodes"))
+}
+
+/// The signed CA cert a hex string encodes, or why it is not one.
+pub fn decode_ca_cert(hex_str: &str) -> Result<SignedCaCert, String> {
+    let bytes = hex::decode(hex_str.trim()).map_err(|e| format!("a signed CA cert is not hex: {e}"))?;
+    postcard::from_bytes(&bytes).map_err(|e| format!("not a signed CA cert ({} bytes): {e}", bytes.len()))
+}
+
 /// An ed25519 secret, hex-encoded for an environment variable or a file (`RDM_CA_SECRET`,
 /// `RDM_ISSUING_KEY`, `ca-secret`).
 pub fn encode_key(key: &SigningKey) -> String {
@@ -305,8 +414,6 @@ pub const ENV_ISSUING_CERT_TTL_SECS: &str = "RDM_ISSUING_CERT_TTL_SECS";
 pub const ENV_CA_CERT_TTL_SECS: &str = "RDM_CA_CERT_TTL_SECS";
 /// `RDM_CERT_RENEW_AT`: the fraction of a cert's TTL after which its issuer renews it, fabric policy.
 pub const ENV_CERT_RENEW_AT: &str = "RDM_CERT_RENEW_AT";
-/// RDM's CA TTL's default, in seconds (365 days).
-pub const CA_CERT_TTL_SECS: u64 = 365 * 86_400;
 /// The renew point's default, in thousandths of a cert's TTL (`RDM_CERT_RENEW_AT` 0.67).
 pub const RENEW_AT_PERMILLE: u32 = 670;
 
@@ -401,8 +508,18 @@ mod tests {
         SigningKey::from_bytes(&[7u8; 32])
     }
 
+    /// The fabric CA `root` signs, valid from 0 for a CA's life.
+    fn ca_of(root_key: &SigningKey) -> CaKey {
+        CaKey::mint(root_key, CA_CERT_TTL_SECS, 0)
+    }
+
+    /// `mesh`'s issuing key under `root`'s CA, valid `ttl_secs` from `now_ms`.
+    fn issuer_under(root_key: &SigningKey, mesh: &str, ttl_secs: u64, now_ms: u64) -> IssuingKey {
+        IssuingKey::mint(&ca_of(root_key), mesh, now_ms.saturating_add(ttl_secs.saturating_mul(1000))).expect("within the CA's life")
+    }
+
     fn sample_issuer(root_key: &SigningKey) -> IssuingKey {
-        IssuingKey::mint(root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000)
+        issuer_under(root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000)
     }
 
     fn birth(name: &str) -> BirthIdentity {
@@ -416,7 +533,7 @@ mod tests {
     }
 
     fn verify_cert_sig_expiry(signed: &SignedCert, root_pub: &VerifyingKey, now_ms: u64) -> Result<(), CertError> {
-        verify(signed, root_pub, now_ms, 0)
+        verify(signed, std::slice::from_ref(root_pub), now_ms, 0)
     }
 
     #[test]
@@ -427,19 +544,68 @@ mod tests {
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Ok(()));
     }
 
+    /// CONTRACT (fabric-certs.md verification, step 3): an issuing cert its chain's CA did not sign is
+    /// refused `issuer-bad-signature`, though the CA itself verifies under the root.
     #[test]
-    fn an_issuer_cert_not_signed_by_the_root_is_refused_issuer_bad_signature() {
+    fn an_issuer_cert_not_signed_by_its_ca_is_refused_issuer_bad_signature() {
+        let root_key = root();
+        let issuer = sample_issuer(&root_key);
+        let mut signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
+        signed.issuer.ca = CaKey::mint(&root_key, CA_CERT_TTL_SECS, 0).cert().clone(); // another CA under the same root
+        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerBadSignature));
+    }
+
+    /// CONTRACT (fabric-certs.md verification, step 1): a CA no root of the verifier's set signed is
+    /// refused `ca-bad-signature`, the first check.
+    #[test]
+    fn a_ca_cert_not_signed_by_a_root_of_the_set_is_refused_ca_bad_signature() {
         let root_key = root();
         let wrong_root = SigningKey::from_bytes(&[11u8; 32]);
-        let issuer = sample_issuer(&wrong_root);
-        let signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
-        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::IssuerBadSignature));
+        let signed = issue_cert(&sample_issuer(&wrong_root), "mesh1.broker.1", 3600, 1000).expect("issue");
+        assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 2000), Err(CertError::CaBadSignature));
+        assert_eq!(verify(&signed, &[], 2000, 0), Err(CertError::CaBadSignature), "an empty set trusts no CA");
+    }
+
+    /// CONTRACT (fabric-certs.md verification, step 2; "the anchors every node holds (one, or two during
+    /// a root rotation)"): a chain verifies under either root of a two-root set, and an expired CA is
+    /// refused `ca-expired` past its expiry and the skew.
+    #[test]
+    fn a_chain_verifies_under_either_root_of_its_set_and_an_expired_ca_is_refused_ca_expired() {
+        let (old, new) = (root(), SigningKey::from_bytes(&[23u8; 32]));
+        let both = [old.verifying_key(), new.verifying_key()];
+        for under in [&old, &new] {
+            let signed = issue_cert(&sample_issuer(under), "mesh1.broker.1", 3600, 1000).expect("issue");
+            assert_eq!(verify(&signed, &both, 2000, 0), Ok(()));
+        }
+        let short_ca = CaKey::mint(&old, 20, 0); // expiry 20_000
+        let issuer = IssuingKey::mint(&short_ca, "mesh1", 20_000).expect("within the CA's life");
+        let signed = issue(&issuer, &birth("mesh1.broker.1"), 20_000).expect("issue");
+        assert_eq!(verify(&signed, &both, 23_000, 3_000), Ok(()), "within the floor past the CA's expiry");
+        assert_eq!(verify(&signed, &both, 23_001, 3_000), Err(CertError::CaExpired));
+    }
+
+    /// CONTRACT (fabric-certs.md "When a cert is issued": "A member cert never outlives its issuer, an
+    /// issuer never its CA"; i145 PRD e5 R13): the chain is member → issuer → CA → root; an issuer asked
+    /// to outlive its CA is refused `issuer-outlives-ca`, and one cut to the CA's expiry is minted and
+    /// verifies; a member asked to outlive its issuer is refused `member-outlives-issuer`.
+    #[test]
+    fn the_chain_verifies_member_issuer_ca_root_and_each_level_never_outlives_the_one_above() {
+        let root_key = root();
+        let ca = CaKey::mint(&root_key, 100, 1000); // CA expiry 101_000
+        assert_eq!(IssuingKey::mint(&ca, "mesh1", 101_001).map(|_| ()), Err(CertError::IssuerOutlivesCa));
+        let issuer = IssuingKey::mint(&ca, "mesh1", ca.expiry_ms()).expect("cut to the CA's expiry");
+        assert_eq!(issuer.cert().ca, *ca.cert(), "the issuing cert carries its CA cert");
+        assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 101_001).map(|_| ()), Err(CertError::MemberOutlivesIssuer));
+        let member = issue(&issuer, &birth("mesh1.rpc.1"), 101_000).expect("cut to the issuer's expiry");
+        assert_eq!(verify(&member, &[root_key.verifying_key()], 101_000, 0), Ok(()), "member → issuer → CA → root");
+        assert_eq!(verify_issuer(&member.issuer, &[root_key.verifying_key()]), Ok(()));
+        assert_eq!(verify_issuer(&member.issuer, &[SigningKey::from_bytes(&[29u8; 32]).verifying_key()]), Err(CertError::CaBadSignature));
     }
 
     #[test]
     fn an_expired_issuer_cert_is_refused_issuer_expired() {
         let root_key = root();
-        let issuer = IssuingKey::mint(&root_key, "mesh1", 10, 1000); // expiry = 11_000 ms
+        let issuer = issuer_under(&root_key, "mesh1", 10, 1000); // expiry = 11_000 ms
         let signed = issue_cert(&issuer, "mesh1.broker.1", 5, 1000).expect("issue"); // member expiry = 6_000 ms
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 12_000), Err(CertError::IssuerExpired));
     }
@@ -479,7 +645,7 @@ mod tests {
     #[test]
     fn a_member_outliving_its_issuer_is_never_minted() {
         let root_key = root();
-        let issuer = IssuingKey::mint(&root_key, "mesh1", 100, 1000); // expiry = 101_000 ms
+        let issuer = issuer_under(&root_key, "mesh1", 100, 1000); // expiry = 101_000 ms
         let res = issue_cert(&issuer, "mesh1.broker.1", 200, 1000); // member expiry = 201_000 ms
         assert_eq!(res.unwrap_err(), CertError::MemberOutlivesIssuer);
     }
@@ -487,7 +653,7 @@ mod tests {
     #[test]
     fn a_member_of_another_mesh_verifies_under_the_one_root() {
         let root_key = root();
-        let mesh2_issuer = IssuingKey::mint(&root_key, "mesh2", ISSUING_CERT_TTL_SECS, 1000);
+        let mesh2_issuer = issuer_under(&root_key, "mesh2", ISSUING_CERT_TTL_SECS, 1000);
         let mesh2_member = issue_cert(&mesh2_issuer, "mesh2.broker.1", 3600, 1000).expect("issue");
         assert_eq!(verify_cert_sig_expiry(&mesh2_member, &root_key.verifying_key(), 2000), Ok(()));
     }
@@ -495,14 +661,14 @@ mod tests {
     #[test]
     fn a_restarted_node_admin_s_earlier_certs_still_verify() {
         let root_key = root();
-        let boot1_issuer = IssuingKey::mint(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
+        let boot1_issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
         let boot1_member = issue_cert(&boot1_issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
 
         // Admin restarts at t=2000 and mints a new in-memory issuing key
-        let boot2_issuer = IssuingKey::mint(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 2000);
+        let boot2_issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 2000);
         assert_ne!(boot1_issuer.cert().cert.issuer_pub, boot2_issuer.cert().cert.issuer_pub);
 
-        // The earlier member cert still verifies because it carries its own root-signed issuing cert
+        // The earlier member cert still verifies because it carries its own chain
         assert_eq!(verify_cert_sig_expiry(&boot1_member, &root_key.verifying_key(), 2500), Ok(()));
     }
 
@@ -513,7 +679,7 @@ mod tests {
     #[test]
     fn a_cert_is_judged_against_the_clock_it_is_given() {
         let root_key = root();
-        let issuer = IssuingKey::mint(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1_000_000);
+        let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1_000_000);
         let signed = issue_cert(&issuer, "mesh1.broker.1", 60, 1_000_000).expect("issue"); // expiry 1_060_000
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 1_059_999), Ok(()));
         assert_eq!(verify_cert_sig_expiry(&signed, &root_key.verifying_key(), 1_060_001), Err(CertError::Expired));
@@ -546,38 +712,42 @@ mod tests {
     #[test]
     fn valid_cert_accepted() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
-        let issuer = IssuingKey::mint(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
+        let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
         let signed = issue_cert(&issuer, "mesh1.gateway.1", 3600, 1000).expect("issue");
-        assert_eq!(verify(&signed, &root_key.verifying_key(), 2000, 0), Ok(()));
+        assert_eq!(verify(&signed, &[root_key.verifying_key()], 2000, 0), Ok(()));
     }
 
     #[test]
     fn wrong_root_rejected() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
         let other_root = SigningKey::from_bytes(&[19u8; 32]);
-        let issuer = IssuingKey::mint(&other_root, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
+        let issuer = issuer_under(&other_root, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
         let signed = issue_cert(&issuer, "mesh1.broker.1", 3600, 1000).expect("issue");
-        assert_eq!(verify(&signed, &root_key.verifying_key(), 2000, 0), Err(CertError::IssuerBadSignature));
+        assert_eq!(verify(&signed, &[root_key.verifying_key()], 2000, 0), Err(CertError::CaBadSignature));
     }
 
     #[test]
     fn expired_cert_rejected() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
-        let issuer = IssuingKey::mint(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
+        let issuer = issuer_under(&root_key, "mesh1", ISSUING_CERT_TTL_SECS, 1000);
         let signed = issue_cert(&issuer, "mesh1.compute.1", 1, 1000).expect("issue");
-        assert_eq!(verify(&signed, &root_key.verifying_key(), 5000, 0), Err(CertError::Expired));
+        assert_eq!(verify(&signed, &[root_key.verifying_key()], 5000, 0), Err(CertError::Expired));
     }
 
     #[test]
     fn signed_issuing_cert_encode_decode_roundtrips() {
         let root_key = SigningKey::from_bytes(&[13u8; 32]);
-        let issuer = IssuingKey::mint(&root_key, "mesh2", ISSUING_CERT_TTL_SECS, 1000);
+        let issuer = issuer_under(&root_key, "mesh2", ISSUING_CERT_TTL_SECS, 1000);
         let encoded = encode_issuing_cert(issuer.cert());
         let decoded = decode_issuing_cert(&encoded).expect("decode issuing cert");
         assert_eq!(decoded, *issuer.cert());
         let reassembled = IssuingKey::from_parts(decode_key(&encode_key(issuer.secret())).expect("decode issuing key"), decoded);
         assert_eq!(reassembled.mesh(), "mesh2");
         assert_eq!(reassembled.cert(), issuer.cert());
+        let ca = ca_of(&root_key);
+        let back = CaKey::from_parts(decode_key(&encode_key(ca.secret())).unwrap(), decode_ca_cert(&encode_ca_cert(ca.cert())).expect("decode CA cert"));
+        assert_eq!((back.cert(), back.expiry_ms()), (ca.cert(), ca.expiry_ms()), "the CA material round-trips as a launch carries it");
+        assert!(!format!("{back:?}").contains(&encode_key(ca.secret())), "the CA key never prints");
     }
 
     /// CONTRACT (fabric-certs.md "Time": "A presented cert is judged with a skew allowance of one
@@ -587,12 +757,12 @@ mod tests {
     #[test]
     fn a_cert_within_one_floor_past_its_expiry_is_admitted_and_one_past_it_is_refused() {
         let root_key = root();
-        let issuer = IssuingKey::mint(&root_key, "mesh1", 10, 1000); // issuer expiry 11_000
+        let issuer = issuer_under(&root_key, "mesh1", 10, 1000); // issuer expiry 11_000
         let member = issue_cert(&issuer, "mesh1.broker.1", 5, 1000).expect("issue"); // member expiry 6_000
         let floor = 3_000;
-        assert_eq!(verify(&member, &root_key.verifying_key(), 9_000, floor), Ok(()), "3 s past the member's expiry, within the floor");
-        assert_eq!(verify(&member, &root_key.verifying_key(), 9_001, floor), Err(CertError::Expired));
-        assert_eq!(verify(&member, &root_key.verifying_key(), 14_001, floor), Err(CertError::IssuerExpired), "past the issuer's expiry and the floor");
+        assert_eq!(verify(&member, &[root_key.verifying_key()], 9_000, floor), Ok(()), "3 s past the member's expiry, within the floor");
+        assert_eq!(verify(&member, &[root_key.verifying_key()], 9_001, floor), Err(CertError::Expired));
+        assert_eq!(verify(&member, &[root_key.verifying_key()], 14_001, floor), Err(CertError::IssuerExpired), "past the issuer's expiry and the floor");
     }
 
     /// CONTRACT (fabric-certs.md "The chain", i145 PRD e1): every refusal is named, and the names are
@@ -601,11 +771,14 @@ mod tests {
     fn each_refusal_is_named() {
         let named = [
             (CertError::BadSignature, "bad-signature"),
+            (CertError::CaBadSignature, "ca-bad-signature"),
+            (CertError::CaExpired, "ca-expired"),
             (CertError::Expired, "expired"),
             (CertError::IssuerBadSignature, "issuer-bad-signature"),
             (CertError::IssuerExpired, "issuer-expired"),
             (CertError::IssuerMeshMismatch, "issuer-mesh-mismatch"),
             (CertError::MemberOutlivesIssuer, "member-outlives-issuer"),
+            (CertError::IssuerOutlivesCa, "issuer-outlives-ca"),
         ];
         for (error, name) in named {
             assert_eq!((error.as_str(), error.to_string()), (name, name.to_string()), "{error:?}");
@@ -618,11 +791,11 @@ mod tests {
     #[test]
     fn a_member_cert_never_outlives_its_issuer() {
         let root_key = root();
-        let issuer = IssuingKey::mint(&root_key, "mesh1", 100, 1000); // expiry 101_000
+        let issuer = issuer_under(&root_key, "mesh1", 100, 1000); // expiry 101_000
         assert_eq!(issue(&issuer, &birth("mesh1.rpc.1"), 101_001), Err(CertError::MemberOutlivesIssuer));
         let cut = issue(&issuer, &birth("mesh1.rpc.1"), issuer.expiry_ms()).expect("cut to the issuer's expiry");
         assert_eq!(cut.cert.expiry_ms, issuer.cert().cert.expiry_ms);
-        assert_eq!(verify(&cut, &root_key.verifying_key(), 101_000, 0), Ok(()));
+        assert_eq!(verify(&cut, &[root_key.verifying_key()], 101_000, 0), Ok(()));
     }
 
     /// CONTRACT (i145 e1, arch 2026-10-19): an iroh `SecretKey` and the ed25519 key of its 32 bytes are

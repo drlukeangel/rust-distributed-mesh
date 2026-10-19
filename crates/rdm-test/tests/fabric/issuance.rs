@@ -54,16 +54,18 @@ fn held_by(spans: &[Value], node: &str) -> Vec<(String, SignedCert)> {
 }
 
 /// CONTRACT (fabric-certs.md "The chain", "Where a node-admin's signing material comes from" and
-/// "When a cert is issued"; i145 e1): the bootstrap admin holds the fabric's root (minted on day 0 and
-/// kept as its `ca-secret`). The admin that accepts a JoinNode issues a member cert for exactly that
-/// birth (path.name, mesh, node id, incarnation, endpoint key), signed by its mesh's issuing key, and
-/// the birth holds it: it verifies to its issuer and the issuer to the root. A restart is a new
-/// JoinNode and is issued a fresh cert. Every launched node-admin is launched with the fabric's root
-/// beside its mesh's issuing material (`RDM_CA_SECRET`, `RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`; §Custody),
-/// the issuing cert signed by the root; the mesh's issuer is minted once, at the mesh's birth, and
-/// every admin of the mesh carries that one, a launched admin that holds the root included. Must NOT
-/// happen: a cert that does not verify to the root, a cert naming another birth, a launched admin with
-/// no issuing material, another mesh's, or no root beside it, or a mesh given a second issuer.
+/// "When a cert is issued"; i145 e1, e5 R13): the bootstrap admin holds the fabric's root (minted on
+/// day 0 and kept as its `ca-secret`) and the fabric CA under it. The admin that accepts a JoinNode
+/// issues a member cert for exactly that birth (path.name, mesh, node id, incarnation, endpoint key),
+/// signed by its mesh's issuing key, and the birth holds it: it verifies to its issuer, the issuer to
+/// the CA and the CA to the root. A restart is a new JoinNode and is issued a fresh cert. Every
+/// launched node-admin is launched with the fabric's root and the CA's key beside its mesh's issuing
+/// material (`RDM_CA_SECRET`, `RDM_FABRIC_CA_KEY`, `RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`; §Custody), the
+/// issuing cert signed by the CA and carrying the CA's cert; the mesh's issuer is minted once, at the
+/// mesh's birth, and every admin of the mesh carries that one, a launched admin that holds the root
+/// included. Must NOT happen: a cert that does not verify to the root, a cert naming another birth, a
+/// launched admin with no issuing material, another mesh's, no root or CA beside it, or a mesh given a
+/// second issuer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let sha = candidate_sha();
@@ -107,7 +109,7 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
             .unwrap_or_else(|| panic!("no issuance span for {node} {inc}"));
         assert_eq!(s_u64(&first_issue["attributes"]["expires_at_rafka_ms"]), cert.cert.expiry_ms, "the process holds the cert of its first join: {first_issue}");
         let at = s_u64(&first_issue["attributes"]["issued_at_rafka_ms"]);
-        assert_eq!(certs::verify(cert, &root, at, 0), Ok(()), "{node}'s cert verifies to its issuer and the issuer to the root");
+        assert_eq!(certs::verify(cert, &[root], at, 0), Ok(()), "{node}'s cert verifies to its issuer, the issuer to the fabric CA and the CA to the root");
         assert_eq!(cert.issuer.cert.mesh, node.split('.').next().unwrap(), "signed by its own mesh's issuer");
     }
     // The rejoin (start after stop) is a second JoinNode of the same birth, issued a fresh cert on the later rafka-time.
@@ -124,11 +126,14 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     for (node, mesh) in [("mesh1.admin.2", "mesh1"), ("mesh2.admin.1", "mesh2"), ("mesh2.admin.2", "mesh2")] {
         let issuing = issuing_of(node);
         assert_eq!(issuing.cert.mesh, mesh, "{node} carries its own mesh's issuing cert");
-        assert!(root.verify_strict(&certs::issuing_cert_bytes(&issuing.cert), &issuing.sig).is_ok(), "{node}'s issuing cert is signed by the root");
+        assert_eq!(certs::verify_issuer(&issuing, &[root]), Ok(()), "{node}'s issuing cert is signed by the fabric CA, and the CA by the root");
         let sp = launches.iter().find(|sp| sp["attributes"]["node"] == node).unwrap();
         assert_eq!(sp["attributes"]["root"], "true", "{node} was launched with the root beside its issuing material: {sp}");
         // R13: the fabric CA sits between the root and every mesh's issuer; a launched admin holds it.
         assert!(!s(&sp["attributes"]["ca_cert"]).is_empty(), "{node} was launched with the fabric CA's cert beside its root and issuing material (R13): {sp}");
+        let ca = certs::decode_ca_cert(&s(&sp["attributes"]["ca_cert"])).unwrap_or_else(|e| panic!("{node}'s launch carries no CA cert: {e}: {sp}"));
+        assert_eq!(ca, issuing.ca, "{node}'s CA is its issuing cert's");
+        assert_eq!(sp["attributes"]["ca_key"], "true", "{node} was launched with the fabric CA's key beside the root: {sp}");
     }
     assert_eq!(issuing_of("mesh2.admin.1"), issuing_of("mesh2.admin.2"), "mesh2's admins carry the one issuer minted at mesh2's birth");
     let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();

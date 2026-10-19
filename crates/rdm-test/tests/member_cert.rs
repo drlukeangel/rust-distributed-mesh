@@ -10,7 +10,7 @@ use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
 use rdm_admin::before_ready::BeforeReadyHook;
 use rdm_test::before_ready_probe::{Mode, TestBeforeReady};
 use rdm_test::node;
-use rdm_core::certs::{self, IssuingKey};
+use rdm_core::certs::{self, CaKey, IssuingKey};
 use rdm_test::test_certs::{root_choice, test_root_public};
 use std::time::Duration;
 
@@ -83,7 +83,7 @@ fn a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_b
         assert!((AUTHORITY_REFERENCE_MS..AUTHORITY_REFERENCE_MS + 60_000).contains(&issued_at), "issued on the authority's rafka-time: {issued_at}");
         assert_eq!(cert.expiry_ms, issued_at + certs::MEMBER_CERT_TTL_SECS * 1000, "a member cert's life from its issue");
         assert_eq!(issued[0]["expires_at_rafka_ms"], cert.expiry_ms.to_string());
-        assert_eq!(certs::verify(&signed, &test_root_public(), issued_at, 0), Ok(()), "verifies to its issuer and the issuer to the root");
+        assert_eq!(certs::verify(&signed, &[test_root_public()], issued_at, 0), Ok(()), "verifies to its issuer, the issuer to the CA and the CA to the root");
 
         running.stop().await;
         let _ = std::fs::remove_dir_all(&dir);
@@ -202,7 +202,7 @@ fn birth_of(n: &rdm_node::node::RunningNode) -> rdm_transport::connections::Birt
 /// root set, the anchors every node holds"; fabric-ca-renew.md "Launch"): a node admits on the root set
 /// its launch carries (`RDM_ROOTS`). Its peer presenting the member cert its join was issued (chained
 /// to the testkit's root) is admitted; the same peer presenting a cert of another root is refused
-/// `issuer-bad-signature`. A node launched with no root set (its launcher configured with no certs)
+/// `ca-bad-signature`. A node launched with no root set (its launcher configured with no certs)
 /// admits that same foreign cert by name. Must NOT happen: a node with a root set admitting what does
 /// not chain to it.
 #[test]
@@ -228,13 +228,13 @@ fn a_node_admits_on_the_root_set_its_launch_carries() {
         assert!(dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await.is_ok(), "the join's cert chains to the launch's root: admitted");
 
         let other = rdm_core::certs::mint_key();
-        let issuer = IssuingKey::mint(&other, "mesh1", certs::ISSUING_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS);
+        let issuer = IssuingKey::mint(&CaKey::mint(&other, certs::CA_CERT_TTL_SECS, AUTHORITY_REFERENCE_MS), "mesh1", AUTHORITY_REFERENCE_MS + certs::ISSUING_CERT_TTL_SECS * 1000).expect("within the CA's life");
         let own = certs::cert_from_bytes(&dialer.member_cert).unwrap().cert;
         let birth = certs::BirthIdentity { node_id: own.node_id, incarnation: own.incarnation, mesh: own.mesh, name: own.name, endpoint_key: own.endpoint };
         let foreign = certs::issue(&issuer, &birth, AUTHORITY_REFERENCE_MS + 3_600_000).unwrap();
         dialing.set_member_cert(certs::cert_to_bytes(&foreign));
         match dialing.probe_direct(&birth_of(&acceptor), &alpn.name).await {
-            Err(rdm_transport::connections::ConnectError::Refused { reason }) => assert_eq!(reason, "issuer-bad-signature"),
+            Err(rdm_transport::connections::ConnectError::Refused { reason }) => assert_eq!(reason, "ca-bad-signature"),
             other => panic!("a cert of another root must be refused by name: {other:?}"),
         }
         assert!(dialing.probe_direct(&birth_of(&no_certs), &alpn.name).await.is_ok(), "a node launched with no root set admits by name");

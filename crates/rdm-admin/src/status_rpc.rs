@@ -882,9 +882,7 @@ impl StatusAuthority {
                 return Err("the issuing key is not the key its cert names".to_string());
             }
             let roots: Vec<rdm_core::certs::VerifyingKey> = certs.root().into_iter().chain(self.own.get().map(|o| o.roots()).unwrap_or_default()).collect();
-            if !roots.iter().any(|r| rdm_core::certs::verify_issuer(&signed, r).is_ok()) {
-                return Err(format!("{}: no root this admin holds verifies the issuing cert", rdm_core::certs::CertError::IssuerBadSignature));
-            }
+            rdm_core::certs::verify_issuer(&signed, &roots).map_err(|e| format!("{e}: the issuing cert's chain does not verify to a root this admin holds"))?;
             Ok(rdm_core::certs::IssuingKey::from_parts(secret, signed))
         })();
         match checked {

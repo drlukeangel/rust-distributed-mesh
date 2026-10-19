@@ -99,17 +99,9 @@ impl Admitter for CertAdmitter {
             None => (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0), "local-bootstrap"),
         };
         let skew_ms = rdm_core::cadence::staleness_floor().as_millis() as u64;
-        // No root of the set verifies the issuing cert until one does; the root that does names any
-        // later check's failure (fabric-certs.md §chain, in order).
-        let mut refusal = rdm_core::certs::CertError::IssuerBadSignature;
-        for root in self.roots.current() {
-            match rdm_core::certs::verify(&signed, &root, now_ms, skew_ms) {
-                Ok(()) => return Ok((signed.cert.expiry_ms, clock)),
-                Err(rdm_core::certs::CertError::IssuerBadSignature) => {}
-                Err(e) => refusal = e,
-            }
-        }
-        Err(refusal.as_str().to_string())
+        // The chain against the node's whole root set, its checks in the page's order (fabric-certs.md
+        // §chain): the first failure names the refusal.
+        rdm_core::certs::verify(&signed, &self.roots.current(), now_ms, skew_ms).map(|()| (signed.cert.expiry_ms, clock)).map_err(|e| e.as_str().to_string())
     }
 }
 

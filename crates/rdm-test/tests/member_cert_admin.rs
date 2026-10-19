@@ -120,7 +120,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         );
         let life = certs::MEMBER_CERT_TTL_SECS * 1000;
         assert!((before + life..=after + life).contains(&cert.expiry_ms), "issued on the root's rafka-time: {before} <= {} <= {after}", cert.expiry_ms - life);
-        assert_eq!(certs::verify(&signed, &test_root_public(), after, 0), Ok(()), "verifies to its issuer and the issuer to the root");
+        assert_eq!(certs::verify(&signed, &[test_root_public()], after, 0), Ok(()), "verifies to its issuer, the issuer to the CA and the CA to the root");
         assert_eq!(joiner_before_ready.member_certs.lock().unwrap().clone(), vec![Some(bytes)], "the hook's context carries the handle's bytes");
 
         joiner.leave().await;

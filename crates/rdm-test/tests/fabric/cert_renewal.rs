@@ -614,7 +614,7 @@ fn an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_p
         let new_issuer = signed(&newer.member_cert).issuer;
         assert_ne!(new_issuer.cert.issuer_pub, old.cert.issuer_pub, "mesh1.admin.2 signs with the new issuing key");
         assert_eq!((new_issuer.cert.expiry_ms, new_issuer.cert.mesh.as_str()), (num(&rotated, "issuer_expires_at"), "mesh1"));
-        assert_eq!(certs::verify_issuer(&new_issuer, &test_root_public()), Ok(()), "the new issuer chains to the root");
+        assert_eq!(certs::verify_issuer(&new_issuer, &[test_root_public()]), Ok(()), "the new issuer chains to the root");
         newer.data_connections_for_testkit().probe_direct(&birth_of(&holder), ALPN).await.expect("the old issuer's holder admits the new issuer's member");
         assert!(!named(&spans, "rdm.node.cert.update.via-installed").iter().any(|f| f.get("node").map(String::as_str) == Some("mesh1.rpc.1")), "the holder still holds the old issuer's cert");
         let admitted = named(&spans, "rdm.node.connections.create.via-admitted").into_iter().rfind(|f| f.get("destination").map(String::as_str) == Some("mesh1.rpc.1")).expect("the admission fact");
