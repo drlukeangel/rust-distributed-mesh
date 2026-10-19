@@ -30,6 +30,11 @@ impl Drop for Fixture {
 /// A UNIT job of one cell whose command is `command` (a shell line printing cargo-shaped
 /// output); the cell's dir is inside the fixture's own temp dir.
 fn fixture(tag: &str, command: &str) -> Fixture {
+    fixture_on(tag, "unit", command)
+}
+
+/// [`fixture`] on the layer `layer` (an estate layer requires the cell's estate manifest).
+fn fixture_on(tag: &str, layer: &str, command: &str) -> Fixture {
     let n = N.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("i143-gate-fixture-{}-{n}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -38,7 +43,7 @@ fn fixture(tag: &str, command: &str) -> Fixture {
     let registry = dir.join("jobs.json");
     let v = serde_json::json!({
         "contract": "fixture",
-        "jobs": { &job: { "issue": 0, "layer": "unit", "cells": [
+        "jobs": { &job: { "issue": 0, "layer": layer, "cells": [
             { "name": "fixture_cell", "source": "none", "command": command, "dir": cell_dir.to_str().unwrap() }
         ] } }
     });
@@ -82,6 +87,34 @@ fn an_ignored_cell_is_refused_by_name() {
     assert!(!ok, "an ignored cell is refused:\n{text}");
     assert!(text.contains("REFUSED") && text.contains("was ignored"), "{text}");
     assert_eq!(receipt["cells"][0]["outcome"], "refused");
+}
+
+/// A passing test summary for the fixture's one cell.
+const PASSED: &str = "echo 'running 1 test'; echo 'test fixture_cell ... ok'; echo; echo 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'";
+
+/// CONTRACT: a cell that skips itself by name (a host that cannot do what it needs, netfault.rs: "a test
+/// skips by that name") passes, forms no estate and writes `result.json` naming the skip and its reason
+/// (`"skipped": {"name", "reason"}`): the runner reads it as a skip, never a failure. The cell's outcome
+/// is `skipped` with the skip named, the job's outcome is `ok`, and no estate manifest is asked of it.
+/// Must NOT happen: a named skip refused, or a skip without its reason taken as one.
+#[test]
+fn a_cell_that_skips_by_name_is_a_skip_not_a_refusal() {
+    let skip = format!("echo '{{\"cell\":\"fixture_cell\",\"skipped\":{{\"name\":\"host-cannot-cut\",\"reason\":\"no nft\"}}}}' > \"$I143_ACCEPTANCE_DIR/result.json\"; {PASSED}");
+    // The estate binaries are not this cell's subject: the runner's own build of them is skipped.
+    let prebuilt = [("I143_ACCEPTANCE_SKIP_BUILD", Path::new("1"))];
+    let f = fixture_on("skip", "chaos-process", &skip);
+    let (ok, text, receipt) = run_env(&f, &prebuilt);
+    assert!(ok, "a named skip is not a failure:\n{text}");
+    assert_eq!(receipt["outcome"], "ok", "{receipt}");
+    assert_eq!(receipt["cells"][0]["outcome"], "skipped", "{receipt}");
+    assert_eq!(receipt["cells"][0]["skip"], "host-cannot-cut: no nft", "{receipt}");
+    assert!(text.contains("skipped by name"), "{text}");
+    // A skip that names no reason is no skip: the estate layer still asks for its estate.
+    let unnamed = format!("echo '{{\"cell\":\"fixture_cell\",\"skipped\":{{\"name\":\"host-cannot-cut\"}}}}' > \"$I143_ACCEPTANCE_DIR/result.json\"; {PASSED}");
+    let f = fixture_on("unnamed-skip", "chaos-process", &unnamed);
+    let (ok, text, receipt) = run_env(&f, &prebuilt);
+    assert!(!ok && text.contains("left no estate manifest"), "{text}");
+    assert_eq!(receipt["cells"][0]["outcome"], "refused", "{receipt}");
 }
 
 #[test]

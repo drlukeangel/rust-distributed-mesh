@@ -139,6 +139,7 @@ TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
 CELLS_JSON="[]"
 FAILED=0
+SKIPPED=0
 for i in $(seq 0 $((NCELLS - 1))); do
     cell=$(jq -r --arg j "$JOB" --argjson i "$i" '.cells[$i].name' "$JOBFILE")
     command=$(jq -r --arg j "$JOB" --argjson i "$i" '.cells[$i].command' "$JOBFILE")
@@ -224,8 +225,15 @@ for i in $(seq 0 $((NCELLS - 1))); do
             reason="the cell left no result.json in $dir"
         fi
     fi
+    # A named skip: the cell passed and its result.json names its skip and the reason (`"skipped": {"name",
+    # "reason"}`), a host that cannot do what the cell needs (netfault.rs: "a test skips by that name"). It is a
+    # skip, never a failure, and it formed no estate. A skip without its name and reason is no skip.
+    skip=""
+    if [ -z "$reason" ] && [ -s "$dir/result.json" ]; then
+        skip=$(jq -r 'if (.skipped | type) == "object" and (.skipped.name // "") != "" and (.skipped.reason // "") != "" then "\(.skipped.name): \(.skipped.reason)" else empty end' "$dir/result.json" 2>/dev/null)
+    fi
     provider=""
-    if [ -z "$reason" ]; then
+    if [ -z "$reason" ] && [ -z "$skip" ]; then
         case "$LAYER" in
             static) ;;
             unit)
@@ -260,10 +268,15 @@ for i in $(seq 0 $((NCELLS - 1))); do
         outcome=refused
         FAILED=$((FAILED + 1))
         refuse "$JOB/$cell: $reason"
+    elif [ -n "$skip" ]; then
+        outcome=skipped
+        SKIPPED=$((SKIPPED + 1))
+        echo "i143-acceptance-gate: $JOB/$cell skipped by name: $skip"
     fi
     jq -n --arg job "$JOB" --arg cell "$cell" --arg layer "$LAYER" --argjson issue "$ISSUE" --arg sha "$SHA" --argjson dirty "$DIRTY" \
           --arg command "$command" --arg provider "$provider" --arg start "$start" --arg finish "$finish" --arg outcome "$outcome" --arg reason "$reason" \
-          '{job:$job, cell:$cell, layer:$layer, issue:$issue, source_sha:$sha, dirty_paths:$dirty, command:$command, provider:$provider, started:$start, finished:$finish, outcome:$outcome, refusal:(if $reason == "" then null else $reason end)}' \
+          --arg skip "$skip" \
+          '{job:$job, cell:$cell, layer:$layer, issue:$issue, source_sha:$sha, dirty_paths:$dirty, command:$command, provider:$provider, started:$start, finished:$finish, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), skip:(if $skip == "" then null else $skip end)}' \
           > "$dir/manifest.json"
     # One pass over the cell's files: sha256sum hashes them all, one jq builds the path -> hash map. (A map
     # grown one file at a time re-parses it for every file: thousands of files took minutes.) The map of a
@@ -271,8 +284,8 @@ for i in $(seq 0 $((NCELLS - 1))); do
     # a file, never as an argument.
     find "$dir" -type f -print0 | sort -z | xargs -0 -r sha256sum \
         | jq -R -s 'split("\n") | map(select(length > 0) | {key: .[66:], value: .[0:64]}) | from_entries' > "$TMPD/artifacts.json"
-    CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg evidence "$evidence" --arg outcome "$outcome" --arg reason "$reason" --slurpfile artifacts "$TMPD/artifacts.json" \
-        '. + [{name:$cell, evidence:$evidence, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), artifacts:$artifacts[0]}]')
+    CELLS_JSON=$(echo "$CELLS_JSON" | jq --arg cell "$cell" --arg evidence "$evidence" --arg outcome "$outcome" --arg reason "$reason" --arg skip "$skip" --slurpfile artifacts "$TMPD/artifacts.json" \
+        '. + [{name:$cell, evidence:$evidence, outcome:$outcome, refusal:(if $reason == "" then null else $reason end), skip:(if $skip == "" then null else $skip end), artifacts:$artifacts[0]}]')
     echo "i143-acceptance-gate: $JOB/$cell $outcome"
 done
 FINISHED=$(now)
@@ -285,5 +298,6 @@ if [ ! -s "$RECEIPT" ] || ! jq -e . "$RECEIPT" > /dev/null 2>&1; then
     refuse "$JOB: the receipt $RECEIPT was not written"
     exit 1
 fi
-echo "i143-acceptance-gate: $JOB $OUTCOME ($((NCELLS - FAILED))/$NCELLS cells); receipt $RECEIPT"
+SKIPS=""; [ "$SKIPPED" -eq 0 ] || SKIPS=", $SKIPPED skipped by name"
+echo "i143-acceptance-gate: $JOB $OUTCOME ($((NCELLS - FAILED))/$NCELLS cells$SKIPS); receipt $RECEIPT"
 [ "$FAILED" -eq 0 ]

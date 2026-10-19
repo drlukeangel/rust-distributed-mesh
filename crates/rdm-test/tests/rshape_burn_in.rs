@@ -6786,13 +6786,16 @@ fn host_can_cut() -> Result<(), String> {
 
 /// Whether the cut cell `cell` runs on this host (netfault.rs): a host that cannot drop UDP between
 /// loopback ports skips it by name, and fails it by name when `RDM_REQUIRE_NETFAULT=1` (CI), as the
-/// soak's own check does.
+/// soak's own check does. A skip writes the cell's `result.json` naming the skip and its reason
+/// (`"skipped": {"name", "reason"}`), which the acceptance gate reads as a skip, never a failure.
 fn cuts_here(cell: &str) -> bool {
     match host_can_cut() {
         Ok(()) => true,
         Err(why) => {
             assert!(std::env::var("RDM_REQUIRE_NETFAULT").as_deref() != Ok("1"), "RDM_REQUIRE_NETFAULT=1: {cell} cuts traffic and this host cannot drop UDP between loopback ports: {why}");
-            eprintln!("SKIP {cell}: it cuts traffic and this host cannot drop UDP between loopback ports: {why}");
+            let reason = format!("it cuts traffic and this host cannot drop UDP between loopback ports: {why}");
+            eprintln!("SKIP {cell}: {reason}");
+            write_json(&cell_dir(cell), "result.json", &json!({"cell": cell, "skipped": {"name": "host-cannot-cut", "reason": reason}}));
             false
         }
     }
