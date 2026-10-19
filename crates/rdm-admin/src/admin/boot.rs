@@ -1995,6 +1995,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 heard_changes.borrow_and_update();
                                                 let view = topology.read().await.clone();
                                                 let holds_seat = view.holds_mesh_seat(&mesh, &me_id);
+                                                // The per-member verdicts and os-stopped confirmations are the seat holder's
+                                                // (node-recovery.md step 3): an admin that does not hold the seat keeps none, so
+                                                // when it takes the seat, or takes it again, its first inspection of each member
+                                                // is its own, spanned, and it revalidates a row another admin wrote
+                                                // (deployment-provider.md §2.5: "a new authority revalidates the stored fact with
+                                                // its own inspection").
+                                                if !holds_seat {
+                                                    verdicts.lock().unwrap().clear();
+                                                    recovery.os_stopped_confirmed.lock().unwrap().clear();
+                                                }
                                                 // Every admin watches the same set, the seat holder or not, so a successor tickles on
                                                 // the window already running; the durable rows are read each tick (one point in time).
                                                 let durable = {
