@@ -162,10 +162,10 @@ No new gossip frame and no new `MemberStatus`.
   reads afresh and `node.roots.update` will replace (`ConnectionsRegistry::roots`), `CertAdmitter`
   over it naming each refusal by its `CertError` (so the CA level's checks need no e2 change), and the
   launch write `RDM_ROOTS` (`Launch::roots`) carrying the launching admin's set as it stands at the
-  launch, one root or two. A launch with no set admits by name (the `NoCerts` spelling question stays
-  Luke's). Not yet built: `registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind` and
-  `a_no_certs_acceptor_admits_by_name` (a `NoCerts` admission is spanned `via-admitted`, clock
-  `no-certs`, not `via-no-certs-configured`).
+  launch, one root or two. A launch with no set admits by name: absent means the launcher holds
+  `NoCerts` (accepted by the lead), spanned `via-no-certs-configured`, never `via-admitted`
+  (`a_no_certs_acceptor_admits_by_name`); `registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind`
+  pins both of RDM's own ALPNs refused at bind. Every e2 acceptance cell is built.
 
 #### e3 — the cert row, `node.cert.renew`, `mesh.issuer.renew`, `node.issuer.update`, policy, the watch
 
