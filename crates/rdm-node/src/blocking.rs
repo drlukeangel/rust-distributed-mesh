@@ -96,3 +96,93 @@ impl IoTime {
 pub async fn io_time_with<F: std::future::Future>(io: IoTime, work: F) -> F::Output {
     IO_TIME.scope(io, work).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::Future;
+    use std::sync::{Arc, Mutex};
+    use std::task::{Context, Poll, Wake};
+
+    /// The spans opened on this thread while installed: each one's name and its `u64` fields.
+    #[derive(Default)]
+    struct Opened(Mutex<Vec<(String, Vec<(String, u64)>)>>);
+
+    struct Fields(Vec<(String, u64)>);
+    impl tracing::field::Visit for Fields {
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.0.push((field.name().to_string(), value));
+        }
+        fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    }
+
+    struct Recorder(Arc<Opened>);
+    impl tracing::Subscriber for Recorder {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            let mut fields = Fields(Vec::new());
+            span.record(&mut fields);
+            let mut opened = self.0 .0.lock().unwrap();
+            opened.push((span.metadata().name().to_string(), fields.0));
+            tracing::span::Id::from_u64(opened.len() as u64)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, _: &tracing::Event<'_>) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    struct Noop;
+    impl Wake for Noop {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    /// CONTRACT (tokio cancels a blocking task only when its runtime shuts down, before the task
+    /// begins; the work awaiting it is being dropped with that runtime): a disk call issued while
+    /// the runtime is shutting down, its one blocking thread still held, is cancelled, never run.
+    /// Its caller does not panic: the cancellation is named (with how long ago the call was issued)
+    /// and the call never answers, so the runtime drops its caller with everything else. Seen as
+    /// `blocking_io` panicking "a blocking disk call was cancelled" at an admin's stop (i144,
+    /// record_store.rs).
+    #[test]
+    fn a_disk_call_cancelled_by_its_runtimes_shutdown_is_named_and_never_answers() {
+        let rt = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        drop(rt.spawn_blocking(move || {
+            let _ = held_tx.send(());
+            let _ = release_rx.recv();
+        }));
+        held_rx.recv().unwrap();
+
+        let opened = Arc::new(Opened::default());
+        let waker = Arc::new(Noop).into();
+        let mut cx = Context::from_waker(&waker);
+        // The runtime shuts down with its one blocking thread held; a call issued in its context now
+        // is cancelled before it begins.
+        let handle = rt.handle().clone();
+        rt.shutdown_timeout(std::time::Duration::from_millis(50));
+        let mut call = Box::pin(blocking_io(|| 7u32));
+
+        let named = |o: &Opened| o.0.lock().unwrap().iter().find(|(n, _)| n == "rdm.node.disk_call.update.via-shutdown").cloned();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while named(&opened).is_none() && std::time::Instant::now() < until {
+            let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tracing::subscriber::with_default(Recorder(opened.clone()), || {
+                    let _in = handle.enter();
+                    call.as_mut().poll(&mut cx)
+                })
+            }));
+            assert!(matches!(polled, Ok(Poll::Pending)), "the cancelled call's caller is never answered and never panics: {:?}", polled.map(|p| p.is_ready()));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let (_, fields) = named(&opened).expect("the cancellation is named");
+        assert!(fields.iter().any(|(k, _)| k == "issue_age_ms"), "it names how long ago the call was issued: {fields:?}");
+        let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call.as_mut().poll(&mut cx)));
+        assert!(matches!(polled, Ok(Poll::Pending)), "polled again, it still never answers");
+        release_tx.send(()).unwrap();
+    }
+}
