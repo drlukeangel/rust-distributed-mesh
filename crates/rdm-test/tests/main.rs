@@ -134,8 +134,8 @@ mod mesh_create;
 mod mesh_delete_no_survivor;
 #[path = "mesh/mesh_delete_resume.rs"]
 mod mesh_delete_resume;
-#[path = "mesh/mesh_recover.rs"]
-mod mesh_recover;
+#[path = "mesh/admins_lost_mid_build.rs"]
+mod admins_lost_mid_build;
 #[path = "mesh/fabric_primary_handover.rs"]
 mod fabric_primary_handover;
 #[path = "gossip/backbone.rs"]

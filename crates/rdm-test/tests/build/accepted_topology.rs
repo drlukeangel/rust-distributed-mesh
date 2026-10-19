@@ -5,17 +5,18 @@
 //! 2. A change compiles to the next complete Build, current once it is written; a second change while
 //!    it reconciles is refused `build-in-progress`, naming it.
 //! 3. The current Build cannot be forgotten; older Builds are history and can.
-//! 4. An admin born later holds the current build_id and the Build it names before Ready, and
-//!    none of the history: the current Build is read last in, first out from its own Build log
-//!    (R14: the fabric-primary is the one writer of `fabric/`), the Build its own Build log's copy.
+//! 4. An admin born later holds the current Build before Ready, and none of the history: it reads
+//!    the Build facts last in, first out from its own Build log (R-BI3; R14: the fabric-primary is
+//!    the one writer of `fabric/`), the Build its own Build log's copy.
 //! 5. A birth stopped (silent, its runtime alive) is held: nothing is reopened.
-//! 6. An admin that missed a Build while stopped catches up to the pointer: it reads the row the
-//!    fabric-primary wrote while it was stopped and holds the Build it names.
+//! 6. An admin that missed a Build while stopped catches up to the current Build when it is back: it
+//!    reads the Build facts written while it was stopped and holds the newest in progress or
+//!    completed (R-BI3: no pointer names the current Build).
 //! 7. A member killed (its exact runtime exited) is node recovery (node-recovery.md): its
 //!    mesh-primary proves the exit and opens the recovery itself, the next attempt of its mesh's lane
 //!    of the same Build (R-BI7), once: node.delete of the exited birth, then node.create at the same
-//!    path.name with a new node.id over the inherited data dir and endpoint key. The pointer does not
-//!    move; the attempt converges; the fabric lane gains no attempt; the fabric-primary opens no drift
+//!    path.name with a new node.id over the inherited data dir and endpoint key. The current Build
+//!    stays the same; the attempt converges; the fabric lane gains no attempt; the fabric-primary opens no drift
 //!    attempt for the member.
 //! 8. A restart changes no topology: it is an attempt of the accepted Build, under the same id.
 
@@ -32,7 +33,7 @@ fn owner() -> Owner {
         subfeature: "accepted-topology".into(),
         rung: "MN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "the_build_fabric_build_id_names_is_the_one_accepted_topology".into(),
+        test: "the_current_build_read_from_the_build_facts_is_the_one_accepted_topology".into(),
     }
 }
 
@@ -68,7 +69,7 @@ fn fabric_of(meshes: &[(&str, u32, u32)]) -> FabricDesired {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
+async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topology() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
 
     // 1. Day 0: the first Build, exact.

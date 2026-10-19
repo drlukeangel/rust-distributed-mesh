@@ -8,8 +8,9 @@
 //!   never hex), and the Digest a peer mesh's admin hears from a restarted birth names its incarnation and node as such;
 //! - every birth's ready span names its node, mesh and fabric ids with
 //!   `id_format = "crockford60"`, equal to the views';
-//! - a restart keeps NodeId and FabricId under a new incarnation, and a second restart of the
-//!   same node restarts it again;
+//! - a restart keeps NodeId, FabricId and the incarnation (a restarted node is the same node.id and
+//!   incarnation; a re-born node is the same path.name and a new node.id), and a second restart of
+//!   the same node restarts it again;
 //! - an intentional replacement mints new identity: a mesh removed and
 //!   created again gets a new MeshId, a node removed and created again at the
 //!   same path a new NodeId; the Fabric keeps its id throughout.

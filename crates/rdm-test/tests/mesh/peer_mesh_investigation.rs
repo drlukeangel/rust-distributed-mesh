@@ -1,5 +1,5 @@
-//! i143.e4.s10 detection acceptance (rafka-v2 #2803; docs/architecture/lifecycles/node-recovery.md
-//! "Mesh Recovery" -> "Detection: the peer-mesh investigation"), PROCESS layer: run by
+//! i143.e4.s10 detection acceptance (rafka-v2 #2803; docs/architecture/lifecycles/mesh-investigation.md),
+//! PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2803-detect-process`, which exports `I143_ACCEPTANCE_DIR`
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans, feature `i143-2803-detect`).
@@ -167,7 +167,8 @@ impl Fixture {
         p
     }
 
-    fn recoveries<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
+    /// The node.create of a node-admin into the lost mesh the fabric primary opened on a verdict.
+    fn admin_creates<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
         named(spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).collect()
     }
 
@@ -200,8 +201,8 @@ fn mesh_sends_after(spans: &[Value], mesh: &str, from_ms: u64) -> BTreeMap<(Stri
 }
 
 /// When the fabric left `degraded` on a completed round, in unix ms: the holder that decided the
-/// rebirth records the recovery of the mesh on its report; a successor holder that adopted
-/// `degraded` clears it when every mesh primary has reported.
+/// node.create of the mesh's node-admin clears it on the new mesh-primary's report; a successor
+/// holder that adopted `degraded` clears it when every mesh primary has reported.
 fn degraded_cleared_at(spans: &[Value], mesh: &str) -> Vec<u64> {
     let mut at: Vec<u64> = named(spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().filter(|sp| attr(sp, "mesh") == mesh).map(|sp| at_ns(sp) / 1_000_000).collect();
     at.extend(named(spans, "rdm.node_admin.fabric.update.via-round-complete").into_iter().filter(|sp| attr(sp, "degraded_cleared") == "true").map(|sp| at_ns(sp) / 1_000_000));
@@ -225,13 +226,13 @@ fn result(dir: &std::path::Path, v: Value) {
 /// answers `carrier-edge-lost`. At the mark (30 s) the mesh is marked silent (nothing is sent), at
 /// probe 2's rung (40 s) probe 2 prefers another member and answers the same. At the decision (60 s)
 /// the latest probe being `carrier-edge-lost` is the verdict: the fabric primary authors
-/// FabricStatus `degraded` and the mesh is reborn under the same Build and the existing MeshId; the
-/// fabric returns to ready when the mesh has its primary again. What must NOT happen: a rebirth
-/// before the decision's rung, a new MeshId or Build id, a surviving member created again, a degraded fabric
+/// FabricStatus `degraded` and runs node.create of a node-admin into the mesh, under the same Build and
+/// the existing MeshId; the fabric returns to ready when the mesh has its primary again. What must NOT
+/// happen: a node-admin created before the decision's rung, a new MeshId or Build id, a surviving member created again, a degraded fabric
 /// before the verdict.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes() {
-    let cell = "peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_probes";
+async fn a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes() {
+    let cell = "a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -266,14 +267,14 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
             }
         })
     };
-    wait_for("the accepted Build is complete past the fault and the lost admins are reborn", Duration::from_secs(300), || {
+    wait_for("the accepted Build is complete past the fault and a node-admin is created for the lost ones", Duration::from_secs(300), || {
         let estate = &f.estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
             let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
-            let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
-            (later && reborn).then_some(b)
+            let created = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
+            (later && created).then_some(b)
         }
     })
     .await;
@@ -288,7 +289,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     sampler.abort();
     let statuses = statuses.lock().unwrap().clone();
     // The return to ready is five sends a second apart, from the fabric primary for as long as it
-    // holds the seat: the reborn mesh can take the seat (the election is the lowest ready NodeId), and
+    // holds the seat: the mesh, its node-admin created, can take the seat (the election is the lowest ready NodeId), and
     // a publisher that loses the role ends the sends still to come.
     let degraded_ms = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or(0);
     let fp_for_sends = f.fabric_primary.clone();
@@ -308,7 +309,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     .await;
     let seat_moved = seat_lost_or_five(&f.estate.spans()).1;
     assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: the current build_id is unchanged");
-    assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} is reborn under its own MeshId", f.lost);
+    assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} keeps its own MeshId", f.lost);
     let new_births = births(&after);
     for m in &survivors {
         assert_eq!(new_births[m], before_births[m], "{m} answered the probes and is never created again");
@@ -331,7 +332,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "the member cannot reach its own node-admin: {p:#?}");
         assert!(attr(p, "member").split(',').all(|m| survivors.contains(&m.to_string())) && survivors.contains(&attr(p, "carrier")), "members of {} were asked and one carried it: {p:#?}", f.lost);
         // iroh's local view of each node-admin asked is a diagnostic on the probe span (R-CK1:
-        // observation stays, separate from recovery authority); nothing decides on it.
+        // observation stays, separate from the decision); nothing decides on it.
         for asked in attr(p, "target").split(',').filter_map(|t| t.split('=').next()) {
             for field in ["iroh_known_addrs", "iroh_active_addrs"] {
                 assert!(attr(p, field).split(';').any(|v| v.starts_with(&format!("{asked}="))), "the probe span carries iroh's view of {asked} in {field}: {p:#?}");
@@ -343,43 +344,43 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     assert_ne!(attr(probes[0], "carrier"), attr(probes[1], "carrier"), "probe 2 prefers another carrier");
 
     let verdicts = f.verdicts(&spans);
-    let rebirth_verdict = verdicts.iter().find(|v| attr(v, "outcome") == "carrier-edge-lost").unwrap_or_else(|| panic!("the verdict is carrier-edge-lost: {verdicts:#?}"));
-    assert!(unheard(rebirth_verdict) >= rungs().decide, "the decision is at {:?} unheard, not before: {:?}", rungs().decide, unheard(rebirth_verdict));
-    let rebirths = f.recoveries(&spans);
-    assert_eq!(rebirths.len(), 1, "one rebirth: {rebirths:#?}");
-    assert!(at_ns(rebirths[0]) >= at_ns(rebirth_verdict), "the verdict is recorded before the rebirth opens");
+    let verdict = verdicts.iter().find(|v| attr(v, "outcome") == "carrier-edge-lost").unwrap_or_else(|| panic!("the verdict is carrier-edge-lost: {verdicts:#?}"));
+    assert!(unheard(verdict) >= rungs().decide, "the decision is at {:?} unheard, not before: {:?}", rungs().decide, unheard(verdict));
+    let creates = f.admin_creates(&spans);
+    assert_eq!(creates.len(), 1, "one node.create of a node-admin: {creates:#?}");
+    assert!(at_ns(creates[0]) >= at_ns(verdict), "the verdict is recorded before the node.create opens");
 
-    // R-D1: until the reborn mesh is heard again the fabric primary holds it as a mesh. The ladder's decision
+    // R-D1: until the mesh is heard again the fabric primary holds it as a mesh. The ladder's decision
     // releases the first recovering node-admin only: one attempt, for mesh node-admin 1. Every other node of the
-    // mesh is reconciled once the mesh is heard again (by the reborn mesh primary's own sweep or the drift pass).
-    // The window ends when the fabric primary hears the reborn mesh again, or when it loses the seat to the reborn
+    // mesh is reconciled once the mesh is heard again (by its new mesh primary's own sweep or the drift pass).
+    // The window ends when the fabric primary hears the mesh again, or when it loses the seat to the mesh's new
     // mesh (its drift pass is then no one's but the new holder's). Heard again is its first direct backbone receipt
     // of the mesh after the verdict (the snapshot installed off the backbone), the instant the R-D1 fence reads
     // (`Ladder::fence` over `DigestBook::mesh_unheard`); the ladder's own heard-again verdict comes on its next
     // round, after it.
     let heard_again = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
         .into_iter()
-        .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(rebirth_verdict))
+        .filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "channel") == "backbone" && at_ns(sp) >= at_ns(verdict))
         .map(at_ns)
         .chain(named(&spans, "rdm.node_admin.mesh.update.via-probe-verdict").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && attr(sp, "node") == fp && attr(sp, "outcome") == "heard-again").map(at_ns))
-        .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(rebirth_verdict)).map(at_ns))
+        .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(verdict)).map(at_ns))
         .min()
-        .unwrap_or_else(|| panic!("{fp} heard {} again after the rebirth, or gave up the seat", f.lost));
+        .unwrap_or_else(|| panic!("{fp} heard {} again after its node-admin was created, or gave up the seat", f.lost));
     let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-carrier-edge-lost").into_iter().filter(|sp| attr(sp, "authority") == fp && attr(sp, "mesh") == f.lost).collect();
-    let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(rebirth_verdict) && at_ns(sp) < heard_again).collect();
+    let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(verdict) && at_ns(sp) < heard_again).collect();
     assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
     assert!(attr(while_unheard[0], "node") == format!("{}.admin.1", f.lost) && attr(while_unheard[0], "action") == "recipe" && attr(while_unheard[0], "reason") == "recipe", "the verdict runs node.create of the first node-admin in path order, a one-step recipe of the same Build: {:#?}", while_unheard[0]);
     assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !attr(sp, "scope").starts_with(&format!("{}.", f.lost))), "the verdict is no proven drift: nothing of {} is repaired from an exit proof", f.lost);
 
     // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
     let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));
-    assert!(degraded_at >= at_ns(rebirth_verdict) / 1_000_000 - 200, "degraded is authored at the verdict, not before: {statuses:?}");
+    assert!(degraded_at >= at_ns(verdict) / 1_000_000 - 200, "degraded is authored at the verdict, not before: {statuses:?}");
     assert!(statuses.last().is_some_and(|(st, _)| st == "ready-for-traffic"), "the fabric is ready again: {statuses:?}");
 
     // The mark sends nothing and the fabric primary never authors the peer mesh's status; the
     // fabric's two changes are five identical sends each.
     // The marks of the story: the estate shutdown that follows it (`Fixture::stop`) stops the members of the
-    // reborn mesh one by one and leaves it unheard, which opens a new interval and a new mark at the fabric primary.
+    // mesh one by one and leaves it unheard, which opens a new interval and a new mark at the fabric primary.
     let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true" && at_ns(sp) < story_end).collect();
     assert_eq!(marks.len(), 1, "the silent mark is made once before the story ends: {marks:#?}");
     assert!(unheard(marks[0]) >= rungs().mark, "the mark is at {:?} unheard, not before: {:?}", rungs().mark, unheard(marks[0]));
@@ -407,13 +408,13 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     } else {
         assert!(ready_sent.values().all(|n| *n == 5), "ready is one change sent five identical times: {ready_sent:?}");
     }
-    // Same status, fresh proof (R-S3): the reborn primary adopts the mesh's existing status and does
-    // not stay silent. After the rebirth it re-sends the SAME fact (the old changed_at, the lifecycle
+    // Same status, fresh proof (R-S3): the new mesh primary adopts the mesh's existing status and does
+    // not stay silent. Once established it re-sends the SAME fact (the old changed_at, the lifecycle
     // state did not change) five times, and the fabric stays degraded until that round-complete report.
-    let reborn_at = at_ns(rebirths[0]) / 1_000_000;
+    let created_at = at_ns(creates[0]) / 1_000_000;
     let status_before = mesh_status_change_before(&spans, &f.lost, fault_ms).unwrap_or_else(|| panic!("{} published its MeshStatus before the fault", f.lost));
-    let republished = mesh_sends_after(&spans, &f.lost, reborn_at);
-    assert!(!republished.is_empty(), "the reborn primary of {} sends the adopted MeshStatus after the rebirth (a new via-status-send for mesh:{}): none", f.lost, f.lost);
+    let republished = mesh_sends_after(&spans, &f.lost, created_at);
+    assert!(!republished.is_empty(), "the new primary of {} sends the adopted MeshStatus once established (a new via-status-send for mesh:{}): none", f.lost, f.lost);
     for ((sender, changed_at), (n, _)) in &republished {
         assert!(sender.starts_with(&format!("{}.admin.", f.lost)), "the mesh's status is authored by its own primary, not {sender}");
         assert_eq!(*changed_at, status_before, "the lifecycle state did not change: the republish keeps the old changed_at ({sender}, {n} sends)");
@@ -422,33 +423,33 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     let first_republish_ms = republished.values().map(|(_, first)| *first).min().unwrap();
     let round_complete_ms = named(&spans, "rdm.node_admin.mesh.update.via-round-complete")
         .into_iter()
-        .filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= reborn_at)
+        .filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_at)
         .map(|sp| at_ns(sp) / 1_000_000)
         .min()
-        .expect("the reborn primary's round completed");
+        .expect("the new primary's round completed");
     assert!(first_republish_ms >= round_complete_ms, "the adopted status is republished only after the round completed: {first_republish_ms} vs {round_complete_ms}");
-    let recovered = degraded_cleared_at(&spans, &f.lost);
-    assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= round_complete_ms), "degraded clears only after the reborn primary's round completed, never on a ready primary of a newer birth alone: recovered at {recovered:?}, round complete at {round_complete_ms}");
+    let cleared = degraded_cleared_at(&spans, &f.lost);
+    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= round_complete_ms), "degraded clears only after the new primary's round completed, never on a ready primary of a newer birth alone: cleared at {cleared:?}, round complete at {round_complete_ms}");
     result(
         &dir,
         json!({
             "cell": cell, "fabric_id": f.estate.fabric_id, "mesh": f.lost, "mesh_id": f.lost_mesh_id, "accepted_build_id": f.accepted,
             "fabric_primary": fp, "fault_unix_ms": fault_ms, "last_heard_unix_ms": last_heard_ms,
-            "probe_unheard_ms": probes.iter().map(|p| unheard(p).as_millis() as u64).collect::<Vec<_>>(), "verdict_unheard_ms": unheard(rebirth_verdict).as_millis() as u64,
+            "probe_unheard_ms": probes.iter().map(|p| unheard(p).as_millis() as u64).collect::<Vec<_>>(), "verdict_unheard_ms": unheard(verdict).as_millis() as u64,
             "fabric_statuses": statuses, "provider": f.estate.owner.provider,
         }),
     );
 }
 
 /// CONTRACT (#2803 detection): a node-admin that is ALIVE but unheard by the fabric primary is not
-/// reborn. Every UDP path between the fabric primary's mesh and the peer mesh's node-admins is cut
+/// given a new one. Every UDP path between the fabric primary's mesh and the peer mesh's node-admins is cut
 /// (netfault; the fabric primary still reaches the peer mesh's rpc nodes). The fabric primary
 /// pings a member, forwards `ProbeNodeState` through it, and the node-admin answers: probe 1 is
-/// `admin-alive`, the investigation stops, nothing is reborn, the fabric is never degraded and no
+/// `admin-alive`, the investigation stops, no node-admin is created, the fabric is never degraded and no
 /// second probe is sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
-    let cell = "alive_but_unheard_admin_answers_the_probe_and_is_not_reborn";
+async fn an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops() {
+    let cell = "an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -480,7 +481,7 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
     let spans = f.estate.spans();
     let probes = f.probes_before(&spans, story_end);
     assert_eq!(probes.len(), 1, "an answering node-admin stops the investigation after probe 1: {probes:#?}");
-    assert!(f.recoveries(&spans).is_empty(), "no rebirth of a node-admin that answers");
+    assert!(f.admin_creates(&spans).is_empty(), "no node.create for a node-admin that answers");
     assert_eq!(fabric, "ready-for-traffic", "the fabric is never degraded for an admin that is alive");
     let verdicts = f.verdicts(&spans);
     assert!(verdicts.iter().any(|v| attr(v, "outcome") == "admin-alive"), "the verdict names admin-alive: {verdicts:#?}");
@@ -493,7 +494,7 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
 /// are frozen (SIGSTOP: no backbone word, no exit) until after probe 1's rung and before their own
 /// view passes the staleness floor, then continued: the fabric primary hears the mesh on the
 /// backbone again before probe 2's rung, records the cancel as the verdict `heard-again`, sends no
-/// second probe and rebirths nothing.
+/// second probe and creates nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     let cell = "peer_mesh_heard_again_between_probes_cancels_the_investigation";
@@ -533,19 +534,19 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     assert_eq!(f.probes_before(&spans, story_end).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
-    assert!(f.recoveries(&spans).is_empty(), "no rebirth of a mesh that is heard again");
+    assert!(f.admin_creates(&spans).is_empty(), "no node.create for a mesh that is heard again");
     assert_eq!(fabric, "ready-for-traffic");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
 }
 
-/// CONTRACT (#2803 detection): no member answers, so nothing is reborn. Every runtime of the peer
+/// CONTRACT (#2803 detection): no member answers, so no node-admin is created. Every runtime of the peer
 /// mesh (admins and rpc nodes) is frozen (SIGSTOP; the host has no root to cut the mesh's UDP, the
 /// frozen processes answer nothing and are not exited): both probes find no member that answers
-/// the Ping, the verdict at the decision's rung is `unreachable`, and the fabric primary holds. No rebirth,
+/// the Ping, the verdict at the decision's rung is `unreachable`, and the fabric primary holds. No node.create,
 /// no degraded fabric. After the mesh is continued it is heard again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
-    let cell = "peer_mesh_whose_members_all_stay_silent_is_held_not_reborn";
+async fn a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created() {
+    let cell = "a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -575,7 +576,7 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     for p in &probes {
         assert_eq!(attr(p, "outcome"), "unreachable", "{p:#?}");
     }
-    assert!(f.recoveries(&spans).is_empty(), "timeout or unreachable alone grants no rebirth");
+    assert!(f.admin_creates(&spans).is_empty(), "timeout or unreachable alone grants no node.create");
     assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
     // One investigation reaches the peer mesh's node-admins: no other mesh's primary tickles them on a
     // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1). The peer mesh's own primary
@@ -589,15 +590,15 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
 }
 
 /// CONTRACT (#2803 detection): a probe that finds the node-admin cut off from its members and a later
-/// probe that finds it answering do not add up to a recovery: the latest probe decides. Both
+/// probe that finds it answering do not add up to a node.create: the latest probe decides. Both
 /// node-admins of the peer mesh are frozen (SIGSTOP: every member's dial to them fails, so probe 1 is
 /// `carrier-edge-lost`) while every UDP path between the fabric primary's mesh and the peer mesh's
 /// node-admins is cut (netfault; the mesh is unheard). After probe 1 the node-admins are continued:
-/// probe 2 reaches them through a member and they answer, `admin-alive`. No recovery, no degraded
+/// probe 2 reaches them through a member and they answer, `admin-alive`. No node.create, no degraded
 /// fabric, no third probe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_that_answers_probe_two_is_not_recovered_for_probe_ones_edge_lost() {
-    let cell = "an_admin_that_answers_probe_two_is_not_recovered_for_probe_ones_edge_lost";
+async fn an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost() {
+    let cell = "an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -645,7 +646,7 @@ async fn an_admin_that_answers_probe_two_is_not_recovered_for_probe_ones_edge_lo
     assert!(attr(&first, "detail").contains("Indeterminate"), "the probe committed over the pooled connection and lost its reply: {first:#?}");
     assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
     assert_eq!(f.probes_before(&spans, story_end).len(), 2, "no third probe: {:#?}", f.probes(&spans));
-    assert!(f.recoveries(&spans).is_empty(), "the latest probe decides: no recovery");
+    assert!(f.admin_creates(&spans).is_empty(), "the latest probe decides: no node.create");
     assert!(f.verdicts(&spans).iter().any(|v| attr(v, "outcome") == "admin-alive"));
     assert_eq!(fabric, "ready-for-traffic");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probe_1": first["attributes"], "probe_2": second["attributes"]}));
@@ -654,11 +655,11 @@ async fn an_admin_that_answers_probe_two_is_not_recovered_for_probe_ones_edge_lo
 /// CONTRACT (#2803 detection): two peer meshes that lose their node-admins at the same time are two
 /// investigations. The estate has three meshes of two node-admins and two rpc nodes; the node-admins
 /// of the two meshes the fabric primary does not belong to are killed together. Each mesh is
-/// probed twice by its own members, each decided `carrier-edge-lost` and recovered once, under its own
+/// probed twice by its own members, each decided `carrier-edge-lost` and given its node-admin once, under its own
 /// MeshId; neither is probed through the other's members.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_peer_meshes_lost_together_are_investigated_and_recovered_independently() {
-    let cell = "two_peer_meshes_lost_together_are_investigated_and_recovered_independently";
+async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin() {
+    let cell = "two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -683,7 +684,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_recovered_independen
     if lost.iter().any(|m| m == "mesh1") {
         estate.kill_bootstrap();
     }
-    wait_for("both meshes are recovered", Duration::from_secs(300), || {
+    wait_for("both meshes have a node-admin created", Duration::from_secs(300), || {
         let (estate, old, lost) = (&estate, old.clone(), lost.clone());
         async move {
             let now = births(&estate.node_values().await);
@@ -693,34 +694,34 @@ async fn two_peer_meshes_lost_together_are_investigated_and_recovered_independen
     .await;
     let after = estate.settles_to(&shape, Duration::from_secs(120)).await;
     for m in &lost {
-        assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} is recovered under its own MeshId");
+        assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} keeps its own MeshId");
     }
     let _ = after;
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {
-        // The fabric primary that decided the recovery probed the mesh: the seat can move to a recovered
-        // admin while the other mesh is still unheard, and its ladder starts over from the seat.
+        // The fabric primary that decided the node.create probed the mesh: the seat can move to a
+        // created admin while the other mesh is still unheard, and its ladder starts over from the seat.
         // A fabric primary that loses the seat takes its ladder with it, so the next holder decides
-        // again for a mesh it has not yet heard: a mesh is recovered at least once and by any one
+        // again for a mesh it has not yet heard: a mesh gets its node-admin at least once, from any one
         // fabric primary at most once.
-        let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
-        assert!(!recoveries.is_empty(), "{m}: recovered: {recoveries:#?}");
-        for r in &recoveries {
-            assert_eq!(recoveries.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: recovered once per fabric primary: {recoveries:#?}");
+        let creates: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
+        assert!(!creates.is_empty(), "{m}: a node-admin created: {creates:#?}");
+        for r in &creates {
+            assert_eq!(creates.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: one node.create per fabric primary: {creates:#?}");
         }
-        let first = recoveries.iter().min_by_key(|sp| at_ns(sp)).unwrap();
+        let first = creates.iter().min_by_key(|sp| at_ns(sp)).unwrap();
         let decider = attr(first, "node");
         let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == decider && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
         probes.sort_by_key(|sp| attr(sp, "probe"));
         assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
         for (i, p) in probes.iter().enumerate() {
             // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
-            // commits and loses its reply (`Indeterminate`, unreachable). The recovery is decided only
+            // commits and loses its reply (`Indeterminate`, unreachable). The node.create is decided only
             // on the LATEST probe being carrier-edge-lost, so probe 2 must be.
             let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
             assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "{m}: {p:#?}");
-            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the recovery: {p:#?}");
+            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the node.create: {p:#?}");
             assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
         }
     }
@@ -728,7 +729,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_recovered_independen
 }
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses its primary node-admin (exact SIGKILL)
-/// while its other node-admin and its rpc nodes live. The survivor is ELECTED primary, not reborn. It
+/// while its other node-admin and its rpc nodes live. The survivor is ELECTED primary; nothing is created. It
 /// adopts the mesh's existing status without inventing a transition and re-sends the round's down op to
 /// its planned births. The killed primary is still a planned birth of the accepted Build, so the
 /// elected primary's checklist names it as missing (a named hold, no timer) and republishes nothing.
@@ -804,15 +805,15 @@ async fn elected_primary_holds_its_round_for_the_killed_primary_then_republishes
 
 /// CONTRACT (R-S3, same status, fresh proof): a peer mesh loses both node-admins (exact SIGKILL) while
 /// its rpc nodes live, and one of those rpc nodes is frozen (SIGSTOP) so it never checks in. The mesh is
-/// recovered under the same Build and MeshId; its recovered primary is ready in the fabric's view, a ready
-/// primary of a newer birth. That is not the proof: the recovered primary's checklist names the frozen
+/// given a node-admin under the same Build and MeshId; its new primary is ready in the fabric's view, a ready
+/// primary of a newer birth. That is not the proof: the new primary's checklist names the frozen
 /// planned birth as missing (a named hold, no timer), republishes nothing, and the fabric stays
 /// `degraded`. After the member is continued it checks in, the round completes, the adopted status is
 /// republished and only then does the fabric clear degraded. What must NOT happen: degraded cleared on
 /// the ready newer-birth primary alone, a republish while a planned birth is missing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does() {
-    let cell = "recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degraded_until_it_does";
+async fn a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does() {
+    let cell = "a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -831,7 +832,7 @@ async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degr
     // kernel (SIGHUP to a stopped, newly orphaned process group) and would exit, not stay silent.
     signal(frozen_pid, "-STOP");
     let lost = f.lost.clone();
-    wait_for("the recovered primary names the frozen planned birth as missing", Duration::from_secs(240), || {
+    wait_for("the new primary names the frozen planned birth as missing", Duration::from_secs(240), || {
         let spans = f.estate.spans();
         let held = named(&spans, "rdm.node_admin.mesh.update.via-round-held").into_iter().any(|sp| attr(sp, "mesh") == lost && attr(sp, "missing").contains(&frozen));
         async move { held.then_some(()) }
@@ -846,12 +847,12 @@ async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degr
         }
     })
     .await;
-    // Ten backbone publications of the recovered primary held: its republish would have gone out by then.
+    // Ten backbone publications of the new primary held: its republish would have gone out by then.
     tokio::time::sleep(rdm_transport::membership::backbone_gossip_interval() * 10).await;
     let held_status = f.fabric_status().await;
     let held_spans = f.estate.spans();
-    let sent_while_held = mesh_sends_after(&held_spans, &f.lost, recovery_start(&held_spans, &f.lost));
-    let recovered_while_held = named(&held_spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().any(|sp| attr(sp, "mesh") == f.lost);
+    let sent_while_held = mesh_sends_after(&held_spans, &f.lost, admin_created_at(&held_spans, &f.lost));
+    let cleared_while_held = named(&held_spans, "rdm.node_admin.mesh.update.via-recovered").into_iter().any(|sp| attr(sp, "mesh") == f.lost);
     let cont_ms = now_ms();
     signal(frozen_pid, "-CONT");
     wait_for("the fabric is ready again", Duration::from_secs(120), || async { (f.fabric_status().await == "ready-for-traffic").then_some(()) }).await;
@@ -859,19 +860,20 @@ async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degr
     f.estate.stop().await;
     let spans = f.estate.spans();
     assert_eq!(held_status, "degraded", "a ready primary of a newer birth does not clear degraded while a planned birth ({frozen}) has not checked in");
-    assert!(!recovered_while_held, "the recovery is not recorded while the round is held");
+    assert!(!cleared_while_held, "degraded is not cleared while the round is held");
     assert!(sent_while_held.is_empty(), "nothing is republished while a planned birth is missing: {sent_while_held:?}");
-    let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, recovery_start(&spans, &f.lost)).values().map(|(_, first)| *first).collect();
+    let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, admin_created_at(&spans, &f.lost)).values().map(|(_, first)| *first).collect();
     assert!(!republished.is_empty() && republished.iter().all(|at| *at >= cont_ms), "the adopted status is republished only after {frozen} checks in: {republished:?} vs continued at {cont_ms}");
-    let recovered_ms = recovery_start(&spans, &f.lost);
-    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= recovered_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the recovered primary's round completed");
+    let created_ms = admin_created_at(&spans, &f.lost);
+    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= created_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the new primary's round completed");
     assert!(complete >= cont_ms, "the checklist completes only after the frozen member checks in: {complete} vs {cont_ms}");
-    let recovered = degraded_cleared_at(&spans, &f.lost);
-    assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= complete), "degraded clears only on the round-complete report: {recovered:?} vs {complete}");
+    let cleared = degraded_cleared_at(&spans, &f.lost);
+    assert!(!cleared.is_empty() && cleared.iter().all(|at| *at >= complete), "degraded clears only on the round-complete report: {cleared:?} vs {complete}");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "frozen": frozen, "continued_ms": cont_ms, "complete_ms": complete}));
 }
 
-/// The instant after which a recovery's sends of `mesh` count: the first `via-recovery` of the mesh (0 before it).
-fn recovery_start(spans: &[Value], mesh: &str) -> u64 {
+/// The instant after which the new primary's sends of `mesh` count: the first node.create of a node-admin
+/// into the mesh (`via-recovery`; `u64::MAX` before it).
+fn admin_created_at(spans: &[Value], mesh: &str) -> u64 {
     named(spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == mesh).map(|sp| at_ns(sp) / 1_000_000).min().unwrap_or(u64::MAX)
 }

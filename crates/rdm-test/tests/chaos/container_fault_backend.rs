@@ -650,7 +650,7 @@ const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 /// did not reach (an attempt of its mesh's lane, over the exited birth), or step 6, the fabric primary's
 /// claim of a missing secondary that the new mesh primary executes. The cell waits for every lane of the
 /// Build to end before it stops the estate. A mesh whose every container is gone has no member to say so and is
-/// held, never reborn (the process cell `peer_mesh_whose_members_all_stay_silent_is_held_not_reborn`).
+/// held, no node-admin created (the process cell `a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created`).
 /// Afterwards both admins are new births in new containers, the lost mesh's rpc nodes and the surviving
 /// mesh's births are the births they were (never re-created), the current build_id is the accepted Build, no
 /// MeshId is minted, and a call to an rpc node of the recovered mesh is served. What must NOT happen: the

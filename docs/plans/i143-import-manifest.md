@@ -17,50 +17,54 @@ Forks: `iroh` / `iroh-base` at `drlukeangel/iroh` `23ab5a84`, `iroh-gossip` at `
 
 ## §14 export gate: every bullet and the cell that proves it
 
-Every cell below exists at RDM `main` `5fa6623c` (2026-10-19). Paths are RDM's: `T/` = `crates/rdm-test/tests/`,
-`A/` = `crates/rdm-admin/`. The REST control routes are retired: a bullet that names one is proven on the Node RPC
-op that carries it, named beside the cell.
+Every bullet is the PRD's current §14 (`docs/plans/i143-prd.md` §14), each proven by a cell on RDM
+`main`, each resolving to one test of the gate's discovery. Paths are RDM's: `T/` = `crates/rdm-test/tests/`, `A/` =
+`crates/rdm-admin/`. `export-manifest` reads every cell of this section and takes the fast and release
+gate logs at the export SHA as their proof (`tools/mesh-audit/src/export.rs`).
 
 ### Identity
 
 | bullet | proving cell |
 |---|---|
-| NodeId/MeshId/FabricId are canonical Crockford60 typed ids | `T/mesh/canonical_ids.rs::every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle`; `crates/rdm-core/tests/crockford60_parity.rs::every_rafka_minted_id_is_a_node_mesh_and_fabric_id_as_is` |
+| NodeId/MeshId/FabricId are canonical Crockford60 typed logical ids | `T/mesh/canonical_ids.rs::every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle`; `crates/rdm-core/tests/crockford60_parity.rs::every_rafka_minted_id_is_a_node_mesh_and_fabric_id_as_is` |
 | EndpointId is a distinct transport identity | `T/mesh/canonical_ids.rs::every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle` |
-| no canonical 32-char hex logical product id | `crates/rdm-core/src/ids.rs::tests::deserializing_refuses_a_non_canonical_product_id` |
-| recovery keeps MeshId/FabricId; restart keeps NodeId; replacement re-mints | `T/mesh/mesh_recover.rs::a_lost_mesh_recovers_as_itself_under_the_same_build`; `T/mesh/canonical_ids.rs` (above) |
+| no canonical 32-char hex logical product id remains | `crates/rdm-core/src/ids.rs::tests::deserializing_refuses_a_non_canonical_product_id` |
+| a live mesh keeps its MeshId; a mesh created again under a dead mesh's name gets a new MeshId | `T/mesh/peer_mesh_investigation.rs::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes` (the node-admin created into the live mesh joins under its MeshId); `T/mesh/canonical_ids.rs::every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle` (a mesh removed and created again gets a new MeshId); `A/tests/store_root_boot.rs::an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name` |
+| restart preserves NodeId and incarnation; node recovery and replacement mint a new NodeId; nothing alive comes back under the same fabric id and MeshIds | `T/mesh/canonical_ids.rs::every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle` (restart keeps NodeId and incarnation; a node removed and created again at its path gets a new NodeId); `A/tests/node_rows.rs::a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded` |
 
 ### Accepted topology / Build
 
 | bullet | proving cell |
 |---|---|
-| the fabric-primary is the only topology writer; others refused by name | `A/tests/node_objects.rs::a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary` (`not-fabric-primary`) |
-| `Fabric.build_id` names one complete Build; no other desired-topology authority | `T/build/accepted_topology.rs::the_build_fabric_build_id_names_is_the_one_accepted_topology` (`fabric.get`'s `build_id`) |
-| an accepted Build is current from the Build store alone, durable before it is answered (R-BI3; the `Fabric.build_id` pointer is retired) | `A/tests/current_build.rs::an_accepted_build_is_current_from_the_build_store_alone` (R-BI3: the Fabric row carries no pointer; a Build is written once and is current from the builds store) |
-| every admin hydrates the Fabric record + Build before authority-bearing Ready | `T/elections/late_authority.rs::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births`; `A/src/admin.rs::tests::an_admin_without_a_current_build_is_never_authority_capable` |
-| older Build history is never replayed | `T/build/accepted_topology.rs::the_build_fabric_build_id_names_is_the_one_accepted_topology` |
-| convenience APIs compile into a new complete Build | `A/src/accepted.rs::tests::a_submitted_change_compiles_to_exact_paths_and_a_shrink_keeps_the_primary`; `…::mesh_changes_compile_and_the_refusals_are_named`; `A/tests/current_build.rs::a_change_after_a_failed_build_compiles_against_the_newest_completed_build` |
-| a second change while reconciling is refused `BuildInProgress` naming the current Build (Node RPC; the REST 409 is retired) | `A/tests/build_admission.rs::two_concurrent_topology_submissions_admit_one_build_and_refuse_the_other_naming_it` (`BuildInProgress` naming the first) |
-| authority movement, restart, replacement and drift use another attempt of the same Build | `T/build/accepted_topology.rs` (above); `T/mesh/mesh_recover.rs::a_lost_mesh_recovers_as_itself_under_the_same_build` |
-| `build.delete` of the current accepted Build is refused `cannot-delete` (Node RPC; the REST route and the `Fabric.build_id` pointer are retired, R-BI3) | `T/build/accepted_topology.rs::the_build_fabric_build_id_names_is_the_one_accepted_topology` (`build.delete` of the accepted Build answers `cannot-delete`) |
-| `fabric.get` names the current Build (Node RPC; the REST route is retired) | `T/build/accepted_topology.rs::the_build_fabric_build_id_names_is_the_one_accepted_topology` (`fabric.get`'s `build_id`) |
-| all-admin restart restores Fabric record, accepted Build and FabricShutdown | `A/src/fabric_storage.rs::tests::the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name`; `A/src/build_state.rs::tests::a_same_admin_restart_replays_the_journal_to_the_same_view` |
+| the current fabric-primary is the only topology writer; non-primary topology mutation is refused by name | `A/tests/node_objects.rs::a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary` (`not-fabric-primary`) |
+| each Build is its own entity, written once in acceptance order; the current Build is the first in progress or completed, read last in, first out; no pointer to the newest Build | `A/src/build_state.rs::tests::the_current_build_is_the_newest_in_progress_or_completed_and_a_failed_one_is_skipped`; `A/tests/current_build.rs::an_accepted_build_is_current_from_the_build_store_alone` |
+| a Build is durable before any reader can read it as current | `A/tests/current_build.rs::an_accepted_build_is_current_from_the_build_store_alone` |
+| every admin reads the Fabric record and the current Build before authority-bearing Ready | `T/elections/late_authority.rs::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births`; `A/src/admin.rs::tests::an_admin_without_a_current_build_is_never_authority_capable` |
+| older Build history is not replayed to reconstruct topology | `T/build/accepted_topology.rs::the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` |
+| every change to the shape (node.create, node.delete, the replace recipe, mesh.delete, fabric.delete) is its own Build compiled from the current topology plus its change | `A/src/accepted.rs::tests::a_submitted_change_compiles_to_exact_paths_and_a_shrink_keeps_the_primary`; `A/src/accepted.rs::tests::mesh_changes_compile_and_the_refusals_are_named`; `A/src/accepted.rs::tests::a_recipe_plans_its_steps_in_order_and_never_reruns_a_completed_one`; `A/tests/current_build.rs::a_change_after_a_failed_build_compiles_against_the_newest_completed_build`; `A/src/accepted.rs::tests::a_fabric_delete_compiles_to_the_build_its_page_names` |
+| a second topology-changing request while the current Build is in progress is refused `BuildInProgress { current_build_id }` | `A/tests/build_admission.rs::two_concurrent_topology_submissions_admit_one_build_and_refuse_the_other_naming_it` |
+| authority movement, restart, node recovery and proven drift use another attempt of the current Build | `T/build/accepted_topology.rs::the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` (restart, node recovery: the next attempt of the same Build) |
+| an attempt lost with its executor leaves the Build in progress; only a named terminal failure fails it, and a failed Build is skipped | `A/tests/build_drive.rs::a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_loss_is_proven`; `T/build/build_op.rs::a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof`; `A/tests/build_drive.rs::a_leave_that_ends_with_a_named_failure_fails_the_build_and_the_read_skips_it`; `A/src/build_state.rs::tests::the_current_build_is_the_newest_in_progress_or_completed_and_a_failed_one_is_skipped` |
+| nothing that moves a seat or writes caller state runs before the initial fabric is ready-for-traffic (`fabric-not-ready`) | `T/fabric/rounds.rs::a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt`; `A/tests/fabric_handover.rs::the_holder_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_on_the_root_row` |
+| `build.delete` refuses the current Build by name | `T/build/accepted_topology.rs::the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` (`cannot-delete`) |
+| `fabric.get` answers the current Build | `T/build/accepted_topology.rs::the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` |
+| all-admin restart restores the current Fabric record and the current Build from RDM storage | `A/src/fabric_storage.rs::tests::the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name`; `A/src/build_state.rs::tests::a_same_admin_restart_replays_the_journal_to_the_same_view` |
 
 ### Runtime / death / provider domain
 
 | bullet | proving cell |
 |---|---|
-| a typed RuntimeFact bound to NodeId + IncarnationId + DeploymentId + provider + domain + locator | `crates/rdm-core/src/runtime.rs::tests::a_fact_is_exact_or_refused_by_name`; `crates/rdm-transport/src/membership.rs::tests::a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one` |
-| provider produces the locator; the node publishes the one normalized fact; no launcher-owned authority | `T/runtime/successor_adoption.rs::a_successor_manages_births_it_never_launched` |
-| `data_dir` reaches non-launcher authorities | `T/runtime/successor_adoption.rs::a_successor_manages_births_it_never_launched` |
-| a late successor adopts without Build receipts | `T/elections/late_authority.rs::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births` |
-| the Day-0 admin adopts and publishes its own runtime | `A/src/deployment/pipeline.rs::tests::day_zero_adopts_this_process_with_one_receipt_per_step` |
-| PID-reuse resistance; immutable container id | `A/src/deployment/process.rs::tests::a_successor_controls_the_exact_process_and_never_a_recycled_pid`; `A/tests/container_proof.rs::a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_never_impersonates_it` |
-| no PID/container id is global across domains | `A/src/deployment/provider.rs::tests::a_published_runtime_is_adopted_only_within_its_provider_and_control_domain` |
-| a same-incarnation locator or domain change is refused | `crates/rdm-transport/src/membership.rs::tests::a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one` |
-| same-domain successor control, cross-domain refusal | `A/tests/container_proof.rs::a_successor_in_the_same_docker_domain_adopts_inspects_and_controls_a_container_it_never_launched`; `…::an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing` |
-| provider terminal state reaches recovery | `T/runtime/container_kill.rs::a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it` |
-| failed RPC, silence or domain mismatch is never death proof | `A/tests/drift_convergence.rs::a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced`; `A/src/drift.rs::tests::a_silent_birth_is_held_until_its_exact_runtime_is_proven_exited` |
+| every current birth carries a typed RuntimeFact bound to NodeId + IncarnationId + DeploymentId + provider + control domain + locator | `crates/rdm-core/src/runtime.rs::tests::a_fact_is_exact_or_refused_by_name`; `crates/rdm-transport/src/membership.rs::tests::a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one` |
+| the provider produces the locator and the node publishes exactly one normalized RuntimeFact; no competing launcher-owned RuntimeFact authority | `T/runtime/successor_adoption.rs::a_successor_manages_births_it_never_launched` |
+| `data_dir` converges to non-launcher authorities without becoming RuntimeFact identity | `T/runtime/successor_adoption.rs::a_successor_manages_births_it_never_launched` |
+| a late successor adopts and manages current runtime without completed Build receipts | `T/elections/late_authority.rs::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births` |
+| the Day-0 externally started admin publishes its exact provider runtime | `A/src/deployment/pipeline.rs::tests::day_zero_adopts_this_process_with_one_receipt_per_step` |
+| process identity resists PID reuse; container identity is the immutable container id | `A/src/deployment/process.rs::tests::a_successor_controls_the_exact_process_and_never_a_recycled_pid`; `A/tests/container_proof.rs::a_container_is_its_docker_domain_and_immutable_id_and_a_reused_name_never_impersonates_it` |
+| no PID/container id is global across provider domains | `A/src/deployment/provider.rs::tests::a_published_runtime_is_adopted_only_within_its_provider_and_control_domain` |
+| a same-incarnation locator or provider-domain change is refused | `crates/rdm-transport/src/membership.rs::tests::a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one` |
+| same-domain successor control and cross-domain refusal | `A/tests/container_proof.rs::a_successor_in_the_same_docker_domain_adopts_inspects_and_controls_a_container_it_never_launched`; `A/tests/container_proof.rs::an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing` |
+| provider terminal state of the adopted exact runtime reaches lifecycle and recovery | `T/runtime/container_kill.rs::a_killed_container_is_proven_terminal_by_inspection_and_the_build_recreates_it` |
+| failed RPC, dial, silence or a provider-domain mismatch is never death proof | `A/tests/drift_convergence.rs::a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced`; `A/src/drift.rs::tests::a_silent_birth_is_held_until_its_exact_runtime_is_proven_exited` |
 
 Multi-host eligibility is not claimed: the remote-pool provider is proven only in
 `A/src/deployment/provider.rs`'s tests (`RemotePool`, same-pool adoption), not across real hosts.
@@ -69,28 +73,44 @@ Multi-host eligibility is not claimed: the remote-pool provider is proven only i
 
 | bullet | proving cell |
 |---|---|
-| only ReadyForTraffic candidates | `A/src/election.rs::tests::the_lowest_ready_node_id_wins_and_nothing_else_counts` |
-| admin Ready needs `Fabric.build_id`, its Build, RuntimeFacts and provider-domain capability | `A/src/admin.rs::tests::an_admin_is_authority_capable_only_when_every_held_birth_is_adoptable_here`; `…::an_admin_without_a_current_build_is_never_authority_capable` |
-| joining admins never self-Ready; only the Day-0 root self-applies its mesh's Pending | `A/src/admin.rs::tests::only_the_day0_root_applies_its_own_meshs_pending` |
+| only ReadyForTraffic candidates are eligible | `A/src/election.rs::tests::the_lowest_ready_node_id_wins_and_nothing_else_counts` |
+| node-admin Ready includes the current Build, RuntimeFacts and provider-domain hydration | `A/src/admin.rs::tests::an_admin_is_authority_capable_only_when_every_held_birth_is_adoptable_here`; `A/src/admin.rs::tests::an_admin_without_a_current_build_is_never_authority_capable` |
+| joining admins never self-Ready; only the Day-0 root establishes Ready without existing Ready authority | `A/src/admin.rs::tests::only_the_day0_root_applies_its_own_meshs_pending` |
 | the complete NodeId is the only election key | `A/src/election.rs::tests::ordinal_and_mesh_name_never_decide_a_seat`; `A/src/admin.rs::tests::ready_since_and_ordinal_never_change_a_winner` |
 | provider domain, locality and runtime metadata are not election keys | `A/src/election.rs::tests::provider_locality_and_runtime_metadata_never_decide_a_seat` |
-| cohort winner == mesh primary; only mesh primaries hold the fabric election | `T/elections/cohort_election.rs::every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix`; `A/src/election.rs::tests::losing_a_winner_moves_each_seat_to_the_next_lowest` |
-| Day 0, three-mesh, replacement, late-admin takeover; a lower NodeId never preempts a living holder (R-A2) | `T/elections/fabric_primary.rs::three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remaining_when_its_mesh_is_lost` (R-A2: a lower NodeId never displaces a living holder, so no preemption); `T/elections/late_authority.rs` (above) |
-| s14 non-launcher adoption (#2850/#2851) is green | `T/runtime/successor_adoption.rs::a_successor_manages_births_it_never_launched` |
-| no parallel election canon | `crates/rdm-node/tests/leadership.rs::node_base_holds_no_comparator` |
+| the node-admin cohort winner is the mesh primary; only mesh primaries hold the fabric election | `T/elections/cohort_election.rs::every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix`; `A/src/election.rs::tests::losing_a_winner_moves_each_seat_to_the_next_lowest` |
+| a living seat holder keeps its seat (a lower NodeId never displaces it); a seat moves only by yield, committed transfer or proven loss | `T/elections/sticky_seat.rs::a_cut_off_fabric_primary_that_runs_is_looked_at_and_keeps_the_seat`; `T/elections/sticky_seat.rs::a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts`; `A/src/admin.rs::tests::a_leaving_holder_keeps_both_seats_in_the_readers_until_its_yield_is_held`; `T/elections/sticky_seat.rs::a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_mesh` |
+| Day 0, three-mesh, replacement and late-admin takeover are green | `T/elections/fabric_primary.rs::three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remaining_when_its_mesh_is_lost`; `T/elections/late_authority.rs::a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births`; `T/elections/sticky_seat.rs::a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts` |
+| no stale amendment or parallel election canon | `crates/rdm-node/tests/leadership.rs::node_base_holds_no_comparator` |
 
 ### Repair / recovery
 
 | bullet | proving cell |
 |---|---|
-| held-member repair heals a partition while each side keeps neighbours | `T/gossip/backbone.rs::gossip_repairs_a_lost_push_and_isolation_authorizes_nothing` |
+| held-member repair heals a partition while each side retains neighbours | `T/gossip/backbone.rs::gossip_repairs_a_lost_push_and_isolation_authorizes_nothing` |
 | a failed rejoin is bounded and never marks Dead | `crates/rdm-transport/src/membership.rs::tests::a_failed_rejoin_is_retried_on_a_bounded_schedule`; `A/src/offline.rs::tests::true_offline_needs_two_rounds_with_no_path_at_least_one_floor_apart` |
-| the fabric seat's takeover commits before the lost mesh is re-created | `T/elections/fabric_takeover.rs::a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_dir_with_inherited_false` (the re-creation is admitted only on the committed takeover); `A/tests/drift_convergence.rs::a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary` (a fabric-primary that handed its seats off before it exited) |
-| recovery: identity → hydration → Pending Applied → reconcile → Ready → election | `T/mesh/mesh_recover.rs::a_lost_mesh_recovers_as_itself_under_the_same_build`; `T/mesh/mesh_create.rs::creating_a_mesh_hands_its_members_to_its_own_primary` |
-| a Pending executor claims no other mesh's or fabric-wide work | `A/src/executor.rs::tests::a_meshs_members_are_its_own_primarys_and_everything_else_the_fabric_primarys`; `A/tests/status_declarations.rs::mesh_and_fabric_declarations_follow_the_same_rules` |
-| cross-domain work never guesses a local PID/container | `A/tests/container_proof.rs::an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing` |
-| fabric authority and local recovery executor are distinct | `T/mesh/mesh_create.rs::creating_a_mesh_hands_its_members_to_its_own_primary` |
-| the accepted Build stays recoverable without older history | `T/build/accepted_topology.rs::the_build_fabric_build_id_names_is_the_one_accepted_topology` |
+| an unheard mesh is mesh investigation: a node-admin is created into the live mesh only on a carrier-edge-lost verdict | `T/mesh/peer_mesh_investigation.rs::a_peer_mesh_without_its_admins_gets_a_node_admin_only_on_a_carrier_edge_lost_verdict_after_two_probes`; `T/mesh/peer_mesh_investigation.rs::two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_each_creating_its_node_admin`; `T/mesh/admins_lost_mid_build.rs::a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier_edge_lost_verdict_and_the_build_completes` (under a Build in flight, which completes under its own id) |
+| an answering node-admin stops the investigation; members that stay silent are held | `T/mesh/peer_mesh_investigation.rs::an_alive_but_unheard_admin_answers_the_probe_and_the_investigation_stops`; `T/mesh/peer_mesh_investigation.rs::an_admin_that_answers_probe_two_stops_the_investigation_over_probe_ones_carrier_edge_lost`; `T/mesh/peer_mesh_investigation.rs::a_peer_mesh_whose_members_all_stay_silent_is_held_and_no_node_admin_is_created` |
+| a fully crashed mesh gets its node-admin only on exact provider exit proof | `A/tests/build_drive.rs::the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does`; `T/elections/fabric_takeover.rs::a_lost_meshs_node_admin_is_re_created_over_its_inherited_dir_only_with_exit_proof` |
+| both arms set degraded on the mesh and the fabric until the new mesh-primary reports | `A/tests/drift_convergence.rs::fully_crashed_mesh::the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it`; `T/mesh/peer_mesh_investigation.rs::a_joined_node_admin_whose_planned_member_has_not_checked_in_keeps_degraded_until_it_does`; `A/src/round.rs::tests::degraded_clears_only_on_the_current_primarys_report_after_the_decision` |
+| nobody publishes a mesh on its behalf; the new mesh-primary re-gossips once established | `crates/rdm-transport/tests/no_acting_publication.rs::the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh`; `T/mesh/peer_mesh_investigation.rs::elected_primary_holds_its_round_for_the_killed_primary_then_republishes_the_old_status` |
+| a node recovery proves the exact exit, then deletes and creates at the same path.name with a new node.id over the inherited data dir | `T/build/accepted_topology.rs::the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` (step 7); `A/tests/node_rows.rs::a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded` |
+| exact-runtime work in another provider domain never guesses a local PID or container | `A/tests/container_proof.rs::an_authority_in_another_docker_domain_refuses_the_locator_by_name_and_touches_nothing` |
+| fabric authority and the local executor are distinct | `T/mesh/mesh_create.rs::creating_a_mesh_hands_its_members_to_its_own_primary`; `A/src/executor.rs::tests::a_meshs_members_are_its_own_primarys_and_everything_else_the_fabric_primarys` |
+| nothing inside the mesh checks who sent a frame or call; an out-of-order gossip frame is ignored once, in the receive path | `tools/mesh-audit/tests/outcome_codes.rs::permission_denied_and_unauthenticated_are_never_constructed`; `crates/rdm-transport/tests/publisher_handover.rs::a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_the_receive_path` |
+| the current Build remains readable independently of older Build history | `T/build/accepted_topology.rs::the_current_build_read_from_the_build_facts_is_the_one_accepted_topology` |
+
+### Transport / Node RPC
+
+| bullet | proving cell |
+|---|---|
+| one canonical Iroh Endpoint per process | `crates/rdm-transport/tests/one_endpoint.rs::one_endpoint_and_one_socket_serve_every_call_on_one_connection` |
+| no second generic internal mTLS stack | `tools/mesh-audit/tests/dependency_rules.rs::rule6_a_member_depending_directly_on_a_tls_stack_fails_and_iroh_s_own_passes` |
+| no hidden N0 DNS/Pkarr product address authority | `tools/mesh-audit/tests/address_lookup.rs::dns_and_pkarr_lookups_are_refused_anywhere`; `tools/mesh-audit/tests/address_lookup.rs::the_rdm_tree_configures_no_n0_lookup_and_keeps_canonical_crates_off_the_legacy_plane` |
+| Direct/Proxy connections parity and target-preserving Node RPC composition | `crates/rdm-core/tests/connections.rs::the_route_prefers_a_valid_proxy_then_an_active_direct_then_none`; `crates/rdm-transport/tests/forward.rs::a_carried_call_reaches_the_target_once_and_the_target_sees_the_carrier`; `crates/rdm-transport/tests/context.rs::a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_hop` |
+| complete-send certainty, 499, pool supersession and carried execution | `crates/rdm-transport/tests/certainty.rs::reply_loss_after_a_complete_send_is_indeterminate`; `crates/rdm-transport/tests/certainty.rs::an_unfinished_send_resets_with_499_is_not_sent_and_is_never_dispatched`; `crates/rdm-transport/tests/pool.rs::late_superseded_dial_never_pools`; `crates/rdm-transport/tests/delivery.rs::a_carried_calls_resend_through_another_carrier_is_suppressed_by_its_origin_identity` |
+
+The downstream-binding subsection of §14 is proven in i141's own import manifest (rafka-v2), not here.
 
 ## Ops and contracts the export carries
 
@@ -113,7 +133,7 @@ All are RDM-owned (`crates/rdm-core/src/catalog.rs:82-87`: `0x1B` status, `0x1C`
 | item | why it is red | owner |
 |---|---|---|
 | the gates at the export SHA (fast, release, container proof, 30-minute seeded soak) | not run until the export SHA is chosen | e10.s2, the export |
-| `export_manifest_rejects_pending_or_unclassified_parity` and `export_manifest_certifies_one_candidate_with_all_owner_receipts`, job `i143-2790-export` | built and green as cells (`tools/mesh-audit/tests/export_certifier.rs`, not the issue-named file this row once named, which the name check refuses; the certifier `tools/mesh-audit/src/export.rs`, binary `export-manifest`); the job's receipt, like every owner's, is not taken until the export SHA, and `export-manifest --candidate <sha> --repo <rafka-v2>` certifies that SHA only when the parity scan is eligible and every owner's receipt (each job of the registry's `jobs` and `rshape_jobs`, 77 today) is `ok` there, written with no uncommitted path, with its artifacts still hashing | e10.s2 (#2790) |
+| `export_manifest_rejects_pending_or_unclassified_parity` and `export_manifest_certifies_one_candidate_with_all_owner_receipts`, job `i143-2790-export` | built and green as cells (`tools/mesh-audit/tests/export_certifier.rs`; the certifier `tools/mesh-audit/src/export.rs`, binary `export-manifest`); the job's receipt, like every owner's, is not taken until the export SHA. `export-manifest --candidate <sha> --repo <rafka-v2>` certifies that SHA only when the parity scan is eligible, every owner's receipt (each job of the registry's `jobs` and `rshape_jobs`, 77 today) is `ok` there, written with no uncommitted path, with its artifacts still hashing, and the fast and release gate logs at that SHA prove every cell of §14 above | e10.s2 (#2790) |
 | the Rafka-shaped qualification `i143-rshape-export-qualification` and its 20-node C1-C20 / S1-S5 matrix | not run at an export SHA | #2943, #2949 |
 | `docs/architecture/node-identity-and-state.md` legacy-section reconciliation and the other import-doc bullets of the issue | not audited in this pass | e10.s2 (#2790) |
 | multi-host provider eligibility | not claimed (see the Runtime section above) | no owner; the claim is withheld |
