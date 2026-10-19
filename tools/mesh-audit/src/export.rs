@@ -65,6 +65,8 @@ pub enum Refusal {
     ReceiptAtAnotherSha { job: String, source_sha: String },
     /// The receipt was written with uncommitted paths in its checkout.
     ReceiptDirty { job: String, dirty_paths: u64 },
+    /// A cell of an `ok` receipt was skipped by name: it proved nothing.
+    ReceiptCellSkipped { job: String, cell: String, skip: String },
     /// An artifact the receipt recorded is gone.
     ArtifactMissing { job: String, cell: String, path: String },
     /// An artifact the receipt recorded no longer hashes to its recorded sha256.
@@ -85,6 +87,7 @@ impl fmt::Display for Refusal {
             Self::ReceiptNotOk { job, outcome } => write!(f, "{job}: the receipt's outcome is {outcome}, not ok"),
             Self::ReceiptAtAnotherSha { job, source_sha } => write!(f, "{job}: the receipt was written at {source_sha}, not the candidate"),
             Self::ReceiptDirty { job, dirty_paths } => write!(f, "{job}: the receipt was written with {dirty_paths} uncommitted paths in its checkout"),
+            Self::ReceiptCellSkipped { job, cell, skip } => write!(f, "{job}/{cell}: skipped by name ({skip}); a skip proves nothing"),
             Self::ArtifactMissing { job, cell, path } => write!(f, "{job}/{cell}: artifact {path} is missing"),
             Self::ArtifactChanged { job, cell, path, recorded, now } => {
                 write!(f, "{job}/{cell}: artifact {path} hashes to {now}, the receipt recorded {recorded}")

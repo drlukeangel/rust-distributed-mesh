@@ -133,6 +133,16 @@ impl Estate {
 
     /// The runner's receipt for `job`: its one cell's artifact written and hashed.
     fn receipt(&self, job: &str, source_sha: &str, outcome: &str, dirty_paths: u64) {
+        self.receipt_of(job, source_sha, outcome, dirty_paths, None);
+    }
+
+    /// The runner's receipt for `job` whose one cell `skip`ped by name: the runner calls the job `ok`.
+    fn receipt_skipped(&self, job: &str, source_sha: &str, skip: &str) {
+        self.receipt_of(job, source_sha, "ok", 0, Some(skip));
+    }
+
+    fn receipt_of(&self, job: &str, source_sha: &str, outcome: &str, dirty_paths: u64, skip: Option<&str>) {
+        let cell_outcome = if skip.is_some() { "skipped" } else { outcome };
         let artifact = Self::artifact(job);
         let body = format!("{{\"cell\":\"cell\",\"job\":\"{job}\"}}");
         std::fs::create_dir_all(self.root.join(&artifact).parent().unwrap()).unwrap();
@@ -140,7 +150,7 @@ impl Estate {
         let receipt = json!({
             "job": job, "issue": 1, "layer": "unit", "source_sha": source_sha, "dirty_paths": dirty_paths,
             "started": "t0", "finished": "t1", "outcome": outcome,
-            "cells": [{ "name": "cell", "evidence": "cell", "outcome": outcome, "refusal": null, "skip": null,
+            "cells": [{ "name": "cell", "evidence": "cell", "outcome": cell_outcome, "refusal": null, "skip": skip,
                         "artifacts": { artifact.clone(): sha256(body.as_bytes()) } }],
         });
         let path = self.root.join(Self::receipt_path(job));
@@ -219,8 +229,10 @@ fn export_manifest_rejects_pending_or_unclassified_parity() {
 
 /// CONTRACT (PRD §14, e10.s2): one candidate is certified only with every owner's receipt: every job
 /// of the registry's `jobs` and `rshape_jobs` has an `ok` receipt at that SHA, written with no uncommitted path,
-/// whose artifacts still hash. A missing, red, other-SHA or dirty receipt, a changed or missing
-/// artifact, and a candidate that is not one exact SHA are each refused by name.
+/// whose artifacts still hash. A missing, red, other-SHA or dirty receipt, a cell skipped by name
+/// under an `ok` receipt (it proved nothing: §14 needs the container proof, and a cut cell skipped
+/// without `nft` cuts nothing), a changed or missing artifact, and a candidate that is not one exact
+/// SHA are each refused by name.
 #[test]
 fn export_manifest_certifies_one_candidate_with_all_owner_receipts() {
     let r = rafka();
@@ -274,6 +286,20 @@ fn export_manifest_certifies_one_candidate_with_all_owner_receipts() {
     let d = dirty.certify(CANDIDATE, &parity);
     assert_eq!(d.refusals, vec![Refusal::ReceiptDirty { job: "i143-rshape-a".into(), dirty_paths: 3 }]);
 
+    let skipped = Estate::new();
+    skipped.all_ok(CANDIDATE);
+    skipped.receipt_skipped("i143-2-process", CANDIDATE, "no-docker: the host has no reachable Docker domain");
+    let k = skipped.certify(CANDIDATE, &parity);
+    assert!(!k.eligible, "a cell skipped by name under an ok receipt proves nothing: {k:#?}");
+    assert_eq!(
+        k.refusals,
+        vec![Refusal::ReceiptCellSkipped {
+            job: "i143-2-process".into(),
+            cell: "cell".into(),
+            skip: "no-docker: the host has no reachable Docker domain".into(),
+        }]
+    );
+
     let moved = Estate::new();
     moved.all_ok(CANDIDATE);
     let changed = Estate::artifact("i143-1-unit");
@@ -309,6 +335,7 @@ fn export_manifest_certifies_one_candidate_with_all_owner_receipts() {
             "red": rr.refusals,
             "another_sha": s.refusals,
             "dirty": d.refusals,
+            "skipped": k.refusals,
             "artifacts": a.refusals,
         }),
     );
