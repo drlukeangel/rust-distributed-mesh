@@ -372,13 +372,17 @@ async fn provider_state_survives_a_confirmed_seat_handover_and_its_return() {
 /// What the operating system shows of one process, strace-free: its state letter, its pending signal
 /// masks (thread and process-wide, hex) and its CPU ticks; `None` once it is gone.
 /// One sample of a member after its terminate (`os_view`: state, pending and shared-pending signal
-/// masks, CPU): gone, or a zombie (`Z`, `X`) holding at most the terminate's SIGKILL pending until its
-/// parent reaps it.
+/// masks, CPU): gone; a zombie (`Z`, `X`) holding at most the terminate's SIGKILL pending until its
+/// parent reaps it; or, in any other state, the kernel killing it: the SIGKILL, and only it, pending.
 fn ended_by_its_terminate(sample: &Option<(char, String, String, u64)>) -> bool {
-    let only_kill = |mask: &str| u64::from_str_radix(mask, 16).is_ok_and(|bits| bits & !(1 << (libc::SIGKILL - 1)) == 0);
+    let kill = 1u64 << (libc::SIGKILL - 1);
+    let bits = |mask: &str| u64::from_str_radix(mask, 16).ok();
     match sample {
         None => true,
-        Some((st, sig, shd, _)) => matches!(st, 'Z' | 'X') && only_kill(sig) && only_kill(shd),
+        Some((st, sig, shd, _)) => match (bits(sig), bits(shd)) {
+            (Some(sig), Some(shd)) if (sig | shd) & !kill == 0 => matches!(st, 'Z' | 'X') || (sig | shd) == kill,
+            _ => false,
+        },
     }
 }
 
@@ -515,11 +519,17 @@ async fn the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate() {
     let bad: Vec<_> = kept_seen.iter().filter(|(_, _, v)| !matches!(v, Some((st, sig, shd, cpu)) if *st == 'T' && sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == kept_cpu)).collect();
     assert!(bad.is_empty() && suspended_still.is_some(), "{}: RDM never continued, signalled or ran the suspended member, through the hand-overs and the death of its launcher {launcher_name} (killed at {launcher_killed_at}): {bad:?}; at the end {suspended_still:?}", kept.0);
     // The deleted member: suspended, nothing pending, no CPU, until its terminate ends it. That SIGKILL is the
-    // only signal it is ever sent: from then on it is a zombie (`Z`, `X`) holding at most that SIGKILL pending
+    // only signal it is ever sent: from then on the kernel is killing it (that SIGKILL, and only it, pending,
+    // in whatever state the wake to die shows), then it is a zombie (`Z`, `X`) holding at most that SIGKILL
     // until its parent reaps it, or gone.
     let deleted_seen = before(&deleted.0, continued_at);
     let deleted_cpu = held_cpu(&deleted.0);
-    let ended_at = deleted_seen.iter().position(|(_, _, v)| !matches!(v, Some((st, ..)) if *st == 'T')).unwrap_or_else(|| panic!("{}: its terminate ended it: {deleted_seen:?}", deleted.0));
+    // Its end begins at the first sample that is not suspended with nothing pending: the kernel may
+    // still show it stopped with the SIGKILL pending before it wakes it to die.
+    let ended_at = deleted_seen
+        .iter()
+        .position(|(_, _, v)| !matches!(v, Some((st, sig, shd, _)) if *st == 'T' && sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty()))
+        .unwrap_or_else(|| panic!("{}: its terminate ended it: {deleted_seen:?}", deleted.0));
     let (held_part, ended) = deleted_seen.split_at(ended_at);
     assert!(held_part.iter().all(|(_, _, v)| matches!(v, Some((_, sig, shd, cpu)) if sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == deleted_cpu)), "{}: suspended, nothing pending and no CPU until its terminate: {held_part:?}", deleted.0);
     assert!(ended.iter().all(|(_, _, v)| ended_by_its_terminate(v)), "{}: ended by its terminate's SIGKILL alone, never running again: {ended:?}", deleted.0);
