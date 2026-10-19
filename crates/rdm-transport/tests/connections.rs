@@ -435,6 +435,138 @@ async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept()
     peer_b.shutdown().await;
 }
 
+/// A dialer that holds a raw QUIC connection on a registered ALPN and presents what the cell says.
+struct RawDialer {
+    ep: iroh::Endpoint,
+    birth: Birth,
+}
+
+impl RawDialer {
+    /// A raw endpoint; `known` registers its key with `acceptor` under a birth of its own.
+    async fn bind(name: &str, acceptor: &TestPeer, known: bool) -> Self {
+        let key = SecretKey::generate();
+        let ep = rdm_transport::endpoint::bind_with_alpns(key.clone(), "127.0.0.1:0".parse().unwrap(), &[ALPN_A.to_vec()]).await.unwrap();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let birth = Birth { name: name.parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        if known {
+            acceptor.resolver.insert(ResolvedNode {
+                node_id: birth.node_id.clone(),
+                name: birth.name.clone(),
+                endpoint_id: key.public(),
+                transport_addr: addr,
+                incarnation: birth.incarnation.clone(),
+            });
+        }
+        Self { ep, birth }
+    }
+
+    async fn connect(&self, to: &TestPeer) -> iroh::endpoint::Connection {
+        let addr = iroh::EndpointAddr::new(to.resolved.endpoint_id).with_ip_addr(to.resolved.transport_addr);
+        self.ep.connect(addr, ALPN_A).await.unwrap()
+    }
+}
+
+/// How the acceptor closed `conn`: its application code and reason, and when, from `from`.
+async fn closed_by_acceptor(conn: &iroh::endpoint::Connection, from: tokio::time::Instant) -> (u64, String, Duration) {
+    match conn.closed().await {
+        iroh::endpoint::ConnectionError::ApplicationClosed(frame) => {
+            (frame.error_code.into_inner(), String::from_utf8_lossy(&frame.reason).into_owned(), from.elapsed())
+        }
+        other => panic!("the acceptor closes with an application code, not {other:?}"),
+    }
+}
+
+/// CONTRACT (node-connections-admit.md, Failure and receipts; decided 2026-10-19): a dialer that
+/// presents nothing within one staleness floor of the accept is refused `no-credential`, the 412
+/// close carrying the reason, and an empty or undecodable presentation is `no-credential` at once;
+/// the `Refused` fact names the birth the acceptor's membership names for the dialer's key, and a
+/// key it cannot name gets the span and no row. A read the acceptor cannot complete (the dialer
+/// gone) is neither verdict: nothing is written.
+#[tokio::test]
+async fn a_dial_that_presents_nothing_within_the_floor_is_no_credential() {
+    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    let floor = rdm_core::cadence::staleness_floor();
+    let silent = RawDialer::bind("mesh1.rpc.11", &acceptor, true).await;
+    let stalled = RawDialer::bind("mesh1.rpc.12", &acceptor, true).await;
+    let empty = RawDialer::bind("mesh1.rpc.13", &acceptor, true).await;
+    let garbage = RawDialer::bind("mesh1.rpc.14", &acceptor, true).await;
+    let stranger = RawDialer::bind("mesh1.rpc.15", &acceptor, false).await;
+    let gone = RawDialer::bind("mesh1.rpc.16", &acceptor, true).await;
+
+    let silent_case = async {
+        let at = tokio::time::Instant::now();
+        let conn = silent.connect(&acceptor).await;
+        closed_by_acceptor(&conn, at).await
+    };
+    // A stream opened half a floor in, with one byte of a frame and nothing more: still one floor
+    // from the accept, never a floor from the stream.
+    let stalled_case = async {
+        let at = tokio::time::Instant::now();
+        let conn = stalled.connect(&acceptor).await;
+        tokio::time::sleep(floor / 2).await;
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        send.write_all(&[0u8]).await.unwrap();
+        closed_by_acceptor(&conn, at).await
+    };
+    let empty_case = async {
+        let at = tokio::time::Instant::now();
+        let conn = empty.connect(&acceptor).await;
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        send.finish().unwrap();
+        closed_by_acceptor(&conn, at).await
+    };
+    let garbage_case = async {
+        let at = tokio::time::Instant::now();
+        let conn = garbage.connect(&acceptor).await;
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        send.write_all(&[0, 0, 0, 3, 0xff, 0xff, 0xff]).await.unwrap();
+        send.finish().unwrap();
+        closed_by_acceptor(&conn, at).await
+    };
+    let stranger_case = async {
+        let at = tokio::time::Instant::now();
+        let conn = stranger.connect(&acceptor).await;
+        closed_by_acceptor(&conn, at).await
+    };
+    let gone_case = async {
+        let conn = gone.connect(&acceptor).await;
+        let (mut send, _recv) = conn.open_bi().await.unwrap();
+        send.write_all(&[0u8]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        conn.close(0u32.into(), b"the dialer left");
+    };
+    let (s, st, e, g, x, ()) = tokio::join!(silent_case, stalled_case, empty_case, garbage_case, stranger_case, gone_case);
+
+    for (case, (code, reason, _)) in [("silent", &s), ("stalled", &st), ("empty", &e), ("undecodable", &g), ("stranger", &x)] {
+        assert_eq!((*code, reason.as_str()), (412, "no-credential"), "{case}: the 412 close carries the reason");
+    }
+    assert!(s.2 < floor + floor / 3, "silent: refused one floor from the accept, at {:?}", s.2);
+    assert!(st.2 < floor + floor / 3, "stalled: one floor from the accept, never a floor from the stream: {:?}", st.2);
+    assert!(e.2 < floor / 2 && g.2 < floor / 2, "an empty or undecodable presentation is refused at once: {:?} {:?}", e.2, g.2);
+
+    tokio::time::sleep(floor + floor / 3).await;
+    let refused: Vec<_> = acceptor.sink.history().into_iter().filter(|r| r.state == ConnectionState::Refused).collect();
+    let mut named: Vec<(String, Option<String>)> = refused.iter().map(|r| (r.source.name.to_string(), r.reason.clone())).collect();
+    named.sort();
+    let no_credential = Some("no-credential".to_string());
+    assert_eq!(
+        named,
+        vec![
+            ("mesh1.rpc.11".to_string(), no_credential.clone()),
+            ("mesh1.rpc.12".to_string(), no_credential.clone()),
+            ("mesh1.rpc.13".to_string(), no_credential.clone()),
+            ("mesh1.rpc.14".to_string(), no_credential.clone()),
+        ],
+        "one Refused fact per named dialer, none for the stranger and none for the dialer that left"
+    );
+    for r in &refused {
+        assert_eq!(r.destination.name, acceptor.birth.name);
+        assert_eq!(r.alpn, ALPN_A);
+        assert_eq!(r.source.node_id, [&silent, &stalled, &empty, &garbage].iter().find(|d| d.birth.name == r.source.name).unwrap().birth.node_id);
+    }
+    acceptor.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_second_accept_owner_is_refused_by_the_type_system_and_split_is_once() {
     // Compile-time ownership invariants:
