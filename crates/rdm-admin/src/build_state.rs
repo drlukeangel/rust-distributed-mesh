@@ -1280,6 +1280,25 @@ struct FactLog {
     /// folds it outside this lock; a writer replaces it whole once the derivation ran over the facts
     /// it adds ([`publish`]).
     facts: Arc<Vec<BuildFact>>,
+    /// The indexes the birth reads answer from ([`BirthIndex`]), filled by [`FactLog::index`].
+    births: BirthIndex,
+    /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
+    /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
+    /// whatever order the facts arrive. Read newest first by [`current_build`].
+    accepted_order: std::collections::BTreeSet<(u64, BuildId)>,
+    /// Each Build's own facts, by their position in `facts`: a Build is read by folding its facts
+    /// alone ([`read_own`]).
+    by_build: std::collections::HashMap<BuildId, Vec<usize>>,
+}
+
+/// The indexes [`BuildStateAdapter::recovery_of`], [`BuildStateAdapter::mesh_deleted_of`],
+/// [`BuildStateAdapter::terminate_failures_of`] and [`BuildStateAdapter::exits_owed`] answer from,
+/// derived fact by fact in whatever order the facts arrive. Every adapter keeps one: RDM's file and
+/// memory adapters inside their log, an application's adapter beside its own store, filled by
+/// [`BirthIndex::index`] with every fact it appends, absorbs or reads back on open, so the four reads
+/// are point reads of it and never a fold of the fact log.
+#[derive(Debug, Default, Clone)]
+pub struct BirthIndex {
     /// The recovery index, in three parts the facts fill in whatever order they arrive (gossip and
     /// catch-up deliver in any order; once all three are held the answer is the same in every
     /// order, while a log that holds a recovery's deletion and its `Complete` but not yet its
@@ -1294,14 +1313,14 @@ struct FactLog {
     /// A birth is answered once its `NodeDeleted` and a `Complete` at that attempt or later are both
     /// held: of the recovery's `node.create:<path>` when a recovery of the birth was opened in that
     /// Build at or before the deletion's attempt (its `retire-node` is the recovery's node.delete),
-    /// else of the deleting operation itself. Filled by [`FactLog::index`], the one place a fact
+    /// else of the deleting operation itself. Filled by [`BirthIndex::index`], the one place a fact
     /// enters the log (own appends, absorbed facts and a journal's replay alike); forgetting a Build
     /// leaves all three, as it leaves the receipts.
     recoveries_opened: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(LaneOf, u32)>>,
     /// The mesh.delete completion index: every `MeshDeleted` receipt by the final primary its
     /// manifest names, to its Build, attempt and operation ([`BuildStateAdapter::mesh_deleted_of`]).
     mesh_deleted: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32, String)>>,
-    /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`FactLog::index`] in
+    /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`BirthIndex::index`] in
     /// whatever order the facts arrive: the exited birth each attempt opened with
     /// `AttemptAction::Recover` names, by attempt (the first open of an attempt)...
     exit_opens: std::collections::HashMap<LaneOf, BTreeMap<u32, (crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)>>,
@@ -1311,19 +1330,12 @@ struct FactLog {
     /// appended, as [`fold`] reads it.
     verdicts: std::collections::HashMap<LaneOf, BTreeMap<u32, Option<AttemptOutcome>>>,
     /// The index of [`BuildStateAdapter::terminate_failures_of`] (i144 R21), filled by
-    /// [`FactLog::index`] in whatever order the facts arrive: the stage of each attempt's Failed
+    /// [`BirthIndex::index`] in whatever order the facts arrive: the stage of each attempt's Failed
     /// `TerminateRuntime` receipt, by its lane and attempt (the first appended)...
     terminate_failures: std::collections::HashMap<(LaneOf, u32), TerminateStage>,
     /// ...and when each recovery attempt was opened, by its lane and attempt. Forgetting a Build
     /// leaves both, as it leaves the receipts: a person's forget never lifts a refused terminate.
     recovery_opened_at: std::collections::HashMap<(LaneOf, u32), u64>,
-    /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
-    /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
-    /// whatever order the facts arrive. Read newest first by [`current_build`].
-    accepted_order: std::collections::BTreeSet<(u64, BuildId)>,
-    /// Each Build's own facts, by their position in `facts`: a Build is read by folding its facts
-    /// alone ([`read_own`]).
-    by_build: std::collections::HashMap<BuildId, Vec<usize>>,
 }
 
 /// A lane of a Build, as the attempt-keyed indexes key it: the Build, and `None` for its fabric lane
@@ -1348,6 +1360,17 @@ impl FactLog {
     /// Fold `fact`, which sits at position `at` of the facts, into the indexes (own appends, absorbed
     /// facts and a journal's replay alike).
     fn index(&mut self, fact: &BuildFact, at: usize) {
+        self.births.index(fact);
+        if let BuildFact::Accepted(a) = fact {
+            self.accepted_order.insert((a.submitted_at_ms, a.build_id.clone()));
+        }
+        self.by_build.entry(fact.build_id().clone()).or_default().push(at);
+    }
+}
+
+impl BirthIndex {
+    /// Fold `fact` into the indexes. A fact folded twice changes nothing.
+    pub fn index(&mut self, fact: &BuildFact) {
         if let BuildFact::Step(s) = fact {
             let lane: LaneOf = (s.build_id.clone(), s.mesh.clone());
             if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
@@ -1388,12 +1411,8 @@ impl FactLog {
                     *held = Some(a.outcome.clone());
                 }
             }
-            BuildFact::Accepted(a) => {
-                self.accepted_order.insert((a.submitted_at_ms, a.build_id.clone()));
-            }
             _ => {}
         }
-        self.by_build.entry(fact.build_id().clone()).or_default().push(at);
     }
 
 
@@ -1402,7 +1421,7 @@ impl FactLog {
     /// ends its workflow: a recovery's `node.create:<path>` when a recovery of the birth was opened in
     /// that Build at or before the deletion's attempt, else the deleting operation itself. The first
     /// such attempt, with the deleting operation.
-    fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, Option<String>, u32, String)> {
+    pub fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, Option<String>, u32, String)> {
         let birth = (node_id.clone(), incarnation.clone());
         let opened = self.recoveries_opened.get(&birth);
         self.recovery_deletes
@@ -1422,7 +1441,7 @@ impl FactLog {
     /// The point read of [`BuildStateAdapter::terminate_failures_of`]: every recovery of the birth
     /// opened in any Build and lane whose `TerminateRuntime` failed with a stage, oldest first (by
     /// its opening time, then attempt).
-    fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Vec<FailedTerminate> {
+    pub fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Vec<FailedTerminate> {
         let Some(opened) = self.recoveries_opened.get(&(node_id.clone(), incarnation.clone())) else { return Vec::new() };
         let mut failed: Vec<FailedTerminate> = opened
             .iter()
@@ -1436,22 +1455,22 @@ impl FactLog {
     }
 
     /// The point read of [`BuildStateAdapter::mesh_deleted_of`]: the first attempt's.
-    fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32, String)> {
+    pub fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32, String)> {
         self.mesh_deleted.get(&(node_id.clone(), incarnation.clone()))?.iter().min_by_key(|(_, a, _)| *a).cloned()
     }
 
     /// The point read of [`BuildStateAdapter::exits_owed`]: per exited birth of `mesh`, the run its
     /// latest claimed `Recover` open in `build_id` began, up to the next attempt opened in the Build;
-    /// owed when the run's last claimed attempt holds the verdict `Failed` and [`FactLog::recovery_of`]
+    /// owed when the run's last claimed attempt holds the verdict `Failed` and [`BirthIndex::recovery_of`]
     /// does not answer the birth. An open with no claim (no entry in `verdicts`) starts no run.
-    fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Vec<OwedExit> {
+    pub fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Vec<OwedExit> {
         // The fabric lane's recoveries of the mesh's births, and the mesh's own drift lane's.
         let mut owed: Vec<OwedExit> = [None, Some(mesh.to_string())].into_iter().flat_map(|lane| self.exits_owed_in(&(build_id.clone(), lane), mesh)).collect();
         owed.sort_by(|a, b| a.path.cmp(&b.path).then(a.attempt.cmp(&b.attempt)));
         owed
     }
 
-    /// [`FactLog::exits_owed`] in one lane of the Build.
+    /// [`BirthIndex::exits_owed`] in one lane of the Build.
     fn exits_owed_in(&self, lane: &LaneOf, mesh: &str) -> Vec<OwedExit> {
         let Some(exit_opens) = self.exit_opens.get(lane) else { return Vec::new() };
         let claimed = |attempt: &u32| self.verdicts.get(lane).is_some_and(|v| v.contains_key(attempt));
@@ -1914,19 +1933,19 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
-        Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
+        Ok(self.log.lock().unwrap().births.recovery_of(path, node_id, incarnation))
     }
 
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
-        Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
+        Ok(self.log.lock().unwrap().births.mesh_deleted_of(node_id, incarnation))
     }
 
     async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<FailedTerminate>, BuildStateError> {
-        Ok(self.log.lock().unwrap().terminate_failures_of(node_id, incarnation))
+        Ok(self.log.lock().unwrap().births.terminate_failures_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
-        Ok(self.log.lock().unwrap().exits_owed(build_id, mesh))
+        Ok(self.log.lock().unwrap().births.exits_owed(build_id, mesh))
     }
 
     async fn seal_moved(&self, moved: &crate::fabric_storage::SeatMove, _by: &rdm_core::handover::HandoverBirth) -> Result<(), BuildStateError> {
@@ -2716,22 +2735,22 @@ impl BuildStateAdapter for FileJournal {
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.sync_for_read("recovery_of").await?;
-        Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
+        Ok(self.log.lock().unwrap().births.recovery_of(path, node_id, incarnation))
     }
 
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         self.sync_for_read("mesh_deleted_of").await?;
-        Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
+        Ok(self.log.lock().unwrap().births.mesh_deleted_of(node_id, incarnation))
     }
 
     async fn terminate_failures_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Vec<FailedTerminate>, BuildStateError> {
         self.sync_for_read("terminate_failures_of").await?;
-        Ok(self.log.lock().unwrap().terminate_failures_of(node_id, incarnation))
+        Ok(self.log.lock().unwrap().births.terminate_failures_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
         self.sync_for_read("exits_owed").await?;
-        Ok(self.log.lock().unwrap().exits_owed(build_id, mesh))
+        Ok(self.log.lock().unwrap().births.exits_owed(build_id, mesh))
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
@@ -3342,6 +3361,12 @@ mod tests {
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "node.delete", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
+        // An application's adapter keeps its own index beside its store, fed every fact it holds.
+        let mut index = BirthIndex::default();
+        for fact in [BuildFact::Opened(opened("b1", 2)), BuildFact::Step(receipt("b1", 2, "node.delete", "Complete")), BuildFact::Step(receipt("b1", 2, "node.create", "Complete")), BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "node.delete", "NodeDeleted"))] {
+            index.index(&fact);
+        }
+        assert_eq!(index.recovery_of(&path, &node_id, &incarnation), Some((BuildId::parse(&rdm_core::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "a standalone index, fed in any order and one fact twice, answers as the adapter does");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
