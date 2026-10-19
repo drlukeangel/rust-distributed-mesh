@@ -106,6 +106,19 @@ async fn rig_before_ready(tag: &str, carry: bool, before_ready: Option<std::sync
     .await
     .expect("the node never reached ReadyForTraffic at its primary");
 
+    // Only the carry's delta is in flight once the carry starts: the node first holds its primary's
+    // projection naming it ReadyForTraffic, so no later delta reaches it ahead of an earlier one. A delta
+    // ahead of its predecessor is a gap, and the top-up's topology read installs the primary's whole
+    // projection into the node's book, the commander included (gossip.md §3.3).
+    let own_key = book.get(launch.node_id.as_str()).map(|(d, _)| d.node.endpoint_id.0.clone()).expect("the primary holds the node");
+    tokio::time::timeout(NEVER, async {
+        while running.membership.projected_member_at(&own_key).is_none_or(|d| d.status != MemberStatus::ReadyForTraffic) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the node never installed its primary's projection naming it ReadyForTraffic");
+
     // From here on the primary carries the commander in the member projection it publishes (when
     // `carry`); the commander itself says nothing on the mesh channel.
     let commander_key = commander.seed.0.clone();
