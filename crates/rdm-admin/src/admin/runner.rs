@@ -1003,20 +1003,7 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
                 self.create_over(&*builds, build_id, attempt, node, from).instrument(span).await
             }
-            BuildOperation::CreateNode { node, over: None } => {
-                let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt);
-                async {
-                    // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it
-                    // has joined its mesh, the fabric primary applies MeshStatus::Pending at that exact
-                    // birth, before it is asked to be Ready; only with that certainty does the shape
-                    // proceed (e4.s11).
-                    let first_admin = self.topology.read().await.first_admin_of(node);
-                    let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
-                    self.create(build_id, attempt, node, before_ready).await
-                }
-                .instrument(span)
-                .await
-            }
+            BuildOperation::CreateNode { node, over: None } => self.create_node(build_id, attempt, node).await,
             BuildOperation::RestartNode { node } => {
                 // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
                 // proven exited is node recovery's (node-recovery.md).
@@ -1054,6 +1041,23 @@ impl AdminRunner {
         ended
     }
 
+    /// A Build's node.create of `node` with no exited birth (`CreateNode { over: None }`, and a recipe's
+    /// create step).
+    async fn create_node(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<(), crate::executor::RunEnd> {
+        use tracing::Instrument;
+        let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id.log(), node = %node, attempt);
+        async {
+            // A mesh's first admin (a new mesh, or a mesh whose admins were all lost): once it has
+            // joined its mesh, the fabric primary applies MeshStatus::Pending at that exact birth,
+            // before it is asked to be Ready; only with that certainty does the shape proceed (e4.s11).
+            let first_admin = self.topology.read().await.first_admin_of(node);
+            let before_ready = if first_admin { Some(self.mesh_state_hook(node, self.held_mesh_state(&node.mesh))?) } else { None };
+            self.create(build_id, attempt, node, before_ready).await
+        }
+        .instrument(span)
+        .await
+    }
+
     /// One step of a recipe (`BuildChange::Recipe`; lifecycles/node-replace.md): the op it names, run
     /// as that op's own workflow on the exact birth the step acts on, the one it is fenced to, or for a
     /// node an earlier step of the recipe created, the birth this executor holds at the step's path.
@@ -1066,7 +1070,7 @@ impl AdminRunner {
         let node = step.node();
         let key = crate::build::recipe_step_key(step);
         if let S::Create { node } = step {
-            return self.run_op(build_id, lane, attempt, &BuildOperation::CreateNode { node: node.clone(), over: None }).await;
+            return self.create_node(build_id, attempt, node).await;
         }
         let birth = match birth {
             Some(b) => b.clone(),
