@@ -81,6 +81,13 @@ pub struct IssuingMaterial {
     pub cert: String,
 }
 
+impl IssuingMaterial {
+    /// The material of `key`, as a launch writes it.
+    pub fn of(key: &crate::certs::IssuingKey) -> Self {
+        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()) }
+    }
+}
+
 /// Everything a node needs to come up as the exact node node-admin allocated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {

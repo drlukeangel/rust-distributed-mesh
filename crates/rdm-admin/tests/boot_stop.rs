@@ -17,6 +17,9 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
     std::fs::create_dir_all(&dir).unwrap();
     let data_dir = std::env::temp_dir().join(format!("rdm-boot-stop-{}", NodeId::mint()));
     std::fs::create_dir_all(&data_dir).unwrap();
+    // A launched admin holds its mesh's issuing material, as every launch writes it.
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let issuing = rdm_core::certs::IssuingKey::mint(&rdm_core::certs::mint_key(), "mesh1", rdm_core::certs::ISSUING_CERT_TTL_SECS, now_ms);
     let launch = Launch {
         fabric: "fabric1".into(),
         fabric_id: FabricId::mint(),
@@ -31,7 +34,7 @@ fn a_node_admin_stopped_while_it_boots_exits_through_its_telemetry_drain() {
         data_dir: data_dir.clone(),
         store_dir: data_dir.clone(),
         mesh_id: None,
-        issuing: None,
+        issuing: Some(rdm_core::launch::IssuingMaterial::of(&issuing)),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"))

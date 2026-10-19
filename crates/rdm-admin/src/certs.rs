@@ -23,7 +23,7 @@
 
 pub use rdm_core::certs::{BirthIdentity, CertError, IssueFailure};
 use rdm_core::certs::{IssuingKey, SigningKey, VerifyingKey};
-use rdm_core::launch::{IssuingMaterial, SecretHex};
+use rdm_core::launch::IssuingMaterial;
 use rdm_transport::clock::RafkaTime;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -267,8 +267,13 @@ impl CertIssuer {
             return Ok(None);
         }
         let now_ms = self.now("a mesh's issuing material")?;
-        let key = self.issuer_for(mesh, now_ms)?;
-        Ok(Some(IssuingMaterial { key: SecretHex(rdm_core::certs::encode_key(key.secret())), cert: rdm_core::certs::encode_issuing_cert(key.cert()) }))
+        let key = self.issuer_for(mesh, now_ms).inspect_err(|refused| {
+            if let IssueFailure::Refused { error, detail } = refused {
+                tracing::info_span!("rdm.node_admin.cert.reject.via-refused", mesh, refusal = %error, detail = %detail)
+                    .in_scope(|| tracing::warn!("the mesh's issuing material is refused: the admin is not launched"));
+            }
+        })?;
+        Ok(Some(IssuingMaterial::of(&key)))
     }
 }
 
