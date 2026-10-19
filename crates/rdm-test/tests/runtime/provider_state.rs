@@ -207,3 +207,289 @@ async fn an_explicit_delete_of_an_os_stopped_birth_skips_the_stop_by_name_and_te
     println!("os-stopped delete: http://192.168.68.99:16687/trace/{trace}");
     estate.record_trace_url(&trace);
 }
+
+// ---- i144 e4: the provider state across a seat hand-over and an admin's re-birth ----
+
+/// mesh1 {1 node-admin, 1 rpc node}, mesh2 {2 node-admins, 2 rpc nodes}, settled, the initial fabric
+/// first ready for traffic. mesh2 holds no fabric seat: its seat moves between its own two admins.
+async fn two_meshes(test: &str, env: &[(&str, &str)]) -> Estate {
+    let estate = Estate::bootstrap_with_env(owner(test), "fabric1", "mesh1", env).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1), ("mesh2", 2, 2)]).await;
+    estate.settled_views(&[("mesh1", 1, 1), ("mesh2", 2, 2)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    estate
+}
+
+/// The primary admin of `mesh` and its other admin, as `node.get` lists them.
+async fn admins_of(estate: &Estate, mesh: &str) -> (String, String) {
+    let nodes = estate.node_values().await;
+    let admins: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "node_admin").collect();
+    let primary = admins.iter().find(|n| n["is_primary"] == true).map(|n| s(&n["name"])).unwrap_or_else(|| panic!("{mesh} lists a primary admin: {admins:?}"));
+    let other = admins.iter().map(|n| s(&n["name"])).find(|n| *n != primary).unwrap_or_else(|| panic!("{mesh} lists a second admin: {admins:?}"));
+    (primary, other)
+}
+
+/// `mesh`'s rpc members, each with its exact runtime suspended by the operating system (SIGSTOP,
+/// acknowledged `T`) and recorded `os-stopped` on `node.get` by the mesh's primary.
+async fn suspended_members(estate: &Estate, mesh: &str) -> Vec<(String, Value, ExactRuntime)> {
+    let names: Vec<String> = estate.node_values().await.into_iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node").map(|n| s(&n["name"])).collect();
+    let mut out = Vec::new();
+    for name in names {
+        let dir = estate.data_dir(&name).await;
+        let rt = ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{name}: no exact runtime published in {dir}: {r:?}"));
+        let before = estate.node_value(&name).await;
+        let held = rt.apply(Fault::Stop).expect("the exact runtime is suspended");
+        assert_eq!(held.state_after, Some('T'), "{name}: the OS holds the runtime: {held:?}");
+        out.push((name, before, rt));
+    }
+    for (name, _, _) in &out {
+        node_where(estate, name, &format!("{name} lists os_stopped on node.get"), crate::node_recovery_due(), |n| n["os_stopped"]["since"].as_u64().unwrap_or(0) > 0).await;
+    }
+    out
+}
+
+/// Every span the process `pid` wrote: the evidence files are named `<service>.<pid>-<pid namespace>`.
+fn spans_of(estate: &Estate, pid: u64) -> Vec<Value> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&estate.evidence).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.ends_with(".spans.jsonl") && name.contains(&format!(".{pid}-")) {
+            out.extend(std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
+        }
+    }
+    out
+}
+
+/// `node.restart` of the admin `admin`, completed: a seat holder's seat moves first (node.primary.update),
+/// then its own stop and start, the same birth on the same process.
+async fn restart(estate: &Estate, admin: &str) {
+    let path: rdm_core::PathName = admin.parse().unwrap();
+    let mut stream = estate.nodes_obj().await.restart(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {admin}: {e}"));
+    Estate::complete(&mut stream).await;
+}
+
+/// The admin that holds `mesh`'s seat once it is `want`, as `node.get` lists it.
+async fn seat_with(estate: &Estate, mesh: &str, want: &str) {
+    wait_for(&format!("{want} holds {mesh}'s seat"), Duration::from_secs(60), || async {
+        estate.node_values().await.into_iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true && n["name"] == want).map(|_| ())
+    })
+    .await;
+}
+
+/// The first inspection `admin` (spans `own`) made of each member's exact birth while it held the seat, from
+/// `from_ns` until `until_ns`, and its `via-os-stopped` revalidation of the row another admin wrote: verdict
+/// `os-stopped`, outcome `revalidated`. Panics naming what is missing; the inspection spans, for the flame.
+fn revalidated_by(own: &[Value], admin: &str, members: &[(String, Value, ExactRuntime)], (from_ns, until_ns): (u64, u64), when: &str) -> Vec<Value> {
+    let mut firsts = Vec::new();
+    for (name, before, _) in members {
+        let mine = |n: &str| -> Vec<&Value> { named(own, n).into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"] && (from_ns..until_ns).contains(&start_ns(sp))).collect() };
+        let first = mine("rdm.node_admin.node.resolve.via-provider-inspection").into_iter().filter(|sp| attr(sp, "inspector") == admin).min_by_key(|sp| start_ns(sp)).cloned().unwrap_or_else(|| panic!("{when}: {admin} never inspected {name}'s exact runtime"));
+        assert_eq!(attr(&first, "verdict"), "os-stopped", "{when}: {admin}'s first inspection of {name} reads it os-stopped, from the provider state it took over: {first}");
+        let facts: Vec<String> = mine("rdm.node_admin.node.update.via-os-stopped").iter().map(|sp| attr(sp, "outcome")).collect();
+        assert_eq!(facts, vec!["revalidated".to_string()], "{when}: {admin} confirms {name}'s os-stopped row, which another admin wrote, once, by its own inspection: {facts:?}");
+        firsts.push(first);
+    }
+    firsts
+}
+
+/// CONTRACT (i144 e4, the canary; deployment-provider.md §2, §2.5 "A new authority revalidates the
+/// stored fact with its own inspection", §2.8; node-primary-update.md steps 5-8): mesh2's two rpc
+/// members are held suspended by the operating system and recorded `os-stopped` by mesh2's primary P.
+/// P is restarted: `node.primary.update` moves mesh2's seat to its other admin S before P stops. S
+/// takes the provider state over: its first inspection of each member's exact runtime reads it
+/// `os-stopped`, and it revalidates each member's row once (`via-os-stopped` `revalidated`), the row's
+/// `since` kept. S is then restarted and the seat returns to P, which inspects each member again and
+/// revalidates its row once more. Continued, both members run on as the same births, their rows
+/// cleared. Must NOT happen: a member inspected `unknown` or `unavailable` by a successor (provider
+/// state lost), a new `since`, a hold, a `TerminateRuntime`, a recovery or a new birth of a member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn provider_state_survives_a_confirmed_seat_handover_and_its_return() {
+    let test = "provider_state_survives_a_confirmed_seat_handover_and_its_return";
+    let mut estate = two_meshes(test, &[]).await;
+    let (p, other) = admins_of(&estate, "mesh2").await;
+    let (p_pid, s_pid) = (estate.pid_of(&p).await, estate.pid_of(&other).await);
+    let members = suspended_members(&estate, "mesh2").await;
+    let mut since = Vec::new();
+    for (name, _, _) in &members {
+        since.push(estate.node_value(name).await["os_stopped"]["since"].as_u64().unwrap());
+    }
+
+    // P's seat moves to S before P stops; S's tick inspects each silent member and revalidates its row.
+    let moved_at = now_ns();
+    restart(&estate, &p).await;
+    seat_with(&estate, "mesh2", &other).await;
+    let floor = rdm_transport::membership::staleness_floor();
+    wait_for(&format!("{other} revalidates every member's os-stopped row"), crate::node_recovery_due() + floor, || async {
+        let own = spans_of(&estate, s_pid);
+        members.iter().all(|(_, b, _)| named(&own, "rdm.node_admin.node.update.via-os-stopped").iter().any(|sp| sp["attributes"]["node_id"] == b["node_id"] && attr(sp, "outcome") == "revalidated" && start_ns(sp) >= moved_at)).then_some(())
+    })
+    .await;
+    // The seat returns: S is restarted, and P, a living admin of the mesh, takes it again.
+    let returned_at = now_ns();
+    restart(&estate, &other).await;
+    seat_with(&estate, "mesh2", &p).await;
+    wait_for(&format!("{p} revalidates every member's os-stopped row on the seat's return"), crate::node_recovery_due() + floor, || async {
+        let own = spans_of(&estate, p_pid);
+        members.iter().all(|(_, b, _)| named(&own, "rdm.node_admin.node.update.via-os-stopped").iter().any(|sp| sp["attributes"]["node_id"] == b["node_id"] && attr(sp, "outcome") == "revalidated" && start_ns(sp) >= returned_at)).then_some(())
+    })
+    .await;
+    for ((name, before, _), since) in members.iter().zip(&since) {
+        let held = estate.node_value(name).await;
+        assert_eq!((&held["node_id"], &held["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{name}: the same birth across both hand-overs: {held}");
+        assert_eq!(held["os_stopped"]["since"].as_u64(), Some(*since), "{name}: the row's since is kept across both hand-overs: {held}");
+        assert!(held["held_running"].is_null(), "{name}: nothing is held for an os-stopped runtime: {held}");
+    }
+    let continued_at = now_ns();
+    for (_, _, rt) in &members {
+        rt.apply(Fault::Continue).expect("the runtime is continued");
+    }
+    for (name, before, _) in &members {
+        let back = node_where(&estate, name, &format!("{name} back ready with os_stopped cleared"), floor * 4 + Duration::from_secs(15), |n| n["status"] == "ready-for-traffic" && n["os_stopped"].is_null()).await;
+        assert_eq!((&back["node_id"], &back["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{name}: the same birth runs on: {back}");
+    }
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let s_first = revalidated_by(&spans_of(&estate, s_pid), &other, &members, (moved_at, returned_at), "the hand-over");
+    let p_first = revalidated_by(&spans_of(&estate, p_pid), &p, &members, (returned_at, continued_at), "the return");
+    for (name, before, _) in &members {
+        let of_birth = |n: &str| -> Vec<&Value> { named(&spans, n).into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect() };
+        assert!(of_birth("rdm.node_admin.node.resolve.via-provider-inspection").iter().all(|sp| !["unknown", "unavailable"].contains(&attr(sp, "verdict").as_str())), "{name}: every inspection reads the exact runtime: {:#?}", of_birth("rdm.node_admin.node.resolve.via-provider-inspection"));
+        // Once continued, an inspection that reads a member running before its digest returns opens the ordinary
+        // hold, which the returning digest clears: only a hold while it was suspended is a defect.
+        assert!(of_birth("rdm.node_admin.node.update.via-held-running").iter().all(|sp| start_ns(sp) >= continued_at), "{name}: no hold for an os-stopped runtime");
+        assert!(of_birth("rdm.node_admin.build.update.via-node-recovery").is_empty(), "{name}: no recovery");
+        assert!(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().all(|sp| !(attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == *name)), "{name}: no TerminateRuntime");
+    }
+    for (when, first) in [("hand-over", &s_first), ("return", &p_first)] {
+        for sp in first {
+            println!("{when}: {} first inspects {}: http://192.168.68.99:16687/trace/{}", attr(sp, "inspector"), attr(sp, "node"), s(&sp["trace_id"]));
+        }
+    }
+    estate.record_trace_url(&s(&s_first[0]["trace_id"]));
+}
+
+/// What the operating system shows of one process, strace-free: its state letter, its pending signal
+/// masks (thread and process-wide, hex) and its CPU ticks; `None` once it is gone.
+fn os_view(pid: u32) -> Option<(char, String, String, u64)> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string()).unwrap_or_default();
+    let state = field("State:").chars().next()?;
+    Some((state, field("SigPnd:"), field("ShdPnd:"), rdm_test::process_faults::cpu_ticks(pid)))
+}
+
+/// A sampler of suspended runtimes: every 20 ms, every change of what the operating system shows of each.
+struct Watch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    seen: std::thread::JoinHandle<Vec<(u64, String, Option<(char, String, String, u64)>)>>,
+}
+
+impl Watch {
+    fn start(runtimes: Vec<(String, u32)>) -> Watch {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let seen = std::thread::spawn(move || {
+            let mut last: std::collections::BTreeMap<String, Option<(char, String, String, u64)>> = Default::default();
+            let mut out = Vec::new();
+            while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+                for (name, pid) in &runtimes {
+                    let now = os_view(*pid);
+                    if last.get(name) != Some(&now) {
+                        out.push((now_ns(), name.clone(), now.clone()));
+                        last.insert(name.clone(), now);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            out
+        });
+        Watch { stop, seen }
+    }
+
+    fn end(self) -> Vec<(u64, String, Option<(char, String, String, u64)>)> {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.seen.join().unwrap()
+    }
+}
+
+/// The parent of process `pid`, as the operating system shows it.
+fn parent_of(pid: u32) -> Option<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?.lines().find_map(|l| l.strip_prefix("PPid:")).and_then(|v| v.trim().parse().ok())
+}
+
+/// CONTRACT (i144 e4; deployment-provider.md §2.5: the provider signals no runtime the operating system
+/// holds suspended outside a terminate, §2.7; node-delete.md "OS-suspended target"; R23): the provider sends
+/// a runtime no signal but its stop ladder and its terminate. mesh2's two rpc members are held suspended
+/// (SIGSTOP) and watched, strace-free, from outside RDM: every 20 ms their state letter, their pending
+/// signal masks and their CPU ticks. Through a seat hand-over and its return, through the death of the
+/// admin that launched them, and through RDM's inspections on every tick, neither member is continued,
+/// sent a signal or run: it stays `T`, nothing pending, no CPU. Then an explicit `node.delete` of one
+/// member ends it by its terminate alone (`TerminateRuntime`, `Immediate`): it goes from `T` to gone with no
+/// signal pending before and no CPU. The other is continued by the cell, never by RDM. Must NOT happen: a
+/// member's state other than `T` before the cell continues it or its terminate ends it, a pending signal
+/// (SIGTERM, SIGHUP, SIGCONT), CPU used while suspended, or a `TerminateRuntime` of the member not deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate() {
+    let test = "the_provider_sends_no_signal_but_the_stop_ladder_and_the_terminate";
+    let mut estate = two_meshes(test, &[]).await;
+    let (p, other) = admins_of(&estate, "mesh2").await;
+    let members = suspended_members(&estate, "mesh2").await;
+    let watch = Watch::start(members.iter().map(|(name, _, rt)| (name.clone(), rt.pid)).collect());
+    let floor = rdm_transport::membership::staleness_floor();
+    // The member deleted is the one that holds no cohort seat: a seat holder's delete first moves its seat, and
+    // the other member, suspended, is no live secondary to take it.
+    let deleted_at = members.iter().position(|(_, b, _)| b["is_primary"] != true).expect("a member that holds no seat");
+    let (deleted, kept) = (&members[deleted_at], &members[1 - deleted_at]);
+
+    // The terminate: an explicit delete of one suspended member ends it with no graceful wait.
+    let path: rdm_core::PathName = deleted.0.parse().unwrap();
+    let mut removal = estate.nodes_obj().await.delete(&path).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of the os-stopped {}: {e}", deleted.0));
+    let delete_build = Estate::complete(&mut removal).await.build_id.to_string();
+    assert!(deleted.2.check().is_err(), "{}: the suspended runtime is gone after its terminate", deleted.0);
+    // A seat hand-over and its return, each successor's tick inspecting the suspended member.
+    restart(&estate, &p).await;
+    seat_with(&estate, "mesh2", &other).await;
+    tokio::time::sleep(crate::node_recovery_due()).await;
+    restart(&estate, &other).await;
+    seat_with(&estate, "mesh2", &p).await;
+    tokio::time::sleep(crate::node_recovery_due()).await;
+    // The admin that launched the member dies.
+    let launcher = parent_of(kept.2.pid).unwrap_or_else(|| panic!("{}: the runtime has a parent", kept.0));
+    let launcher_name = {
+        let mut name = None;
+        for n in estate.node_values().await.into_iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == "mesh2") {
+            if estate.pid_of(&s(&n["name"])).await == u64::from(launcher) {
+                name = Some(s(&n["name"]));
+            }
+        }
+        name.unwrap_or_else(|| panic!("{}: its parent {launcher} is an admin of the estate", kept.0))
+    };
+    let launcher_killed_at = now_ns();
+    estate.kill_node(&launcher_name).await;
+    tokio::time::sleep(floor).await;
+    let suspended_still = os_view(kept.2.pid);
+    let continued_at = now_ns();
+    if suspended_still.is_some() {
+        kept.2.apply(Fault::Continue).expect("the cell continues the member it suspended");
+    }
+    let seen = watch.end();
+    estate.stop().await;
+    let spans = estate.spans();
+
+    let before = |name: &str, until: u64| -> Vec<&(u64, String, Option<(char, String, String, u64)>)> { seen.iter().filter(|(t, n, _)| n == name && *t < until).collect() };
+    let held_cpu = |name: &str| seen.iter().find(|(_, n, v)| n == name && v.is_some()).and_then(|(_, _, v)| v.as_ref().map(|v| v.3));
+    // The kept member: suspended, nothing pending, no CPU, until the cell continued it.
+    let kept_seen = before(&kept.0, continued_at);
+    let kept_cpu = held_cpu(&kept.0);
+    let bad: Vec<_> = kept_seen.iter().filter(|(_, _, v)| !matches!(v, Some((st, sig, shd, cpu)) if *st == 'T' && sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == kept_cpu)).collect();
+    assert!(bad.is_empty() && suspended_still.is_some(), "{}: RDM never continued, signalled or ran the suspended member, through the hand-overs and the death of its launcher {launcher_name} (killed at {launcher_killed_at}): {bad:?}; at the end {suspended_still:?}", kept.0);
+    // The deleted member: suspended, nothing pending, no CPU, then gone: its terminate alone ended it.
+    let deleted_seen = before(&deleted.0, continued_at);
+    let deleted_cpu = held_cpu(&deleted.0);
+    let alive: Vec<_> = deleted_seen.iter().filter(|(_, _, v)| v.is_some()).collect();
+    assert!(alive.iter().all(|(_, _, v)| matches!(v, Some((st, sig, shd, cpu)) if *st == 'T' && sig.trim_start_matches('0').is_empty() && shd.trim_start_matches('0').is_empty() && Some(*cpu) == deleted_cpu)), "{}: suspended, nothing pending and no CPU until its terminate: {alive:?}", deleted.0);
+    assert!(deleted_seen.last().is_some_and(|(_, _, v)| v.is_none()), "{}: gone after its terminate: {deleted_seen:?}", deleted.0);
+    let terminates: Vec<(String, String)> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "step") == "TerminateRuntime" && members.iter().any(|(n, _, _)| attr(sp, "node") == *n)).map(|sp| (attr(sp, "node"), attr(sp, "build_id"))).collect();
+    assert!(terminates.len() == 1 && terminates[0].0 == deleted.0 && same_build(named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().find(|sp| attr(sp, "step") == "TerminateRuntime" && attr(sp, "node") == deleted.0).unwrap(), &delete_build), "one TerminateRuntime of a member, the delete's of {}: {terminates:?}", deleted.0);
+    println!("watched {} changes of the suspended members", seen.len());
+}
