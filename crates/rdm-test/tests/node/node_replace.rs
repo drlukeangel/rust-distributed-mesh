@@ -1314,7 +1314,9 @@ async fn a_hung_member_held_past_the_hold_is_terminated_and_recovered() {
 /// surfaced on `node.get` and `mesh2.admin.2` does NOT take the seat. When the hold expires, the
 /// fabric-primary submits the recovery Build with `TerminateRuntime` in the fabric lane, records
 /// `exit_proof`, R-EL1 seats `mesh2.admin.2` on the exit proof, and `mesh2.admin.1` recovers as a new
-/// birth.
+/// birth, created by `mesh2.admin.2` (commands go down: the fabric-primary claims the create on its own
+/// log and the seated mesh-primary executes it, mesh-investigation.md step 6). Must NOT happen: the
+/// fabric-primary creating mesh2's new birth itself, or a second recovery of the hung birth in mesh2's lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_the_fabric_primary() {
     let (mut estate, birth_build) = born_at(
@@ -1389,7 +1391,7 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
     // the hung birth.
     let created_rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row")
         .into_iter()
-        .filter(|sp| sp["attributes"]["operation"] == format!("node.create:{mp_name}").as_str() && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
+        .filter(|sp| sp["attributes"]["operation"] == format!("node.create:{mp_name}").as_str() && sp["attributes"]["node_id"] == after["node_id"] && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
         .collect();
     assert!(!created_rows.is_empty() && created_rows.iter().all(|sp| sp["attributes"]["node"] == standby.as_str()), "the new birth at {mp_name} is created by {standby}, mesh2's seated primary, never by {fp}: {created_rows:#?}");
     let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == mp["node_id"]).collect();

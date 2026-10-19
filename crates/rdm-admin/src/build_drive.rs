@@ -1393,10 +1393,8 @@ impl DriveEnv {
     async fn claim_next(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<PathName>, crashed: &HashSet<String>) -> Result<(u32, PathName, CallContext), DriveEnd> {
         let id = &drive.build_id;
         let attempt = p.attempt + 1;
-        let first = {
-            let t = self.topology.read().await.clone();
-            left(drive, p, &t).into_iter().next()
-        };
+        let view = self.topology.read().await.clone();
+        let first = left(drive, p, &view).into_iter().next();
         if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op, crashed).map(|f| (op, f))) {
             return Err(self.stop_at_fence(me, drive, attempt, op, f, crashed));
         }
@@ -1410,7 +1408,20 @@ impl DriveEnv {
         // recovery, which the ladder told when it decided): the mesh this claim gives a node-admin.
         let crash_mesh = first.as_ref().filter(|_| recover).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
         let from = std::time::Instant::now();
-        let forced = if recover { Some(me.clone()) } else { forced.filter(|to| to != me) };
+        // A hung mesh-primary's retire is this admin's (R-FM1); the create over its birth is the admin its
+        // mesh seats in the birth's place once one is seated (mesh-investigation.md step 6: the
+        // fabric-primary claims on its own log, the executor adopts the won claim; commands go down), and
+        // this admin's only while no admin of that mesh executes it.
+        let seated = first
+            .as_ref()
+            .filter(|op| matches!(op, BuildOperation::CreateNode { .. }) && hung_recovery_admits(p, op))
+            .and_then(|op| crate::executor::executor_for(op, &view))
+            .filter(|to| to != me);
+        let forced = match seated {
+            Some(to) => Some(to),
+            None if recover => Some(me.clone()),
+            None => forced.filter(|to| to != me),
+        };
         let lead = match forced {
             Some(to) => Some(to),
             None => {
