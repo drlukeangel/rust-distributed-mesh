@@ -1382,6 +1382,18 @@ async fn a_hung_mesh_primary_held_past_the_hold_is_terminated_and_recovered_by_t
         .cloned()
         .expect("the hung mesh-primary's exit-proof row is read");
     assert!(start(&proof_row) <= end(&seat_span), "R-EL1 seats the successor only on the exit proof: proof row={proof_row} seat={seat_span} (delete step's proof={proof_span})");
+    // Commands go down (mesh-investigation.md step 6 and its messages: "the fabric-primary claims on its
+    // own log, the executor adopts the won claim"): the retire is the fabric-primary's (R-FM1), and the
+    // new birth at mesh2.admin.1 is created by the admin mesh2 seats in the hung birth's place, which
+    // takes its join, its node.started and its member status. mesh2's lane opens no second recovery of
+    // the hung birth.
+    let created_rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["operation"] == format!("node.create:{mp_name}").as_str() && matches!(sp["attributes"]["outcome"].as_str(), Some("row-seeded" | "row-written")))
+        .collect();
+    assert!(!created_rows.is_empty() && created_rows.iter().all(|sp| sp["attributes"]["node"] == standby.as_str()), "the new birth at {mp_name} is created by {standby}, mesh2's seated primary, never by {fp}: {created_rows:#?}");
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == mp["node_id"]).collect();
+    assert!(recoveries.iter().all(|sp| s(&sp["attributes"]["submitter"]) == fp), "the hung birth is recovered once, by {fp}: no recovery of it is submitted in mesh2's lane: {recoveries:#?}");
     eprintln!(
         "R-FM1 mesh-primary cell: {mp_name} (birth {}) held_running={} then terminated and recovered by {fp} at attempt {attempt}: trace {} | TerminateRuntime {:?} | exit_proof {} | {standby} seated (span {}) | new birth {}",
         s(&mp["node_id"]),
