@@ -786,6 +786,12 @@ impl Estate {
         self.probe_handle().run(&self.entry_birth(), args).unwrap_or_else(|e| panic!("{e}"))
     }
 
+    /// [`Estate::probe`], with the probe's stderr: a cell that reads the probe's own span file reads a
+    /// loss its exit named there.
+    pub fn probe_with_stderr(&self, args: &[&str]) -> (Value, String) {
+        self.probe_handle().run_with_stderr(&self.entry_birth(), args).unwrap_or_else(|e| panic!("{e}"))
+    }
+
     /// What a probe invocation needs of this estate, owned: a traffic task issues probes while the
     /// estate itself is borrowed by the scenario's control loop.
     pub fn probe_handle(&self) -> ProbeHandle {
@@ -1161,12 +1167,17 @@ impl ProbeHandle {
 
     /// One probe invocation, including its endpoint close, exit and evidence flush.
     pub fn run(&self, admin: &MeshNode, args: &[&str]) -> Result<Value, String> {
+        self.run_with_stderr(admin, args).map(|(value, _)| value)
+    }
+
+    /// [`ProbeHandle::run`], with the probe's stderr.
+    pub fn run_with_stderr(&self, admin: &MeshNode, args: &[&str]) -> Result<(Value, String), String> {
         let out = self.command(admin, args)?.output().map_err(|e| format!("run rafka-rpc-probe: {e}"))?;
         let line = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         let value = serde_json::from_str(line.trim()).map_err(|e| format!("probe {args:?} printed no JSON ({e}): {line} / {stderr}"))?;
         self.record(args, &value, &out.status, &stderr)?;
-        Ok(value)
+        Ok((value, stderr.into_owned()))
     }
 
     /// Observe the real probe's answer when printed, retaining ownership of its

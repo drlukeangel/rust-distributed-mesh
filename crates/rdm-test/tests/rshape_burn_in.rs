@@ -434,11 +434,20 @@ fn probe_files(estate: &Estate) -> BTreeSet<PathBuf> {
 fn probe_call(estate: &Estate, args: &[&str]) -> Call {
     let before = probe_files(estate);
     let started_ms = now_ms();
-    let out = estate.probe(args);
+    let (out, stderr) = estate.probe_with_stderr(args);
     let finished_ms = now_ms();
     let fresh: Vec<PathBuf> = probe_files(estate).difference(&before).cloned().collect();
-    assert_eq!(fresh.len(), 1, "one probe invocation leaves exactly one span file: {fresh:?} for {args:?}");
-    let spans: Vec<Value> = std::fs::read_to_string(&fresh[0]).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    // One invocation leaves at most its own span file. The file is opened by its first export, so an exit
+    // flush that ended at its bound before any export leaves none, its loss named whole on stderr (i146 Q42:
+    // the bound is the contract, a named, bounded loss); no file and no loss named is a defect.
+    assert!(fresh.len() <= 1, "one probe invocation leaves at most one span file, its own: {fresh:?} for {args:?}");
+    let spans: Vec<Value> = match fresh.first() {
+        Some(file) => std::fs::read_to_string(file).unwrap().lines().filter_map(|l| serde_json::from_str(l).ok()).collect(),
+        None => {
+            assert!(crate::common::loss_named_whole(&stderr, 0).is_some(), "the probe {args:?} left no span file and named no loss whole: {stderr}");
+            Vec::new()
+        }
+    };
     // The probe names its own trace on stdout (`traceparent`); its span file must hold that trace, and holds its
     // root unless the root was still open when the process ended (recorded per call, never hidden).
     let tp = s(&out["traceparent"]);
