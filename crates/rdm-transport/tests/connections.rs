@@ -515,8 +515,25 @@ async fn node_connections_delete_by_id_closes_the_stream_and_closed_names_it() {
     peer_b.shutdown().await;
 }
 
+/// CONTRACT (connections.md §12; i148 Q61): a dial's spans parent to the caller's span, the stream's
+/// bytes are not spanned, and a dial begun under another dispatcher (none, or a second registry) and
+/// finished under the caller's never clones a foreign span id on the caller's registry. The cell builds
+/// its own registries, so it runs in a process of its own, as RDM's other subscriber-sensitive cells
+/// do: no other cell's subscriber shares its threads. In that process a panic prints its full stack,
+/// so a registry clone of a foreign id names the site that cloned it. Must NOT happen:
+/// `Registry::clone_span` panicking on an id its registry never issued (the e4s8 land gate at
+/// 6c04336b: "tried to clone Id(11), but no span exists with that ID", in the whole binary).
 #[tokio::test]
 async fn a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned() {
+    if crate::own_process::delegated(module_path!(), "a_dial_parents_to_the_callers_span_and_the_stream_bytes_are_not_spanned") {
+        return;
+    }
+    // This process is the cell's own: any panic prints its stack, whatever RUST_BACKTRACE says.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("{info}\nthe panicking thread's stack:\n{}", std::backtrace::Backtrace::force_capture());
+        report(info);
+    }));
     use tracing::instrument::WithSubscriber;
     use tracing::span::{Attributes, Id};
     use tracing::Subscriber;
