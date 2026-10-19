@@ -8,10 +8,33 @@
 use crate::common::admin_view::{node, serve_on_own_runtime};
 use rdm_core::{IncarnationId, NodeId};
 
+/// The probe's `via-probe` root span is in its span file, or its exit ended its evidence flush at its
+/// bound with the loss named whole (i146 Q42: the bound is the contract, a named, bounded loss). The span
+/// file is opened by its first export, so a flush that ended before any export left none.
+fn root_span_or_named_loss(evidence: &std::path::Path, stderr: &str) {
+    let files: Vec<std::path::PathBuf> = std::fs::read_dir(evidence)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rafka-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl")))
+        .collect();
+    let spans: String = files.iter().map(|p| std::fs::read_to_string(p).unwrap_or_default()).collect();
+    if spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") {
+        return;
+    }
+    let written = spans.lines().filter(|l| !l.trim().is_empty()).count();
+    match crate::common::loss_named_whole(stderr, written) {
+        Some((unwritten, handed)) => println!("the probe's exit flush ended at its bound: {written} written and {unwritten} named unwritten of {handed} handed"),
+        None => panic!("the probe left no via-probe span and named no loss whole: {written} spans in {files:?}: {spans:?}; stderr: {stderr}"),
+    }
+}
+
 /// CONTRACT: a probe asked to carry a call through a resolvable carrier to an exact node its view
 /// does not hold prints `NotSent` with the `via-peer` route, exits without the iroh "dropped
 /// without calling `Endpoint::close`" abort, and leaves its `via-probe` span in the evidence
-/// directory. What must NOT happen: an empty span file, or the ungraceful-abort line on stderr.
+/// directory, or ends its exit's evidence flush at its bound with the loss named whole (i146 Q42). What
+/// must NOT happen: a span file without the root and no loss named, or the ungraceful-abort line on stderr.
 #[test]
 fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
     let key = iroh::SecretKey::generate().public().to_string();
@@ -29,13 +52,7 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("the probe printed no JSON ({e}): {stdout} / {stderr}"));
     assert_eq!((v["outcome"].as_str(), v["route"].as_str()), (Some("NotSent"), Some("via-peer")), "{v}");
     assert!(!stderr.contains("dropped without calling"), "the probe's endpoint was dropped open: {stderr}");
-    let spans: String = std::fs::read_dir(&evidence)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe."))
-        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
-        .collect();
-    assert!(spans.contains("rdm.node_rpc.proof_store.resolve.via-probe"), "the probe left no via-probe span; evidence dir holds: {spans:?}");
+    root_span_or_named_loss(&evidence, &stderr);
     rt.block_on(admin.shutdown());
     let _ = std::fs::remove_dir_all(&evidence);
 }
@@ -43,8 +60,9 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
 /// CONTRACT: a probe asked to carry a call through a carrier its view does not hold (the carrier left
 /// the fabric while the call was being aimed at it) sends nothing and says so as the client's own
 /// `NotSent(Resolve(..))` on the `via-peer` route, exactly as it does for a target the view does not
-/// hold; it closes its socket and leaves its `via-probe` span. What must NOT happen: a `Refused` line
-/// with no typed outcome, an exit status 2, the ungraceful-abort line, or a lost span file.
+/// hold; it closes its socket and leaves its `via-probe` span, or names its loss whole at its exit's
+/// bound (i146 Q42). What must NOT happen: a `Refused` line with no typed outcome, an exit status 2, the
+/// ungraceful-abort line, or a span file lost with no loss named.
 #[test]
 fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
     let present = NodeId::mint();
@@ -64,13 +82,7 @@ fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
     assert!(v["reason"].as_str().is_some_and(|r| r.contains("Resolve")), "the NotSent names the resolve failure: {v}");
     assert!(out.status.success(), "a call that sends nothing is a typed outcome, not a probe failure: {:?}", out.status);
     assert!(!stderr.contains("dropped without calling"), "the probe's endpoint was dropped open: {stderr}");
-    let spans: String = std::fs::read_dir(&evidence)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe."))
-        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
-        .collect();
-    assert!(spans.contains("rdm.node_rpc.proof_store.resolve.via-probe"), "the probe left no via-probe span; evidence dir holds: {spans:?}");
+    root_span_or_named_loss(&evidence, &stderr);
     rt.block_on(admin.shutdown());
     let _ = std::fs::remove_dir_all(&evidence);
 }

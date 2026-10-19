@@ -15,6 +15,23 @@
 
 pub mod admin_view;
 
+/// `(unwritten, handed)` when a process's exit ended its evidence flush at its bound and named its loss
+/// on stderr (i146 Q42; Luke 2026-10-17: the bound is the contract, a named, bounded loss).
+pub fn named_loss(stderr: &str) -> Option<(usize, usize)> {
+    let line = stderr.lines().find(|l| l.contains("the evidence flush ended at its bound"))?;
+    let (_, tail) = line.split_once("): ")?;
+    let mut words = tail.split_whitespace();
+    let unwritten = words.next()?.parse().ok()?;
+    let handed = words.nth(1)?.parse().ok()?;
+    Some((unwritten, handed))
+}
+
+/// The loss a process named whole at its exit's bound, when its span file holds `written` spans: some
+/// spans named unwritten, and with the written ones they account for every span it handed.
+pub fn loss_named_whole(stderr: &str, written: usize) -> Option<(usize, usize)> {
+    named_loss(stderr).filter(|(unwritten, handed)| *unwritten > 0 && written + unwritten >= *handed)
+}
+
 use rdm_core::{FabricId, IncarnationId, NodeId};
 use rdm_admin::accepted::{FabricTopology, MeshTopology};
 use rdm_admin::build::BuildId;

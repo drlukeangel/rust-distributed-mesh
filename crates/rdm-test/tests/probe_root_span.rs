@@ -12,6 +12,7 @@ use rdm_transport::{ServedBirth, ServerBuilder};
 use rdm_test::proof_store::{self, FileProofStore};
 use crate::common::admin_view::{self, node};
 use std::sync::Arc;
+use crate::common::named_loss;
 
 /// Snapshot the child's result and files on the failing run, before a later run or cleanup can
 /// replace them. File lengths distinguish no file from an opened but unwritten file.
@@ -49,17 +50,6 @@ fn failure_context(out: &std::process::Output, evidence: &std::path::Path, run: 
     }
     listing.sort();
     format!("{run}: status={:?}; trace={traces:?}; evidence_dir={}; listing={listing:#?}; stdout={}; stderr={}", out.status, evidence.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
-}
-
-/// `(unwritten, handed)` when the probe's exit ended its evidence flush at its bound and named
-/// its loss on stderr.
-fn named_loss(stderr: &str) -> Option<(usize, usize)> {
-    let line = stderr.lines().find(|l| l.contains("the evidence flush ended at its bound"))?;
-    let (_, tail) = line.split_once("): ")?;
-    let mut words = tail.split_whitespace();
-    let unwritten = words.next()?.parse().ok()?;
-    let handed = words.nth(1)?.parse().ok()?;
-    Some((unwritten, handed))
 }
 
 /// CONTRACT: forty probe invocations (twenty direct, twenty carried through a gateway), each a real Get against a live proof-store node (the call
