@@ -4,7 +4,9 @@
 
 A primitive. `node.issuer.update` installs a mesh's issuing material (the issuing key and its cert,
 signed by the fabric root) on one running node-admin of that mesh. It is run by the fabric-primary,
-one admin at a time, inside [mesh.issuer.renew](mesh-issuer-renew.md). It is a single call, not a
+one admin at a time, inside [mesh.issuer.renew](mesh-issuer-renew.md): to the mesh-primary directly, and
+to each other node-admin of the mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier); commands go down
+([fabric authority](../fabric-authority.md#11-identity-creation-order)). It is a single call, not a
 Build. From the install the admin signs member certs with the new key; certs it issued before stay
 valid to their own expiry.
 
@@ -12,17 +14,19 @@ valid to their own expiry.
 
 | Field | Contract |
 |---|---|
-| Caller | The fabric-primary |
+| Caller | The fabric-primary: to the mesh-primary directly, to every other node-admin of the mesh as a command forwarded through the mesh-primary (Forward 0x1A) |
 | Target | One node-admin, by exact `(node.id, incarnation)`, of the mesh the issuing cert names; material for another mesh or another birth is refused by name |
 | Request | `UpdateIssuer { node_id, incarnation, key, cert }` on [Status 0x1B](../node-rpc-envelope.md#status-op-0x1b-rdm) |
 | Reply | `IssuerUpdated { node_id, incarnation, issuer_expires_at }`, the receipt; an admin that cannot verify the cert against the root's public key answers a named refusal and keeps what it holds |
 | Never | A member cert re-issued by this call, a connection closed, a status set, a frame published |
-| Spans | `rdm.node_admin.issuer.update.via-renewal` (node, node_id, incarnation_id, mesh, issuer_expires_at, previous_issuer_expires_at, outcome) on the fabric-primary; `rdm.node_admin.issuer.update.via-installed` on the admin |
+| Spans | `rdm.node_admin.issuer.update.via-renewal` (node, node_id, incarnation_id, mesh, issuer_expires_at, previous_issuer_expires_at, outcome) on the fabric-primary; `rdm.node_admin.issuer.update.via-installed` (node, node_id, mesh, sender, issuer_expires_at, previous_issuer_expires_at) on the admin, `sender` the node the call reached it from: the fabric-primary, or the mesh-primary carrying it |
 
 ## Numbered end-to-end sequence
 
 1. The fabric-primary holds the mesh's new issuing material ([mesh.issuer.renew](mesh-issuer-renew.md) step 1).
-2. It sends `UpdateIssuer` to the admin's held address. `NotSent` or `Indeterminate` is spanned and
+2. It sends `UpdateIssuer` to the mesh-primary's held address, and to each other admin as a Forward 0x1A
+   through the mesh-primary, once the mesh-primary's receipt is held; the carrier makes the one inner
+   call and returns its reply. `NotSent` or `Indeterminate` is spanned and
    retried on the next tick, until the old issuer expires.
 3. The admin checks the material names its own mesh and its own `(node.id, incarnation)` and verifies
    the issuing cert against the root's public key, installs it, and answers `IssuerUpdated`.

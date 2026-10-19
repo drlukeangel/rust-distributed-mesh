@@ -28,7 +28,8 @@ The chain verifies member → issuer → CA → root against the fabric's root s
 node holds (one, or two during a root rotation). A node-admin never issues a member cert that
 outlives its issuer (`MemberOutlivesIssuer`). Every node-admin holds the root (§Custody).
 
-Verification (Rafka's accept loop today, RDM's at i145 e2) checks the chain in this order and
+Verification (RDM's, in [node.connections.admit](lifecycles/node-connections-admit.md); Rafka's own accept
+loop too until i145 e4 removes it) checks the chain in this order and
 refuses at the first failure:
 
 1. `IssuerBadSignature`: the root does not verify the issuing cert;
@@ -95,9 +96,11 @@ side of its validity.
 
 ## Tracking
 
-The issuer writes a cert row for the exact birth at every issue and renew: `NodeCertRow { node_id,
+The issuer puts a cert row for the exact birth at every issue and renew: `NodeCertRow { node_id,
 name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a status-row kind beside
-`held-running` and `os-stopped`, keyed by the birth (format `node-cert/1`). `node.get` surfaces it as
+`held-running` and `os-stopped`, keyed by the birth and `issued_at` (format `node-cert/1`); the receipt
+is a row under the same key, and the birth's newest issue and whether it has a receipt are its renewal
+state. `node.get` surfaces it as
 `cert { issued_at, expires_at, issuer_expires_at }`. A successor mesh-primary folds the rows and
 continues the schedule from them; nothing about renewal lives only in memory. Every cert row is in the
 fabric-level projection: `fabric.get` shows the next expiry across the fabric, and a mesh whose renewals
@@ -151,8 +154,8 @@ One vocabulary, `<entity>.<thing>.<verb>`, the event in the past tense.
 | `fabric.root.create` | step inside fabric.create | the bootstrap admin, day 0 | none (local) | [fabric.create](lifecycles/fabric-create.md) step 1 |
 | `fabric.ca.create` | step inside fabric.create | the bootstrap admin, day 0, under the root | none (local) | [fabric.create](lifecycles/fabric-create.md) step 1 |
 | `mesh.issuer.create` | step inside mesh.create | the fabric-primary, at the mesh's acceptance | none (the first admin's launch env) | [mesh.create](lifecycles/mesh-create.md) step 2 |
-| `mesh.issuer.renew` | workflow, on the fabric-primary's tick | the fabric-primary → every node-admin of the mesh | `node.issuer.update` per admin | [mesh.issuer.renew](lifecycles/mesh-issuer-renew.md) |
-| `node.issuer.update` | primitive | the fabric-primary → one node-admin, exact birth | Status 0x1B `UpdateIssuer`, reply `IssuerUpdated` | [node.issuer.update](lifecycles/node-issuer-update.md) |
+| `mesh.issuer.renew` | workflow, on the fabric-primary's tick | the fabric-primary → the mesh-primary, and through it (forwarded) every other node-admin of the mesh | `node.issuer.update` per admin | [mesh.issuer.renew](lifecycles/mesh-issuer-renew.md) |
+| `node.issuer.update` | primitive | the fabric-primary → one node-admin, exact birth: the mesh-primary directly, any other admin forwarded through the mesh-primary | Status 0x1B `UpdateIssuer`, reply `IssuerUpdated` | [node.issuer.update](lifecycles/node-issuer-update.md) |
 | `node.cert.create` | step inside node.mesh.join | the accepting authority, before it admits | none (the join answer) | [node.mesh.join](lifecycles/node-mesh-join.md) step 5 |
 | `node.cert.renew` | primitive, on the issuing authority's tick | mesh-primary → member; fabric-primary → mesh-primary | Status 0x1B `RenewCert`, reply `CertRenewed` | [node.cert.renew](lifecycles/node-cert-renew.md) |
 | `node.cert.get` | a field of node.get | any caller → the view | `NodeView.cert` on the `Nodes` reply | [typed-object table](node-rpc-envelope.md#typed-object-contract) |

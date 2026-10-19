@@ -114,7 +114,7 @@ named direct connection. It is never global proof that the destination node is d
 
 `Refused` is written by an acceptor for an inbound connection it dropped at admission
 ([fabric-certs.md](fabric-certs.md#on-a-connection), [node.connections.admit](lifecycles/node-connections-admit.md)),
-naming the reason (`no-credential`, `bad-signature`, `expired`, `issuer-mesh-mismatch`). It is the
+naming the reason, one of node.connections.admit's `refused` reasons (its Result row). It is the
 acceptor's fact about one dial, never proof about the dialer.
 
 ---

@@ -14,8 +14,8 @@ every member cert it signed, stay valid to their own expiry, so nothing is cut a
 |---|---|
 | Runner | The fabric-primary, which holds the fabric root |
 | Target | One mesh; every node-admin of it, exact births, in the view |
-| Steps | Mint the issuing cert, write the mesh's issuer row, then [node.issuer.update](node-issuer-update.md) to each admin; the step keys are `mesh.issuer.renew:<mesh>` and `node.issuer.update:<path.name>` |
-| Order | The mesh-primary first, then the others; a member renewal due in the window is signed with the new key once its own admin holds it |
+| Steps | Mint the issuing cert, write the mesh's issuer row, then [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other admin as a command forwarded through the mesh-primary; the step keys are `mesh.issuer.renew:<mesh>` and `node.issuer.update:<path.name>` |
+| Order | The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others; a member renewal due in the window is signed with the new key once its own admin holds it |
 | Receipt | The issuer row carries each admin's `IssuerUpdated`; the workflow is complete when every admin in the view has one |
 | Never | A member cert re-issued by this workflow (that is [node.cert.renew](node-cert-renew.md)'s on its own schedule), the root rotated (a fabric re-birth), a status set, a frame published |
 | Spans | `rdm.fabric.issuer.update.via-renewal` (mesh, issuer_expires_at, previous_issuer_expires_at, admins, outcome) on the fabric-primary, and each `node.issuer.update`'s spans |
@@ -25,7 +25,7 @@ every member cert it signed, stay valid to their own expiry, so nothing is cut a
 1. The fabric-primary's tick reads its issuer rows; a mesh whose `renew_at` has passed is renewed. It
    mints the issuing cert for that mesh with the root, on rafka-time, and writes the row.
 2. [node.issuer.update](node-issuer-update.md) to the mesh-primary, then to each other node-admin of the
-   mesh. An admin not reached is retried on the next tick until the old issuer expires.
+   mesh as a command forwarded through the mesh-primary ([Forward 0x1A](../node-rpc-envelope.md#forward-op-0x1a-core), the mesh-primary the carrier). An admin not reached is retried on the next tick until the old issuer expires.
 3. Each admin signs member certs with the new key from its install. [node.cert.renew](node-cert-renew.md)
    runs on its own schedule; a member whose cert would outlive the old issuer is renewed early, cut to
    the issuer's expiry (`MemberOutlivesIssuer`), which is what forces this workflow to run first.
@@ -41,8 +41,10 @@ sequenceDiagram
     Note over F: 1. tick: an issuer row past renew_at; mint, write the row
     F->>P: 2. node.issuer.update
     P-->>F: node.issuer.updated
-    F->>A: 2. node.issuer.update, each
-    A-->>F: node.issuer.updated
+    F->>P: 2. Forward(node.issuer.update → each other admin)
+    P->>A: node.issuer.update
+    A-->>P: node.issuer.updated
+    P-->>F: Forwarded(node.issuer.updated)
     Note over P,A: 3. member certs signed with the new key from here
 ```
 
