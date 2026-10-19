@@ -698,3 +698,94 @@ fn a_mesh_whose_renewals_stall_has_its_row_surfaced_on_fabric_get() {
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
+
+/// The first span of `estate` named `name` that `wanted` says yes to, within `within`.
+async fn estate_span(estate: &rdm_test::estate::Estate, name: &str, what: &str, within: Duration, wanted: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let spans = estate.spans();
+        if let Some(sp) = rdm_test::estate::named(&spans, name).into_iter().find(|sp| wanted(sp)) {
+            return sp.clone();
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{what}: not within {within:?}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (node-cert-renew.md Caller: "its mesh-primary for a member, the fabric-primary for a
+/// mesh-primary"; e3, decided by arch: "a mesh-primary's cert rows are written by the fabric-primary
+/// through the `_of(mesh)` door"): under a 30 s member TTL, the fabric-primary (mesh1.admin.1) renews
+/// mesh2's primary, spanned `via-renewal` `installed` for it. The renewed issue is mesh2's own row:
+/// `node.get` shows it at the fabric-primary, which reads mesh2's rows through the door, and at
+/// mesh2's primary, which reads them as its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door() {
+    use rdm_test::estate::Estate;
+    const CELL: &str = "the_fabric_primary_renews_another_meshs_primary_and_puts_its_rows_through_that_meshs_door";
+    let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_MEMBER_CERT_TTL_SECS, "30")]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 1, 0)]).await;
+    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh2.admin.1"].into_iter().map(str::to_string).collect();
+    estate.settles_to_named(&names, Duration::from_secs(30)).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let primary = estate.node_view("mesh2.admin.1").await;
+    assert!(primary.is_primary && !primary.is_fabric_primary, "mesh2.admin.1 is mesh2's primary and not the fabric's: {primary:?}");
+
+    let renewed = estate_span(&estate, "rdm.node_admin.cert.update.via-renewal", "the fabric-primary renews mesh2.admin.1", Duration::from_secs(60), |sp| attr(sp, "node") == "mesh2.admin.1" && attr(sp, "outcome") == "installed").await;
+    let issued_at = attr_num(&renewed, "issued_at");
+    for at in ["mesh1.admin.1", "mesh2.admin.1"] {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let shown = estate.node_views_at(&Estate::path(at)).await.and_then(|vs| vs.into_iter().find(|v| v.name.to_string() == "mesh2.admin.1")).and_then(|v| v.cert);
+            if shown.as_ref().is_some_and(|c| c.issued_at >= issued_at) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "node.get at {at} shows mesh2.admin.1's renewed issue ({issued_at}) from mesh2's rows: {shown:?}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let mut estate = estate;
+    estate.stop().await;
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (CLAUDE.md, commands go down: fabric-primary → mesh-primary → node; e3, decided by the lead
+/// 2026-10-19: "The fabric-primary sends UpdateIssuer to the mesh's primary only; the mesh-primary
+/// installs it, then forwards it to its other admins"; node-issuer-update.md): under a 45 s issuing
+/// TTL the fabric-primary (mesh1.admin.1) re-mints mesh2's issuer and sends `node.issuer.update` to
+/// mesh2's primary alone, whose install is sent by the fabric-primary; mesh2's primary then carries it
+/// to mesh2's other admin, whose install is sent by mesh2's primary. Each hop's receipt is spanned
+/// `via-renewal` `installed` for its receiver. Must NOT happen: the fabric-primary calling mesh2's
+/// secondary admin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary() {
+    use rdm_test::estate::{named, Estate};
+    const CELL: &str = "an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary";
+    let estate = Estate::bootstrap_with_env(estate_owner(CELL), "fabric1", "mesh1", &[(certs::ENV_ISSUING_CERT_TTL_SECS, "45")]).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 0), ("mesh2", 2, 0)]).await;
+    let names: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh2.admin.1", "mesh2.admin.2"].into_iter().map(str::to_string).collect();
+    let views = estate.settles_to_named(&names, Duration::from_secs(30)).await;
+    let mesh2_admins: Vec<_> = views.iter().filter(|v| v.mesh == "mesh2").collect();
+    let primary = mesh2_admins.iter().find(|v| v.is_primary).map(|v| v.name.to_string()).expect("mesh2 holds a primary");
+    let secondary = mesh2_admins.iter().find(|v| !v.is_primary).map(|v| v.name.to_string()).expect("mesh2 holds a secondary admin");
+
+    let rotated = estate_span(&estate, "rdm.fabric.issuer.update.via-renewal", "the fabric-primary re-mints mesh2's issuer", Duration::from_secs(90), |sp| attr(sp, "mesh") == "mesh2" && attr(sp, "outcome") == "minted").await;
+    let expiry = attr(&rotated, "issuer_expires_at");
+    let installed = |node: String, sender: String| {
+        let expiry = expiry.clone();
+        move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "sender") == sender && attr(sp, "issuer_expires_at") == expiry
+    };
+    let received = |node: String| {
+        let expiry = expiry.clone();
+        move |sp: &serde_json::Value| attr(sp, "node") == node && attr(sp, "outcome") == "installed" && attr(sp, "issuer_expires_at") == expiry
+    };
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's primary installs the update the fabric-primary sent", Duration::from_secs(30), installed(primary.clone(), "mesh1.admin.1".into())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "the fabric-primary's hop is received", Duration::from_secs(30), received(primary.clone())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-installed", "mesh2's secondary installs the update its primary carried", Duration::from_secs(30), installed(secondary.clone(), primary.clone())).await;
+    estate_span(&estate, "rdm.node_admin.issuer.update.via-renewal", "mesh2's primary's hop is received", Duration::from_secs(30), received(secondary.clone())).await;
+    let spans = estate.spans();
+    let direct: Vec<_> = named(&spans, "rdm.node_admin.issuer.update.via-installed").into_iter().filter(|sp| attr(sp, "node") == secondary && attr(sp, "sender") == "mesh1.admin.1").collect();
+    assert!(direct.is_empty(), "the fabric-primary never calls mesh2's secondary admin: {direct:#?}");
+    let mut estate = estate;
+    estate.stop().await;
+}
