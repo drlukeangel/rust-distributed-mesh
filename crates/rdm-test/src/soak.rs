@@ -254,8 +254,8 @@ pub struct LedgerReport {
     pub applied_mutations: usize,
     /// Stores that survived to the end and were reconciled against their final state.
     pub stores_reconciled: usize,
-    /// Operations whose target birth no longer exists: counted by the count algebra, their store
-    /// is gone with it.
+    /// Operations on a store no live node holds: counted by the count algebra, their store is gone
+    /// with the last birth over it.
     pub ops_on_retired_births: usize,
     /// `(node id, key)` pairs a delete touched: the ledger holds no delete intent, so the state
     /// algebra does not judge those keys.
@@ -322,6 +322,9 @@ struct OpBook {
     /// `(node id, key)` -> the value the last successful write left, for compare-and-swap.
     last: BTreeMap<(String, u64), String>,
     probe_failures: Vec<String>,
+    /// Node id -> the data dir its view named. A store is its data dir: a recovered node is born
+    /// over the lost node's dir with a new node id (node-recovery.md), and holds what it stored.
+    data_dirs: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Default, Clone)]
@@ -837,6 +840,10 @@ impl Driver {
         let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
         let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
+        let mut b = self.shared.book.lock().unwrap();
+        for n in nodes.iter().filter(|n| serves_proof(n)) {
+            b.data_dirs.insert(s(&n["node_id"]), n["data_dir"].as_str().map(str::to_string));
+        }
     }
 
     /// The live reason an action cannot run now, if any. The model knows no authority.
@@ -1269,7 +1276,12 @@ impl Driver {
         let delete = nodes.delete(&path_name(&path)).await.map_err(|end| refused(&format!("node.delete {path}"), end))?;
         entry["accepted"] = accepted_json(delete.accepted());
         entry["build"] = self.await_build(delete).await?;
-        let spawn = nodes.create(&NodeSpec { mesh: mesh.clone(), kind }).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
+        // A deleted fabric-primary or entry admin takes the entry with it: the create goes to the admin
+        // that holds the control seat after the delete, as each round enters it.
+        if relocate_control(&mut self.estate, &self.known).await.is_none() {
+            return Err(broken("control-api-answers", format!("after node.delete {path}, no admin answers fabric.get: {:?}", self.known.iter().map(|a| a.name.as_str()).collect::<Vec<_>>())));
+        }
+        let spawn = self.estate.nodes_obj().await.create(&NodeSpec { mesh: mesh.clone(), kind }).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
         entry["regrow"] = accepted_json(spawn.accepted());
         let build = spawn.accepted().build_id.to_string();
         self.await_build(spawn).await?;
@@ -1568,10 +1580,13 @@ impl Driver {
         let mut found: Vec<(String, String)> = Vec::new();
         let nodes = if relocate_control(&mut self.estate, &self.known).await.is_some() { self.estate.node_values().await } else { Vec::new() };
         let alive: BTreeMap<String, String> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
-        let (meta, excluded, probe_failures) = {
+        let (meta, excluded, probe_failures, mut data_dirs) = {
             let b = self.shared.book.lock().unwrap();
-            (b.meta.clone(), b.excluded.clone(), b.probe_failures.clone())
+            (b.meta.clone(), b.excluded.clone(), b.probe_failures.clone(), b.data_dirs.clone())
         };
+        for n in nodes.iter().filter(|n| serves_proof(n)) {
+            data_dirs.insert(s(&n["node_id"]), n["data_dir"].as_str().map(str::to_string));
+        }
         let mut report = LedgerReport { probe_failures, keys_excluded_from_state: excluded.len(), ..Default::default() };
         let (counts, global) = {
             let b = self.shared.book.lock().unwrap();
@@ -1592,16 +1607,31 @@ impl Driver {
                 found.push((v.invariant().to_string(), v.to_string()));
             }
         }
-        // The state algebra, store by store.
+        // The state algebra, store by store. A store is its data dir: every birth over the dir a live
+        // node holds is folded into that node's final state.
         let ids: BTreeSet<String> = meta.iter().map(|m| m.target_id.clone()).collect();
+        let mut held: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for (id, path) in &alive {
+            match data_dirs.get(id).cloned().flatten() {
+                None => found.push((crate::ledger::DETECTS_LOST_APPLIED_MUTATION.to_string(), format!("{path} ({id}): its view names no data dir, so its store is not told from another birth's"))),
+                Some(dir) => {
+                    if let Some((other, other_path)) = held.insert(dir.clone(), (id.clone(), path.clone())) {
+                        found.push((crate::ledger::DETECTS_LOST_APPLIED_MUTATION.to_string(), format!("{path} ({id}) and {other_path} ({other}) are both live over the data dir {dir}")));
+                    }
+                }
+            }
+        }
+        let mut reconciled: BTreeSet<String> = BTreeSet::new();
         let probe = self.estate.probe_handle();
         let admin = self.estate.entry_birth();
-        for id in ids {
-            let Some(path) = alive.get(&id) else {
-                report.ops_on_retired_births += meta.iter().filter(|m| m.target_id == id).count();
+        for (dir, (id, path)) in &held {
+            let births: BTreeSet<String> = ids.iter().filter(|t| data_dirs.get(*t).is_some_and(|d| d.as_deref() == Some(dir.as_str()))).cloned().collect();
+            if births.is_empty() {
                 continue;
-            };
-            let keys: BTreeSet<u64> = meta.iter().filter(|m| m.target_id == id).map(|m| m.key).filter(|k| !excluded.contains(&(id.clone(), *k))).collect();
+            }
+            reconciled.extend(births.iter().cloned());
+            let excluded_keys: BTreeSet<u64> = excluded.iter().filter(|(t, _)| births.contains(t)).map(|(_, k)| *k).collect();
+            let keys: BTreeSet<u64> = meta.iter().filter(|m| births.contains(&m.target_id)).map(|m| m.key).filter(|k| !excluded_keys.contains(k)).collect();
             let mut state: BTreeMap<String, Vec<u8>> = BTreeMap::new();
             let mut unreadable = Vec::new();
             for k in keys {
@@ -1621,7 +1651,7 @@ impl Driver {
             }
             let sub = {
                 let b = self.shared.book.lock().unwrap();
-                b.ledger.select(|o| o.target_node_id == id && !o.mutation.as_ref().is_some_and(|m| m.key.parse::<u64>().is_ok_and(|k| excluded.contains(&(id.clone(), k)))))
+                b.ledger.select(|o| births.contains(&o.target_node_id) && !o.mutation.as_ref().is_some_and(|m| m.key.parse::<u64>().is_ok_and(|k| excluded_keys.contains(&k))))
             };
             match sub.reconcile_state(&state) {
                 Ok(r) => {
@@ -1636,6 +1666,7 @@ impl Driver {
                 }
             }
         }
+        report.ops_on_retired_births = meta.iter().filter(|m| !reconciled.contains(&m.target_id)).count();
         (report, found)
     }
 }
