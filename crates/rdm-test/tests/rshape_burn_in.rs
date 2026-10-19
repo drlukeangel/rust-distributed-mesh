@@ -4367,7 +4367,11 @@ async fn retire_run(cell: &str, shape: Shape) {
         // Ordinary work that reaches a routable node whose connections are being deleted is refused by name
         // before its body is read: a broker answers the typed `ConnectionsDeleting` refusal, a gateway refuses to carry.
         // No handler ran for any of it and none of its values were stored (account() checked the trace
-        // and the final state). None was refused before the All began.
+        // and the final state). None was refused before the All began. The page promises the block, not that a
+        // call lands inside it: the window lasts as long as admitted work takes to reach zero (node-connections-delete.md
+        // step 3), so with nothing in flight it closes within microseconds and a serial call may never meet it.
+        // What holds whatever the window's length (node-rpc.md §35: the refusal "proves their handler did not
+        // run"): no call made after the All began was served by the node.
         let t_apply = all[0]["start_ns"].as_u64().unwrap();
         let hits: Vec<Value> = a
             .traffic
@@ -4376,8 +4380,16 @@ async fn retire_run(cell: &str, shape: Shape) {
             .filter(|(o, _)| o.target == node || o.via.as_deref() == Some(node.as_str()))
             .filter_map(|(o, c)| connections_deleting_refusal(&c.out).map(|why| json!({"seq": o.seq, "key": o.key, "target": o.target, "via": o.via, "started_ms": c.started_ms, "finished_ms": c.finished_ms, "refusal": why})))
             .collect();
-        assert!(!hits.is_empty(), "{node}: no ordinary work was refused while its connections were deleted: the window held no refusal ({stop})");
         assert!(hits.iter().all(|h| h["finished_ms"].as_u64().unwrap() >= t_apply / 1_000_000), "{node}: a refusal answered before the node's All began ({t_apply}): {hits:?}");
+        let served_after: Vec<Value> = a
+            .traffic
+            .ops
+            .iter()
+            .filter(|(o, _)| o.target == node || o.via.as_deref() == Some(node.as_str()))
+            .filter(|(_, c)| c.started_ms >= t_apply / 1_000_000 && bucket(&c.out) == Bucket::Reply && c.out["reply"]["result"]["refused"].is_null())
+            .map(|(o, c)| json!({"seq": o.seq, "key": o.key, "target": o.target, "via": o.via, "started_ms": c.started_ms, "finished_ms": c.finished_ms, "reply": c.out["reply"]}))
+            .collect();
+        assert!(served_after.is_empty(), "{node}: work called after the node's All began ({t_apply}) was served: {served_after:?} ({stop})");
         // The status family stays admissible through the All: the node's own Stopped declaration (node-stop.md
         // step 4: the only one its stop makes), after the All began, is decided by its receiver, `applied`.
         let decided: Vec<&Value> = stop["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied" && d["state"] == "Stopped").collect();
