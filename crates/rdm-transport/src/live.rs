@@ -456,7 +456,7 @@ mod tests {
     #[tokio::test]
     async fn a_birth_that_takes_another_name_resolves_at_it_and_gives_up_the_old_one() {
         let r = LiveNodeResolver::default();
-        let born = birth("mesh1.rpc.1.new", 7000);
+        let born = birth("mesh1.rpc.7", 7000);
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         assert_eq!(r.apply(born.clone(), None), Applied::Joined);
         let mut rx = r.changes().unwrap();

@@ -214,7 +214,7 @@ impl NodeView {
         self.name.path()
     }
 
-    /// The node's name within its path (`<base>[.old|.new]`).
+    /// The node's name within its path (`<base>[.old]`).
     pub fn node_name(&self) -> String {
         self.name.name()
     }

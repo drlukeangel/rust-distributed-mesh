@@ -49,8 +49,8 @@ mod tests {
 
     #[test]
     fn a_birth_holds_its_launch_name_until_its_membership_is_followed_then_the_membership_s() {
-        let name = HeldName::of_birth("mesh1.rpc.1.new".parse().unwrap());
-        assert_eq!(name.now().to_string(), "mesh1.rpc.1.new");
+        let name = HeldName::of_birth("mesh1.rpc.7".parse().unwrap());
+        assert_eq!(name.now().to_string(), "mesh1.rpc.7");
         let held = Arc::new(std::sync::Mutex::new("mesh1.rpc.1".parse::<PathName>().unwrap()));
         let h = held.clone();
         name.follow(move || h.lock().unwrap().clone()).unwrap();

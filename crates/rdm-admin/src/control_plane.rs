@@ -588,10 +588,10 @@ impl ControlPlane {
             }
             // A delete acts only on a `.old` path: the stopped birth a node.name.update renamed there,
             // found in the view (below), which reads a renamed birth by its node id through the node-row
-            // id index (R12). Any other action's `.old` or `.new` name is its accepted path's
-            // (node-replace.md: a predecessor renamed `<name>.old`, a successor born `<name>.new`): a node
-            // renamed while stopped is started by its row's name (R-JN1, node-start.md step 2), and its
-            // birth is fenced below in the view, which lists it at its row's name.
+            // id index (R12). Any other action's `.old` name is its accepted path's (node-replace.md: a
+            // predecessor renamed `<name>.old` live and stopped there): a stopped `.old` node is started by
+            // its row's name (rollback step 2), and its birth is fenced below in the view, which lists it at
+            // its row's name.
             let parked_old = kind == ActionKind::Delete && path.old;
             // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
             // the mesh, and only a delete acts on it (mesh-delete.md step 7).

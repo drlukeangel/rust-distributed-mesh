@@ -3525,22 +3525,21 @@ mod tests {
         }
     }
 
-    /// `mesh1.rpc.1`, born `mesh1.rpc.1.new` and stopped there, its row moved twice by its mesh-primary
-    /// on the fabric's shared store root (to `mesh1.rpc.1`, then to `mesh1.rpc.1.old`: each move one
-    /// suffix toggled, the stopped node told nothing), and another admin's view over the same root,
-    /// whose row reads are probed.
+    /// A birth born `mesh1.rpc.7` and stopped there, its row moved twice by its mesh-primary on the
+    /// fabric's shared store root (to `mesh1.rpc.1`, then to `mesh1.rpc.1.old`), and another admin's
+    /// view over the same root, whose row reads are probed.
     #[cfg(feature = "file-backend")]
     async fn renamed_twice(cell: &str) -> (std::path::PathBuf, MeshDigest, Arc<ProbedRows>, Arc<RwLock<Topology>>, Arc<Records>, DigestBook) {
         let d = crate::test_support::tempdir(cell);
         let root = crate::store_root::StoreRoot::at(&d.join("root"));
         let primary = crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
         let book = DigestBook::default();
-        let held = digest("mesh1.rpc.1.new", MemberStatus::ReadyForTraffic);
+        let held = digest("mesh1.rpc.7", MemberStatus::ReadyForTraffic);
         book.record(held.clone());
         assert!(book.stopped(rdm_core::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
-            operation: "node.stop:mesh1.rpc.1.new".into(),
+            operation: "node.stop:mesh1.rpc.7".into(),
             node_id: held.node.node_id.clone(),
             incarnation: held.node.incarnation.clone(),
             name: held.node.name.clone(),
@@ -3552,7 +3551,7 @@ mod tests {
         record.status = NodeStatus::Leaving;
         let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
-        let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), held.node.name.base());
+        let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), "mesh1.rpc.1".parse::<PathName>().unwrap());
         crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, &held.node.name, &base).await.unwrap();
         crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), None, &base, &base.renamed()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
@@ -3569,8 +3568,8 @@ mod tests {
     }
 
     /// CONTRACT (CLAUDE.md read rule: "id: only a lookup by id that cannot read the store's own key";
-    /// "add the index, never the scan"): a parked birth whose row was moved twice while it was stopped
-    /// (`mesh1.rpc.1.new` to `mesh1.rpc.1`, then to `mesh1.rpc.1.old`) is listed by another admin's
+    /// "add the index, never the scan"): a parked birth whose row was moved twice (`mesh1.rpc.7` to
+    /// `mesh1.rpc.1`, then to `mesh1.rpc.1.old`) is listed by another admin's
     /// view at the row's current name, `mesh1.rpc.1.old`, read by the birth's node id through the
     /// node row's id index: one read, no `path.name` key guessed. What must NOT happen: the birth
     /// listed at a name it no longer holds, or its name found by trying the keys a move could reach.
@@ -3581,9 +3580,9 @@ mod tests {
         view_projector("mesh1.admin.2".parse().unwrap(), view.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = view.read().await.clone();
         let names: Vec<String> = t.nodes.iter().map(|n| n.name.to_string()).collect();
-        let now = held.node.name.base().renamed();
+        let (moved, now): (PathName, PathName) = ("mesh1.rpc.1".parse().unwrap(), "mesh1.rpc.1.old".parse().unwrap());
         assert!(t.node(&now).is_some_and(|n| n.node_id == held.node.node_id && n.parked), "the parked birth is listed at its row's current name: {names:?}");
-        assert!(t.node(&held.node.name).is_none() && t.node(&held.node.name.base()).is_none(), "nothing is listed at a name the row moved from: {names:?}");
+        assert!(t.node(&held.node.name).is_none() && t.node(&moved).is_none(), "nothing is listed at a name the row moved from: {names:?}");
         assert_eq!((ProbedRows::count(&probed.key_reads), ProbedRows::count(&probed.id_reads)), (0, 1), "the birth's row is read once, by its node id, and no path.name key is tried");
         let _ = std::fs::remove_dir_all(&d);
     }

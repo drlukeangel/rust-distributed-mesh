@@ -21,8 +21,9 @@
 //!   the `path.name` (a `Deleted` row) or the `<name>.old` row. A create that fails after its claim
 //!   withdraws it ([`NodeRows::withdraw`]), the holder's own key only.
 //! - `node.update` of a name (R13, `crate::node_update`): the row moves to the new name and the
-//!   node lets go of the old one ([`move_row`]); a node taking `<name>` from `<name>.new` has its
-//!   config seeded from the `<name>.old` row (lifecycles/node-replace.md step 4).
+//!   node lets go of the old one ([`move_row`]). A replace's successor is created at `<name>`, its
+//!   claim seeded from the `<name>.old` row ([`ClaimFor::Successor`], lifecycles/node-replace.md
+//!   step 3).
 //! - `NodeDeleted`: the row with status `Deleted`, the record and its config kept
 //!   ([`NodeRows::deleted`]).
 //! - A mesh delete (R-MN1, mesh-delete.md steps 3 and 7): each member's row `Deleted` on its exact

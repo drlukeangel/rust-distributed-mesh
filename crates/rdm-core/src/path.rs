@@ -74,10 +74,9 @@ impl NodeKind {
     }
 }
 
-/// A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names
-/// the predecessor a replacement renamed to free the path for its successor, and
-/// `<mesh>.<kind>.<name>.new` the successor born beside it until it takes the name
-/// (node-replace.md). At most one of `old` and `new` is set: every constructor keeps it so.
+/// A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names the
+/// predecessor a replacement renamed to free the path for its successor, which is created at the
+/// path (node-replace.md).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathName {
     /// The mesh's name.
@@ -90,8 +89,6 @@ pub struct PathName {
     pub label: String,
     /// The path is the `.old` name of a replaced predecessor.
     pub old: bool,
-    /// The path is the `.new` name of a successor that has not yet taken the name.
-    pub new: bool,
 }
 
 /// Why a `path.name` was refused.
@@ -105,8 +102,7 @@ pub enum PathNameError {
     Kind(String),
     /// The ordinal is not a number of at least 1.
     Ordinal(String),
-    /// A fourth segment other than the one `old` suffix a replaced predecessor carries or the one
-    /// `new` suffix a successor carries.
+    /// A fourth segment other than the one `old` suffix a replaced predecessor carries.
     Suffix(String),
 }
 
@@ -117,7 +113,7 @@ impl fmt::Display for PathNameError {
             Self::MeshName(s) => write!(f, "mesh name `{s}` must match [a-z0-9][a-z0-9-]{{0,63}}"),
             Self::Kind(s) => write!(f, "node kind `{s}` is not admin, rpc, broker, gateway or compute"),
             Self::Ordinal(s) => write!(f, "ordinal `{s}` is not a number >= 1"),
-            Self::Suffix(s) => write!(f, "`{s}` is not a path.name: the only suffixes are one `.old`, on a replaced predecessor, and one `.new`, on its successor"),
+            Self::Suffix(s) => write!(f, "`{s}` is not a path.name: the only suffix is one `.old`, on a replaced predecessor"),
         }
     }
 }
@@ -134,22 +130,17 @@ pub fn is_valid_mesh_name(m: &str) -> bool {
 impl PathName {
     /// A `path.name` from its parts.
     pub fn new(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
-        Self { mesh: mesh.into(), kind, ordinal, label: String::new(), old: false, new: false }
+        Self { mesh: mesh.into(), kind, ordinal, label: String::new(), old: false }
     }
 
     /// The name the predecessor of a replacement keeps: this path with the `.old` suffix.
     pub fn renamed(&self) -> Self {
-        Self { old: true, new: false, ..self.clone() }
+        Self { old: true, ..self.clone() }
     }
 
-    /// The name the successor of a replacement is born at: this path with the `.new` suffix.
-    pub fn successor(&self) -> Self {
-        Self { old: false, new: true, ..self.clone() }
-    }
-
-    /// This path with no suffix: the name a replacement's successor takes.
+    /// This path with no suffix: the name a replaced predecessor released, its successor's.
     pub fn base(&self) -> Self {
-        Self { old: false, new: false, ..self.clone() }
+        Self { old: false, ..self.clone() }
     }
 
     /// The node's path: everything of the `path.name` before its name (`mesh1.rpc` of
@@ -180,10 +171,9 @@ impl FromStr for PathName {
     type Err = PathNameError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('.').collect();
-        let (mesh, kind, base, old, new) = match parts[..] {
-            [mesh, kind, base] => (mesh, kind, base, false, false),
-            [mesh, kind, base, "old"] => (mesh, kind, base, true, false),
-            [mesh, kind, base, "new"] => (mesh, kind, base, false, true),
+        let (mesh, kind, base, old) = match parts[..] {
+            [mesh, kind, base] => (mesh, kind, base, false),
+            [mesh, kind, base, "old"] => (mesh, kind, base, true),
             [_, _, _, _] => return Err(PathNameError::Suffix(s.into())),
             _ => return Err(PathNameError::Shape(s.into())),
         };
@@ -207,7 +197,7 @@ impl FromStr for PathName {
         } else {
             return Err(PathNameError::Ordinal(base.into()));
         };
-        Ok(Self { mesh: mesh.into(), kind, ordinal, label, old, new })
+        Ok(Self { mesh: mesh.into(), kind, ordinal, label, old })
     }
 }
 
@@ -220,9 +210,6 @@ impl fmt::Display for PathName {
         }
         if self.old {
             f.write_str(".old")?;
-        }
-        if self.new {
-            f.write_str(".new")?;
         }
         Ok(())
     }

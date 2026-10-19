@@ -1017,7 +1017,7 @@ impl Estate {
     /// The running container of `node`'s current birth (container provider): the container id its
     /// birth's RuntimeFact names, which the provider writes to the birth's data dir (`runtime.json`).
     /// Never the `rafka.node` label: that is the name the container was launched under, and a node
-    /// renamed since (the replace recipe's successor, born `<path.name>.new`) keeps it.
+    /// renamed since (a replace's predecessor, renamed `<path.name>.old`) keeps it.
     pub async fn container_of(&self, node: &str) -> Option<String> {
         if self.owner.provider != "container" {
             return None;

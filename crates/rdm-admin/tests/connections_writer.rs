@@ -560,7 +560,7 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_rows_written_before() {
     let dir = data_dir("held-name");
-    let (me, peer) = (end("mesh1.rpc.1.new"), end("mesh1.rpc.2"));
+    let (me, peer) = (end("mesh1.rpc.7"), end("mesh1.rpc.2"));
     let taken: PathName = "mesh1.rpc.1".parse().unwrap();
     let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rdm_admin::store_root::StoreRoot::at(&dir), &me.name, &rdm_admin::model::IncarnationId::parse(&rdm_core::fixture_crockford60("test")).unwrap()).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
@@ -569,7 +569,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let told: Arc<Mutex<Option<PathName>>> = Arc::default();
     let (cell, birth) = (told.clone(), me.name.clone());
     writer.follow_held_name(move || cell.lock().unwrap().clone().unwrap_or_else(|| birth.clone())).unwrap();
-    assert!(writer.follow_held_name(|| "mesh1.rpc.9".parse().unwrap()).is_err_and(|e| e.contains("mesh1.rpc.1.new") && e.contains("already reads its name")), "one place holds the name");
+    assert!(writer.follow_held_name(|| "mesh1.rpc.9".parse().unwrap()).is_err_and(|e| e.contains("mesh1.rpc.7") && e.contains("already reads its name")), "one place holds the name");
     writer.hydrate().await.unwrap();
     let target = resolved(&peer);
     writer.direct_connected(&target);

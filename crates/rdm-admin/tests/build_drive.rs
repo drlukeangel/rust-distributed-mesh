@@ -2170,12 +2170,12 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh2.admin.1".to_string()]);
 }
 
-/// CONTRACT (R12 / i143 e12.s47 #64): a node-admin born as `<path>.new` and renamed in place by
-/// `node.name.update` to `<path>` acts and spans under the name it holds now (`<path>`), never the
-/// boot `PathName` its structs were constructed with (`<path>.new`). Its `ControlPlane` submits, its
+/// CONTRACT (R12 / i143 e12.s47 #64): a node-admin born as `mesh1.admin.9` and renamed in place by
+/// `node.name.update` to `mesh1.admin.1` acts and spans under the name it holds now, never the boot
+/// `PathName` its structs were constructed with. Its `ControlPlane` submits, its
 /// `ClaimDoor` claims, its `DriveEnv` drives, its `RpcDispatcher` dispatches in-process to its own
 /// `RunDoor` and `BuildExecutor`, its `NodeRows` writes rows, and every control-plane, Build and
-/// node-row span names `mesh1.admin.1` and never `mesh1.admin.1.new`.
+/// node-row span names `mesh1.admin.1` and never `mesh1.admin.9`.
 #[test]
 fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_its_boot_name() {
     use tracing_subscriber::layer::SubscriberExt;
@@ -2192,7 +2192,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
     let _g = tracing::dispatcher::set_default(&dispatch);
 
     rt.block_on(async {
-        let boot: PathName = "mesh1.admin.1.new".parse().unwrap();
+        let boot: PathName = "mesh1.admin.9".parse().unwrap();
         let held: PathName = "mesh1.admin.1".parse().unwrap();
         let t = Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
@@ -2291,8 +2291,8 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         for kv in &s.attributes {
             let val = kv.value.to_string();
             assert!(
-                !val.contains("mesh1.admin.1.new"),
-                "span {} attribute {}={} still carries the boot name mesh1.admin.1.new",
+                !val.contains("mesh1.admin.9"),
+                "span {} attribute {}={} still carries the boot name mesh1.admin.9",
                 s.name,
                 kv.key,
                 val

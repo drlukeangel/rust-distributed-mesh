@@ -28,7 +28,7 @@ async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, sc
     }
 }
 
-/// A live `mesh1.rpc.1.new` the admin side has heard ReadyForTraffic and resolves.
+/// A live `mesh1.rpc.7` the admin side has heard ReadyForTraffic and resolves.
 async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) -> (Launch, node::RunningNode) {
     let (launch, running, _) = live_node_with(admin, dir, fabric, |b| b).await;
     (launch, running)
@@ -42,7 +42,7 @@ async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &Fabri
     let launch = Launch {
         fabric: "fabric1".into(),
         fabric_id: fabric.clone(),
-        name: "mesh1.rpc.1.new".parse().unwrap(),
+        name: "mesh1.rpc.7".parse().unwrap(),
         node_id: NodeId::mint(),
         incarnation: IncarnationId::mint(),
         supersedes: None,
@@ -195,7 +195,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let retired = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1.new".into() };
+        let retired = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.7".into() };
         let reply = call_on(&admin, &target, &retired, None).await;
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
         let all = NodeCommandRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };

@@ -781,12 +781,11 @@ fn plan_with(
     // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
-    // A `<name>.new` successor is its recipe's, never surplus: a recipe that failed stops at its step,
-    // and resuming it or running its compensation steps is the caller's (lifecycles/node-replace.md
-    // "Rollback").
+    // A recipe that failed stops at its step, and resuming it or running its compensation steps is the
+    // caller's (lifecycles/node-replace.md "Rollback").
     let mut extra: Vec<&PathName> = observed
         .members()
-        .filter(|n| action.is_none() && !n.name.new && (n.status.is_live() || n.parked || n.os_stopped.is_some()) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .filter(|n| action.is_none() && (n.status.is_live() || n.parked || n.os_stopped.is_some()) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
     extra.sort();

@@ -586,8 +586,7 @@ pub async fn reconcile_drift(
     // taken only once no exited birth is left to repair.
     let mut surplus: Vec<String> = t
         .members()
-        // A `<name>.new` successor is its recipe's, never surplus (lifecycles/node-replace.md "Rollback").
-        .filter(|n| n.status.is_live() && !n.name.new && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
+        .filter(|n| n.status.is_live() && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
         .filter(|n| n.mesh == me.mesh || hold(&n.mesh).is_none())
         // A birth whose retirement the Build already receipted (`NodeDeleting` of this exact birth) is
         // not surplus: that operation retires it, and this view is only late in hearing it go.

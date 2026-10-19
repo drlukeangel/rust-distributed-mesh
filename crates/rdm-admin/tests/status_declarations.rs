@@ -1190,10 +1190,10 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
     eprintln!("trace {trace}: rdm.node_admin.node.create.via-node-row node=mesh2.admin.1 subject=mesh2.rpc.2 outcome=row-seeded > rdm.node_admin.node.update.via-config node=mesh2.admin.1 outcome=config-updated");
 }
 
-/// A successor born `mesh1.rpc.3.new`, live in the mesh-primary's view, serving Status that answers
+/// A successor born `mesh1.rpc.8`, live in the mesh-primary's view, serving Status that answers
 /// every request `Applied` and records it; the mesh-primary's node-RPC client resolves it.
 async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
-    let b = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
+    let b = birth("mesh1.rpc.8", NodeKind::RpcNode, "mesh1", false, false);
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node(&b).await;
     configs_door(rig, &node).await;
@@ -1204,7 +1204,7 @@ async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
 /// answering `node.connections.delete` with every connection cut and nothing held, `node.mesh.leave`
 /// with its mesh left, and every other request `Applied`.
 async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
-    let mut b = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
+    let mut b = birth("mesh1.rpc.8", NodeKind::RpcNode, "mesh1", false, false);
     (b.node.status, b.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |req| match req {
@@ -1278,9 +1278,9 @@ fn outcomes_and_connections(spans: &[(String, BTreeMap<String, String>)]) -> Vec
 /// ready-for-traffic node, or one still holding a connection, is refused"; "the precondition holds,
 /// else `RejectedAdmittingConnections { status, held_connections }`"; §2.4 "Refused before the claim
 /// ...: nothing written, nothing changed"): a caller's `node.name.update` of the live,
-/// ready-for-traffic successor `mesh1.rpc.3.new` to the name `3` at mesh1's primary is refused
+/// ready-for-traffic successor `mesh1.rpc.8` to the name `3` at mesh1's primary is refused
 /// `RejectedAdmittingConnections { status: ReadyForTraffic, held_connections: [] }`. Nothing is claimed
-/// (no row at `mesh1.rpc.3`), the view keeps the birth at `.new`, and the birth is told nothing. One
+/// (no row at `mesh1.rpc.3`), the view keeps the birth at `mesh1.rpc.8`, and the birth is told nothing. One
 /// `rdm.node_admin.node.name.update.via-writer` span says `rejected-admitting-connections` with
 /// `traffic=ReadyForTraffic` and `connections=none-deleted`. What must NOT happen: the row written, the
 /// birth told `ApplyNodeName`, or `NameUpdated`.
@@ -1305,13 +1305,13 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
         (Some("rejected-admitting-connections"), Some("ReadyForTraffic"), Some("none-deleted"), None),
         "{attrs:?}"
     );
-    eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.3.new name=3 traffic=ReadyForTraffic connections=none-deleted outcome=rejected-admitting-connections");
+    eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.8 name=3 traffic=ReadyForTraffic connections=none-deleted outcome=rejected-admitting-connections");
 }
 
 /// CONTRACT (node-name-update.md Precondition: "The node is live and admits no connection: this
 /// mesh-primary holds the birth's `node.connections.deleted` of an `All`, then its `node.mesh.left`
 /// ..., and it holds zero connections"; steps 4-5; Completion "The left node: `node.name.updated` after
-/// `Applied`"): the successor `mesh1.rpc.3.new`, ConnectionsDeleting in the mesh-primary's view, is
+/// `Applied`"): the successor `mesh1.rpc.8`, ConnectionsDeleting in the mesh-primary's view, is
 /// refused the rename to `3` `RejectedAdmittingConnections { status: ConnectionsDeleting,
 /// held_connections: [] }`, nothing claimed and nothing told. A caller's `node.connections.delete {
 /// All }` through the mesh-primary is carried to the exact birth and answered with the birth's
@@ -1319,7 +1319,7 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
 /// birth still on its mesh (`connections=deleted`, `mesh=on-mesh`). The mesh-primary carries
 /// `LeaveMesh` to the exact birth (node-mesh-leave.md) and holds its `MeshLeft`; the same
 /// `node.name.update` then claims `mesh1.rpc.3`, puts the row there carrying `renamed_from:
-/// mesh1.rpc.3.new`, releases the old key, tells the birth `ApplyNodeName` and ends `NameUpdated` on its
+/// mesh1.rpc.8`, releases the old key, tells the birth `ApplyNodeName` and ends `NameUpdated` on its
 /// `Applied`. A start begins the birth's next cycle: neither receipt is carried over, and a rename after
 /// it is refused again. What must NOT happen: a node whose connections were not deleted, or one still
 /// on its mesh, taking another name, or a started one renamed on its last cycle's receipts.
@@ -1342,9 +1342,9 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
         assert_eq!(on_mesh, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] }, "a birth still on its mesh keeps its name");
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed while the birth is on its mesh");
 
-        let left = rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.3.new").await;
+        let left = rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.8").await;
         assert!(matches!(&left, Ok(StatusReply::MeshLeft { .. })), "the mesh-primary carries the leave and the birth answers MeshLeft: {left:?}");
-        assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.3.new")), "the leave is carried to the exact birth");
+        assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.8")), "the leave is carried to the exact birth");
         let applied = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(applied, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the row at the new name");
@@ -1354,7 +1354,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
 
         // A start begins the birth's next cycle: its last cycle's receipts do not carry over.
         rig.authority.begin_cycle(&succ.node, succ.node.incarnation_id.as_ref().unwrap()).await;
-        let again = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3.new")).await);
+        let again = reply(&call(&rig, &b["admin2"], &update_name(&succ, "8")).await);
         assert!(matches!(&again, StatusReply::RejectedAdmittingConnections { held_connections, .. } if held_connections.is_empty()), "a started birth is refused until its connections are deleted and it leaves its mesh again: {again:?}");
     });
     let spans = cap.spans(NAME_SPAN);
@@ -1375,9 +1375,9 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
     assert_eq!(carried.len(), 1, "{carried:?}");
     assert_eq!((carried[0].1.get("scope").map(String::as_str), carried[0].1.get("status_at_cut").map(String::as_str), carried[0].1.get("outcome").map(String::as_str)), (Some("all"), Some("ConnectionsDeleting"), Some("connections-deleted")), "{carried:?}");
     let leaves = cap.spans("rdm.node_admin.node.mesh.update.via-mesh-primary");
-    assert_eq!(leaves.iter().map(|(_, a)| (a.get("subject").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![(s("mesh1.rpc.3.new"), s("mesh-left"))], "{leaves:?}");
+    assert_eq!(leaves.iter().map(|(_, a)| (a.get("subject").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![(s("mesh1.rpc.8"), s("mesh-left"))], "{leaves:?}");
     eprintln!("trace {}: rdm.node_admin.node.connections.delete.via-mesh-primary scope=all status_at_cut=ConnectionsDeleting outcome=connections-deleted", carried[0].0);
-    eprintln!("trace {}: rdm.node_admin.node.mesh.update.via-mesh-primary subject=mesh1.rpc.3.new outcome=mesh-left", leaves[0].0);
+    eprintln!("trace {}: rdm.node_admin.node.mesh.update.via-mesh-primary subject=mesh1.rpc.8 outcome=mesh-left", leaves[0].0);
     for (trace, attrs) in &spans {
         eprintln!("trace {trace}: {NAME_SPAN} outcome={:?} connections={:?} mesh={:?} traffic={:?} to={:?} answered={:?}", attrs.get("outcome"), attrs.get("connections"), attrs.get("mesh"), attrs.get("traffic"), attrs.get("to"), attrs.get("answered"));
     }
@@ -1385,7 +1385,7 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_i
 
 /// CONTRACT (proposal §7: "connections-deleted node still holding one connection: refused
 /// `RejectedAdmittingConnections { held_connections: [id] }`, nothing written"): the successor
-/// `mesh1.rpc.3.new`, ConnectionsDeleting, whose mesh-primary holds its `node.connections.deleted` of an `All`
+/// `mesh1.rpc.8`, ConnectionsDeleting, whose mesh-primary holds its `node.connections.deleted` of an `All`
 /// that left one connection held, is refused the rename to `3` naming that connection by id. No row
 /// at `mesh1.rpc.3`, nothing told. The span says `connections=held`.
 #[test]
@@ -1443,7 +1443,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
 
 /// CONTRACT (proposal §2.1 Caller / executor: "Caller to the node's mesh-primary ... (Forward `0x1A`
 /// when not directly reachable)"): a caller of another mesh whose client reaches mesh1's primary only
-/// through a carrier (mesh1.admin.2) renames the successor `mesh1.rpc.3.new`, whose
+/// through a carrier (mesh1.admin.2) renames the successor `mesh1.rpc.8`, whose
 /// `node.connections.deleted` and then `node.mesh.left` mesh1's primary holds, to the name `3` with
 /// `node.name.update`: the call
 /// ends `NameUpdated` naming the exact birth, the row at `mesh1.rpc.3` holds it, the birth was told
@@ -1457,8 +1457,8 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         let (rig, b) = rig().await;
         let (succ, node) = successor_connections_deleted(&rig).await;
         assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }), "the successor's connections are deleted first");
-        let leave = leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.3.new");
-        assert!(matches!(rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.3.new").await, Ok(StatusReply::MeshLeft { .. })), "then it leaves its mesh");
+        let leave = leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.8");
+        assert!(matches!(rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.8").await, Ok(StatusReply::MeshLeft { .. })), "then it leaves its mesh");
         let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier.clone());
@@ -1670,7 +1670,7 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
 /// CONTRACT (proposal §2.1 Idempotency: "A repeat naming the name the row already holds ... for a
 /// live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`"; §2.3 "Row
 /// written, apply unresolved ... the resubmit resends `ApplyNodeName`, and completes on `Applied` or
-/// `AlreadyApplied` from the node, never from the row"): the successor `mesh1.rpc.3.new`, its
+/// `AlreadyApplied` from the node, never from the row"): the successor `mesh1.rpc.8`, its
 /// connections deleted and its mesh left, renamed to `3` answers the apply `NotReady`: the command ends `NameNotApplied {
 /// node: mesh1.rpc.3, answered: not-ready }` with the row moved. The same command again resends
 /// `ApplyNodeName`, which the node answers `AlreadyApplied`, and ends `NameUpdated`. What must NOT
@@ -1680,7 +1680,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        let mut succ = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
+        let mut succ = birth("mesh1.rpc.8", NodeKind::RpcNode, "mesh1", false, false);
         (succ.node.status, succ.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         rig.topology.write().await.nodes.push(succ.node.clone());
         let applies = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1694,8 +1694,8 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         .await;
         configs_door(&rig, &node).await;
         assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }));
-        let leave = leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.3.new");
-        assert!(matches!(rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.3.new").await, Ok(StatusReply::MeshLeft { .. })));
+        let leave = leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.8");
+        assert!(matches!(rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.8").await, Ok(StatusReply::MeshLeft { .. })));
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert!(matches!(&incomplete, StatusReply::NameNotApplied { node, answered, .. } if node == "mesh1.rpc.3" && answered == "not-ready"), "{incomplete:?}");

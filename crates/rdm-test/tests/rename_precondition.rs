@@ -3,12 +3,12 @@
 //! `node.connections.delete { scope: All }` closes every one of them, writing each drop under the
 //! node's current name, before the name can move.
 //!
-//! CONTRACT: `mesh1.rpc.1.new` originates a data-plane connection to its admin and one to its peer
+//! CONTRACT: `mesh1.rpc.7` originates a data-plane connection to its admin and one to its peer
 //! `mesh1.rpc.2`, so its own connections log holds a `connected` entry to each. Told
 //! `ApplyNodeName { mesh1.rpc.1 }`, it answers `Busy` naming both routes, holding nothing. Its admin's
 //! `DeleteConnections { All }` answers `ConnectionsDeleted` closing both routes' open entries and
-//! holding none, each drop written under `mesh1.rpc.1.new`; the same `ApplyNodeName` then answers
-//! `Applied`. No `connected` entry under `mesh1.rpc.1.new` is the latest of its pair after the
+//! holding none, each drop written under `mesh1.rpc.7`; the same `ApplyNodeName` then answers
+//! `Applied`. No `connected` entry under `mesh1.rpc.7` is the latest of its pair after the
 //! rename, and once the node joins its mesh again the next entry it writes (it dials its peer again)
 //! names `mesh1.rpc.1`. What must
 //! NOT happen: a node that still holds connections takes another name, a route left open
@@ -53,7 +53,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         std::fs::create_dir_all(&store).unwrap();
         // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
         crate::common::store_past_state_commit(&store, &fabric).await;
-        let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
+        let born: PathName = "mesh1.rpc.7".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
         let launch_of = |name: &PathName| {

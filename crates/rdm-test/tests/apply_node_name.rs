@@ -1,10 +1,10 @@
 //! A live node takes the name its mesh-primary's row now holds (`ApplyNodeName`; node-rpc-envelope.md
 //! "Meta and config", R12/R13, R-CR1).
 //!
-//! CONTRACT: a node born `mesh1.rpc.1.new` that originated a data-plane connection to its admin
+//! CONTRACT: a node born `mesh1.rpc.7` that originated a data-plane connection to its admin
 //! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `BusyHoldingConnections` naming that connection
 //! by the minted id of its open entry (proposal node-properties-own-commands.md §2.2 step 6), and holds nothing:
-//! its digest still says `.new`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
+//! its digest still says `mesh1.rpc.7`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
 //! node's `node.connections.delete { All }` has completed): `All`, held open by one call in flight
 //! at the node until the cell releases it, answers `ConnectionsDeleted` with an `Established`
 //! receipt counting that call and closing the route; only then is the name applied: `Applied`, and
@@ -43,7 +43,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
-        let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
+        let born: PathName = "mesh1.rpc.7".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -150,10 +150,10 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
         let fields_of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect() };
         let deletes = fields_of("rdm.node_admin.connection.delete.via-connections-delete");
         assert_eq!(deletes.len(), 1, "All deletes the one data-plane connection, on its own span: {deletes:#?}");
-        assert_eq!((deletes[0].get("entry"), deletes[0].get("node").map(String::as_str), deletes[0].get("destination").map(String::as_str)), (Some(&closed), Some("mesh1.rpc.1.new"), Some("mesh1.admin.1")), "{deletes:#?}");
+        assert_eq!((deletes[0].get("entry"), deletes[0].get("node").map(String::as_str), deletes[0].get("destination").map(String::as_str)), (Some(&closed), Some("mesh1.rpc.7"), Some("mesh1.admin.1")), "{deletes:#?}");
         let observed = fields_of("rdm.node_admin.connection.update.via-observed");
         let dialled = observed.iter().find(|f| f.get("entry") == Some(&closed)).unwrap_or_else(|| panic!("the observed fact names the entry All closed ({closed}): {observed:#?}"));
-        assert_eq!((dialled.get("source").map(String::as_str), dialled.get("destination").map(String::as_str), dialled.get("origin").map(String::as_str)), (Some("mesh1.rpc.1.new"), Some("mesh1.admin.1"), Some("dial")), "{dialled:#?}");
+        assert_eq!((dialled.get("source").map(String::as_str), dialled.get("destination").map(String::as_str), dialled.get("origin").map(String::as_str)), (Some("mesh1.rpc.7"), Some("mesh1.admin.1"), Some("dial")), "{dialled:#?}");
         assert!(dialled.get("peer").is_some_and(|p| !p.is_empty()) && dialled.get("peer") == deletes[0].get("peer"), "the observed fact and the delete name the same peer: {dialled:#?} vs {deletes:#?}");
         assert!(fields_of("rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "All hard-cuts no pool");
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);

@@ -421,9 +421,6 @@ impl BuildExecutor {
         if let Ok(birth) = self.executor.parse::<PathName>() {
             let t = self.topology.read().await;
             if t.node(&birth).is_none() {
-                if birth.new && t.node(&birth.base()).is_some() {
-                    return birth.base().to_string();
-                }
                 if let Some(p) = t.cohort_primary(&birth.mesh, NodeKind::NodeAdmin) {
                     return p.name.to_string();
                 }
