@@ -38,7 +38,9 @@ unset CARGO_TARGET_DIR
 # OTLP over HTTP (e12.s80: the exporter is http-proto); 5318 is the collector's OTLP/HTTP port, 5317 its gRPC one.
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.68.99:5318
 # Ports: every node binds :0 and the OS assigns it (R-J1); a gate reserves no port range.
-JOBS="${GATE_JOBS:-40}"
+# 12 at once on this box's 20 cores (2026-10-18: release at 17a8a449 on 20 cores, 40 jobs: 3,441 evidence
+# writes stalled up to 18.4 s and 16 reds; 12 jobs: 1,169 up to 531 ms and 11, the timing reds gone).
+JOBS="${GATE_JOBS:-12}"
 # The estate binaries come from the one build below: no job builds or relinks a binary while other
 # stems are starting.
 export I143_ACCEPTANCE_SKIP_BUILD=1
