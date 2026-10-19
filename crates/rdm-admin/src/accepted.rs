@@ -469,7 +469,22 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &[])
+    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &[], None)
+}
+
+/// The re-created node-admin the fabric seat is owed back to (elections §4.3: "Once that admin is Ready,
+/// the fabric-primary hands the seat back to it by the committed handover of §4.4, naming it as the
+/// successor"): the fabric seat was taken from `taken`'s lost birth, it is held outside that birth's
+/// mesh, and that mesh's primary seat is held by a ReadyForTraffic node-admin other than the lost
+/// birth. `None` once the seat is back in that mesh, and for a fabric seat no takeover moved.
+pub fn handback_due(observed: &Topology, taken: Option<&(u64, rdm_core::handover::HandoverBirth)>) -> Option<PathName> {
+    let (_, lost) = taken?;
+    let holder = observed.fabric_primary()?;
+    if holder.mesh == lost.mesh {
+        return None;
+    }
+    let recreated = observed.cohort_primary(&lost.mesh, NodeKind::NodeAdmin)?;
+    (recreated.node_id != lost.node_id && recreated.status == NodeStatus::ReadyForTraffic).then(|| recreated.name.clone())
 }
 
 /// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped
@@ -588,8 +603,8 @@ pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName
 }
 
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
-pub fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
-    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &build.steps)
+pub fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology, handback: Option<&PathName>) -> BuildPlan {
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &build.steps, handback)
 }
 
 /// The meshes, by name, whose mesh.delete `build` admitted (its `AcceptedRoster` receipt) and has not
@@ -614,6 +629,7 @@ fn plan_with(
     progress: ActionProgress,
     open_deletes: &BTreeSet<String>,
     steps: &[crate::build_state::BuildStepReceipt],
+    handback: Option<&PathName>,
 ) -> BuildPlan {
     let mut ops = Vec::new();
     // A standalone drain or stop is its one operation and nothing else: the topology is unchanged,
@@ -790,6 +806,13 @@ fn plan_with(
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m).in_scope(|| tracing::info!(error = %e, "the mesh's shutdown is not planned")),
         }
     }
+    // The handback (elections §4.3, §4.4): an attempt with no action owes the fabric seat back to the
+    // re-created node-admin of the mesh it was taken from, after everything the topology owes; the drive
+    // moves the seat as the operation's preceding update, naming that admin, and once the seat is back
+    // nothing plans it again.
+    if let (None, Some(to)) = (action, handback) {
+        ops.push(BuildOperation::HandFabricSeat { to: to.clone() });
+    }
     BuildPlan { operations: ops }
 }
 
@@ -894,6 +917,42 @@ mod tests {
 
     fn counts(name: &str, a: u32, r: u32) -> MeshDesired {
         MeshDesired::of(name.to_string(), [(rdm_core::NodeKind::NodeAdmin, a), (rdm_core::NodeKind::RpcNode, r)])
+    }
+
+    /// CONTRACT (elections §4.3: "Once that admin is Ready, the fabric-primary hands the seat back to it by
+    /// the committed handover of §4.4, naming it as the successor"): after a takeover moved the fabric
+    /// seat from mesh1's lost birth to mesh2, the handback is owed to mesh1's re-created node-admin once it
+    /// is ReadyForTraffic and holds mesh1's primary seat, and an attempt with no action plans it after
+    /// everything the topology owes. Never owed with no takeover, while the re-created admin is Pending, to
+    /// the lost birth itself, or once the seat is back in mesh1; an attempt that carries an action never
+    /// plans it.
+    #[test]
+    fn the_fabric_seat_is_owed_back_to_the_lost_meshs_re_created_admin_once_it_is_ready() {
+        use NodeStatus::{Pending as P, ReadyForTraffic as R};
+        let lost = |o: &Topology| {
+            let lost = o.node(&"mesh1.admin.1".parse().unwrap()).unwrap();
+            (4u64, rdm_core::handover::HandoverBirth { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: lost.incarnation_id.clone().unwrap() })
+        };
+        let view = |recreated: NodeStatus, fabric_in_mesh2: bool| {
+            let mut o = observed(vec![n("mesh1.admin.1", recreated, true), n("mesh1.rpc.1", R, true), n("mesh2.admin.1", R, true), n("mesh2.rpc.1", R, true)], &["mesh1", "mesh2"]);
+            let fp = if fabric_in_mesh2 { "mesh2.admin.1" } else { "mesh1.admin.1" };
+            o.nodes.iter_mut().for_each(|x| x.is_fabric_primary = x.name.to_string() == fp);
+            o
+        };
+        let o = view(R, true);
+        let taken = lost(&o);
+        assert_eq!(handback_due(&o, Some(&taken)).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "owed to mesh1's re-created, Ready primary");
+        assert_eq!(handback_due(&o, None), None, "no takeover moved the seat");
+        assert_eq!(handback_due(&view(P, true), Some(&taken)), None, "the re-created admin is still Pending");
+        assert_eq!(handback_due(&view(R, false), Some(&taken)), None, "the seat is back in mesh1");
+        let as_lost = (taken.0, rdm_core::handover::HandoverBirth { node_id: o.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone(), ..taken.1.clone() });
+        assert_eq!(handback_due(&o, Some(&as_lost)), None, "the primary of mesh1 is the lost birth itself");
+        let cur = t(&[("mesh1", 1, 1), ("mesh2", 1, 1)]);
+        let to: PathName = "mesh1.admin.1".parse().unwrap();
+        let planned = plan_with(&cur, &o, None, ActionProgress::default(), &BTreeSet::new(), &[], Some(&to)).operations;
+        assert_eq!(planned, vec![BuildOperation::HandFabricSeat { to: to.clone() }], "the converged topology owes nothing else");
+        let restart = AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: o.node(&"mesh2.rpc.1".parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
+        assert!(!plan_with(&cur, &o, Some(&restart), ActionProgress::default(), &BTreeSet::new(), &[], Some(&to)).operations.iter().any(|op| matches!(op, BuildOperation::HandFabricSeat { .. })), "an attempt with an action repairs exactly its birth");
     }
 
     #[test]
@@ -1023,7 +1082,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
         assert_eq!(
-            plan_with(&cur, &o, None, ActionProgress::default(), &open, &[]).operations,
+            plan_with(&cur, &o, None, ActionProgress::default(), &open, &[], None).operations,
             vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }],
             "the Build that admitted its mesh.delete and holds no completion resumes it"
         );
@@ -1049,7 +1108,7 @@ mod tests {
         let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: birth.clone() };
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![BuildOperation::RetireNode { node: path.clone(), exited: None }]);
         let finished = ActionProgress { started: true, finished: true, ..ActionProgress::default() };
-        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &[]).operations, vec![], "nothing once its Complete names the birth");
+        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &[], None).operations, vec![], "nothing once its Complete names the birth");
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
         let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
@@ -1286,13 +1345,13 @@ mod tests {
             claimant: None,
             lanes: Default::default(),
         };
-        assert_eq!(plan_for_build(&build(vec![]), &o).operations, all, "nothing receipted: every step");
+        assert_eq!(plan_for_build(&build(vec![]), &o, None).operations, all, "nothing receipted: every step");
         let first_three = vec![receipt(4, &keys[0]), receipt(4, &keys[1]), receipt(4, &keys[2])];
-        assert_eq!(plan_for_build(&build(first_three.clone()), &o).operations, all[3..].to_vec(), "a resume runs only what is left");
-        assert_eq!(plan_for_build(&build(vec![receipt(3, &keys[1])]), &o).operations, all, "another action's Complete of the same operation is no progress");
+        assert_eq!(plan_for_build(&build(first_three.clone()), &o, None).operations, all[3..].to_vec(), "a resume runs only what is left");
+        assert_eq!(plan_for_build(&build(vec![receipt(3, &keys[1])]), &o, None).operations, all, "another action's Complete of the same operation is no progress");
         let mut done = first_three;
         done.extend(keys[3..].iter().map(|k| receipt(4, k)));
-        assert_eq!(plan_for_build(&build(done), &o).operations, vec![], "every step receipted: the recipe is done");
+        assert_eq!(plan_for_build(&build(done), &o, None).operations, vec![], "every step receipted: the recipe is done");
         // Refusals.
         assert_eq!(recipe_action(vec![], &o), Err(BuildReject::EmptyRecipe));
         assert_eq!(
@@ -1392,10 +1451,10 @@ mod tests {
             lanes: Default::default(),
         };
         let gone = mn();
-        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, op, "the view never names the parked birth (a fabric-primary that did not run its replace) and nothing began: owed");
-        assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting")]), &gone).operations, op, "begun, the birth gone from the view: still owed");
-        assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting"), step(9, "Complete")]), &gone).operations, vec![], "completed for this birth");
-        assert_eq!(plan_for_build(&build(vec![step(8, "NodeDeleting"), step(8, "Complete")]), &gone).operations, op, "another birth's Complete is not this delete's");
+        assert_eq!(plan_for_build(&build(vec![]), &gone, None).operations, op, "the view never names the parked birth (a fabric-primary that did not run its replace) and nothing began: owed");
+        assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting")]), &gone, None).operations, op, "begun, the birth gone from the view: still owed");
+        assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting"), step(9, "Complete")]), &gone, None).operations, vec![], "completed for this birth");
+        assert_eq!(plan_for_build(&build(vec![step(8, "NodeDeleting"), step(8, "Complete")]), &gone, None).operations, op, "another birth's Complete is not this delete's");
     }
 
     /// CONTRACT: a standalone stop is planned until its `Complete` receipt names the exact birth; after it,
@@ -1444,11 +1503,11 @@ mod tests {
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
         let stop = vec![BuildOperation::StopNode { node: path.clone(), from_incarnation: from.clone() }];
-        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, vec![], "the view never held the birth and nothing began");
-        assert_eq!(plan_for_build(&build(vec![step(7, "StopNode")]), &gone).operations, stop, "begun, the birth pruned from the view: still owed");
-        assert_eq!(plan_for_build(&build(vec![step(7, "StopNode"), step(7, "Complete")]), &gone).operations, vec![], "completed for this birth");
-        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete")]), &gone).operations, vec![], "another birth's stop neither began nor completed this one");
-        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete"), step(7, "StopNode")]), &gone).operations, stop, "another birth's Complete is not this stop's");
+        assert_eq!(plan_for_build(&build(vec![]), &gone, None).operations, vec![], "the view never held the birth and nothing began");
+        assert_eq!(plan_for_build(&build(vec![step(7, "StopNode")]), &gone, None).operations, stop, "begun, the birth pruned from the view: still owed");
+        assert_eq!(plan_for_build(&build(vec![step(7, "StopNode"), step(7, "Complete")]), &gone, None).operations, vec![], "completed for this birth");
+        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete")]), &gone, None).operations, vec![], "another birth's stop neither began nor completed this one");
+        assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete"), step(7, "StopNode")]), &gone, None).operations, stop, "another birth's Complete is not this stop's");
     }
 
     /// CONTRACT (node-recovery.md, Operation summary "Steps"; proposal node-properties-own-commands.md
@@ -1511,7 +1570,7 @@ mod tests {
             claimant: None,
             lanes: Default::default(),
         };
-        let keys = |steps: Vec<BuildStepReceipt>, o: &Topology| plan_for_build(&build(&path, &node_id, steps), o).operations.iter().map(|op| op.key()).collect::<Vec<_>>();
+        let keys = |steps: Vec<BuildStepReceipt>, o: &Topology| plan_for_build(&build(&path, &node_id, steps), o, None).operations.iter().map(|op| op.key()).collect::<Vec<_>>();
         let all = vec![format!("node.delete:{path}"), format!("node.create:{path}")];
         // Whatever the view holds at the path, and with another member unheard and a third missing:
         // the two operations, nothing else.
@@ -1521,7 +1580,7 @@ mod tests {
             o.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.3").unwrap().status = dead;
             o.nodes.retain(|x| x.name.to_string() != "mesh1.admin.2");
             assert_eq!(keys(vec![], &o), all, "{dead:?}");
-            for op in &plan_for_build(&build(&path, &node_id, vec![]), &o).operations {
+            for op in &plan_for_build(&build(&path, &node_id, vec![]), &o, None).operations {
                 assert_eq!(crate::executor::executor_for(op, &o).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"), "{} is the member's mesh-primary's", op.key());
             }
         }
@@ -1546,7 +1605,7 @@ mod tests {
         let admin: PathName = "mesh1.admin.1".parse().unwrap();
         let mut o = mn();
         o.nodes.iter_mut().find(|x| x.name == admin).unwrap().status = NodeStatus::PendingReconnect;
-        let ops = plan_for_build(&build(&admin, &node_id, vec![]), &o).operations;
+        let ops = plan_for_build(&build(&admin, &node_id, vec![]), &o, None).operations;
         assert_eq!(ops.iter().map(|op| op.key()).collect::<Vec<_>>(), vec![format!("node.delete:{admin}"), format!("node.create:{admin}")]);
         for op in &ops {
             assert_eq!(crate::executor::executor_for(op, &o).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.2"), "{} of the exited mesh-primary is executed by its mesh's next admin", op.key());

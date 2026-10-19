@@ -792,7 +792,7 @@ pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, d
         (None, _) => return Err(RecoveryNotRun::Broke { why: format!("{me}: attempt {} of {} is a fabric-lane attempt that names no recovered birth: a recovery runs in its mesh's drift lane, or in the fabric lane for a hung mesh-primary", opened.attempt, opened.build_id), opened }),
     };
     let observed = control.topology.read().await.clone();
-    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
+    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed, None).operations, hand_off_to: None };
     let context = crate::build_claim::current_context();
     let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &me.to_string(), &context, &[], &plan).await {
         Attached::Refused(reply) => return Err(RecoveryNotRun::RunRefused { opened, reply }),

@@ -698,7 +698,7 @@ impl HandoverDoor {
                 return rdm_core::reply::handover::bounded_not_authority(&reason);
             }
         };
-        match self.update_primary(moving, mesh_expected, &build_id, attempt, &operation).await {
+        match self.update_primary(moving, mesh_expected, &build_id, attempt, &operation, None).await {
             Ok(revisions) => Reply::PrimaryUpdated { revisions },
             Err(refusal) => refusal,
         }
@@ -713,7 +713,7 @@ impl HandoverDoor {
     /// revision. After the row the seat is the successor's whatever the call returns: a call with no
     /// node.primary.updated ends `Incomplete`, and a later attempt or an identical retry replays from
     /// the row.
-    pub async fn update_primary(&self, moving: Moving, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, Reply> {
+    pub async fn update_primary(&self, moving: Moving, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<CommittedSeat>, Reply> {
         let me = self.held_name();
         let span = tracing::info_span!(
             "rdm.node_admin.seat.update.via-primary-updating",
@@ -727,7 +727,7 @@ impl HandoverDoor {
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
         );
-        let r = self.update_primary_in(moving, expected, build_id, attempt, operation).instrument(span.clone()).await;
+        let r = self.update_primary_in(moving, expected, build_id, attempt, operation, named).instrument(span.clone()).await;
         if r.is_ok() {
             self.memo.acknowledge(operation, false);
         }
@@ -744,16 +744,16 @@ impl HandoverDoor {
     /// fabric-primary moving its own seats, having nothing above it), its end told apart as the step
     /// needs it: refused before the row, incomplete after it, or `Failed { step, reason }` when the new
     /// holder's process is gone, provider-confirmed, after the row (ruling R-PU2, Q10).
-    pub async fn move_own_seats(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
+    pub async fn move_own_seats(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
         use crate::build_drive::SeatMoveEnd;
-        self.update_primary(moving, None, build_id, attempt, operation).await.map_err(|e| match e {
+        self.update_primary(moving, None, build_id, attempt, operation, named).await.map_err(|e| match e {
             Reply::Failed { step, reason, code } => SeatMoveEnd::Failed { step, reason, code },
             r @ Reply::Incomplete { .. } => SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name())),
             other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
         })
     }
 
-    async fn update_primary_in(&self, moving: Moving, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, Reply> {
+    async fn update_primary_in(&self, moving: Moving, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str, named: Option<&PathName>) -> Result<Vec<CommittedSeat>, Reply> {
         let _one_at_a_time = self.locks.updating.lock().await;
         let me_name = self.held_name();
         let me = self.me_birth();
@@ -817,7 +817,11 @@ impl HandoverDoor {
             refused("holder", "record-absent", &format!("{me_name} is not a member of its own view"), &of, None);
             return Err(rdm_core::reply::handover::bounded_record_absent(&record, &me_name.to_string()));
         };
-        let successor = match crate::election::commanded_successor(&nodes, &self.incumbency(), &me_node, moving) {
+        let chosen = match named {
+            Some(name) => crate::election::named_fabric_successor(&nodes, &self.incumbency(), &me_node, name),
+            None => crate::election::commanded_successor(&nodes, &self.incumbency(), &me_node, moving),
+        };
+        let successor = match chosen {
             Ok(n) => n,
             Err(text) => {
                 refused("holder", "no-successor", &text, &of, None);

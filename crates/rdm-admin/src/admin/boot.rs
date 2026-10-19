@@ -1659,8 +1659,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
                                         let runtime = runtime.clone();
                                         let boot = boot.clone();
-                                         let (records, topology, authority, mesh_name, fabric_name, view_provider, backbone_ready) =
-                                            (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone(), cfg.fabric.clone(), policy.provider, backbone.clone());
+                                         let (records, authority, mesh_name, fabric_name, view_provider, backbone_ready) =
+                                            (records.clone(), authority.clone(), cfg.mesh.clone(), cfg.fabric.clone(), policy.provider, backbone.clone());
                                         let park = park_gate.clone();
                                         let election_storage = fabric_storage.clone();
                                         tasks.push(tokio::spawn(async move {

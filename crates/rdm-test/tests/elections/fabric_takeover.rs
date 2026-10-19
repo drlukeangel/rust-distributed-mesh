@@ -407,6 +407,23 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
         Some(_) => inherited_env(estate.pid_of("mesh1.admin.1").await),
         None => None,
     };
+    // Elections §4.3: once the re-created admin is Ready, the fabric-primary hands the seat back to it by
+    // the committed handover of §4.4, naming it as the successor.
+    let handed_back = match &recreated {
+        Some(n) => {
+            let id = n.node_id.to_string();
+            let until = std::time::Instant::now() + floor * 12 + Duration::from_secs(60);
+            let mut back = false;
+            while !back && std::time::Instant::now() < until {
+                back = estate.node_views().await.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary);
+                if !back {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+            back
+        }
+        None => false,
+    };
     let moves = seat_moves(&estate);
     estate.stop().await;
     let spans = estate.spans();
@@ -439,6 +456,18 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
     // The re-born admin takes the vacant seat by the ordinary rule: an election row from the vacated revision.
     let seated = moves.iter().filter(|m| m["cause"] == "election").filter_map(mesh_seat).find(|x| s(&x["holder"]["node_id"]) == new.node_id.to_string()).unwrap_or_else(|| panic!("mesh1's re-born admin is seated by an election row: {moves:#?}"));
     assert_eq!((seated["from_revision"].as_u64(), seated["revision"].as_u64()), (Some(vacated_at), Some(vacated_at + 1)), "seated from the vacated revision: {seated}");
+    // The handback (§4.3, §4.4): one handover row moves the fabric seat from mesh2's admin to mesh1's
+    // re-created admin, from the takeover's revision to the next.
+    let fabric_seat = |m: &Value| m["seats"].as_array().into_iter().flatten().find(|x| x["seat"] == "FabricPrimary").cloned();
+    let taken_at = fabric_seat(takeovers[0]).and_then(|x| x["revision"].as_u64()).unwrap_or_else(|| panic!("the takeover row moves the fabric seat: {:#}", takeovers[0]));
+    let handbacks: Vec<&Value> = moves.iter().filter(|m| m["cause"]["handover"].is_object() && fabric_seat(m).is_some_and(|x| s(&x["holder"]["node_id"]) == new.node_id.to_string())).collect();
+    assert!(handed_back && handbacks.len() == 1, "the fabric-primary hands the seat back to mesh1's re-created admin {} by one handover row: {moves:#?}", new.node_id);
+    let back = fabric_seat(handbacks[0]).expect("the handover row moves the fabric seat");
+    assert_eq!((back["from_revision"].as_u64(), back["revision"].as_u64()), (Some(taken_at), Some(taken_at + 1)), "handed back from the takeover's revision: {back}");
+    // The fabric-primary runs the handback itself: its attempt is dispatched to no other node.
+    let cause = &handbacks[0]["cause"]["handover"];
+    let dispatched: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| s(&sp["attributes"]["attempt"]) == cause["attempt"].to_string() && s(&sp["attributes"]["build_id"]).replace('-', "").trim_start_matches("bid_") == s(&cause["build_id"])).map(|sp| s(&sp["attributes"]["executor"])).collect();
+    assert!(!dispatched.is_empty() && dispatched.iter().all(|e| *e == winner_name), "the handback attempt is the fabric-primary's own, dispatched to {winner_name} alone: {dispatched:?} for {cause}");
     estate.record_trace_url(admitted[0].split(' ').next().unwrap_or("").trim_matches('"'));
 }
 

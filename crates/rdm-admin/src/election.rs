@@ -209,6 +209,25 @@ pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) 
     hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
 
+/// The fabric seat's successor its holder names (elections §4.4: "or the successor the holder names
+/// (the re-created node-admin of the mesh that lost the seat, §4.3)"): `named`, when the fabric-successor
+/// resolution with the holder's mesh excluded holds it as a ReadyForTraffic node-admin that holds its own
+/// mesh's primary seat. Refused by name otherwise: in the holder's own mesh, unknown to the view, not
+/// Ready, or holding no mesh-primary seat.
+pub fn named_fabric_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, named: &PathName) -> Result<Node, String> {
+    if named.mesh == holder.mesh {
+        return Err(format!("cannot hand the fabric seat to {named}: it is in {}'s own mesh {}", holder.name, holder.mesh));
+    }
+    let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != holder.mesh).cloned().collect();
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone(), vacant: inc.vacant.clone() };
+    resolve_with(&mut hypothetical, &vacated);
+    match hypothetical.into_iter().find(|n| n.name == *named) {
+        Some(n) if n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic && n.is_primary => Ok(n),
+        Some(n) => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds it {:?}{}", holder.name, n.status, if n.is_primary { "" } else { ", holding no mesh-primary seat" })),
+        None => Err(format!("cannot hand the fabric seat to {named}: {}'s view holds no such node-admin", holder.name)),
+    }
+}
+
 /// The successor a yielding holder computes for its cohort seat (R-MT1, node.primary.update: "the MP
 /// determines who is the next MP"; fabric-node-lifecycle-elections.md §4.1 and §5: "a holder that yields
 /// ... hands the seat to the lowest ReadyForTraffic NodeId of its own mesh"): the lowest Ready node of

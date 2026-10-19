@@ -342,6 +342,9 @@ pub struct Drive {
     state: Mutex<DriveState>,
     wake: Notify,
     running: AtomicBool,
+    /// The takeover that moved the fabric seat, as this pass read the seat moves: what the handback
+    /// is planned from ([`crate::accepted::handback_due`]).
+    taken: Mutex<Option<(u64, rdm_core::handover::HandoverBirth)>>,
 }
 
 fn frame_key(f: &BuildReply) -> Option<String> {
@@ -361,12 +364,17 @@ fn frame_attempt(f: &BuildReply) -> u32 {
 
 impl Drive {
     fn new(build_id: BuildId) -> Arc<Self> {
-        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false) })
+        Arc::new(Self { build_id, first_attempt: std::sync::atomic::AtomicU32::new(0), state: Mutex::new(DriveState::default()), wake: Notify::new(), running: AtomicBool::new(false), taken: Mutex::new(None) })
     }
 
     /// A drive that no task makes frames for: the frames are pushed by the caller.
     pub fn detached(build_id: BuildId) -> Arc<Self> {
         Self::new(build_id)
+    }
+
+    /// The node-admin the fabric seat is owed back to in view `t`, from the takeover this pass read.
+    fn handback(&self, t: &Topology) -> Option<PathName> {
+        crate::accepted::handback_due(t, self.taken.lock().unwrap().as_ref())
     }
 
     /// Make a progress frame readable. A frame whose receipt key is already held is dropped, so a
@@ -741,7 +749,7 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
 }
 
 fn left(drive: &Drive, p: &BuildProjection, t: &Topology) -> Vec<BuildOperation> {
-    crate::accepted::plan_for_build(p, t).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
+    crate::accepted::plan_for_build(p, t, drive.handback(t).as_ref()).operations.into_iter().filter(|op| !p.completed_in_run(&op.key()) && !drive.completed_in(&op.key(), |a| p.reported_in_run(a))).collect()
 }
 
 /// The node-admin of `mesh` the Build already carried across the R-D1 fence: an operation on it has a
@@ -1055,6 +1063,7 @@ impl DriveEnv {
                 return end;
             }
             let me = self.held_name().await;
+            *drive.taken.lock().unwrap() = self.departure.taken_from().await;
             let p = match self.builds.read_build(&id).await {
                 Ok(p) => p,
                 Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} could not be read: {e}")),

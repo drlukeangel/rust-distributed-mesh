@@ -63,7 +63,7 @@ impl crate::build_drive::Gate for SeatGate {
             (false, false) => return Ok(()),
         };
         let update = update_operation(seat, build_id.as_str(), run, operation);
-        door.move_own_seats(moving, build_id.as_str(), attempt, &update).await?;
+        door.move_own_seats(moving, build_id.as_str(), attempt, &update, m.successor.as_ref()).await?;
         Ok(())
     }
 
@@ -598,7 +598,11 @@ pub async fn reconcile_drift(
         .map(|n| n.name.to_string())
         .collect();
     surplus.sort();
-    if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() {
+    // The handback (elections §4.3, §4.4): the fabric seat a takeover moved is owed back to the lost
+    // mesh's re-created node-admin once it is Ready and seated there. Its attempt carries no action: the
+    // plan holds the handback, and the drive moves the seat, naming that admin, as its preceding update.
+    let handback = crate::accepted::handback_due(t, taken);
+    if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() && handback.is_none() {
         return None;
     }
     // The node-admin a recovery owes a node.create: the carrier-edge-lost verdict's, or the fully crashed mesh's.
@@ -633,6 +637,10 @@ pub async fn reconcile_drift(
                     }
                 }
             }
+            None if surplus.is_empty() => match (&handback, taken) {
+                (Some(to), Some((at, _))) => (vec![format!("handback:{to}@{at}")], format!("handback: the fabric seat to {to}"), None),
+                _ => return None,
+            },
             None => (surplus.clone(), format!("surplus: {}", surplus.join(" ")), None),
         }
     };

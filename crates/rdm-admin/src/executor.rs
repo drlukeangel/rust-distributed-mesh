@@ -108,7 +108,10 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A mesh retire whose mesh holds the fabric seat waits for node.fabric-primary.update ([`seat_move`]):
         // the new fabric-primary, outside the leaving mesh, drives the rest (mesh-delete.md step 1).
         BuildOperation::ShutdownMesh { .. } if seat_move(op, t).is_some() => None,
-        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
+        // The handback is the fabric seat's move alone ([`seat_move`]): no admin executes it while the
+        // seat is still to move, and once it moved the plan holds it no more.
+        BuildOperation::HandFabricSeat { .. } if seat_move(op, t).is_some() => None,
+        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } | BuildOperation::HandFabricSeat { .. } => fabric(),
     }
 }
 
@@ -238,12 +241,18 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// refuses it first, `control_plane::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     use rdm_core::build::RecipeStep;
+    // The handback: the fabric seat moves out of its holder's mesh to the re-created node-admin named
+    // (elections §4.3, §4.4), until it is back in that admin's mesh.
+    if let BuildOperation::HandFabricSeat { to } = op {
+        let holder = t.fabric_primary().filter(|fp| fp.mesh != to.mesh)?.clone();
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: Some(to.clone()) });
+    }
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         if !t.meshes.iter().any(|m| m.name != *mesh && m.status != crate::model::ScopeStatus::Dead) {
             return None;
         }
         let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
-        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false });
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: None });
     }
     let (node, delete) = match op {
         BuildOperation::RetireNode { node, exited: None } | BuildOperation::RecipeStep { step: RecipeStep::Delete { node }, .. } => (node, true),
@@ -264,7 +273,7 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         if !t.cohort_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && only_of_cohort) {
             return None;
         }
-        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: false, cohort_seat: true });
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: false, cohort_seat: true, successor: None });
     }
     let holder = t.node(node)?.clone();
     let mesh_seat = t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == holder.node_id);
@@ -279,9 +288,9 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         if !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) {
             return None;
         }
-        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false });
+        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false, successor: None });
     }
-    Some(SeatMove { holder, mesh_seat, fabric_seat, cohort_seat: false })
+    Some(SeatMove { holder, mesh_seat, fabric_seat, cohort_seat: false, successor: None })
 }
 
 /// What a drive moves before an operation on a seat holder runs ([`seat_move`]).
@@ -297,6 +306,9 @@ pub struct SeatMove {
     /// It holds the seat of its (mesh, node type) cohort, a type other than node-admin:
     /// node.primary.update moves it, commanded and written by its mesh-primary (proposal Part C1, Q3).
     pub cohort_seat: bool,
+    /// The successor the holder names (elections §4.4: the re-created node-admin of the mesh that lost
+    /// the fabric seat); `None` when the search of node-primary-update.md picks it.
+    pub successor: Option<PathName>,
 }
 
 /// The admin that executes what is left of a plan: the first operation's

@@ -1036,6 +1036,9 @@ impl AdminRunner {
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.delete_mesh(build_id, attempt, mesh, mesh_id).await,
             BuildOperation::DeleteFabric { fabric_id } => crate::mesh_delete::complete_fabric_delete(&*builds, &*self.fabric_storage, build_id, attempt, fabric_id, &self.me.to_string()).await.map_err(Into::into),
+            // The handback is the fabric-primary's drive's seat move, made before any run
+            // (`executor::seat_move`); no executor runs it, and an executor handed it refuses by name.
+            BuildOperation::HandFabricSeat { to } => Err(crate::executor::RunEnd::failed(format!("{me}: {} hands the fabric seat to {to} by the fabric-primary's drive's seat move, never as an executor's operation (attempt {attempt} of {build_id})", op.key()))),
             BuildOperation::RecipeStep { step, birth } => return Box::pin(self.recipe_step(build_id, lane, attempt, step, birth.as_ref())).await,
         };
         ended

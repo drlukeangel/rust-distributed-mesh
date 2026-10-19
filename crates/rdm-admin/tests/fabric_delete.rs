@@ -231,7 +231,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 1a: initial plan orders leaf-inward: non-FP mesh (mesh2) first, FP's own mesh (mesh1)
     // after, and DeleteFabric at the end.
     let proj = builds.read_build(&build_id).await.unwrap();
-    let initial_ops = plan_for_build(&proj, &*observed.read().await).operations;
+    let initial_ops = plan_for_build(&proj, &*observed.read().await, None).operations;
     assert_eq!(
         initial_ops,
         vec![
@@ -300,7 +300,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 2: after mesh2's MeshDeleted, re-planning the SAME Build plans RetireNode(mesh2.admin.1)
     // before ShutdownMesh(mesh1) and DeleteFabric!
     let proj = builds.read_build(&build_id).await.unwrap();
-    let after_m2_deleted = plan_for_build(&proj, &*observed.read().await).operations;
+    let after_m2_deleted = plan_for_build(&proj, &*observed.read().await, None).operations;
     assert_eq!(
         after_m2_deleted,
         vec![
@@ -340,7 +340,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 1b: now only mesh1 (the FP's own mesh) and DeleteFabric remain. On mesh1, seat_move is
     // None (the fabric seat stays on mesh1.admin.1) and executor_for is mesh1.admin.1.
     let proj = builds.read_build(&build_id).await.unwrap();
-    let after_m2_left = plan_for_build(&proj, &*observed.read().await).operations;
+    let after_m2_left = plan_for_build(&proj, &*observed.read().await, None).operations;
     assert_eq!(
         after_m2_left,
         vec![
@@ -397,7 +397,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // Step 3: after mesh1's MeshDeleted, re-planning plans ONLY DeleteFabric (mesh1.admin.1 is NOT
     // retired inside fabric.delete!).
     let proj = builds.read_build(&build_id).await.unwrap();
-    let before_complete = plan_for_build(&proj, &*observed.read().await).operations;
+    let before_complete = plan_for_build(&proj, &*observed.read().await, None).operations;
     assert_eq!(
         before_complete,
         vec![BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() }],
@@ -412,7 +412,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
     // - The fabric-primary `mesh1.admin.1` is STILL ALIVE (`ReadyForTraffic` row in nodes.storage,
     //   runtime not terminated).
     let proj = builds.read_build(&build_id).await.unwrap();
-    assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
+    assert!(plan_for_build(&proj, &*observed.read().await, None).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
     assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric identity row is released at fabric.deleted");
     assert!(!fleet.terminated.lock().unwrap().contains(&"mesh1.admin.1".to_string()), "fabric-primary is still alive at fabric.deleted");
     assert_eq!(nodes_storage.node_row_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "fabric-primary's node row is still live at fabric.deleted");
@@ -425,7 +425,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         .expect("the separate node.delete of the fabric-primary is admitted");
     assert_eq!(fp_delete.attempt, 2);
     let proj2 = builds.read_build(&build_id).await.unwrap();
-    let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
+    let fp_ops = plan_for_build(&proj2, &*observed.read().await, None).operations;
     assert_eq!(fp_ops, vec![BuildOperation::RetireNode { node: m1_a1.name.clone(), exited: None }], "attempt 2 plans only the fabric-primary's own node.delete");
     assert_eq!(seat_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no seat on its separate node.delete");
     assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
