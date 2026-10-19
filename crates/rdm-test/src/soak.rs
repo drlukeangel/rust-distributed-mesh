@@ -1358,7 +1358,11 @@ impl Driver {
         // the tickle's two rounds derive (spans of the i143-2787-soak-container run): the coin is
         // drawn all the same, so the schedule is the same on both providers.
         let coin = self.rng.next() % 2 == 0;
-        let true_offline = coin && !container;
+        // Only a node's own mesh-primary tickles it, so only it records `dead`. A held mesh-primary has
+        // no other tickler: the admins that look at it find it `os-stopped`, which proves no exit and
+        // opens no hold (deployment-provider.md §2.5), so it is held pending-reconnect, never dead.
+        let holds_mesh_primary = nodes0.iter().any(|x| x["name"] == path.as_str() && x["kind"] == "node_admin" && x["is_primary"] == true);
+        let true_offline = coin && !container && !holds_mesh_primary;
         // Control never waits on the held node's own control API: a held admin answers nothing.
         let held_name = n["name"].as_str().map(String::from);
         self.known.retain(|a| Some(&a.name) != held_name.as_ref());
