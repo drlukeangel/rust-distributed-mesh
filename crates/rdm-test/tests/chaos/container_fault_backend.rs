@@ -728,27 +728,33 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     estate.stop().await;
     let spans = estate.spans();
     let at = |sp: &Value| start(sp);
-    // The pending hand-off to the lost mesh's first admin names the EXISTING MeshId and ran at the fabric primary.
-    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff")
-        .into_iter()
-        .filter(|h| attr(h, "mesh") == lost_mesh && at(h) > fault_at && (attr(h, "outcome") == "applied" || attr(h, "outcome") == "already-applied"))
-        .collect();
-    let first = handoffs.iter().max_by_key(|h| at(h)).copied().expect("Pending handed to the recovery admin after the fault");
-    assert_eq!(attr(first, "mesh_id"), lost_mesh_id, "Pending names the same MeshId: it joined, it never minted");
-    assert_eq!(attr(first, "node"), holder, "the surviving fabric primary ran the first admin's birth");
-    let recovery_admin = attr(first, "target").to_string();
-    // The second admin is created by the NEW mesh primary, never by the fabric primary.
+    // The reconcile a create ran in is the one in its own trace: a drift lane's attempt number also
+    // names an attempt of the fabric lane (R-BI7).
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == accepted).collect();
-    let creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
+    let executor_of = |c: &Value| reconciles.iter().find(|r| r["trace_id"] == c["trace_id"] && attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor").to_string()).expect("the create ran inside a reconcile");
+    let admin_creates: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-build")
         .into_iter()
-        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node").starts_with(&format!("{lost_mesh}.admin.")) && attr(c, "node") != recovery_admin && at(c) > at(first))
+        .filter(|c| attr(c, "build_id") == accepted && attr(c, "node").starts_with(&format!("{lost_mesh}.admin.")) && at(c) > fault_at)
         .collect();
+    let first = admin_creates.iter().min_by_key(|c| at(c)).copied().expect("the lost mesh's first admin is created after the fault");
+    assert_eq!(executor_of(first), holder, "the surviving fabric primary ran the first admin's birth");
+    let recovery_admin = attr(first, "node").to_string();
+    // The lost mesh's re-created admin adopts its mesh's held state from its maker's entry answer
+    // (mesh-investigation.md "A node-admin joins the live mesh" step 2; fabric-authority.md §7; Q56): the
+    // EXISTING MeshId, answered by the surviving fabric primary. Pending is handed only to a mesh the
+    // fabric primary holds no state for, and it holds this one's.
+    let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted")
+        .into_iter()
+        .filter(|a| attr(a, "mesh") == lost_mesh && at(a) > fault_at)
+        .min_by_key(|a| at(a))
+        .expect("the recovery admin adopted its mesh's held state after the fault");
+    assert_eq!(attr(adopted, "mesh_id"), lost_mesh_id, "the adopted state names the same MeshId: it joined, it never minted");
+    assert_eq!(attr(adopted, "served_by"), holder, "the first admin adopted its mesh's state from the surviving fabric primary's answer");
+    // The second admin is created by the NEW mesh primary, never by the fabric primary.
+    let creates: Vec<&Value> = admin_creates.iter().copied().filter(|c| attr(c, "node") != recovery_admin && at(c) > at(first)).collect();
     assert!(!creates.is_empty(), "the second admin of {lost_mesh} was created after the first: {creates:?}");
     for c in &creates {
-        // The reconcile the create ran in is the one in its own trace: a drift lane's attempt number
-        // also names an attempt of the fabric lane (R-BI7).
-        let executor = reconciles.iter().find(|r| r["trace_id"] == c["trace_id"] && attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor")).expect("the create ran inside a reconcile");
-        assert_eq!(executor, recovery_admin, "{} was created by the new mesh primary, not by {holder}", attr(c, "node"));
+        assert_eq!(executor_of(c), recovery_admin, "{} was created by the new mesh primary, not by {holder}", attr(c, "node"));
     }
     // No survivor was created or deleted by any attempt after the fault.
     let touched: Vec<String> = named(&spans, "rdm.node_admin.node.create.via-build")
@@ -774,7 +780,8 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         "attempt_before_fault": attempt_before,
         "final_build": {"build_id": done.build_id.as_str(), "phase": format!("{:?}", done.phase), "attempt": done.attempt, "executor": done.executor, "reason": done.reason},
         "recovery_admin": recovery_admin,
-        "pending_handoff": span_row(first, &["mesh", "mesh_id", "node", "target", "outcome"]),
+        "first_admin_create": span_row(first, &["node", "build_id", "attempt"]),
+        "held_state_adopted": span_row(adopted, &["mesh", "mesh_id", "state", "served_by", "publisher"]),
         "fault_unix_nano": fault_at,
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
