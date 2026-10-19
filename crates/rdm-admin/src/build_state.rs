@@ -575,7 +575,7 @@ impl CurrentBuild {
 
 /// What a read of `p`, one entry of the acceptance-order index, makes of it: in progress, completed,
 /// or skipped (`None`: failed, and it never completed).
-fn current_of(p: &BuildProjection) -> Option<CurrentBuild> {
+pub(crate) fn current_of(p: &BuildProjection) -> Option<CurrentBuild> {
     // A drift lane's open attempt keeps its Build in progress (R-BI7 caveat 5: the LIFO read is
     // otherwise untouched).
     if p.lane_open() {

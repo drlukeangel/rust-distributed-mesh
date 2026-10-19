@@ -692,7 +692,10 @@ impl VerdictSink for LocalVerdicts {
 /// (R-BI3: the Build in progress is resumed), and once it is complete, the drive this admin holds of
 /// it that has not ended (one that paused or stalled while the Build completed): its next pass reads
 /// the Build complete and ends its callers' streams. A Build that completed once and whose later
-/// attempt failed is the known state too, and only a caller's resubmit drives it on (R-BI3).
+/// attempt failed is the known state too, and only a caller's resubmit drives it on (R-BI3). The
+/// Build as read decides, never the current-Build read before it: a verdict that landed between the
+/// two reads leaves the Build no longer in progress, and nothing is driven
+/// (`rdm.node_admin.build.reject.via-not-in-progress-when-read`).
 pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc<Drive>> {
     let (id, completed) = match env.builds.current_build().await {
         Ok(crate::build_state::CurrentBuild::InProgress(id)) => (id, false),
@@ -705,6 +708,11 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
     };
     match env.builds.read_build(&id).await {
         Ok(b) if completed && b.state != crate::build_state::BuildState::Complete => Vec::new(),
+        Ok(b) if !completed && !matches!(crate::build_state::current_of(&b), Some(crate::build_state::CurrentBuild::InProgress(_))) => {
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-in-progress-when-read", build_id = %b.build_id.log(), attempt = b.attempt, state = ?b.state)
+                .in_scope(|| tracing::info!("the Build read after the current-Build read is no longer in progress: a failed Build is never current, and only a caller's resubmit drives it on (R-BI3)"));
+            Vec::new()
+        }
         Ok(b) => vec![drives.ensure(env, &b.build_id, b.attempt_to_drive())],
         Err(e) => {
             tracing::info!(error = %e, build_id = %id.log(), "the current Build is unreadable; nothing driven");
