@@ -2042,7 +2042,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Protocol name: ProbeNodeState.
                                                 let kick_of = |n: &Node, incarnation: &crate::model::IncarnationId| rdm_core::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
                                                 let own_id = me_id.clone();
-                                                let in_view: HashSet<String> = view.members().map(|n| n.node_id.to_string()).collect();
+                                                // What the tick watches decides "heard again" (`heard_against`, R-FM1).
+                                                let in_view: HashSet<String> = heard_against(&view, &watched);
                                                 for ((nid, _), v) in verdicts.lock().unwrap().iter() {
                                                     if v.is_running() {
                                                         tickle.reprobe(nid.to_string());

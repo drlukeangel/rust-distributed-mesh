@@ -2205,6 +2205,56 @@ mod tests {
         assert_eq!(silent.iter().map(|s| s.marked_at_ms).collect::<Vec<_>>(), vec![Some(now_ms - 500)], "the mark: first held plus the floor");
     }
 
+    /// CONTRACT (R-FM1: "An answer from the exact birth or its returning digest ends the hold and clears
+    /// the fact (`reachable-silent` / `offline-returned`, no action)"; Q7 = a): the mesh primary hears a
+    /// member again against what its tick watches. A member its view does not hold, named only by a
+    /// durable runtime row at a planned path (born while this admin was silent), is in that set, so the
+    /// ladder reports it returned once it leaves the silent set; a node id neither the view nor the watched
+    /// births hold is not, and stays gone. Must NOT happen: the re-born admin's tick deciding from its view
+    /// snapshot alone, reporting such a member `via-offline-gone` and keeping its mark and its hold
+    /// (kept/e6s7-i144-e4-re-born-admin-third-defect).
+    #[tokio::test(start_paused = true)]
+    async fn a_member_watched_only_through_durable_rows_is_heard_again_not_gone() {
+        let me = digest("mesh2.admin.1", MemberStatus::ReadyForTraffic);
+        let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        let snapshot = view(&[me.clone()]);
+        assert!(snapshot.births().all(|n| n.node_id != member.node.node_id), "the view does not hold the member");
+        let row = crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: rdm_core::RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("q7-heard-against")).unwrap(), data_dir: None };
+        let durable = durable_births(&snapshot, &[row], &|_| true, &|_| false);
+        let watched = watched_births(&snapshot, &me.node.node_id, "mesh2", &durable);
+        let heard = heard_against(&snapshot, &watched);
+        let id = member.node.node_id.to_string();
+        assert!(heard.contains(&id), "a birth named only by durable rows is heard against: {heard:?}");
+        let unknown = NodeId::mint().to_string();
+        assert!(!heard.contains(&unknown), "a node id neither viewed nor watched is not");
+        // The ladder: the member held TRUE OFFLINE, then no longer silent while the view still lacks it.
+        let mut t = crate::offline::OfflineTickle::new();
+        let silent = |ids: &[&str]| ids.iter().map(|i| crate::offline::SilentNode { node_id: (*i).to_string(), path: format!("mesh2.rpc.{i}"), incarnation: None, marked_at_ms: None }).collect::<Vec<_>>();
+        let floor = 30_000u64;
+        let mut report = crate::offline::OfflineTickReport::default();
+        for (now, set) in [(0, silent(&[&id, &unknown])), (floor / 2, silent(&[&id, &unknown])), (floor / 2, silent(&[&id, &unknown])), (floor * 3 / 2, silent(&[&id, &unknown])), (floor * 3 / 2, silent(&[&id, &unknown])), (floor * 3 / 2 + 1, vec![])] {
+            if set.is_empty() {
+                assert!(t.is_offline(&id) && t.is_offline(&unknown), "both held TRUE OFFLINE first");
+            }
+            report = t
+                .tick(
+                    now,
+                    true,
+                    set,
+                    |i: &str| heard.contains(i),
+                    floor / 2,
+                    floor,
+                    |_| async { Err("no answer".to_string()) },
+                    |_| async { crate::offline::ViaPeerVerdict::NoPath { asked: vec!["mesh2.rpc.2".into()] } },
+                    |_| async { rdm_transport::iroh_obs::IrohObservation::unavailable() },
+                )
+                .await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(report.returned, vec![id.clone()], "heard again, it is returned: {report:?}");
+        assert_eq!(report.gone, vec![unknown], "a node id the tick no longer watches is gone: {report:?}");
+    }
+
     /// CONTRACT (node-rpc-envelope.md, "Node RPC readiness gate": "A node-admin waits until its Status
     /// authority is filled and its view holds it"): the admin's Node RPC door opens with the first view
     /// installed that holds its exact birth once the authority is filled, whichever task installs that

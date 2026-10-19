@@ -310,8 +310,8 @@ impl OfflineTickle {
 
     /// One tick. `holds_seat` is this node-admin's primary seat, sampled once for the tick;
     /// `silent` is this tick's silent set (every `PendingReconnect` node it watches); `in_view` says
-    /// whether the view still holds a node id at all (a node that left the silent set is heard
-    /// again only if it does); `now_ms` is the tick's start instant, and an instant inside the tick
+    /// whether the tick still watches a node id at all, in its view or through the durable rows that
+    /// name a birth not yet in it (a node that left the silent set is heard again only if it does); `now_ms` is the tick's start instant, and an instant inside the tick
     /// (a verdict that came back after awaited probes) is `now_ms` plus the time the tick has run;
     /// `probe_delay_ms`
     /// is how long a node stays silent before its one tickle; `staleness_floor_ms` is the minimum
@@ -364,8 +364,9 @@ impl OfflineTickle {
         self.first_seen.retain(|id, _| silent_ids.contains(id));
         self.offline.retain(|id| silent_ids.contains(id));
         for id in left {
-            // Heard again only while the view still holds the node; a node id the view no longer
-            // holds was deleted (or recovered under a new node.id at its path.name): gone.
+            // Heard again while the tick still watches the node (its view, or the durable rows that
+            // name a birth not yet in its view); a node id it no longer watches was deleted (or
+            // recovered under a new node.id at its path.name): gone.
             if in_view(&id) {
                 tracing::info_span!("rdm.node_admin.node.update.via-offline-returned", node_id = %id, observer = %self.observer, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!(node_id = %id, "a silent node is heard again: its tickle and its status end"));
