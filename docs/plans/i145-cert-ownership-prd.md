@@ -28,19 +28,19 @@ gossip.
 
 | # | Requirement | State | Evidence today | Epic |
 |---|---|---|---|---|
-| R1 | the cert format, sign and verify live in `rdm_core::certs`; `CertChoice` is `Ca` / `NoCerts`; `CertSigner` is gone | BUILD | `crates/rdm-admin/src/certs.rs:29` the trait; rafka `rafka-node-transport/src/cert.rs` the format | e1 |
-| R2 | the accept loop is rdm-transport's: every connection on the endpoint, dispatched by ALPN; Rafka's loop deleted | BUILD | rafka `rafka-node-base/src/lib.rs:10748 start_accept_loop` | e2 |
-| R3 | `node.connections.admit` on every inbound connection of a registered product ALPN: the exchange on the first bi-stream, the verification, the verdict written back, admit or drop | BUILD | rafka `lib.rs:2817 dialer_send_svid`, `:3056 acceptor_verify_svid` | e2 |
-| R4 | registration is per ALPN at `bind`; RDM's own two ALPNs are refused by name | BUILD | `crates/rdm-transport/src/endpoint.rs:30` `bind` takes no admission | e2 |
-| R5 | a refusal is the connection fact `Refused { reason }`; an admission the ordinary `Connected`; both spanned | BUILD | connections.md §1.2 had three states | e2 |
-| R6 | `node.cert.create` at JoinNode writes the birth's cert row (`NodeCertRow`, `node-cert/1`); `node.get` surfaces `cert { … }` | BUILD | `certs.rs:122` issues, writes no row; `NodeView` has no cert | e3 |
-| R7 | `node.cert.renew`: the issuing authority's tick renews at `RDM_CERT_RENEW_AT` + jitter; installed on the running node; presented on new connections; terminates nothing; retried to expiry | BUILD | nothing renews | e3 |
-| R8 | `mesh.issuer.create` at the mesh's acceptance, `mesh.issuer.renew` on the fabric-primary's tick, `node.issuer.update` per admin; a member never outlives its issuer | BUILD | rafka `node-admin/src/main.rs:20707` mints an issuer once; nothing rotates | e3 |
-| R9 | the TTLs and renewal point are fabric policy, carried in the entry pull | BUILD | `MESH_SPAWN_TYPE` is the pattern | e3 |
-| R10 | the fabric-primary watches every cert row; a mesh whose renewals stall has its row surfaced on `fabric.get` | BUILD | Q23 retires Concern; stalled renewal is surfaced on `fabric.get` | e3 |
+| R1 | the cert format, sign and verify live in `rdm_core::certs`; `CertChoice` is `Ca` / `NoCerts`; `CertSigner` is gone | DONE | e1 `3d6e4695`: `rdm_core::certs` holds the format, sign and `verify` (`certs.rs:323`); `CertChoice` is `Ca` / `NoCerts` (`rdm-admin/src/certs.rs:46`); no `CertSigner` | e1 |
+| R2 | the accept loop is rdm-transport's: every connection on the endpoint, dispatched by ALPN; Rafka's loop deleted | DONE (RDM's loop) / BUILD (Rafka's loop deleted: e4, R11) | e2 `e56f91e2`: `rdm-transport/src/connections/admit.rs`; rafka `rafka-node-base/src/lib.rs:10748 start_accept_loop` stands until e4 | e2 |
+| R3 | `node.connections.admit` on every inbound connection of a registered product ALPN: the exchange on the first bi-stream, the verification, the verdict written back, admit or drop | DONE | e2 `e56f91e2`: `rdm-transport/src/connections/admit.rs`: the exchange on the first bi-stream, the verification, the verdict written back | e2 |
+| R4 | registration is per ALPN at `bind`; RDM's own two ALPNs are refused by name | DONE | e2 `e56f91e2`: `rdm-transport/src/connections.rs:59 validate_alpns` refuses `rdm_transport::ALPN` and `iroh_gossip::ALPN` by name | e2 |
+| R5 | a refusal is the connection fact `Refused { reason }`; an admission the ordinary `Connected`; both spanned | DONE | e2 `e56f91e2`: `ConnectionState::Refused` (`rdm-core/src/connections.rs:86`) | e2 |
+| R6 | `node.cert.create` at JoinNode writes the birth's cert row (`NodeCertRow`, `node-cert/1`); `node.get` surfaces `cert { … }` | DONE | e3 `e56f91e2`: `NodeCertRow` (`rdm-admin/src/status_storage.rs:316`), put at the join; `node.get` shows the held issue | e3 |
+| R7 | `node.cert.renew`: the issuing authority's tick renews at `RDM_CERT_RENEW_AT` + jitter; installed on the running node; presented on new connections; terminates nothing; retried to expiry | DONE | e3 `e56f91e2`: `cert_renewal::renew_members` (`rdm-admin/src/cert_renewal.rs:199`) | e3 |
+| R8 | `mesh.issuer.create` at the mesh's acceptance, `mesh.issuer.renew` on the fabric-primary's tick, `node.issuer.update` per admin; a member never outlives its issuer | DONE | e3 `e56f91e2`: `cert_renewal::renew_issuers` (`cert_renewal.rs:330`): `node.issuer.update` to the mesh-primary directly, then to each other admin forwarded through it (Luke Q82) | e3 |
+| R9 | the TTLs and renewal point are fabric policy, carried in the entry pull | DONE | e3 `e56f91e2`: `cert_policy` in the entry answer (`rdm-admin/src/admin/records.rs:103`) | e3 |
+| R10 | the fabric-primary watches every cert row; a mesh whose renewals stall has its row surfaced on `fabric.get` | DONE | e3 `e56f91e2`: `cert_renewal::fabric_watch` (`cert_renewal.rs:100`) on `fabric.get` | e3 |
 | R11 | Rafka passes the root in once (`CertChoice::Ca`), signs and verifies nothing, reads none of `RAFKA_CA_PUBKEY` / `RAFKA_NODE_CERT` / `RAFKA_NO_CERT`; its node-admin's minting and the belt are deleted | BUILD | rafka `node-admin/src/main.rs:4713`, `lib.rs:5806`, `rafka-node-base/src/lib.rs:2724` | e4 |
 | R12 | no cert is checked on Node RPC or gossip | HOLDS | nothing checks today; the control cell keeps it so | every epic |
-| R13 | two levels above the issuers: the fabric root (the app's anchor, signs only the CA) and RDM's CA (minted on day 0 under the root, `fabric.ca.create`); the chain is member → issuer → CA → root (Luke 2026-10-16: "I thought we were using the caller root to issue a new root that I then passed on and we can rotate internally") | BUILD | one level: the root signs issuers | e5 |
+| R13 | two levels above the issuers: the fabric root (the app's anchor, signs only the CA) and RDM's CA (minted on day 0 under the root, `fabric.ca.create`); the chain is member → issuer → CA → root (Luke 2026-10-16: "I thought we were using the caller root to issue a new root that I then passed on and we can rotate internally") | DONE | e5.1 `4c706850`: `CaCert` / `CaKey` (`rdm-core/src/certs.rs:76`, `:95`); `verify` checks the CA first (`CaBadSignature`); the CA minted on day 0 and kept as `fabric-ca` (`rdm-admin/src/certs.rs:41`, `read_ca` `:205`) | e5 |
 | R13a | `fabric.ca.renew`: the CA rotates internally on policy (`RDM_CA_CERT_TTL_SECS`, `RDM_CERT_RENEW_AT`) under the same anchor; every issuer re-minted; no `node.roots.update`; an issuer never outlives its CA, the CA never its root | BUILD | nothing rotates | e5 |
 | R13b | `fabric.root.update { secret }`: a caller-supplied anchor rotates through five durable phases (`minted`, `distributed`, `ca-rotated`, `retired`); `node.roots.update` installs the set on every node (the secret to admins); a retire before every chain moved is refused by name; refused in flight or for a trusted root; a launched node is written `RDM_ROOTS`; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | BUILD | no caller op; verifiers hold one key | e5 |
 | R14 | custody: every node-admin holds the one root (written at launch as `RDM_CA_SECRET`, refreshed on rotation by `node.roots.update`); an elected successor mints and rotates from its own copy; the root is never in a row, frame or digest | BUILD (RDM) / HOLDS (rafka's node-admin already hands every admin the CA secret: `lane-mesh-deploy.sh:1262`) | `node.roots.update`'s admin arm does not refresh it on rotation | e1 (the launch write and a successor minting from its own copy; arch 2026-10-19, e1 = a) / e5 (the refresh on rotation) |
@@ -120,8 +120,8 @@ No new gossip frame and no new `MemberStatus`.
 - **Page text.** fabric-certs.md :27-30 ("The chain"), :44-51 ("Where a node-admin's signing material
   comes from") and the `CertChoice` block, brought to §Custody: for Luke, with the landing.
 - **Sizing.** One seat; `rdm-core/src/certs.rs` (new), `rdm-admin/src/certs.rs`, `wiring.rs`.
-- **State.** built on branch `i145-e1-cert-format` (lane e4s2), not landed: it lands after the release is
-  green (Luke's order) and with Luke's yes on the page text.
+- **State.** LANDED `3d6e4695` (2026-10-19) with its page text (Luke Q81: arm b, `CertChoice` is `Ca` /
+  `NoCerts`).
 
 #### e2 — the accept loop and `node.connections.admit` are rdm-transport's
 
@@ -143,7 +143,7 @@ No new gossip frame and no new `MemberStatus`.
   `membership.rs` (the gossip arm), `rdm-node/src/node.rs` (the admitter built from the launch),
   `rdm-admin/src/wiring.rs` and `admin/boot.rs` (the admin's ALPNs through the registry),
   `deployment/pipeline.rs` (the one-root launch write).
-- **State.** not started. Prep read 2026-10-19 (lane e6s4), decided by the lead: the six reasons are a
+- **State.** LANDED `e56f91e2` with e3 (2026-10-19). Prep read 2026-10-19 (lane e6s4), decided by the lead: the six reasons are a
   typed outcome in the admit page's order (`no-credential`, then fabric-certs.md §chain 1-5), and
   undecodable or empty bytes are `no-credential`; a dialer silent for one floor from the accept is
   `no-credential` (today two floors and a silent `Ok`, `connections.rs:850-856`); a refusal is a
@@ -197,7 +197,8 @@ No new gossip frame and no new `MemberStatus`.
   - fabric-certs.md §Tracking: "The issuer writes a cert row for the exact birth at every issue and renew: `NodeCertRow { node_id, name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a status-row kind beside `held-running` and `os-stopped`, keyed by the birth (format `node-cert/1`)." → "The issuer puts a cert row for the exact birth at every issue and renew: `NodeCertRow { node_id, name, incarnation, issued_at, expires_at, issuer_expires_at, renew_at }`, a status-row kind beside `held-running` and `os-stopped`, keyed by the birth and `issued_at` (format `node-cert/1`); the receipt is a row under the same key, and the birth's newest issue and whether it has a receipt are its renewal state."
   - mesh-issuer-renew.md, Order: "The mesh-primary first, then the others" → "The mesh-primary first (the fabric-primary's own mesh: installed in-process, with no call, spanned `via-installed`), then the others"
 - **Sizing.** Two seats (member renewal + row + policy; issuer renewal + watch).
-- **State.** RED 2026-10-19 on branch `i145-e3-renewal` (lane e6s4), stacked on `i145-e2-admit` on e1:
+- **State.** LANDED `e56f91e2` (2026-10-19), its page commit last (90ee2240's text, Luke Q82), on the
+  `ensure_active` fix `86c2cdee` (i143, R-BI3; its land gate's red on the stack). RED 2026-10-19 on branch `i145-e3-renewal` (lane e6s4), stacked on `i145-e2-admit` on e1:
   the ten cells (`crates/rdm-test/tests/fabric/cert_renewal.rs`, the cut one a unit cell in
   `rdm-admin/src/certs.rs`) and the renew point's unit cell (`rdm_core::certs::renew_at`) red; the wire
   (`RenewCert`, `UpdateIssuer`, `CertRenewed`, `IssuerUpdated`, `RejectedCert`; `JoinControl::cert_policy`)
@@ -236,7 +237,7 @@ No new gossip frame and no new `MemberStatus`.
   its flush; the dials ran; green 4 of 4 alone; no cert path), recorded and not chased. The stack
   (e1, e2, e3) is kept rebased on main: on d55112a6 at 8e932eea the fast gate is green
   (gates-e6s4-8e932eea) and the three process cells pass. Decided by arch 2026-10-19, from the e3 prep read: `node.issuer.update` goes fabric-primary → mesh-primary → admin (CLAUDE.md, commands go down); a cert issue and its receipt are each a blind put keyed (birth, `issued_at`), and their fold is R10's stall test; the fabric-primary renews its own cert in-process; a mesh-primary's cert rows are written by the fabric-primary through the `_of(mesh)` door, as held-running's are (`status_storage.rs:361`).
-  The issuer hop, to Luke's model (2026-10-19, lane e7s3): RED 277c802b, `an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary` asserting the fabric-primary's Forward (op 26, carrier mesh2's primary) and the carried Status `UpdateIssuer` (op 27) to the secondary in one trace, the secondary's install naming mesh2's primary as sender, and every update to the secondary sent by the fabric-primary; red on the `carry_issuer` model at `cert_renewal.rs:710` (no via-renewal names the fabric-primary as sender). GREEN deletes `carry_issuer` and its tick.
+  The issuer hop, to Luke's model (2026-10-19, lane e7s3): RED `b3863c55`, GREEN `6b9fb681` (as landed), `an_issuer_update_reaches_a_secondary_admin_through_its_mesh_primary` asserting the fabric-primary's Forward (op 26, carrier mesh2's primary) and the carried Status `UpdateIssuer` (op 27) to the secondary in one trace, the secondary's install naming mesh2's primary as sender, and every update to the secondary sent by the fabric-primary; red on the `carry_issuer` model at `cert_renewal.rs:710` (no via-renewal names the fabric-primary as sender). GREEN deletes `carry_issuer` and its tick.
   Known gap, held: the policy has no durable row (`FabricIdentity` is `{ fabric_id, name }`, `model.rs:317`), and a recovered root admin with no maker reads its own env (`boot.rs:924`), as it does `MESH_SPAWN_TYPE`; nothing shows a recovery changing the TTLs.
   Two cells assert admission and are green only once e2 lands: `a_member_is_renewed_at_the_policys_point_and_dials_past_its_first_expiry_admitted`, `an_issuer_is_rotated_and_a_member_signed_by_the_new_issuer_is_admitted_by_a_peer_holding_the_old`.
   Page lines for e5's text: mesh-issuer-renew.md:20 ("the root rotated (a fabric re-birth)") against `fabric.root.update`; fabric-certs.md:28-31 and :50 against §Custody.
@@ -266,7 +267,11 @@ No new gossip frame and no new `MemberStatus`.
   `a_rotation_not_retired_by_the_old_roots_expiry_is_the_fabrics_concern`. RED first.
 - **Page text.** fabric-ca-renew.md and fabric-certs.md §Custody applied 2026-10-16 (Q7: A).
 - **Sizing.** One seat.
-- **State.** not started.
+- **State.** e5.1, the CA level (R13), LANDED `4c706850` (2026-10-19): RED `6a56782a` (every launched
+  node-admin carries the CA), GREEN `2e61d7b3`, RED `1290dd0a` (a restarted bootstrap admin mints under
+  its day-0 CA), GREEN `3e107a57` (the CA minted on day 0 and kept as `fabric-ca`; `RDM_FABRIC_CA_KEY` in
+  every launch), its page commit last (Luke Q83). e5.2 on, not started: R13a (`fabric.ca.renew`), R13b
+  (`fabric.root.update`) and R14's refresh on rotation.
 
 #### e4 — Rafka passes the root in; its node-admin minting, its accept loop and the belt go
 
