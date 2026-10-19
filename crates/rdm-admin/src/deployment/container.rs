@@ -52,11 +52,12 @@ impl FabricNetwork {
     }
 }
 
-/// The node addresses this provider handed out on the fabric network.
+/// The node addresses this provider handed out on the fabric network, each held by the birth (its
+/// deployment) it was given to until that birth's container is removed.
 #[derive(Default)]
 struct NodeIps {
     next: u32,
-    held: HashMap<crate::model::PathName, IpAddr>,
+    held: HashMap<crate::model::DeploymentId, IpAddr>,
 }
 
 /// Realises runtimes as containers on the fabric's bridge network.
@@ -628,6 +629,8 @@ impl DeploymentProvider for ContainerDeploymentProvider {
                 .map_err(|e| err(format!("the container's logs cannot be kept at {}: {e}", file.display())))?;
         }
         docker(&["rm", "-f", name]).await.map_err(err)?;
+        // The container is gone, and the address its birth held with it.
+        self.ips.lock().unwrap().held.remove(&handle.deployment_id);
         self.data_dirs.lock().unwrap().remove(name);
         self.exited.lock().unwrap().insert(name.to_string(), code);
         Ok(())
@@ -668,17 +671,20 @@ impl DeploymentProvider for ContainerDeploymentProvider {
     }
 
     /// A container is given its own address on the fabric network before it starts (`--ip`): the
-    /// one pre-boot address a container needs. Its ports are the operating system's. The
-    /// addresses already taken on the network are asked of the daemon (no lock held across it);
-    /// a daemon that cannot answer, or a network with no address left, is an error naming it.
-    async fn bind_ip(&self, node: &crate::model::PathName) -> Result<IpAddr, DeployError> {
+    /// one pre-boot address a container needs. Its ports are the operating system's. The address
+    /// belongs to the birth it was given to: that birth binds it again, and a new birth at the same
+    /// `path.name` (a replace re-births there while its renamed predecessor's container still runs,
+    /// Q79) is given one no container holds. The addresses already taken on the network are asked of
+    /// the daemon (no lock held across it); a daemon that cannot answer, or a network with no address
+    /// left, is an error naming it.
+    async fn bind_ip(&self, node: &crate::model::PathName, birth: &crate::model::DeploymentId) -> Result<IpAddr, DeployError> {
         let err = |reason: String| DeployError::Spawn { node: node.to_string(), reason };
-        if let Some(ip) = self.ips.lock().unwrap().held.get(node) {
+        if let Some(ip) = self.ips.lock().unwrap().held.get(birth) {
             return Ok(*ip);
         }
         let on_network = network_addresses(&self.network.name).await.map_err(err)?;
         let mut ips = self.ips.lock().unwrap();
-        if let Some(ip) = ips.held.get(node) {
+        if let Some(ip) = ips.held.get(birth) {
             return Ok(*ip);
         }
         let (first, last) = self.network.node_range();
@@ -690,7 +696,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
             next = if next == last { first } else { next + 1 };
             if !taken.contains(&ip) {
                 ips.next = next;
-                ips.held.insert(node.clone(), ip);
+                ips.held.insert(birth.clone(), ip);
                 return Ok(ip);
             }
         }

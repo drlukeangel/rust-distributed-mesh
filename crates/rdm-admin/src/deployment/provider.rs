@@ -379,12 +379,12 @@ pub trait DeploymentProvider: Send + Sync {
     /// place in any of the three.
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError>;
 
-    /// The host address `node`'s runtime binds on, with port 0 (the operating system assigns the
-    /// port; the node reports it at its join). Loopback for a process; a container's own address
-    /// on the fabric network.
+    /// The host address the runtime of `birth` (its deployment, at `node`) binds on, with port 0 (the
+    /// operating system assigns the port; the node reports it at its join). Loopback for a process; a
+    /// container's own address on the fabric network, which belongs to the birth that holds it.
     /// `Err` names why no address can be given (a container network the daemon cannot list, or
     /// one with no address left).
-    async fn bind_ip(&self, _node: &crate::model::PathName) -> Result<std::net::IpAddr, DeployError> {
+    async fn bind_ip(&self, _node: &crate::model::PathName, _birth: &crate::model::DeploymentId) -> Result<std::net::IpAddr, DeployError> {
         Ok(std::net::IpAddr::from([127, 0, 0, 1]))
     }
 

@@ -618,8 +618,8 @@ impl DeploymentProvider for FaultedProvider {
     async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rdm_admin::deployment::provider::Found, DeployError> {
         self.inner.find(spec).await
     }
-    async fn bind_ip(&self, node: &rdm_admin::model::PathName) -> Result<std::net::IpAddr, DeployError> {
-        self.inner.bind_ip(node).await
+    async fn bind_ip(&self, node: &rdm_admin::model::PathName, birth: &rdm_admin::model::DeploymentId) -> Result<std::net::IpAddr, DeployError> {
+        self.inner.bind_ip(node, birth).await
     }
     fn launched(&self) -> Vec<DeploymentHandle> {
         self.inner.launched()

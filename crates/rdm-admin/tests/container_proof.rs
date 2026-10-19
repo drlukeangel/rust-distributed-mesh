@@ -129,12 +129,15 @@ async fn a_new_birth_at_a_name_whose_stopped_predecessor_still_runs_gets_its_own
     let Some(p) = provider(&fabric).await else { return };
     let _cleanup = Fabric(fabric.clone());
     let name = launch(&p, &fabric, 0).node;
-    let first_ip = p.bind_ip(&name).await.expect("an address for the first birth");
-    let first = ResolvedNodeLaunch { transport: SocketAddr::new(first_ip, 20000), ..launch(&p, &fabric, 0) };
+    let first = launch(&p, &fabric, 0);
+    let first_ip = p.bind_ip(&name, &first.deployment_id).await.expect("an address for the first birth");
+    let first = ResolvedNodeLaunch { transport: SocketAddr::new(first_ip, 20000), ..first };
     let held = p.spawn(&first).await.expect("the first birth's container runs");
+    assert_eq!(p.bind_ip(&name, &first.deployment_id).await.expect("the first birth's address again"), first_ip, "a birth binds the address it holds again");
     // The first birth is renamed and stopped: its container keeps running, and its address with it.
-    let second_ip = p.bind_ip(&name).await.expect("an address for the new birth");
-    let second = ResolvedNodeLaunch { node: name.clone(), transport: SocketAddr::new(second_ip, 20000), ..launch(&p, &fabric, 1) };
+    let second = ResolvedNodeLaunch { node: name.clone(), ..launch(&p, &fabric, 1) };
+    let second_ip = p.bind_ip(&name, &second.deployment_id).await.expect("an address for the new birth");
+    let second = ResolvedNodeLaunch { transport: SocketAddr::new(second_ip, 20000), ..second };
     p.spawn(&second).await.unwrap_or_else(|e| panic!("the new birth at {name} starts on its own address ({second_ip}; the stopped birth holds {first_ip}): {e}"));
     assert_ne!(second_ip, first_ip, "the new birth at {name} is given an address of its own");
     assert_eq!(daemon_state(&container_id(&held)), "running", "the stopped predecessor still runs on its address");

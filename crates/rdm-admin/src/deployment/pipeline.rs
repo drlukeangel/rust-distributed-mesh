@@ -1465,13 +1465,15 @@ impl DeploymentPipeline<'_> {
     /// - one runs and the birth has joined membership: refused by name, nothing stopped, withdrawn or
     ///   minted, since this run holds none of that create's receipts past its claim.
     /// No such claim: `None`, and the identity is minted. One `via-claimed-allocation` span.
-    async fn claimed_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows, bind_addr: SocketAddr) -> Result<Option<Identity>, PipelineError> {
+    async fn claimed_allocation(&self, run: &Run<'_>, req: &CreateRequest, rows: &crate::node_rows::NodeRows) -> Result<Option<Identity>, PipelineError> {
         use tracing::Instrument;
         let step = CreateStep::AllocateIdentity.name();
         let Some((node_id, a)) = rows.allocation_at(&req.node, &req.build_id, &run.operation).await.map_err(|reason| PipelineError { step, reason , code: rdm_core::outcome::Code::FailedPrecondition })? else { return Ok(None) };
         let identity = Identity { node_id, incarnation: a.incarnation, supersedes: None, deployment_id: a.deployment_id };
         let data_dir = req.data_dir.clone().unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", req.node, identity.node_id)));
-        let spec = ResolvedNodeLaunch { node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: bind_addr, listeners: vec![] };
+        // `find` reads the launch's name, data dir and deployment; the birth's address is bound only once
+        // its identity is decided.
+        let spec = ResolvedNodeLaunch { node: req.node.clone(), deployment_id: identity.deployment_id.clone(), executable: self.template.executable.clone(), args: vec![], env: Default::default(), data_dir, transport: SocketAddr::from(([0, 0, 0, 0], 0)), listeners: vec![] };
         let span = tracing::info_span!(
             "rdm.node_admin.node.resolve.via-claimed-allocation",
             node = %req.node,
@@ -1559,19 +1561,11 @@ impl DeploymentPipeline<'_> {
             }
         }
         let rows = self.sink.node_rows();
-        // The node binds port 0 and the operating system assigns the port; the address it
-        // reports at its join is the one this admin publishes for the birth.
-        let bind_ip = self
-            .provider
-            .bind_ip(&req.node)
-            .await
-            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) , code: rdm_core::outcome::Code::FailedPrecondition })?;
-        let bind_addr = SocketAddr::new(bind_ip, 0);
         // A run holding no AllocateIdentity receipt of this operation continues the birth an earlier
         // run claimed the name for, when the claim row names one ([`Self::claimed_allocation`]); any
         // other run mints.
         let claimed_before = match &rows {
-            Some(rows) if !run.done.contains_key(CreateStep::AllocateIdentity.name()) => self.claimed_allocation(run, req, rows, bind_addr).await?,
+            Some(rows) if !run.done.contains_key(CreateStep::AllocateIdentity.name()) => self.claimed_allocation(run, req, rows).await?,
             _ => None,
         };
         let id: Identity = self
@@ -1579,6 +1573,16 @@ impl DeploymentPipeline<'_> {
                 Ok(claimed_before.unwrap_or_else(|| Identity { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), supersedes: None, deployment_id: DeploymentId::mint() }))
             })
             .await?;
+        // The birth's address, bound for its deployment: the birth a run continues binds the address it
+        // holds, and a new birth at a name a predecessor still holds is given its own. The node binds
+        // port 0 and the operating system assigns the port; the address it reports at its join is the
+        // one this admin publishes for the birth.
+        let bind_ip = self
+            .provider
+            .bind_ip(&req.node, &id.deployment_id)
+            .await
+            .map_err(|e| PipelineError { step: CreateStep::DeployRuntime.name(), reason: format!("{}: no address to bind: {e}", req.node) , code: rdm_core::outcome::Code::FailedPrecondition })?;
+        let bind_addr = SocketAddr::new(bind_ip, 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
         let inherits = req.data_dir.is_some();
         let data_dir = match req.data_dir.clone() {
