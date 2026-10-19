@@ -1246,6 +1246,40 @@ async fn an_owed_call_outlives_every_bound_and_is_delivered_when_its_receiver_co
     assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
 }
 
+/// Cell 24b (Q10 = a). CONTRACT (node-rpc.md §43: retry stops "on the ack, on the receiver's proven exit
+/// or accepted removal, or on explicit cancellation or retargeting by the owning workflow; never on a
+/// timer, never on absence from a view"): an Owed call to a receiver this caller's view does not hold yet
+/// stays owed. It is opened once the receiver resolves (read again at the resend pacing and on every
+/// change of the view), delivered, and its handler runs once. Controls: an Overall call to the same
+/// absent receiver still ends `NotSent` at once, and an Owed call to a receiver the view holds proven
+/// gone ends `NotSent`/`Resolve(Gone)` at once. Must NOT happen: the Owed call ending
+/// `NotSent`/`Resolve(Unknown)` because the view did not hold its receiver yet (the re-born admin cell:
+/// a member resumed after its mesh's primary was re-born declared ReadyForTraffic to it, the call ended
+/// so, and nothing sent it again; kept/e6s7-i144-e4-re-born-admin-owed-declaration, trace
+/// 704617ac4b3ac6bbd29b0c8707af019b).
+#[tokio::test]
+async fn an_owed_call_to_a_receiver_its_view_holds_only_later_is_delivered_once_it_resolves() {
+    let s = served().await;
+    let (client, resolver) = client_of(&[]).await;
+    let target = s.target();
+    let (bounded, _) = client.call::<Command>(&target, &run(241, Mode::Apply), &budget(FLOOR)).await;
+    assert!(matches!(&bounded, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Unknown))), "an Overall call ends at once: {bounded:?}");
+    let (c, t) = (client.clone(), target.clone());
+    let call = tokio::spawn(async move { c.call::<Command>(&t, &run(242, Mode::Apply), &owed()).await.0 });
+    tokio::time::sleep(FLOOR * 2).await;
+    assert!(!call.is_finished(), "absence from the view ends nothing: {:?}", if call.is_finished() { Some(call.await.unwrap()) } else { None });
+    resolver.insert(s.node.clone());
+    let out = tokio::time::timeout(FLOOR * 4, call).await.expect("delivered once the receiver resolved").unwrap();
+    assert_eq!(ran(&out), Some((242, 1)), "{out:?}");
+    assert_eq!(get(&s.stats.dispatched), 1, "the handler ran once");
+    let gone = NodeId::mint();
+    resolver.remove_gone(&gone);
+    let started = Instant::now();
+    let (out, _) = client.call::<Command>(&NodeTarget::ExactNode(gone), &run(243, Mode::Apply), &owed()).await;
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), rdm_core::outcome::NotSentReason::Resolve(rdm_core::outcome::ResolveFailure::Gone))), "a receiver proven gone ends it: {out:?}");
+    assert!(started.elapsed() < FLOOR, "at once: {:?}", started.elapsed());
+}
+
 /// Cell 25 (control, i146 Q44). CONTRACT: an Overall call and a Split call still lapse as before: to a
 /// receiver that cannot be reached, each ends `NotSent`/`Deadline` at its send bound; to a receiver
 /// that holds the request unanswered, each ends `Indeterminate`/`ReplyDeadline` at its bound.
