@@ -574,8 +574,25 @@ pub type BuildRead = for<'a> fn(&'a Estate, &'a str) -> std::pin::Pin<Box<dyn st
 /// The birth a round's operation produced at `path`, from the Build's own receipts: the last
 /// completed `AllocateIdentity` for an operation on `path` in an attempt after `after_attempt`.
 /// `Ok(None)` while the Build has not completed it; `Err` names a failed Build.
-async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &str, after_attempt: u64) -> Result<Option<(String, String)>, String> {
+async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &str, after_attempt: u64, lane: Option<(&str, u64)>) -> Result<Option<(String, String)>, String> {
     let b = read(estate, build_id).await;
+    // A loss's recovery runs in its mesh's drift lane when that mesh's primary opens it (R-BI7: the
+    // lane's attempts are numbered per mesh, and nothing of a lane moves the Build's own fields): the
+    // lane past the attempt it held before the action, with its own AllocateIdentity.
+    if let Some((mesh, lane_after)) = lane {
+        let l = &b["lanes"][mesh];
+        if num(&l["attempt"]) > lane_after {
+            match l["state"].as_str() {
+                Some("failed") => return Err(format!("attempt {} of {mesh}'s lane of Build {build_id} failed: {}", num(&l["attempt"]), l["last_failure"])),
+                Some("complete") => {
+                    if let Some(birth) = allocated_at(&l["steps"], path, lane_after) {
+                        return Ok(Some(birth));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     // A Build still reporting an attempt up to `after_attempt` is reporting an earlier attempt's
     // state: this operation's attempt has not been claimed here yet.
     if num(&b["attempt"]) <= after_attempt && after_attempt > 0 {
@@ -586,30 +603,35 @@ async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &str, a
         Some("complete") => {}
         _ => return Ok(None),
     }
+    Ok(allocated_at(&b["steps"], path, after_attempt))
+}
+
+/// The birth the last complete `AllocateIdentity` for `path` past attempt `after` names in `steps`.
+fn allocated_at(steps: &Value, path: &str, after: u64) -> Option<(String, String)> {
     let suffix = format!(":{path}");
-    Ok(b["steps"]
+    steps
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|st| st["step"] == "AllocateIdentity" && st["outcome"] == "complete" && num(&st["attempt"]) > after_attempt && st["operation"].as_str().is_some_and(|o| o.ends_with(&suffix)))
+        .filter(|st| st["step"] == "AllocateIdentity" && st["outcome"] == "complete" && num(&st["attempt"]) > after && st["operation"].as_str().is_some_and(|o| o.ends_with(&suffix)))
         .last()
-        .map(|st| (s(&st["output"]["node_id"]), s(&st["output"]["incarnation"]))))
+        .map(|st| (s(&st["output"]["node_id"]), s(&st["output"]["incarnation"])))
 }
 
 /// Every live admin's view holds exactly `birth` at `path`, ready for traffic, and the replaced
 /// incarnation `old` nowhere live.
-async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: &str) -> Result<(), String> {
+async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: Option<&str>) -> Result<(), String> {
     let nodes = estate.node_values().await;
     for admin in admins_of(&nodes) {
         let Some(theirs) = views_at(estate, &admin).await else { return Err(format!("{}: node.get unanswered", admin.name)) };
         let at_path: Vec<String> = theirs.iter().filter(|n| n["name"] == path).map(|n| format!("{}/{}:{}", s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["status"]))).collect();
         let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready-for-traffic");
-        let old_live: Vec<String> = theirs.iter().filter(|n| n["incarnation_id"] == old && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
+        let old_live: Vec<String> = theirs.iter().filter(|n| old.is_some_and(|old| n["incarnation_id"] == old) && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
         if !holds {
             return Err(format!("{} holds {at_path:?} at {path}, not {}/{} ready-for-traffic", admin.name, birth.0, birth.1));
         }
         if !old_live.is_empty() {
-            return Err(format!("{} still holds the replaced incarnation {old} live: {old_live:?}", admin.name));
+            return Err(format!("{} still holds the replaced incarnation {} live: {old_live:?}", admin.name, old.unwrap_or_default()));
         }
     }
     Ok(())
@@ -1009,12 +1031,17 @@ impl Driver {
 
     async fn execute(&mut self, action: &Action, nodes: &[Value], round: usize, entry: &mut Value) -> Result<(), Broken> {
         let expected = expected_counts(&self.model);
-        let attempt_before = num(&(self.read)(&self.estate, &self.build_id).await["attempt"]);
+        let before = (self.read)(&self.estate, &self.build_id).await;
+        let attempt_before = num(&before["attempt"]);
         let node_json = |p: &str| nodes.iter().find(|n| n["name"] == p).cloned();
         // The exact birth the action removes, and the Build whose receipts name the birth that
         // replaces it (with the attempt it must come after).
         let mut removed: Option<(String, String)> = None;
         let mut watch: Option<(String, u64)> = None;
+        // The drift lane a loss's recovery may run in, with the attempt it held before the action.
+        let mut lane_watch: Option<(String, u64)> = None;
+        // A restarted birth: the same node id and incarnation come back ready (node-restart.md).
+        let mut restarted: Option<(String, (String, String))> = None;
         let mut retired_node_id: Option<String> = None;
         // A birth held while its runtime ran: it comes back as itself.
         let mut held: Option<(String, String)> = None;
@@ -1039,11 +1066,10 @@ impl Driver {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
                 let restart = self.estate.nodes_obj().await.restart(&path_name(node)).await.map_err(|end| refused(&format!("node.restart {node}"), end))?;
                 entry["accepted"] = accepted_json(restart.accepted());
-                removed = Some((node.clone(), s(&n["incarnation_id"])));
-                // The birth is read from the attempt this restart opened, never an earlier one's.
-                let opened = restart.accepted().clone();
+                // A restart keeps the birth: the same node id and incarnation start again on the live
+                // process once its Build completes (pipeline.rs restart steps); nothing is replaced.
                 self.await_build(restart).await?;
-                watch = Some((opened.build_id.to_string(), u64::from(opened.attempt) - 1));
+                restarted = Some((node.clone(), (s(&n["node_id"]), s(&n["incarnation_id"]))));
             }
             Action::Replace { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
@@ -1068,6 +1094,8 @@ impl Driver {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
                 removed = Some((node.clone(), s(&n["incarnation_id"])));
                 watch = Some((self.build_id.clone(), attempt_before));
+                let mesh = s(&n["mesh"]);
+                lane_watch = Some((mesh.clone(), num(&before["lanes"][mesh.as_str()]["attempt"])));
                 retired_node_id = Some(s(&n["node_id"]));
                 no_build_for_drift = true;
                 self.kill(node, entry).await?;
@@ -1117,13 +1145,23 @@ impl Driver {
                 let view = self.estate.node_values().await;
                 self.publish_view(&view);
                 let born = match (&watch, &removed) {
-                    (Some((b, after)), Some((path, _))) => born_at(&self.estate, self.read, b, path, *after).await.map_err(|f| broken("build-completes", f))?,
+                    (Some((b, after)), Some((path, _))) => born_at(&self.estate, self.read, b, path, *after, lane_watch.as_ref().map(|(m, a)| (m.as_str(), *a))).await.map_err(|f| broken("build-completes", f))?,
                     _ => None,
                 };
                 let sequence_done = match (&removed, &born, &gone) {
+                    _ if restarted.is_some() => {
+                        let (path, birth) = restarted.as_ref().expect("checked");
+                        match birth_held_everywhere(&self.estate, path, birth, None).await {
+                            Ok(()) => true,
+                            Err(why) => {
+                                entry["waiting_on"] = json!(why);
+                                false
+                            }
+                        }
+                    }
                     (Some((path, old)), Some(birth), _) => {
                         entry["born"] = json!({"path": path, "node_id": birth.0, "incarnation": birth.1, "replaced": old});
-                        match birth_held_everywhere(&self.estate, path, birth, old).await {
+                        match birth_held_everywhere(&self.estate, path, birth, Some(old)).await {
                             Ok(()) => true,
                             Err(why) => {
                                 entry["waiting_on"] = json!(why);

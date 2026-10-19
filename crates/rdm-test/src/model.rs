@@ -98,7 +98,7 @@ pub enum Action {
     Grow { mesh: String, class: NodeClass },
     /// A Build deletes the node (drain, then terminate).
     Shrink { node: String },
-    /// A Build restarts the node: same NodeId, a new incarnation.
+    /// A Build restarts the node: the same NodeId and incarnation start again on the live process.
     Restart { node: String },
     /// A Build replaces the node: a new NodeId born at the same path.name.
     Replace { node: String },
@@ -294,13 +294,6 @@ impl Model {
                     m.nodes.remove(node);
                 }
             }
-            Action::Restart { node } => {
-                for m in self.meshes.values_mut() {
-                    if let Some(n) = m.nodes.get_mut(node) {
-                        n.incarnation += 1;
-                    }
-                }
-            }
             Action::Replace { node } => {
                 for m in self.meshes.values_mut() {
                     if let Some(n) = m.nodes.get_mut(node) {
@@ -309,7 +302,8 @@ impl Model {
                     }
                 }
             }
-            Action::HandOff { .. } | Action::Proof(_) | Action::Kill { .. } | Action::Wedge { .. } => {}
+            // A restart keeps the birth: the same NodeId and incarnation (node-restart.md).
+            Action::Restart { .. } | Action::HandOff { .. } | Action::Proof(_) | Action::Kill { .. } | Action::Wedge { .. } => {}
             Action::Unheard { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = true,
             Action::Heal { mesh } => self.meshes.get_mut(mesh).expect("checked").unheard = false,
         }
