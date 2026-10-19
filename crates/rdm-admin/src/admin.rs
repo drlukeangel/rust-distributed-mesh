@@ -883,6 +883,40 @@ mod tests {
         }
     }
 
+    /// A provider that answers `status` and, while it inspects, has the tick hear the birth again: it
+    /// drops every TRUE OFFLINE mark of `marks`, as the tick's `offline-returned` does.
+    struct HeardDuringInspection {
+        domain: String,
+        status: crate::deployment::provider::DeploymentStatus,
+        marks: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for HeardDuringInspection {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            self.domain.clone()
+        }
+        async fn spawn(&self, spec: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::DeploymentHandle, crate::deployment::provider::DeployError> {
+            Err(crate::deployment::provider::DeployError::Spawn { node: spec.node.to_string(), reason: "this provider only answers inspections".into() })
+        }
+        async fn terminate(&self, _: &crate::deployment::provider::DeploymentHandle, _: crate::deployment::provider::TerminationMode) -> Result<(), crate::deployment::provider::DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &crate::deployment::provider::DeploymentHandle) -> crate::deployment::provider::DeploymentStatus {
+            self.marks.lock().unwrap().clear();
+            self.status.clone()
+        }
+        async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle) -> Result<(), crate::deployment::provider::DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::Found, crate::deployment::provider::DeployError> {
+            Ok(crate::deployment::provider::Found::NeverLaunched)
+        }
+    }
+
     /// A nodes store whose reads of runtime rows (the point read and the whole set) are refused; every
     /// other row is the memory store's.
     #[derive(Default)]
@@ -1117,6 +1151,7 @@ mod tests {
             gone_dirs: Arc::default(),
             os_stopped_confirmed: Arc::default(),
             terminate_refusals_named: Arc::default(),
+            offline: Arc::new(Mutex::new([(member.node_id.clone(), member.incarnation_id.clone().expect("the member's birth"))].into_iter().collect())),
         };
         (recovery, status, member)
     }
@@ -1268,6 +1303,41 @@ mod tests {
         let fresh = status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap().expect("a fresh hold opens");
         assert!(fresh.since > 1 && fresh.verdicts == 1, "a fresh hold, its own since: {fresh:?}");
         eprintln!("span via-held-running cancelled-os-stopped trace_id={}", cancelled[0].trace_id);
+    }
+
+    /// CONTRACT (node-recovery.md step 3: "`Running` clears the fact and, if the birth is still
+    /// unreachable, the rule below opens a fresh hold"; step 4: its returning digest "ends the hold and
+    /// clears `held-running`"): a TRUE OFFLINE member heard again while its inspection is in flight (the
+    /// tick drops its mark) is left no `held-running` row and no `os-stopped` row by that inspection,
+    /// whether the provider reads it `Running` or `OsStopped`, and no `recorded` span names one; the same
+    /// member still TRUE OFFLINE is held or recorded by the ordinary rule. Must NOT happen: the re-born admin cell's run, where a
+    /// follower put `verdicts=2` 12 ms after the tick's `via-offline-returned` had cleared the hold, and
+    /// no later tick cleared it.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_member_heard_again_during_its_inspection_is_left_no_hold_and_no_os_stopped_row() {
+        for status_read in [crate::deployment::provider::DeploymentStatus::Running, crate::deployment::provider::DeploymentStatus::OsStopped] {
+            let (recovery, status, node, provider, _, _) = os_stopped_member(status_read.clone(), "dep-heard-during-inspection");
+            let inc = node.incarnation_id.clone().unwrap();
+            let heard = RecoverySubmitter { provider: Arc::new(HeardDuringInspection { domain: provider.domain.clone(), status: status_read.clone(), marks: recovery.offline.clone() }), ..recovery.clone() };
+            let capture = crate::span_capture::Capture::new("i144-e4-heard-during-inspection");
+            {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                heard.recover_if_proven(&node, &Mutex::new(HashMap::new())).await;
+            }
+            assert!(heard.offline.lock().unwrap().is_empty(), "{status_read:?}: the tick heard the birth during the inspection");
+            assert_eq!(status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "{status_read:?}: no hold for a birth heard again");
+            assert_eq!(status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap(), None, "{status_read:?}: no os-stopped row for a birth heard again");
+            let recorded: Vec<_> = capture.named("rdm.node_admin.node.update.via-held-running").into_iter().chain(capture.named("rdm.node_admin.node.update.via-os-stopped")).filter(|c| attrs(c)("outcome") == "recorded").collect();
+            assert!(recorded.is_empty(), "{status_read:?}: nothing is recorded: {recorded:?}");
+            // The same member still TRUE OFFLINE is held or recorded as before.
+            let (still, status, node, _, _, _) = os_stopped_member(status_read.clone(), "dep-still-offline");
+            still.recover_if_proven(&node, &Mutex::new(HashMap::new())).await;
+            let inc = node.incarnation_id.clone().unwrap();
+            let held = status.node_held_running_of("mesh2", &node.node_id, &inc).await.unwrap().is_some();
+            let stopped = status.node_os_stopped_of("mesh2", &node.node_id, &inc).await.unwrap().is_some();
+            assert_eq!((held, stopped), (status_read == crate::deployment::provider::DeploymentStatus::Running, status_read == crate::deployment::provider::DeploymentStatus::OsStopped), "{status_read:?}: a birth still TRUE OFFLINE keeps the ordinary rule");
+        }
     }
 
     /// CONTRACT (node-delete.md "OS-suspended target": the `os-stopped` row is removed once, `deleted`, or
@@ -1471,6 +1541,7 @@ mod tests {
             gone_dirs: Arc::default(),
             os_stopped_confirmed: Arc::default(),
             terminate_refusals_named: Arc::default(),
+            offline: Arc::default(),
         };
         assert_eq!(recovery.owed_submits(false, "mesh2").await, vec![], "nothing is owed by an admin that does not hold the seat");
         assert_eq!(recovery.owed_submits(true, "mesh1").await, vec![], "another mesh's primary is owed none of mesh2's exits");

@@ -267,8 +267,9 @@ pub struct Records {
     /// `declared`, never its `status`.
     pub declared: Arc<Mutex<crate::status_rpc::Declared>>,
     /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
-    /// `Dead` while they stay silent.
-    pub offline: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
+    /// `Dead` while they stay silent. Shared with the tick's recovery followers, whose verdict rows
+    /// stand only for a birth still in it (`RecoverySubmitter::offline`).
+    pub offline: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
     /// The births a command of this admin's executor never reached for a reachability reason, marked
     /// `PendingReconnect` at once (node-tickle.md step 1): read by the mesh primary's tick.
     pub unreachable: crate::offline::UnreachableMarks,

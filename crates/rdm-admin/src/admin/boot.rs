@@ -1976,6 +1976,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         gone_dirs: Arc::default(),
                                         os_stopped_confirmed: Arc::default(),
                                         terminate_refusals_named: Arc::default(),
+                                        offline: records.offline.clone(),
                                     };
                                     {
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
@@ -2165,6 +2166,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.unreachable.lock().unwrap().retain(|nid, _| nid.as_str() != id);
                                                 }
                                                 for id in &report.returned {
+                                                    // The mark goes before the rows are cleared: a follower in flight reads the
+                                                    // mark after its own write and removes what it wrote (`RecoverySubmitter::offline`).
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                     // The silence, held-running and os-stopped rows are written and removed by the
                                                     // mesh-primary (node-identity-and-state.md): an admin that does not hold the

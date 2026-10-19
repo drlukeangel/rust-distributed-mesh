@@ -31,6 +31,10 @@ pub(crate) struct RecoverySubmitter {
     /// lane and attempt: each is named once, on the first expired hold that reads it. The refusal
     /// itself is the durable receipt; this only keeps its span from repeating every tick.
     pub terminate_refusals_named: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId, crate::build::BuildId, Option<String>, u32)>>>,
+    /// The exact births this admin's tick holds TRUE OFFLINE (`Records::offline`, the same set): a
+    /// follower's verdict row (`held-running`, `os-stopped`) stands only for a birth still in it
+    /// (node-recovery.md step 3), read before the row is written and again after it.
+    pub offline: Arc<Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>>,
 }
 
 /// What a hold of a birth may do this tick, read from the birth's durable Failed `TerminateRuntime`
@@ -130,6 +134,14 @@ impl Inspected {
 }
 
 impl RecoverySubmitter {
+    /// Whether this admin's tick still holds `n`'s exact birth TRUE OFFLINE. The tick drops a birth
+    /// heard again from the set before it clears the birth's rows, so a follower that reads the birth
+    /// still in the set after its own write leaves that write to the tick's clear, and one that reads
+    /// it gone removes the row it wrote: no order leaves a row of a birth heard again standing.
+    fn still_offline(&self, n: &Node) -> bool {
+        n.incarnation_id.as_ref().is_some_and(|inc| self.offline.lock().unwrap().contains(&(n.node_id.clone(), inc.clone())))
+    }
+
     /// The name this admin currently holds in its membership digest book, or its boot name before its
     /// birth is in the book.
     pub(crate) fn held_name(&self) -> PathName {
@@ -302,7 +314,10 @@ impl RecoverySubmitter {
                 if removal.is_none() {
                     self.clear_os_stopped(n, "running").await;
                 }
-                if removal.is_none() {
+                // node-recovery.md step 3: the hold opens only "if the birth is still unreachable". A
+                // birth heard again while this inspection was in flight has had its hold ended by the
+                // tick (step 4): nothing is written for it.
+                if removal.is_none() && self.still_offline(n) {
                     if let Some(inc) = n.incarnation_id.clone() {
                         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
                         let prev = self.status_storage.node_held_running_of(&n.mesh, &n.node_id, &inc).await.ok().flatten();
@@ -322,6 +337,13 @@ impl RecoverySubmitter {
                         };
                         let held_row = crate::status_storage::NodeHeldRunningRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: inc.clone(), since, verdicts: count };
                         let _ = self.status_storage.put_node_held_running_of(&n.mesh, &held_row).await;
+                        // Heard again between the read above and this put: the tick's clear may have run
+                        // before the put, so the row this follower wrote is removed here.
+                        if !self.still_offline(n) {
+                            let _ = self.status_storage.remove_node_held_running_of(&n.mesh, &n.node_id, &inc).await;
+                            tracing::info!(node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), "the birth was heard again during its inspection: the held-running row this inspection wrote is removed");
+                            return outcome;
+                        }
                         tracing::info_span!(
                             "rdm.node_admin.node.update.via-held-running",
                             node = %n.name,
@@ -449,6 +471,11 @@ impl RecoverySubmitter {
     /// recorded, or first confirmed by this admin over a row another admin wrote (`revalidated`).
     pub(crate) async fn record_os_stopped(&self, n: &Node) {
         let Some(inc) = n.incarnation_id.clone() else { return };
+        // node-recovery.md step 3 speaks for a TRUE OFFLINE birth: one heard again while this
+        // inspection was in flight has had its fact cleared by the tick, and nothing is written for it.
+        if !self.still_offline(n) {
+            return;
+        }
         let birth = (n.node_id.clone(), inc.clone());
         let span = |outcome: &str, since: u64, detail: &str| {
             tracing::info_span!("rdm.node_admin.node.update.via-os-stopped", node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), since = since as i64, outcome, detail, "otel.kind" = "internal")
@@ -467,6 +494,13 @@ impl RecoverySubmitter {
         match self.status_storage.put_node_os_stopped_of(&n.mesh, &row).await {
             // A refused put confirms nothing: the next tick records or revalidates it again.
             Err(e) => span("refused", since, &format!("the os-stopped row could not be written: {e}")),
+            // Heard again between the read above and this put: the tick's clear may have run before
+            // the put, so the row this inspection wrote is removed here.
+            Ok(()) if !self.still_offline(n) => {
+                let _ = self.status_storage.remove_node_os_stopped_of(&n.mesh, &n.node_id, &inc).await;
+                tracing::info!(node = %n.name, node_id = %n.node_id, incarnation_id = %inc.as_str(), "the birth was heard again during its inspection: the os-stopped row this inspection wrote is removed");
+                return;
+            }
             Ok(()) => {
                 self.os_stopped_confirmed.lock().unwrap().insert(birth);
                 if let Some(outcome) = outcome {
