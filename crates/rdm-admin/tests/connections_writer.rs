@@ -647,6 +647,31 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The recovery-dial spans open at each moment, and how many were open each time a pending recovery
+/// item was spent (its `via-recovery-attempt` span opens at the clear).
+#[derive(Clone, Default)]
+struct OpenDials {
+    open: Arc<std::sync::atomic::AtomicUsize>,
+    at_spend: Arc<Mutex<Vec<usize>>>,
+}
+
+impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for OpenDials {
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+        match attrs.metadata().name() {
+            "rdm.node_admin.connection.create.via-recovery-dial" => {
+                self.open.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            "rdm.node_admin.connection.remove.via-recovery-attempt" => self.at_spend.lock().unwrap().push(self.open.load(std::sync::atomic::Ordering::SeqCst)),
+            _ => {}
+        }
+    }
+    fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        if ctx.span(&id).is_some_and(|s| s.name() == "rdm.node_admin.connection.create.via-recovery-dial") {
+            self.open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 /// CONTRACT (connections.md §9.3, §9.4, §9.5, Q7 ruled Luke 2026-10-13): one reconciler, two
 /// arming paths, one pending item per (destination, destination_incarnation). A latest Direct
 /// Failed row arms the reconciler on its own without any inbound accept trigger. When `due_ms` is
@@ -662,7 +687,8 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     use tracing_subscriber::layer::SubscriberExt;
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rdm_transport::span_capture("connections-writer", exporter.clone());
-    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let open_dials = OpenDials::default();
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer).with(open_dials.clone()));
     let d = dispatch.clone();
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
     let _g = tracing::dispatcher::set_default(&dispatch);
@@ -759,5 +785,9 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
     let spent = named("rdm.node_admin.connection.remove.via-recovery-attempt");
     assert_eq!(spent.len(), 1);
     assert_eq!(spent[0]["attributes"]["reason"], "direct-connected");
+    // A dial span's lifetime is the outcome it records: it is closed (and so handed to the exporter)
+    // before the item that dial spends is spent, so a reader that waits for the item to be spent finds
+    // the span ended. Counted at the spend's own span, which the clear opens.
+    assert_eq!(*open_dials.at_spend.lock().unwrap(), vec![0], "no recovery-dial span was still open when its item was spent");
     println!("cell=due_time_reconnect trace_id={trace_id}");
 }
