@@ -33,6 +33,7 @@ pub fn adopted_time() -> rdm_transport::clock::RafkaTime {
     t
 }
 
+#[cfg(feature = "file-backend")]
 mod admin_app_alpns;
 mod admin_serves_forward;
 mod ids_crockford;
