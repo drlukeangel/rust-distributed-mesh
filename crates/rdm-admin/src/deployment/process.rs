@@ -119,7 +119,7 @@ const PROC: &str = "/proc";
 
 /// What the operating system shows of a thread group (deployment-provider.md §2.6): the state
 /// letter of every task in `/proc/<pid>/task/*/stat`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Group {
     /// A live task is in a state other than `T` or `t`.
     Running,
@@ -127,8 +127,15 @@ enum Group {
     OsStopped,
     /// No task is live (each a zombie or dead), or `/proc/<pid>` is gone.
     Gone,
-    /// The task files are present and cannot be read whole: never exit proof.
-    Unreadable,
+    /// The task files are present and cannot be read whole: never exit proof. `path` is the file or
+    /// directory whose read failed and `cause` the error or the line that names no state.
+    Unreadable { path: String, cause: String },
+}
+
+impl Group {
+    fn unreadable(path: impl std::fmt::Display, cause: impl std::fmt::Display) -> Self {
+        Group::Unreadable { path: path.to_string(), cause: cause.to_string() }
+    }
 }
 
 /// The thread group of the process `start` names: a pid that now runs another process (its start
@@ -136,31 +143,41 @@ enum Group {
 /// is `Unreadable`. A handle without a start token is read on the pid alone.
 fn exact_group(proc: &str, pid: u32, start: Option<u64>) -> Group {
     if let Some(s) = start {
-        match std::fs::read_to_string(format!("{proc}/{pid}/stat")) {
+        let path = format!("{proc}/{pid}/stat");
+        match std::fs::read_to_string(&path) {
             Ok(stat) => match rdm_core::runtime::start_token_of_stat(&stat) {
                 Some(t) if t != s => return Group::Gone,
                 Some(_) => {}
-                None => return Group::Unreadable,
+                None => return Group::unreadable(path, format!("no start token in {stat:?}")),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Group::Gone,
-            Err(_) => return Group::Unreadable,
+            Err(e) => return Group::unreadable(path, e),
         }
     }
     group(proc, pid)
 }
 
 /// The state of `pid`'s whole thread group. A task listed and gone before its `stat` was read has
-/// exited; any other task whose `stat` cannot be read makes the group `Unreadable`.
+/// exited; any other task whose `stat` cannot be read, or whose line names no state, makes the
+/// group `Unreadable`.
 fn group(proc: &str, pid: u32) -> Group {
-    match std::fs::read_dir(format!("{proc}/{pid}/task")) {
+    let dir = format!("{proc}/{pid}/task");
+    match std::fs::read_dir(&dir) {
         Ok(tasks) => {
             let mut letters = Vec::new();
             for task in tasks {
-                let Ok(task) = task else { return Group::Unreadable };
-                match std::fs::read_to_string(task.path().join("stat")) {
-                    Ok(stat) => letters.push(state_letter(&stat)),
+                let task = match task {
+                    Ok(task) => task,
+                    Err(e) => return Group::unreadable(&dir, e),
+                };
+                let path = task.path().join("stat");
+                match std::fs::read_to_string(&path) {
+                    Ok(stat) => match state_letter(&stat) {
+                        Some(letter) => letters.push(letter),
+                        None => return Group::unreadable(path.display(), format!("no state letter in {stat:?}")),
+                    },
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(_) => return Group::Unreadable,
+                    Err(e) => return Group::unreadable(path.display(), e),
                 }
             }
             fold_group(letters)
@@ -169,9 +186,10 @@ fn group(proc: &str, pid: u32) -> Group {
         // /proc not readable here, it cannot be told.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => match std::fs::metadata(format!("{proc}/{pid}")) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Group::Gone,
-            _ => Group::Unreadable,
+            Ok(_) => Group::unreadable(&dir, format!("absent while {proc}/{pid} is present")),
+            Err(m) => Group::unreadable(&dir, format!("absent, and {proc}/{pid} cannot be read: {m}")),
         },
-        Err(_) => Group::Unreadable,
+        Err(e) => Group::unreadable(&dir, e),
     }
 }
 
@@ -183,18 +201,17 @@ fn state_letter(stat: &str) -> Option<char> {
 
 /// Fold the state letters of a thread group's tasks: a zombie (`Z`) or dead (`X`, `x`) task is not
 /// live; every live task in `T` or `t` is `OsStopped`; any other live task is `Running`; no live
-/// task is `Gone`. A letter that cannot be read makes the group `Unreadable`.
-fn fold_group(letters: impl IntoIterator<Item = Option<char>>) -> Group {
+/// task is `Gone`.
+fn fold_group(letters: impl IntoIterator<Item = char>) -> Group {
     let (mut live, mut stopped) = (0usize, 0usize);
     for letter in letters {
         match letter {
-            None => return Group::Unreadable,
-            Some('Z' | 'X' | 'x') => {}
-            Some('T' | 't') => {
+            'Z' | 'X' | 'x' => {}
+            'T' | 't' => {
                 live += 1;
                 stopped += 1;
             }
-            Some(_) => live += 1,
+            _ => live += 1,
         }
     }
     match (live, stopped) {
@@ -539,7 +556,11 @@ impl DeploymentProvider for ProcessDeploymentProvider {
             match crate::blocking::blocking_io(move || exact_group(PROC, pid, start)).await {
                 Group::Running => DeploymentStatus::Running,
                 Group::OsStopped => DeploymentStatus::OsStopped,
-                Group::Unreadable => DeploymentStatus::Unknown,
+                Group::Unreadable { path, cause } => {
+                    tracing::info_span!("rdm.node_admin.deployment.returns-unknown.via-proc-unreadable", deployment_id = %handle.deployment_id, pid, path = %path, cause = %cause)
+                        .in_scope(|| tracing::info!("the runtime's thread group cannot be read whole: its state is unknown, never exit proof"));
+                    DeploymentStatus::Unknown
+                }
                 // No live task, or a recycled pid that runs another process: this birth has exited.
                 // A child's code is its wait's, recorded once the group is gone.
                 Group::Gone => DeploymentStatus::Exited { code: exit_of().flatten().flatten() },
@@ -626,30 +647,28 @@ mod tests {
     /// CONTRACT (deployment-provider.md §2.6): every live task of the thread group in `T` or `t` is
     /// `OsStopped`; any live task in another state (running, sleeping, in disk wait) is `Running`, so a
     /// group with one stopped task and one that runs is `Running`; zombie and dead tasks are not live,
-    /// and a group with none live is `Gone`; one letter that cannot be read makes the group
-    /// `Unreadable`, never `Gone`.
+    /// and a group with none live is `Gone`.
     #[test]
     fn a_thread_group_is_os_stopped_only_when_every_live_task_is_stopped() {
-        let fold = |l: &[Option<char>]| fold_group(l.iter().copied());
+        let fold = |l: &[char]| fold_group(l.iter().copied());
         for running in ['R', 'S', 'D', 'I'] {
-            assert_eq!(fold(&[Some(running)]), Group::Running, "{running}");
+            assert_eq!(fold(&[running]), Group::Running, "{running}");
         }
-        assert_eq!(fold(&[Some('T')]), Group::OsStopped);
-        assert_eq!(fold(&[Some('t')]), Group::OsStopped);
-        assert_eq!(fold(&[Some('T'), Some('t'), Some('T')]), Group::OsStopped, "every task stopped, by signal or by tracer");
-        assert_eq!(fold(&[Some('Z'), Some('T')]), Group::OsStopped, "a zombie leader with a stopped sibling: the live task is stopped");
-        assert_eq!(fold(&[Some('T'), Some('S')]), Group::Running, "one live task that is not stopped: the group runs");
-        assert_eq!(fold(&[Some('t'), Some('R')]), Group::Running);
-        assert_eq!(fold(&[Some('Z'), Some('X'), Some('x')]), Group::Gone, "no live task");
+        assert_eq!(fold(&['T']), Group::OsStopped);
+        assert_eq!(fold(&['t']), Group::OsStopped);
+        assert_eq!(fold(&['T', 't', 'T']), Group::OsStopped, "every task stopped, by signal or by tracer");
+        assert_eq!(fold(&['Z', 'T']), Group::OsStopped, "a zombie leader with a stopped sibling: the live task is stopped");
+        assert_eq!(fold(&['T', 'S']), Group::Running, "one live task that is not stopped: the group runs");
+        assert_eq!(fold(&['t', 'R']), Group::Running);
+        assert_eq!(fold(&['Z', 'X', 'x']), Group::Gone, "no live task");
         assert_eq!(fold(&[]), Group::Gone);
-        assert_eq!(fold(&[Some('T'), None]), Group::Unreadable, "a letter that cannot be read is no state");
-        assert_eq!(fold(&[Some('Z'), None]), Group::Unreadable, "never Gone on a partial read");
     }
 
     /// CONTRACT (deployment-provider.md §2.6, PRD i144 R3): read over a process filesystem, a pid
     /// whose `/proc/<pid>` is gone, or whose start token names another process, is `Gone` (the exact
-    /// runtime exited); task files present but unreadable or partial are `Unreadable`, which inspect
-    /// answers `Unknown`, never exit proof; a pid listed without its task directory cannot be told.
+    /// runtime exited); task files present but unreadable or partial are `Unreadable`, naming the file
+    /// and the error or the line, which inspect answers `Unknown`, never exit proof, even beside a
+    /// zombie task; a pid listed without its task directory cannot be told.
     #[test]
     fn a_partial_or_unreadable_task_read_is_unreadable_and_a_gone_or_recycled_pid_is_gone() {
         let root = crate::test_support::tempdir("proc-fixture");
@@ -662,15 +681,22 @@ mod tests {
         assert_eq!(exact_group(proc, 200, Some(556)), Group::Gone, "a start token that names another process: this runtime exited");
         assert_eq!(exact_group(proc, 999, Some(555)), Group::Gone, "the pid is gone");
         assert_eq!(group(proc, 999), Group::Gone);
+        let names = |g: Group, path: &str, cause: &str| match g {
+            Group::Unreadable { path: p, cause: c } => assert!(p == format!("{proc}/{path}") && c.contains(cause), "{p}: {c}; expected {path}: {cause}"),
+            other => panic!("{other:?}; expected Unreadable at {path}"),
+        };
         fixture_proc(&root, 300, 555, &[Some('S'), None]);
-        assert_eq!(exact_group(proc, 300, Some(555)), Group::Unreadable, "a task whose stat cannot be read");
+        names(exact_group(proc, 300, Some(555)), "300/task/301/stat", "Is a directory");
         fixture_proc(&root, 400, 555, &[Some('S')]);
         std::fs::write(root.join("400/task/400/stat"), "400 (node").unwrap();
-        assert_eq!(exact_group(proc, 400, Some(555)), Group::Unreadable, "a partial task line");
+        names(exact_group(proc, 400, Some(555)), "400/task/400/stat", "no state letter in \"400 (node\"");
+        fixture_proc(&root, 600, 555, &[Some('Z'), Some('S')]);
+        std::fs::write(root.join("600/task/601/stat"), "601 (node").unwrap();
+        names(exact_group(proc, 600, Some(555)), "600/task/601/stat", "no state letter");
         std::fs::write(root.join("400/stat"), "400 (node").unwrap();
-        assert_eq!(exact_group(proc, 400, Some(555)), Group::Unreadable, "a start token that cannot be read is no identity");
+        names(exact_group(proc, 400, Some(555)), "400/stat", "no start token in \"400 (node\"");
         std::fs::create_dir_all(root.join("500")).unwrap();
-        assert_eq!(group(proc, 500), Group::Unreadable, "listed without its tasks: it cannot be told");
+        names(group(proc, 500), "500/task", "absent while");
     }
 
     fn launch(dir: &std::path::Path) -> ResolvedNodeLaunch {
@@ -839,10 +865,13 @@ mod tests {
         assert!(err.to_string().contains(DEPLOYMENT_FILE), "{err}");
     }
 
-    /// CONTRACT: inspecting an adopted process reads /proc on the blocking pool.
+    /// CONTRACT: inspecting an adopted process reads /proc on the blocking pool. An `Unknown` names
+    /// the read that failed (`rdm.node_admin.deployment.returns-unknown.via-proc-unreadable`).
     #[test]
     fn inspecting_an_adopted_process_waits_on_the_blocking_pool() {
         let me = std::process::id();
+        let capture = crate::span_capture::Capture::new("process-inspect-blocking-pool");
+        let _cell = tracing::dispatcher::set_default(&capture.dispatch);
         let (waited, status) = crate::test_support::op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| {
             Box::pin(async move {
                 let p = ProcessDeploymentProvider::new();
@@ -851,7 +880,8 @@ mod tests {
             })
         });
         assert!(waited, "the inspection finished on the runtime's thread while the blocking pool was held");
-        assert_eq!(status, DeploymentStatus::Running);
+        let unread: Vec<_> = capture.named("rdm.node_admin.deployment.returns-unknown.via-proc-unreadable").into_iter().map(|s| s.attributes).collect();
+        assert_eq!(status, DeploymentStatus::Running, "the read that failed: {unread:?}");
     }
 
     /// CONTRACT: a spawn (its data dir, logs, records and the fork) runs on the blocking pool.
