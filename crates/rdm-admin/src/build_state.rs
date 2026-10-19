@@ -928,7 +928,8 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 /// The lifecycle operations open in `builds` (the fold of `facts`): every `NodeDeleting` step a
 /// retire operation completed with no `NodeDeleted` step of the same operation after it, and every
 /// `NodeRestarting` step whose restart (`node.restart:<path>`, the op it carries) has no `Complete`
-/// step yet and whose attempt is not `Converged`. An attempt's `Converged` verdict ends every
+/// step yet and whose attempt is not `Converged`, at its own attempt or at a later one of the same
+/// Build that reused the step (which records the end under the restart's own attempt). An attempt's `Converged` verdict ends every
 /// restart of that attempt: the fabric-primary records it from the executor's stream terminal, which
 /// follows every step's `Complete` receipt durable on the executor (node-rpc-envelope.md: progress
 /// waits on no gossip), so the restart's own `Complete` need not have reached this log. Derived from
@@ -1006,7 +1007,22 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
                 }
                 lane_steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete) || by.is_some()
             } else {
-                converged.contains(&verdict) || lane_steps.iter().any(|t| t.step == "Complete" && t.attempt == op.attempt && t.operation == op.operation && t.outcome == StepOutcome::Complete)
+                // A later attempt of the same Build that reused this pre-event (its pipeline re-ran the
+                // operation and wrote no new one: it holds a receipt of the operation) ends it by the
+                // operation's `Complete` or by its own `Converged` verdict, recorded under the
+                // operation's own stamped attempt, so every reader's (Build, attempt, operation)
+                // lookup closes the hold it opened (gossip.md: NodeRestarting stays until the
+                // restart's node.started).
+                let ended_later = lane_steps.iter().any(|t| {
+                    t.attempt > op.attempt
+                        && t.operation == op.operation
+                        && t.outcome == StepOutcome::Complete
+                        && (t.step == "Complete" || converged.contains(&(op.build_id.clone(), s.mesh.clone(), t.attempt)))
+                });
+                if ended_later && s.mesh.is_none() {
+                    out.restarts_completed.insert((op.build_id.clone(), op.attempt, op.operation.clone()));
+                }
+                ended_later || converged.contains(&verdict) || lane_steps.iter().any(|t| t.step == "Complete" && t.attempt == op.attempt && t.operation == op.operation && t.outcome == StepOutcome::Complete)
             };
             if !closed {
                 out.ops.push(op);
