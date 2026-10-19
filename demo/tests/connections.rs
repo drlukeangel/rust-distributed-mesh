@@ -1198,10 +1198,12 @@ fn direct_restoration_during_a_proxy_stream_leaves_the_stream_and_connections_de
         assert!(
             spans
                 .iter()
-                .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted")
+                // The estate runs `Wiring::no_certs()`: each acceptor admits by name, spanned
+                // via-no-certs-configured (node-connections-admit.md, `NoCerts`).
+                .filter(|s| s["name"] == "rdm.node.connections.create.via-no-certs-configured")
                 .count()
                 >= 3,
-            "three-node trace must include the three admission spans across source, carrier, and destination"
+            "three-node trace must include the three no-certs admission spans across source, carrier, and destination"
         );
     });
 }
