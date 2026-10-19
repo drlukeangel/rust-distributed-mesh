@@ -2721,7 +2721,9 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let executor = st.primary_of(&om);
     let executor_name = s(&executor["name"]);
     let survivor = st.secondary_of(&om);
-    let broker = format!("{om}.broker.1");
+    // A broker that holds no seat: its restart starts with its own stop, which the hold below keeps in flight
+    // (a seat holder's restart first commands the holder, which a held holder cannot answer).
+    let broker = st.nodes.iter().filter(|n| n["mesh"] == om.as_str() && n["kind"] == "broker" && n["is_primary"] != true).map(|n| s(&n["name"])).min().unwrap_or_else(|| panic!("R3: {om} holds a broker without a seat"));
     let broker_before = f.estate.node_value(&broker).await;
     let fabric_build = s(&st.fabric["build_id"]);
     point_entry_away(&mut f, &st, &executor_name).await;
@@ -2732,6 +2734,13 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let seat_first = broker_before["is_primary"] == true;
     let restart_attempt = attempt_before + 1 + u64::from(seat_first);
     a.traffic.aim = Some(broker.clone());
+    // The broker's exact runtime is held before the restart is asked, so the restart's own stop is in flight
+    // when the executor dies: its stop-node gets no answer from a held runtime until its send bound, and the
+    // kill lands inside that bound (STOP_NODE_SEND_BOUND). No call is aimed at the held broker meanwhile: each
+    // would wait out its own budget.
+    let broker_rt = exact_runtime(&f, &broker).await;
+    let (mut broker_held, hold_ack) = Held::hold(&broker, &broker_rt);
+    progress(&format!("R3: {broker} held for its restart's stop: {hold_ack}"));
     let req_ns = now_ns();
     let bid = a.write(&f, &st, "R3: node.restart of a role node under the mesh primary", Write::Restart(broker.to_string())).await;
     assert_eq!(bid, b0, "R3: the role node's restart is an attempt of the accepted Build");
@@ -2744,12 +2753,17 @@ async fn recovery_run(cell: &str, shape: Shape) {
         if b["state"] == "running" && b["executor"] == executor_name.as_str() && b["attempt"].as_u64() == Some(restart_attempt) && left_service {
             break (b, restart_attempt);
         }
-        assert!(started.elapsed() < Duration::from_secs(30), "R3: the restart's attempt {restart_attempt} (seat moved first: {seat_first}) was never seen in flight under {executor_name} with {broker} out of service; build {b:#}");
-        a.traffic.burst(&f, 1, "during-restart").await;
+        assert!(started.elapsed() < STOP_NODE_SEND_BOUND, "R3: the restart's attempt {restart_attempt} was never seen in flight under {executor_name} with {broker} held and out of service within its stop's send bound; build {b:#}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
     };
     let kill = kill_admin(&mut f, &mut a, &st, &executor_name).await;
     let killed_instant = Instant::now();
-    progress(&format!("R3: {executor_name} killed with attempt {killed_at_attempt} of {bid} in flight: {held}"));
+    let kill_ns = kill["kill_ns"].as_u64().unwrap();
+    // The stop-node cannot have been sent before the restart was asked: a kill within the send bound of the
+    // request is inside the held stop's bound.
+    assert!(kill_ns.saturating_sub(req_ns) < STOP_NODE_SEND_BOUND.as_nanos() as u64, "R3: {executor_name} was killed {} ms after the restart was asked, past the held stop's bound ({} ms)", (kill_ns - req_ns) / 1_000_000, STOP_NODE_SEND_BOUND.as_millis());
+    let release_ack = broker_held.release();
+    progress(&format!("R3: {executor_name} killed {} ms after the restart was asked, with attempt {killed_at_attempt} of {bid} in flight and {broker}'s stop held; {broker} released: {release_ack}; {held}", (kill_ns - req_ns) / 1_000_000));
     let fin = a.finish(&mut f, &bid, Until::Restarted { node: broker.clone(), node_id: s(&broker_before["node_id"]), incarnation: s(&broker_before["incarnation_id"]) }, "during-successor").await;
     a.traffic.aim = None;
     let broker_after = f.estate.node_value(&broker).await;
@@ -2926,9 +2940,12 @@ async fn recovery_run(cell: &str, shape: Shape) {
 /// CONTRACT: topology-preserving recovery keeps the accepted Build and only advances its attempt. In
 /// the formed estate two Build-executed admin restarts each open exactly the next attempt of the Build
 /// the fabric already names (same Build id, one attempt further, one executor, the same NodeId in a
-/// new birth). Then a non-fabric-primary mesh primary, executing a broker's restart, is SIGKILLed
-/// (a death the story names) with that attempt in flight and the broker out of service, while seeded
-/// puts are aimed at the broker: the fabric-primary's next attempt of the same Build re-births the
+/// new birth). Then a non-fabric-primary mesh primary, executing the restart of a broker that holds no
+/// seat, is SIGKILLed (a death the story names) with that attempt in flight and the broker out of
+/// service: the broker's exact runtime is held from before the restart is asked, so the restart's own
+/// stop is in flight, and the kill lands inside the held stop's bound (the stop-node's 5 s send bound,
+/// measured from the request); the broker is released after the kill, and seeded puts are aimed at it
+/// after the release: the fabric-primary's next attempt of the same Build re-births the
 /// dead admin's path.name and hands the broker's restart to the surviving mesh primary, whose attempt
 /// completes it; the broker ends back in service under a new exact birth (its NodeId kept or re-born
 /// is recorded). No
@@ -3858,6 +3875,10 @@ impl Drop for Held {
         }
     }
 }
+
+/// The send bound of a stop-node command (`rdm_admin::node_commands`, `Budget::Split { send: 5 s, .. }`): a
+/// held runtime leaves the stop the executor sent unanswered until then.
+const STOP_NODE_SEND_BOUND: Duration = Duration::from_secs(5);
 
 /// The exact runtime of a held node is held, never taken for dead: while it is held the node stays
 /// listed under its NodeId in every admin's view, no Build is accepted and no attempt is opened for
