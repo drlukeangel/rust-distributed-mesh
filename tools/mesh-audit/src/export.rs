@@ -1,0 +1,149 @@
+//! The i143 export certifier (e10.s2, #2790; PRD §14, §15).
+//!
+//! i141 pins one exact RDM SHA. This module certifies that one candidate: it is eligible only when
+//! the transport-parity scan ([`crate::parity::scan`]) is eligible and every owner's job receipt is
+//! `ok` at that SHA. Every job in both sections of the acceptance registry
+//! (`tools/mesh-audit/i143-acceptance-jobs.json`, `jobs` and `rshape_jobs`) is an owner, and its
+//! receipt is the one `scripts/i143-acceptance-gate.sh` writes: `target/i143-acceptance/jobs/<job>.json`
+//! for `jobs`, `target/i143-rshape/jobs/<job>.json` for `rshape_jobs`. A receipt certifies only when
+//! its outcome is `ok`, its `source_sha` is the candidate, it ran on a clean tree, and every artifact
+//! it recorded still hashes to the sha256 it recorded. Anything else is refused by name, and every
+//! refusal is named in one run, never just the first.
+
+use crate::parity::Report;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+/// The two registry sections whose every job is an owner, and where the runner writes each one's receipt.
+pub const SECTIONS: [(&str, &str); 2] = [("jobs", "target/i143-acceptance/jobs"), ("rshape_jobs", "target/i143-rshape/jobs")];
+
+/// A job receipt as `scripts/i143-acceptance-gate.sh` writes it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Receipt {
+    pub job: String,
+    pub source_sha: String,
+    pub dirty_paths: u64,
+    pub outcome: String,
+    pub cells: Vec<ReceiptCell>,
+}
+
+/// One executed cell of a receipt, with every artifact path and its sha256.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReceiptCell {
+    pub name: String,
+    pub outcome: String,
+    #[serde(default)]
+    pub artifacts: BTreeMap<String, String>,
+}
+
+/// Why a candidate is not certified. Every variant blocks the export.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Refusal {
+    /// The candidate is not one exact 40-hex commit SHA.
+    CandidateNotASha { candidate: String },
+    /// A parity ledger row is `MIRROR pending`.
+    ParityMirrorPending { sha: String },
+    /// A boundary commit in the parity range has no ledger row.
+    ParityUnclassified { sha: String, subject: String },
+    /// Any other parity gate failure.
+    ParityIneligible { violation: String },
+    /// The registry has no `jobs` section, or a section is not an object.
+    Registry { reason: String },
+    /// An owner's job has no receipt.
+    ReceiptMissing { job: String, path: String },
+    /// An owner's receipt does not read as the runner's receipt.
+    ReceiptUnreadable { job: String, path: String, reason: String },
+    /// The receipt at an owner's path names another job.
+    ReceiptForAnotherJob { job: String, names: String },
+    /// The receipt's outcome is not `ok`.
+    ReceiptNotOk { job: String, outcome: String },
+    /// The receipt was written at another source SHA than the candidate.
+    ReceiptAtAnotherSha { job: String, source_sha: String },
+    /// The receipt was written on a tree with uncommitted paths.
+    ReceiptDirty { job: String, dirty_paths: u64 },
+    /// An artifact the receipt recorded is gone.
+    ArtifactMissing { job: String, cell: String, path: String },
+    /// An artifact the receipt recorded no longer hashes to its recorded sha256.
+    ArtifactChanged { job: String, cell: String, path: String, recorded: String, now: String },
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CandidateNotASha { candidate } => write!(f, "candidate {candidate:?} is not one exact 40-hex commit SHA"),
+            Self::ParityMirrorPending { sha } => write!(f, "parity row {sha} is MIRROR pending"),
+            Self::ParityUnclassified { sha, subject } => write!(f, "boundary commit {sha} ({subject}) has no parity row"),
+            Self::ParityIneligible { violation } => write!(f, "parity: {violation}"),
+            Self::Registry { reason } => write!(f, "registry: {reason}"),
+            Self::ReceiptMissing { job, path } => write!(f, "{job}: no receipt at {path}"),
+            Self::ReceiptUnreadable { job, path, reason } => write!(f, "{job}: receipt {path} does not read: {reason}"),
+            Self::ReceiptForAnotherJob { job, names } => write!(f, "{job}: the receipt names job {names}"),
+            Self::ReceiptNotOk { job, outcome } => write!(f, "{job}: the receipt's outcome is {outcome}, not ok"),
+            Self::ReceiptAtAnotherSha { job, source_sha } => write!(f, "{job}: the receipt was written at {source_sha}, not the candidate"),
+            Self::ReceiptDirty { job, dirty_paths } => write!(f, "{job}: the receipt was written on a tree with {dirty_paths} uncommitted paths"),
+            Self::ArtifactMissing { job, cell, path } => write!(f, "{job}/{cell}: artifact {path} is missing"),
+            Self::ArtifactChanged { job, cell, path, recorded, now } => {
+                write!(f, "{job}/{cell}: artifact {path} hashes to {now}, the receipt recorded {recorded}")
+            }
+        }
+    }
+}
+
+/// One owner's receipt the manifest certifies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CertifiedReceipt {
+    pub job: String,
+    pub section: String,
+    pub path: String,
+    pub sha256: String,
+}
+
+/// The export manifest: the one candidate, the parity it was scanned through, every owner's receipt.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportManifest {
+    pub candidate_sha: String,
+    pub rafka_parity_base: String,
+    pub rafka_parity_through: String,
+    pub parity_ledger_digest: String,
+    pub mirror_pending: usize,
+    pub owners: usize,
+    pub receipts: Vec<CertifiedReceipt>,
+    pub refusals: Vec<Refusal>,
+    pub eligible: bool,
+}
+
+/// Inputs to one certification.
+pub struct CertifyInput<'a> {
+    /// The one candidate RDM SHA, 40 hex.
+    pub candidate: &'a str,
+    /// The parity scan's report.
+    pub parity: &'a Report,
+    /// The acceptance registry.
+    pub registry: &'a serde_json::Value,
+    /// The RDM root: receipts and their relative artifact paths resolve against it.
+    pub root: &'a Path,
+}
+
+/// Certify one candidate. RED (#2790): the certifier is not built; it certifies nothing and names
+/// nothing.
+pub fn certify(input: &CertifyInput<'_>) -> ExportManifest {
+    ExportManifest {
+        candidate_sha: input.candidate.into(),
+        rafka_parity_base: input.parity.rafka_parity_base.clone(),
+        rafka_parity_through: input.parity.rafka_parity_through.clone(),
+        parity_ledger_digest: input.parity.parity_ledger_digest.clone(),
+        mirror_pending: input.parity.mirror_pending,
+        owners: 0,
+        receipts: Vec::new(),
+        refusals: Vec::new(),
+        eligible: false,
+    }
+}
+
+/// The registry the acceptance runner reads.
+pub fn default_registry() -> PathBuf {
+    crate::workspace_root().join("tools/mesh-audit/i143-acceptance-jobs.json")
+}

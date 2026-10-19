@@ -3,6 +3,7 @@
 
 mod acceptance_gate;
 mod gate_evidence;
+mod export_certifier;
 mod address_lookup;
 mod admin_ui_client;
 mod connections_parity;

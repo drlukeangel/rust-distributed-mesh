@@ -7,6 +7,7 @@
 pub mod address_lookup;
 pub mod admin_ui;
 pub mod deps;
+pub mod export;
 pub mod legacy;
 pub mod lock;
 pub mod parity;

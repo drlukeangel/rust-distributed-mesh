@@ -1,6 +1,24 @@
 {
   "contract": "The i143 acceptance job registry. One job per (issue, layer); each cell's `command` is copied verbatim from the issue's hardened acceptance text and names exactly one test (`-- --exact`). `scripts/i143-acceptance-gate.sh <job-id>` runs every cell of a job from the RDM root, in a shell with `I143_ACCEPTANCE_DIR=<dir>` and `I143_ACCEPTANCE_CELL=<cell>` exported: a cell writes its `result.json` (direct observations) there, a UNIT cell also its `spans.json`; a PROCESS/CONTAINER/FAST cell's estate lands under `<dir>/estate` by the command's own `RDM_ARTIFACTS_DIR`. The runner writes `<dir>/gate.log`, `<dir>/manifest.json` and the job receipt `target/i143-acceptance/jobs/<job-id>.json`. `dir` is always `target/i143-acceptance/<issue>/<layer>/<cell>`. A cell with `evidence: runner` is an existing stem run as a regression: the runner writes its `result.json` itself from the test summary, the estate manifest and the spans files, since an existing stem is never edited to produce one.",
   "jobs": {
+    "i143-2790-export": {
+      "issue": 2790,
+      "layer": "export",
+      "cells": [
+        {
+          "name": "export_manifest_rejects_pending_or_unclassified_parity",
+          "source": "tools/mesh-audit/tests/export_certifier.rs",
+          "command": "cargo test -p rdm-mesh-audit --test main export_certifier::export_manifest_rejects_pending_or_unclassified_parity -- --exact",
+          "dir": "target/i143-acceptance/2790/export/export_manifest_rejects_pending_or_unclassified_parity"
+        },
+        {
+          "name": "export_manifest_certifies_one_candidate_with_all_owner_receipts",
+          "source": "tools/mesh-audit/tests/export_certifier.rs",
+          "command": "cargo test -p rdm-mesh-audit --test main export_certifier::export_manifest_certifies_one_candidate_with_all_owner_receipts -- --exact",
+          "dir": "target/i143-acceptance/2790/export/export_manifest_certifies_one_candidate_with_all_owner_receipts"
+        }
+      ]
+    },
     "i143-2938-process": {
       "issue": 2938,
       "layer": "process",
