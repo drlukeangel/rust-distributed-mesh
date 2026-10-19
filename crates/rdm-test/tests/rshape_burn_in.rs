@@ -3738,7 +3738,7 @@ fn stopped_decided_after(stop: &Value, t_apply: u64) -> Vec<&Value> {
         .as_array()
         .map(|ds| {
             ds.iter()
-                .filter(|d| d["start_ns"].as_u64().unwrap_or(0) >= t_apply && d["state"] == "Stopped" && d["outcome"] == "applied")
+                .filter(|d| d["start_ns"].as_u64().unwrap_or(0) >= t_apply && d["state"] == "Stopped" && matches!(d["outcome"].as_str(), Some("applied" | "already-applied")))
                 .collect()
         })
         .unwrap_or_default()
