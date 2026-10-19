@@ -19,13 +19,15 @@ if [ -z "$RDM_GATE_LOCKED" ]; then
   [ $rc = 99 ] && echo "ABORT: a gate is already running on lane $(basename "$(pwd)")" >&2
   exit $rc
 fi
-# Two gates over one suite. `release` (rdm-gate-at.sh <lane> release) runs every scenario at the
-# documented production windows (staleness 30 s, gossip and backbone 2 s). The default gate runs
-# the same scenarios at the test cadence: the proofs are about ordering and outcomes, not the
-# length of a window, and a stem that still takes long at this cadence is a defect to read.
+# Two gates over one suite. `release` (rdm-gate-at.sh <lane> release) adds the release-only jobs
+# below and exports no cadence: each stem runs at the cadence it sets (rdm-test's and rdm-admin's
+# test binaries set the test cadence when it is unset), and a node a cell launches with a cleared
+# environment runs at the production defaults. The fast gate exports the test cadence: the proofs
+# are about ordering and outcomes, not the length of a window, and a stem that still takes long at
+# this cadence is a defect to read.
 GATE="${2:-fast}"
 case "$GATE" in
-  release) echo "[gate] release: production cadence" ;;
+  release) echo "[gate] release: the release-only jobs, each stem at its own cadence" ;;
   fast)    export RDM_STALENESS_MS=3000 RDM_GOSSIP_INTERVAL_MS=500 RDM_BACKBONE_INTERVAL_MS=500 RAFKA_STALENESS_MS=3000 RAFKA_GOSSIP_INTERVAL_MS=500 RAFKA_BACKBONE_INTERVAL_MS=500
            echo "[gate] fast: test cadence staleness=${RAFKA_STALENESS_MS}ms gossip=${RAFKA_GOSSIP_INTERVAL_MS}ms backbone=${RAFKA_BACKBONE_INTERVAL_MS}ms" ;;
   *)       echo "ABORT: gate is fast or release, not $GATE" >&2; exit 1 ;;
@@ -396,8 +398,9 @@ export -f one; export O D DEPLOY SCENARIO_PKG OTEL_EXPORTER_OTLP_ENDPOINT RDM_ST
 # during the stem phase they take cargo's package-cache lock that audit-tests' `cargo tree` waits on.
 RELEASE_ONLY='^(mesh_delete_resume|mesh_delete_no_survivor|container-proof|i143-2777-container|i143-2784-chaos-container|cohort_election|rshape-[a-z-]+|i143-2777-process|i143-2780-process|cohort_recovery|peer_mesh_investigation|doctests|workspace-check|demo-admin-ui|restored_faults|node_replace|rafka_time_discipline|owed_check_ins|fabric_takeover) '
 if [ "$GATE" = fast ]; then grep -vE "$RELEASE_ONLY" $D/jobs > $D/jobs.fast && mv $D/jobs.fast $D/jobs; fi
-# Every suite job starts in the same concurrent batch. Long release jobs retain their
-# existing 900 s cap; other jobs retain 300 s. GATE_JOBS controls the batch concurrency.
+# Every suite job starts in the same concurrent batch. The release-only jobs are the long ones by
+# definition (above) and get the 900 s cap, so a job ends with its libtest summary and every
+# failure's text; other jobs keep 300 s. GATE_JOBS controls the batch concurrency.
 # Prioritize known heavy/longer jobs so they start at T=0 and don't stall in the queue tail
 python3 - "$D/jobs" <<'PY'
 import sys
@@ -432,10 +435,9 @@ def score(line):
 lines.sort(key=score)
 open(path, "w").writelines(lines)
 PY
+export RELEASE_ONLY
 xargs -P "$JOBS" -L1 bash -c '
-    case "$1" in rshape-*|i143-2784-chaos-container|i143-2777-container|container-proof)
-        export GATE_JOB_SECS=${GATE_HEAVY_JOB_SECS:-900} ;;
-    esac
+    if [[ "$1 " =~ $RELEASE_ONLY ]]; then export GATE_JOB_SECS=${GATE_HEAVY_JOB_SECS:-900}; fi
     one "$@"
 ' _ < $D/jobs
 cat $D/*.log >> $O.detail
