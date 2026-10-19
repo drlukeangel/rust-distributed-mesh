@@ -40,6 +40,10 @@ pub const ENV_MESH_ID: &str = "RDM_MESH_ID";
 pub const ENV_ISSUING_KEY: &str = "RDM_ISSUING_KEY";
 /// A launched node-admin's mesh issuing cert, signed by the fabric's root, as hex.
 pub const ENV_ISSUING_CERT: &str = "RDM_ISSUING_CERT";
+/// The fabric's root, the ed25519 secret as hex (fabric-certs.md §Custody): given to the bootstrap
+/// node-admin, and written into every node-admin's launch beside its mesh's issuing material by a
+/// launcher that holds it. A secret: it travels only in a launch's environment.
+pub const ENV_CA_SECRET: &str = "RDM_CA_SECRET";
 /// A person-started node-admin must recover its mesh: with `RDM_FABRIC_PRIMARY`, a fabric recovery.
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
@@ -72,19 +76,22 @@ impl std::fmt::Debug for SecretHex {
 }
 
 /// The issuing material a launched node-admin signs its mesh's member certs with (`RDM_ISSUING_KEY`,
-/// `RDM_ISSUING_CERT`): the issuing key's secret and its root-signed cert, each as hex.
+/// `RDM_ISSUING_CERT`): the issuing key's secret and its root-signed cert, each as hex; and beside
+/// them the fabric's root (`RDM_CA_SECRET`) when its launcher holds it (fabric-certs.md §Custody).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuingMaterial {
     /// The issuing key's ed25519 secret.
     pub key: SecretHex,
     /// The issuing cert, signed by the fabric's root.
     pub cert: String,
+    /// The fabric's root, written beside them by a launcher that holds it.
+    pub root: Option<SecretHex>,
 }
 
 impl IssuingMaterial {
-    /// The material of `key`, as a launch writes it.
+    /// The material of `key`, with no root, as a launch writes it.
     pub fn of(key: &crate::certs::IssuingKey) -> Self {
-        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()) }
+        Self { key: SecretHex(crate::certs::encode_key(key.secret())), cert: crate::certs::encode_issuing_cert(key.cert()), root: None }
     }
 }
 
@@ -186,16 +193,19 @@ pub fn decode_listeners(s: &str) -> Result<Vec<(String, SocketAddr)>> {
         .collect()
 }
 
-/// The issuing material `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` carry: both, or neither. One
-/// without the other, or either not hex, is refused by name.
-pub fn decode_issuing(key: Option<String>, cert: Option<String>) -> Result<Option<IssuingMaterial>> {
+/// The issuing material `RDM_ISSUING_KEY` and `RDM_ISSUING_CERT` carry: both, or neither, with the
+/// root `RDM_CA_SECRET` carries beside them. One without the other, or any of them not hex, is
+/// refused by name. A root with no issuing material is no issuing material: it is the bootstrap
+/// admin's, read by its cert choice.
+pub fn decode_issuing(key: Option<String>, cert: Option<String>, root: Option<String>) -> Result<Option<IssuingMaterial>> {
     let present = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
     match (present(key), present(cert)) {
         (None, None) => Ok(None),
         (Some(key), Some(cert)) => {
             decode_hex(ENV_ISSUING_KEY, &key)?;
             decode_hex(ENV_ISSUING_CERT, &cert)?;
-            Ok(Some(IssuingMaterial { key: SecretHex(key), cert }))
+            let root = present(root).map(|r| decode_hex(ENV_CA_SECRET, &r).map(|_| SecretHex(r))).transpose()?;
+            Ok(Some(IssuingMaterial { key: SecretHex(key), cert, root }))
         }
         (Some(_), None) => Err(format!("{ENV_ISSUING_KEY} is set without {ENV_ISSUING_CERT}: issuing material is the key and its cert together")),
         (None, Some(_)) => Err(format!("{ENV_ISSUING_CERT} is set without {ENV_ISSUING_KEY}: issuing material is the key and its cert together")),
@@ -253,6 +263,9 @@ impl Launch {
         if let Some(issuing) = &self.issuing {
             m.insert(ENV_ISSUING_KEY.into(), issuing.key.0.clone());
             m.insert(ENV_ISSUING_CERT.into(), issuing.cert.clone());
+            if let Some(root) = &issuing.root {
+                m.insert(ENV_CA_SECRET.into(), root.0.clone());
+            }
         }
         m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
@@ -276,7 +289,7 @@ impl Launch {
             data_dir: PathBuf::from(req(ENV_DATA_DIR)?),
             store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
-            issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT))?,
+            issuing: decode_issuing(get(ENV_ISSUING_KEY), get(ENV_ISSUING_CERT), get(ENV_CA_SECRET))?,
             connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         })
     }
@@ -302,7 +315,7 @@ mod tests {
             data_dir: "/tmp/x".into(),
             store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
-            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into() }),
+            issuing: Some(IssuingMaterial { key: SecretHex("0a".repeat(32)), cert: "00abff".into(), root: Some(SecretHex("0b".repeat(32))) }),
             connections_delete_deadline: Duration::from_millis(750),
         };
         let env = l.to_env();
@@ -317,6 +330,11 @@ mod tests {
         assert!(Launch::from_env(|k| blank.get(k).cloned()).unwrap_err().contains("RDM_FABRIC is required and must not be empty"));
         assert_eq!((env.get(ENV_ISSUING_KEY).map(String::len), env.get(ENV_ISSUING_CERT).map(String::as_str)), (Some(64), Some("00abff")));
         assert!(!format!("{l:?}").contains(&"0a".repeat(32)), "the issuing key never prints: {l:?}");
+        assert_eq!(env.get(ENV_CA_SECRET).map(String::len), Some(64), "the root rides beside the issuing material");
+        assert!(!format!("{l:?}").contains(&"0b".repeat(32)), "the root never prints: {l:?}");
+        let mut no_root = env.clone();
+        no_root.remove(ENV_CA_SECRET);
+        assert_eq!(Launch::from_env(|k| no_root.get(k).cloned()).unwrap().issuing.unwrap().root, None, "issuing material from a launcher with no root");
         let mut odd = env.clone();
         odd.insert(ENV_ISSUING_CERT.into(), "abc".into());
         assert!(Launch::from_env(|k| odd.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_CERT has an odd number"));
@@ -327,7 +345,7 @@ mod tests {
         assert!(Launch::from_env(|k| half.get(k).cloned()).unwrap_err().starts_with("RDM_ISSUING_KEY is set without RDM_ISSUING_CERT"));
         // A launch that carries no issuing material sets no variable.
         let none = Launch { issuing: None, ..l.clone() }.to_env();
-        assert!(!none.contains_key(ENV_ISSUING_KEY) && !none.contains_key(ENV_ISSUING_CERT));
+        assert!(!none.contains_key(ENV_ISSUING_KEY) && !none.contains_key(ENV_ISSUING_CERT) && !none.contains_key(ENV_CA_SECRET));
         // The connections-delete bound rides the launch: absent or blank is the default, a value that
         // is no whole number of milliseconds is refused by name.
         assert_eq!(env.get(ENV_CONNECTIONS_DELETE_DEADLINE).map(String::as_str), Some("750"));

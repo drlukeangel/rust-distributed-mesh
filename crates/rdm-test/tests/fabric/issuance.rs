@@ -58,11 +58,12 @@ fn held_by(spans: &[Value], node: &str) -> Vec<(String, SignedCert)> {
 /// kept as its `ca-secret`). The admin that accepts a JoinNode issues a member cert for exactly that
 /// birth (path.name, mesh, node id, incarnation, endpoint key), signed by its mesh's issuing key, and
 /// the birth holds it: it verifies to its issuer and the issuer to the root. A restart is a new
-/// JoinNode and is issued a fresh cert. Every launched node-admin is launched with its mesh's issuing
-/// material (`RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`), the issuing cert signed by the root; the mesh's
-/// issuer is minted once, at the mesh's birth, and every admin of the mesh carries that one. Must NOT
+/// JoinNode and is issued a fresh cert. Every launched node-admin is launched with the fabric's root
+/// beside its mesh's issuing material (`RDM_CA_SECRET`, `RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`; §Custody),
+/// the issuing cert signed by the root; the mesh's issuer is minted once, at the mesh's birth, and
+/// every admin of the mesh carries that one, a launched admin that holds the root included. Must NOT
 /// happen: a cert that does not verify to the root, a cert naming another birth, a launched admin with
-/// no issuing material or another mesh's.
+/// no issuing material, another mesh's, or no root beside it, or a mesh given a second issuer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
     let sha = candidate_sha();
@@ -124,6 +125,8 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         let issuing = issuing_of(node);
         assert_eq!(issuing.cert.mesh, mesh, "{node} carries its own mesh's issuing cert");
         assert!(root.verify_strict(&certs::issuing_cert_bytes(&issuing.cert), &issuing.sig).is_ok(), "{node}'s issuing cert is signed by the root");
+        let sp = launches.iter().find(|sp| sp["attributes"]["node"] == node).unwrap();
+        assert_eq!(sp["attributes"]["root"], "true", "{node} was launched with the root beside its issuing material: {sp}");
     }
     assert_eq!(issuing_of("mesh2.admin.1"), issuing_of("mesh2.admin.2"), "mesh2's admins carry the one issuer minted at mesh2's birth");
     let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();

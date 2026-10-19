@@ -237,7 +237,7 @@ pub fn issue(issuer: &IssuingKey, birth: &BirthIdentity, expiry_ms: u64) -> Resu
 /// ([`CertError::BadSignature`]); the member cert has not expired ([`CertError::Expired`]). An expiry
 /// is passed only when `now_ms` is past it by more than `skew_ms` (one staleness floor).
 pub fn verify(signed: &SignedCert, root: &VerifyingKey, now_ms: u64, skew_ms: u64) -> Result<(), CertError> {
-    root.verify(&issuing_cert_bytes(&signed.issuer.cert), &signed.issuer.sig).map_err(|_| CertError::IssuerBadSignature)?;
+    verify_issuer(&signed.issuer, root)?;
     if now_ms > signed.issuer.cert.expiry_ms.saturating_add(skew_ms) {
         return Err(CertError::IssuerExpired);
     }
@@ -249,6 +249,11 @@ pub fn verify(signed: &SignedCert, root: &VerifyingKey, now_ms: u64, skew_ms: u6
         return Err(CertError::Expired);
     }
     Ok(())
+}
+
+/// The root verifies the issuing cert ([`CertError::IssuerBadSignature`]): the first check of [`verify`].
+pub fn verify_issuer(issuer: &SignedIssuingCert, root: &VerifyingKey) -> Result<(), CertError> {
+    root.verify(&issuing_cert_bytes(&issuer.cert), &issuer.sig).map_err(|_| CertError::IssuerBadSignature)
 }
 
 /// A signed member cert's bytes, as `JoinControl::member_cert` carries them.

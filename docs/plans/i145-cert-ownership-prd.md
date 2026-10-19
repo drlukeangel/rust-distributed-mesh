@@ -43,7 +43,7 @@ gossip.
 | R13 | two levels above the issuers: the fabric root (the app's anchor, signs only the CA) and RDM's CA (minted on day 0 under the root, `fabric.ca.create`); the chain is member → issuer → CA → root (Luke 2026-10-16: "I thought we were using the caller root to issue a new root that I then passed on and we can rotate internally") | BUILD | one level: the root signs issuers | e5 |
 | R13a | `fabric.ca.renew`: the CA rotates internally on policy (`RDM_CA_CERT_TTL_SECS`, `RDM_CERT_RENEW_AT`) under the same anchor; every issuer re-minted; no `node.roots.update`; an issuer never outlives its CA, the CA never its root | BUILD | nothing rotates | e5 |
 | R13b | `fabric.root.update { secret }`: a caller-supplied anchor rotates through five durable phases (`minted`, `distributed`, `ca-rotated`, `retired`); `node.roots.update` installs the set on every node (the secret to admins); a retire before every chain moved is refused by name; refused in flight or for a trusted root; a launched node is written `RDM_ROOTS`; `fabric.get` carries `roots { phase, expires_at }` and `ca { expires_at }` | BUILD | no caller op; verifiers hold one key | e5 |
-| R14 | custody: every node-admin holds the one root (written at launch as `RDM_CA_SECRET`, refreshed on rotation by `node.roots.update`); an elected successor mints and rotates from its own copy; the root is never in a row, frame or digest | BUILD (RDM) / HOLDS (rafka's node-admin already hands every admin the CA secret: `lane-mesh-deploy.sh:1262`) | `Launch` writes no root; `CertChoice::Issuer` carries none | e5 |
+| R14 | custody: every node-admin holds the one root (written at launch as `RDM_CA_SECRET`, refreshed on rotation by `node.roots.update`); an elected successor mints and rotates from its own copy; the root is never in a row, frame or digest | BUILD (RDM) / HOLDS (rafka's node-admin already hands every admin the CA secret: `lane-mesh-deploy.sh:1262`) | `node.roots.update`'s admin arm does not refresh it on rotation | e1 (the launch write and a successor minting from its own copy; arch 2026-10-19, e1 = a) / e5 (the refresh on rotation) |
 
 ## § Open forks
 
@@ -103,15 +103,26 @@ No new gossip frame and no new `MemberStatus`.
 - **Goal → gap.** fabric-certs.md §"How RDM is instantiated" (`CertChoice::Ca` / `Issuer` / `NoCerts`).
   The tree has `CertSigner` and no format.
 - **Requirements, with coordinates.** R1: `certs.rs:29` (the trait, deleted), rafka `cert.rs` (the
-  types, moved to `rdm_core::certs` with their tests), `CertChoice` (`certs.rs:58`).
-- **Spans.** None new; `via-no-certs-configured` unchanged.
+  types, moved to `rdm_core::certs` with their tests), `CertChoice` (`certs.rs:58`). R14's launch
+  write: every node-admin launch from a root holder carries `RDM_CA_SECRET` beside `RDM_ISSUING_KEY`
+  and `RDM_ISSUING_CERT` (`IssuingMaterial::root`); a launched admin reads the root first
+  (`CertChoice::Ca { secret, issuing }`), holds its mesh's issuer as given, and mints another mesh's
+  from its own copy (a successor fabric-primary's mesh.create).
+- **Spans.** `rdm.node_admin.cert.reject.via-refused` (a refused member cert or issuing material),
+  `rdm.node_admin.cert.reject.via-no-material`, `rdm.node_admin.cert.create.via-day-zero-root`;
+  `via-no-certs-configured` unchanged.
 - **Acceptance cells.** `a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root`;
   `each_refusal_is_named` (one per reason); `a_member_cert_never_outlives_its_issuer`;
   `a_node_admin_started_with_no_cert_choice_is_refused_at_start` (exists, kept);
-  `a_launched_admin_signs_only_its_own_mesh`. RED first.
-- **Page text.** None beyond the set applied 2026-10-16.
+  `a_launched_admin_signs_only_its_own_mesh`;
+  `a_launched_admin_holds_the_root_beside_its_meshs_issuer_and_mints_no_second_one`; the successor
+  fabric-primary cells green again (`build_op::a_successor_fabric_primary_*` ×2,
+  `fabric_primary::losing_the_fabric_primary_mesh_moves_control`). RED first.
+- **Page text.** fabric-certs.md :27-30 ("The chain"), :44-51 ("Where a node-admin's signing material
+  comes from") and the `CertChoice` block, brought to §Custody: for Luke, with the landing.
 - **Sizing.** One seat; `rdm-core/src/certs.rs` (new), `rdm-admin/src/certs.rs`, `wiring.rs`.
-- **State.** not started.
+- **State.** built on branch `i145-e1-cert-format` (lane e4s2), not landed: it lands after the release is
+  green (Luke's order) and with Luke's yes on the page text.
 
 #### e2 — the accept loop and `node.connections.admit` are rdm-transport's
 
@@ -181,13 +192,13 @@ No new gossip frame and no new `MemberStatus`.
 #### e5 — the CA under the root: `fabric.ca.create`, `fabric.ca.renew`, `fabric.root.update`; every admin holds the root
 
 - **Goal → gap.** fabric-ca-renew.md; fabric-certs.md §chain, §Custody. The root signs issuers directly;
-  there is no CA level; verifiers hold one key; a launched admin is not written the root.
+  there is no CA level; verifiers hold one key; a rotation refreshes no admin's root.
 - **Requirements, with coordinates.** R13 the fabric-primary's tick (e3's issuer renewal is the
   pattern), `status.rs` (`UpdateRoots` / `RootsUpdated` appended), the node's root set beside
   `node.connections.admit` in `rdm-transport` (not `admission.rs`), the launch env's second root
   (`RDM_ROOTS`; its one-root write lands with e2), the fabric's roots row; R13b the caller op on the fabric-primary's door
-  (`fabric.update` is the pattern); R14 the launch env (`RDM_CA_SECRET` written for a launched admin
-  beside `RDM_ISSUING_KEY`), `node.roots.update`'s admin arm carrying the secret.
+  (`fabric.update` is the pattern); R14 `node.roots.update`'s admin arm carrying the secret (the
+  launch write is e1's).
 - **Wire note.** `RenewCert`, `UpdateIssuer` and `UpdateRoots` are single-reply installs on Status 0x1B, the `ApplyNodeConfig` shape; they are not progress streams, so 0x22 NodeCommand (the streaming mesh-primary→node command hop) is not theirs. `fabric.root.update` is a caller op to the fabric-primary like `fabric.update`.
 - **Spans.** `rdm.fabric.ca.update.via-renewal`, `rdm.fabric.root.update.via-caller`,
   `rdm.node.roots.update.via-installed` (with `secret` ∈ {`carried`, `public-only`}).

@@ -24,7 +24,8 @@ async fn main() {
         tracing::info_span!("rdm.testkit.fault.create.via-boot", node = %name, door_op = rdm_test::fault_door::OP, boot_cuts = armed).in_scope(|| tracing::info!("boot cuts armed; the fault door is served on the Node RPC server"));
         // This executable holds the cert material every RDM node-admin does (fabric-certs.md): the root its
         // environment or data dir gives it, or its launch's issuing material. A launch's issuing cert (never
-        // its key) is recorded in a span, so a scenario reads what the admin was launched with.
+        // its key), and whether the root rode beside it (never the root), are recorded in a span, so a
+        // scenario reads what the admin was launched with.
         if let Some(l) = &cfg.launch {
             // The export filter admits `rafka*` targets only: this executable's own target is not one.
             tracing::info_span!(
@@ -32,6 +33,7 @@ async fn main() {
                 "rdm.testkit.cert.resolve.via-launch",
                 node = %name,
                 issuing = l.issuing.is_some(),
+                root = l.issuing.as_ref().is_some_and(|m| m.root.is_some()),
                 issuing_cert = %l.issuing.as_ref().map(|m| m.cert.as_str()).unwrap_or(""),
             )
             .in_scope(|| tracing::info!(target: "rafka_node_rpc_testkit", "the launch's issuing material"));

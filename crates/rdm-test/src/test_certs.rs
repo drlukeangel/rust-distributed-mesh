@@ -21,5 +21,5 @@ pub fn test_root_public() -> VerifyingKey {
 
 /// The cert choice of an admin holding the testkit's root.
 pub fn root_choice() -> rdm_admin::certs::CertChoice {
-    rdm_admin::certs::CertChoice::Ca { secret: test_root() }
+    rdm_admin::certs::CertChoice::Ca { secret: test_root(), issuing: None }
 }
