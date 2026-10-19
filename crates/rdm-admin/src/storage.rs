@@ -445,14 +445,13 @@ pub struct NodeRow {
     /// so it is never cleared. A row no rename wrote carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renamed_from: Option<PathName>,
-    /// The successor that took this row's config and tags at a replace's cutover (node-replace.md
-    /// step 4; proposal node-properties-own-commands.md §8, replace: the successor "inherits config
-    /// and tags from the retained predecessor row at the cutover rename ... and the predecessor's index
-    /// entries gone"), written on the retained predecessor's row once the successor's row stands at the
-    /// name. The row keeps its tags, as a `Deleted` row does, and the tags index holds none of them:
-    /// every label leaves with that write and none arrives with a later write at the same key. A
-    /// rename of the row writes none: the node takes a name again (node-replace.md "Rollback" step 2).
-    /// A row no cutover marked carries none.
+    /// The successor that took this row's config and tags at a replace (node-replace.md step 3 and
+    /// Inherited: the successor's row "inherits config and tags from the predecessor row ... whose
+    /// labels leave the active tags index"), written on the retained predecessor's row once the
+    /// successor's claim stands at the name. The row keeps its tags, as a `Deleted` row does, and the
+    /// tags index holds none of them: every label leaves with that write and none arrives with a later
+    /// write at the same key. A rename of the row writes none: the node takes a name again
+    /// (node-replace.md "Rollback" step 3). A row no successor marked carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_by: Option<NodeId>,
     /// Immutable application declaration, scoped to the exact incarnation that reported it.
@@ -1430,9 +1429,9 @@ mod tests {
         assert!(files("mesh1", "green").is_empty(), "nothing of the cut-off label is written");
     }
 
-    /// CONTRACT (proposal node-properties-own-commands.md §8, replace: the successor inherits the
-    /// retained predecessor row's tags at the cutover, "and the predecessor's index entries gone"):
-    /// between the cutover's put of the successor at the name and its mark, both nodes carry the label;
+    /// CONTRACT (node-replace.md Inherited: the successor inherits the retained predecessor row's tags,
+    /// "Retained predecessor labels are removed from the active index, not erased from its row"):
+    /// between the successor's claim at the name and the retained row's mark, both nodes carry the label;
     /// the retained row put again with `inherited_by` keeps its tags and the tags index names none of
     /// them for it; a later put at the same key carrying the field (a tags or config write) indexes
     /// none again, an added label included, while the successor stays named.
@@ -1449,7 +1448,7 @@ mod tests {
         let old = NodeRow { node_id: pred.clone(), tags: tags(&["rabbit"]), ..row("mesh1.rpc.1.old") };
         n1.put_node_row(&old).await.unwrap().unwrap();
         n1.put_node_row(&NodeRow { node_id: succ.clone(), tags: tags(&["rabbit"]), ..row("mesh1.rpc.1") }).await.unwrap().unwrap();
-        assert_eq!(n1.tagged("rabbit").await.unwrap(), [pred.clone(), succ.clone()].into(), "between the cutover's put and its mark both carry the label");
+        assert_eq!(n1.tagged("rabbit").await.unwrap(), [pred.clone(), succ.clone()].into(), "between the successor's claim and the mark both carry the label");
         let marked = NodeRow { inherited_by: Some(succ.clone()), ..old.clone() };
         n1.put_node_row(&marked).await.unwrap().unwrap();
         assert_eq!(n1.tagged("rabbit").await.unwrap(), [succ.clone()].into(), "the retained row's label left the index");

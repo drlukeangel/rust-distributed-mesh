@@ -3,4 +3,4 @@
 //! Renames a node within its mesh path, verifying rename preconditions and updating
 //! durable node rows and indices.
 
-pub use crate::node_name_update::{update, Cutover, FirstReadyOnRoot, NameDoors};
+pub use crate::node_name_update::{update, FirstReadyOnRoot, NameDoors};

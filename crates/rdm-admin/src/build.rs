@@ -162,10 +162,10 @@ pub enum BuildOperation {
     },
     /// One step of a recipe (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md): its op's
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
-    /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`, or
-    /// `retire-node` (node.delete). `birth` fences it to the exact birth its node was
-    /// when the recipe was accepted; `None` for a node an earlier step of the recipe created, which
-    /// the executor resolves at its path when the step runs.
+    /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`,
+    /// `retire-node` (node.delete), node.connections.delete `{ All }` or node.mesh.leave. `birth`
+    /// fences it to the exact birth its node was when the recipe was accepted; `None` for a node an
+    /// earlier step of the recipe created, which the executor resolves at its path when the step runs.
     RecipeStep {
         /// The step.
         step: rdm_core::build::RecipeStep,
@@ -248,6 +248,8 @@ pub fn recipe_step_key(step: &rdm_core::build::RecipeStep) -> String {
         S::Update { node, .. } => format!("node.update:{node}"),
         S::Start { node } => format!("node.start:{node}"),
         S::Delete { node } => format!("node.delete:{node}"),
+        S::DeleteConnections { node } => format!("node.connections.delete:{node}"),
+        S::LeaveMesh { node } => format!("node.mesh.leave:{node}"),
     }
 }
 

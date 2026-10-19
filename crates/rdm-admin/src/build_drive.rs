@@ -125,7 +125,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         | BuildOperation::RestartNode { node }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
-        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node }, .. }
+        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node } | RecipeStep::DeleteConnections { node }, .. }
             if node.kind == NodeKind::NodeAdmin =>
         {
             [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), run, &key), holder: Some(node.clone()) }).collect()
@@ -135,7 +135,7 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> V
         | BuildOperation::RestartNode { node }
         | BuildOperation::DeleteConnections { node, .. }
         | BuildOperation::StopNode { node, .. }
-        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node }, .. } => {
+        | BuildOperation::RecipeStep { step: RecipeStep::Stop { node } | RecipeStep::Delete { node } | RecipeStep::DeleteConnections { node }, .. } => {
             vec![PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(Seat::Cohort(node.kind), build_id.as_str(), run, &key), holder: Some(node.clone()) }]
         }
         _ => Vec::new(),

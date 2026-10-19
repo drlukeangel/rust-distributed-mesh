@@ -1929,20 +1929,10 @@ impl Run {
     /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
     async fn write_recipe(&mut self, f: &Formed, st: &Stable, what: &str, node: &str) -> String {
         use rdm_client::Nodes;
-        use rdm_core::build::RecipeStep;
         let t0 = now_ms();
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
         let path: rdm_core::PathName = node.parse().unwrap();
-        let recipe = vec![
-            RecipeStep::Create { node: path.successor() },
-            RecipeStep::Stop { node: path.clone() },
-            RecipeStep::Update { node: path.clone(), name: path.renamed() },
-            RecipeStep::Stop { node: path.successor() },
-            RecipeStep::Update { node: path.successor(), name: path.clone() },
-            RecipeStep::Start { node: path.clone() },
-            RecipeStep::Delete { node: path.renamed() },
-        ];
-        let mut stream = nodes.recipe(recipe).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the replace recipe of {node}: {e}", st.fp_name()));
+        let mut stream = nodes.recipe(rdm_test::recipes::replace(&path)).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the replace recipe of {node}: {e}", st.fp_name()));
         let (build_id, attempt) = (stream.accepted().build_id.to_string(), stream.accepted().attempt);
         tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
         self.attempts.insert(build_id.clone(), u64::from(attempt));
@@ -3541,9 +3531,9 @@ async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &st
 
 /// How a node's birth is ended through the rectifier: `node.delete` of the node (a retirement, the
 /// topology changes: a new accepted Build) or the replace recipe (node-replace.md: one Build of node
-/// primitives, the next attempt of the accepted Build, no Build minted): a successor at
-/// `<node>.new`, the live birth stopped and renamed `<node>.old`, the successor renamed to the path
-/// and started, and the old birth deleted at `<node>.old` (its exit proven, NodeDeleted published).
+/// primitives, the next attempt of the accepted Build, no Build minted): the live birth's connections
+/// deleted, its mesh left, renamed `<node>.old` live and stopped, the successor created at the path it
+/// released, and the old birth deleted at `<node>.old` (its exit proven, NodeDeleted published).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Removal {
     Delete,
@@ -3703,10 +3693,10 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
 }
 
 /// The replace recipe of `node` in `build_id` (node-replace.md "Numbered end-to-end sequence"): its
-/// reconciles executed the recipe's seven operations, each under its op's own key, in order, and no
-/// other operation of the node, its successor or its predecessor.
+/// reconciles executed the recipe's six operations, each under its op's own key, in order, and no
+/// other operation of the node or its predecessor.
 fn recipe_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
-    let (new, old) = (format!("{node}.new"), format!("{node}.old"));
+    let old = format!("{node}.old");
     // The recipe is an attempt of the accepted Build (its via-recipe span names the attempt it opened):
     // the reconciles from that attempt on in the fabric lane are the recipe's. The formation's earlier
     // attempts of the same Build created the node at its path and are not the recipe's.
@@ -3718,13 +3708,13 @@ fn recipe_ops_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
     reconciles.sort_by_key(|sp| start_ns(sp));
     let mut ops: Vec<String> = Vec::new();
     for sp in reconciles {
-        for op in s(&sp["attributes"]["operations"]).split(',').filter(|o| o.split_once(':').is_some_and(|(_, p)| p == node || p == new || p == old)) {
+        for op in s(&sp["attributes"]["operations"]).split(',').filter(|o| o.split_once(':').is_some_and(|(_, p)| p == node || p == old)) {
             if !ops.iter().any(|x| x == op) {
                 ops.push(op.to_string());
             }
         }
     }
-    let want = [format!("node.create:{new}"), format!("node.stop:{node}"), format!("node.update:{node}"), format!("node.stop:{new}"), format!("node.update:{new}"), format!("node.start:{node}"), format!("node.delete:{old}")];
+    let want = [format!("node.connections.delete:{node}"), format!("node.mesh.leave:{node}"), format!("node.update:{node}"), format!("node.stop:{old}"), format!("node.create:{node}"), format!("node.delete:{old}")];
     assert_eq!(ops, want.to_vec(), "{node}: the recipe's operations, in order");
     ops
 }
@@ -3983,17 +3973,19 @@ async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &
     rec
 }
 
-/// The creating half of a replace: the recipe's first step, node.create of the successor at
-/// `<node>.new` (`node.create:<node>.new`, node-replace.md step 1), ran `node.create.via-build` through
-/// the create pipeline (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready span
-/// follows; the old identity's NodeDeleted comes later, from the recipe's delete of `<node>.old`.
+/// The creating half of a replace: node.create of the successor at `<node>`, the name its predecessor
+/// released (`node.create:<node>`, node-replace.md step 3), ran `node.create.via-build` through the
+/// create pipeline (AllocateIdentity .. WaitForNodeReady), and the new NodeId's own ready span follows;
+/// the old identity's NodeDeleted comes later, from the recipe's delete of `<node>.old`.
 fn check_replace_create_chain(spans: &[Value], node: &str, build_id: &str, node_id: &str, incarnation: &str) -> Value {
-    let (successor, create) = (format!("{node}.new"), format!("node.create:{node}.new"));
+    let (successor, create) = (node.to_string(), format!("node.create:{node}"));
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
-        .find(|sp| sp["attributes"]["build_id"] == build_id && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == create)))
+        // The formation created the node at the same path under the same key: the recipe's reconcile is
+        // the one whose action is the recipe.
+        .find(|sp| sp["attributes"]["build_id"] == build_id && s(&sp["attributes"]["action"]).contains("\"recipe\"") && sp["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == create)))
         .cloned()
-        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} executed {create}"));
+        .unwrap_or_else(|| panic!("{node}: no reconcile of {build_id} carrying the recipe executed {create}"));
     let action = s(&reconcile["attributes"]["action"]);
     assert!(action.contains("\"recipe\"") && action.contains(&successor), "{node}: the reconcile carries the recipe: {action}");
     let make = named(spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| sp["attributes"]["node"] == successor.as_str() && descends_from(spans, sp, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.create.via-build of {successor} under the recipe's reconcile"));
@@ -4019,8 +4011,9 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let formation_build = f.build_id.clone();
 
     // 1. A planned logical replacement: the replace recipe of the broker (node-replace.md), one Build of
-    //    node primitives on the fabric-primary, opens the next attempt of the accepted Build: a successor at
-    //    `<path>.new` takes the path, the live birth is stopped, renamed `.old` and deleted. No Build is minted.
+    //    node primitives on the fabric-primary, opens the next attempt of the accepted Build: the live birth
+    //    leaves its mesh, takes `.old` live and is stopped, a successor is created at the path, and `.old` is
+    //    deleted. No Build is minted.
     let victim = format!("mesh2.broker.{}", f.shape.broker);
     let old = at(&st, &victim).clone();
     let old_id = s(&old["node_id"]);
@@ -5679,20 +5672,10 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     // to create, stop, rename or delete across the cut (R-D1).
     {
         use rdm_client::{CallEnd, Nodes};
-        use rdm_core::build::RecipeStep;
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
         for target in [format!("{far_mesh}.gateway.1"), s(&far_secondary["name"]), s(&far_primary["name"])] {
             let path: rdm_core::PathName = target.parse().unwrap();
-            let recipe = vec![
-                RecipeStep::Create { node: path.successor() },
-                RecipeStep::Stop { node: path.clone() },
-                RecipeStep::Update { node: path.clone(), name: path.renamed() },
-                RecipeStep::Stop { node: path.successor() },
-                RecipeStep::Update { node: path.successor(), name: path.clone() },
-                RecipeStep::Start { node: path.clone() },
-                RecipeStep::Delete { node: path.renamed() },
-            ];
-            let refused = match nodes.recipe(recipe).await {
+            let refused = match nodes.recipe(rdm_test::recipes::replace(&path)).await {
                 Err(CallEnd::Rejected { reason, detail }) => (reason, detail),
                 other => panic!("{near_fp}: the replace recipe of {target}, in the mesh it holds unheard, was not refused by name: {:?}", other.map(|s| s.accepted().clone())),
             };

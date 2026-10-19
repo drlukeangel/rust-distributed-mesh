@@ -52,8 +52,8 @@ While node[1] is stopped as `<name>.old` and its data remains available:
    incarnation, endpoint key, port and bin. Complete its full hook and readiness gates.
 3. node[1]: node.connections.delete `{ scope: All }`, node.mesh.leave, then
    [node.name.update](node-name-update.md) to `<name>` (its tag-index entries restored under its
-   own id), then [node.mesh.join](node-mesh-join.md) under `<name>`. Its ready-for-traffic ends the
-   rollback.
+   own id), then node[1].stop and node[1].start under `<name>`: its start's
+   [node.mesh.join](node-mesh-join.md) rejoins it, and its ready-for-traffic ends the rollback.
 
 No general rollback is inferred from Build durability. A missing or failed receipt
 leaves the recipe at the named step; resume or run the explicit compensation steps.
@@ -74,7 +74,8 @@ rollback:
   node[1].start → every AfterStop event, joined as name.old
   node.connections.delete(node[1], All), node.mesh.leave(node[1])
   node.name.update(node[1], name.old → name) → node.name.updated
-  node.mesh.join(node[1]) → node.mesh.joined, as name
+  node[1].stop → every stop event
+  node[1].start → every AfterStop event, joined as name
 ```
 
 Stop publishes its mesh-primary NodeStopped overlay; delete publishes NodeDeleting and

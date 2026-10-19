@@ -1622,9 +1622,10 @@ fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_h
 /// 4. `recovery` (`NodeDeleted` writing the `Deleted` row at `mesh1.broker.north`, then the
 ///    recovered birth claiming `mesh1.broker.north` with `ClaimFor::Recovery` and inheriting
 ///    config, tags and `node_type`), and
-/// 5. `replace` (successor created at `mesh1.broker.north.new` with `name = "north.new"`,
-///    predecessor renamed to `mesh1.broker.north.old` with `name = "north.old"`, and cutover
-///    moving `north.new` -> `north` while inheriting config, tags and `node_type` from `north.old`).
+/// 5. `replace` (the predecessor renamed to `mesh1.broker.north.old` with `name = "north.old"`, and
+///    the successor created at `mesh1.broker.north`, the name it released, its claim a successor's
+///    (`ClaimFor::Successor`), inheriting config, tags and `node_type` from `north.old`, whose row is
+///    marked inherited and whose labels leave the active tags index).
 #[test]
 fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_through_create_get_stop_start_recovery_and_replace() {
     use rdm_core::status::{NodeSelect, StatusReply};
@@ -1731,51 +1732,38 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         })
         .await;
 
-        // 5. Replace: successor at `mesh1.broker.north.new` (`north.new`), predecessor moved to
-        //    `mesh1.broker.north.old` (`north.old`), then cutover moves `north.new` -> `north`.
-        let new_key = north_key.successor();
+        // 5. Replace (node-replace.md steps 2-3): the predecessor moves to `mesh1.broker.north.old`
+        //    (`north.old`), and the successor is created at `mesh1.broker.north`, the name it released,
+        //    its claim a successor's: it inherits `node_type`, `config` and `tags` from the retained row.
         let old_key = north_key.renamed();
-        assert_eq!((new_key.to_string().as_str(), new_key.path().as_str(), new_key.name().as_str(), new_key.node_type()), ("mesh1.broker.north.new", "mesh1.broker", "north.new", "broker"));
         assert_eq!((old_key.to_string().as_str(), old_key.path().as_str(), old_key.name().as_str(), old_key.node_type()), ("mesh1.broker.north.old", "mesh1.broker", "north.old", "broker"));
-        assert_eq!(north_key.with_name("north.new").unwrap(), new_key);
         assert_eq!(north_key.with_name("north.old").unwrap(), old_key);
-        assert_eq!(new_key.with_name("north").unwrap(), north_key);
-
-        let mut succ = node("mesh1.broker.north.new", false, false);
-        succ.status = NodeStatus::Leaving;
-        succ.parked = true;
-        mp.rows
-            .claim_with_node_type(&new_key, &succ.node_id, "broker", "node.create:mesh1.broker.north.new", None, ClaimFor::Create)
-            .await
-            .expect("successor claims mesh1.broker.north.new");
 
         let mut pred_stopped = recovered_north.clone();
         pred_stopped.status = NodeStatus::Leaving;
         pred_stopped.parked = true;
         let old_row = mp.rows.rename_row(&pred_stopped, &old_key).await.expect("predecessor moves to mesh1.broker.north.old");
         assert_eq!((old_row.path().as_str(), old_row.node_name().as_str(), old_row.node_type()), ("mesh1.broker", "north.old", "broker"));
-        assert_eq!(storage.node_row_at(&north_key).await.unwrap(), None, "mesh1.broker.north is free for cutover");
+        assert_eq!(storage.node_row_at(&north_key).await.unwrap(), None, "mesh1.broker.north is free for the successor's claim");
 
-        let cutover_row = mp
-            .rows
-            .cutover_row(&succ, &north_key, &old_key, &pred_stopped.node_id)
-            .await
-            .expect("successor cuts over from north.new to north");
+        let mut succ = node("mesh1.broker.north", false, false);
+        succ.status = NodeStatus::Pending;
+        mp.rows.claim(&north_key, &succ.node_id, "node.create:mesh1.broker.north", None, ClaimFor::Successor).await.expect("the successor claims mesh1.broker.north");
+        let succ_row = storage.node_row_at(&north_key).await.unwrap().expect("successor row at mesh1.broker.north");
         assert_eq!(
-            (cutover_row.node_id.clone(), cutover_row.path().as_str(), cutover_row.node_name().as_str(), cutover_row.node_type(), &cutover_row.config, &cutover_row.tags),
+            (succ_row.node_id.clone(), succ_row.path().as_str(), succ_row.node_name().as_str(), succ_row.node_type(), &succ_row.config, &succ_row.tags),
             (succ.node_id.clone(), "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
         );
         assert_eq!(mp.rows.node_type_of(&succ.node_id, &north_key), "broker", "replace copies predecessor node_type to successor");
-        assert_eq!(storage.node_row_at(&new_key).await.unwrap(), None, "north.new is released after cutover");
         let retained_old = storage.node_row_at(&old_key).await.unwrap().expect("retained predecessor row at mesh1.broker.north.old");
         assert_eq!((retained_old.node_name().as_str(), retained_old.inherited_by.as_ref()), ("north.old", Some(&succ.node_id)));
-        assert_eq!(storage.tagged("blue").await.unwrap(), [succ.node_id.clone()].into(), "active tag index holds only the successor after cutover");
+        assert_eq!(storage.tagged("blue").await.unwrap(), [succ.node_id.clone()].into(), "active tag index holds only the successor after its claim");
 
         let mut succ_ready = succ.clone();
         succ_ready.name = north_key.clone();
         succ_ready.status = NodeStatus::ReadyForTraffic;
         succ_ready.parked = false;
-        succ_ready.config = cutover_row.config.clone();
+        succ_ready.config = succ_row.config.clone();
         let mut pred_old = pred_stopped.clone();
         pred_old.name = old_key.clone();
         let pred_id = pred_old.node_id.clone();

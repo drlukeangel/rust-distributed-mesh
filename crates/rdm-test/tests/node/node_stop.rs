@@ -254,7 +254,7 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
 
     estate.stop().await;
     let spans = estate.spans();
-    let update = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["to"]) == renamed.to_string()).expect("the mesh-primary decided the node.name.update");
+    let update = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).expect("the mesh-primary decided the node.name.update");
     assert_eq!(
         (s(&update["attributes"]["outcome"]), s(&update["attributes"]["traffic"]), s(&update["attributes"]["connections"]), s(&update["attributes"]["from"])),
         ("rejected-admitting-connections".into(), "Stopped".into(), "stopped".into(), path.to_string()),
@@ -265,80 +265,6 @@ async fn a_stopped_nodes_rename_at_its_mesh_primary_is_refused_and_its_start_rej
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
     assert_eq!(s(&join["attributes"]["admitted_as"]), path.to_string(), "{join:#?}");
     estate.record_trace_url(update["trace_id"].as_str().unwrap_or(""));
-}
-
-/// CONTRACT (R13; node-replace.md Rollback 2-3; proposal node-properties-own-commands.md §2.3
-/// "Stopped node"): the caller's `node.name.update` of the parked `mesh1.rpc.1` to the name `1.old`
-/// reaches its mesh-primary directly and ends `NameUpdated`, the stopped node told nothing; `node.get`
-/// lists the parked birth at `mesh1.rpc.1.old` and nothing at `mesh1.rpc.1`. The rename back to `1` ends `NameUpdated` the same
-/// way, and `node.start` of `mesh1.rpc.1` makes the same process rejoin: `node.joined`,
-/// `node.started`, `Complete`; `node.get` lists the same birth `ready-for-traffic` at `mesh1.rpc.1`
-/// and nothing at `.old`; every other node holds the birth publishing the row's name.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_rows_name() {
-    let test = "a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_rows_name";
-    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
-    estate.settled_views(&[("mesh1", 2, 3)]).await;
-    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let peers = estate.peers().await;
-    let nodes = estate.nodes_obj().await;
-    let path: PathName = NODE.parse().unwrap();
-    let renamed: PathName = path.renamed();
-
-    let mesh = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
-    peers.learn(&mesh);
-    let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
-    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
-    let others: Vec<&NodeView> = mesh.iter().filter(|n| n.name != path).collect();
-    let pid = estate.pid_of(NODE).await;
-
-    let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
-    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let parked = view_of(&nodes, &path).await;
-    assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
-
-    // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
-    assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
-    let listed = view_of(&nodes, &renamed).await;
-    assert!(listed.parked && listed.node_id == before.node_id && listed.incarnation_id == before.incarnation_id, "node.get lists the parked birth at {renamed}: {listed:?}");
-
-    assert_eq!(nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get").into_iter().filter(|n| n.name == path).count(), 0, "node.get lists nothing at {path} while the row says {renamed}");
-
-    // The rollback (node-replace.md Rollback 2-3): the row's name goes back while the node is
-    // stopped, and the start by that name rejoins the same process.
-    let back = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &path.name()).await.expect("node.name.update answered");
-    assert_eq!(back, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
-    let started = frames(nodes.start(&path).await.expect("the start by the row's name was accepted")).await;
-    assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
-    assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
-    for peer in &others {
-        peers
-            .fact(peer, "mesh1", "the rejoined birth is held again as the same incarnation, publishing the row's name", |v| {
-                v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation_id.as_ref().unwrap() && d.node.name == path)
-            })
-            .await;
-    }
-    let after = view_of(&nodes, &path).await;
-    assert!(!after.parked && after.status == NodeStatus::ReadyForTraffic, "node.get lists {path} ready: {after:?}");
-    assert_eq!((&after.node_id, &after.incarnation_id, &after.endpoint_id, &after.transport_addr), (&before.node_id, &before.incarnation_id, &before.endpoint_id, &before.transport_addr), "the same birth");
-    assert_eq!(nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get").into_iter().filter(|n| n.name == renamed).count(), 0, "node.get lists nothing at {renamed}");
-    assert_eq!(estate.pid_of(NODE).await, pid, "the same process");
-
-    estate.stop().await;
-    let spans = estate.spans();
-    let update = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["to"]) == renamed.to_string()).expect("the mesh-primary served the node.name.update");
-    assert_eq!((s(&update["attributes"]["outcome"]), s(&update["attributes"]["traffic"]), s(&update["attributes"]["from"])), ("name-updated".into(), "Stopped".into(), path.to_string()), "{update:#?}");
-    let back = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["to"]) == path.to_string()).expect("the mesh-primary served the rename back");
-    assert_eq!((s(&back["attributes"]["outcome"]), s(&back["attributes"]["from"])), ("name-updated".into(), renamed.to_string()), "{back:#?}");
-    let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && sp["attributes"]["node"] == path.to_string()).expect("the start command was sent");
-    let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
-    assert_eq!(s(&join["attributes"]["admitted_as"]), path.to_string(), "{join:#?}");
-    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "a renamed parked node is not drift");
-    estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 
 /// CONTRACT (node-rpc-envelope.md "Node properties": config "is a field of the node record ... a
@@ -402,22 +328,22 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
     estate.record_trace_url(update["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (R-JN1; node-start.md step 2, node-create.md step 4; R12/R13; CLAUDE.md read rule): in a
-/// mesh of three node-admins, the non-primary `mesh1.admin.3` is stopped and its mesh-primary renames
-/// its row to `mesh1.admin.3.old` (`node.name.update` of the name `3.old`, the stopped node told nothing). Every admin lists
-/// the parked birth at the row's name, `mesh1.admin.2`, which performed no rename, included: its view
-/// reads the name from the row on the shared store root. `node.start` of `mesh1.admin.3.old` makes the
-/// same process rejoin: its join presents `mesh1.admin.3`, the name its authority last accepted for
-/// this exact birth, and is admitted under the row's name (`via-join` `admitted_as`); the answer hands
-/// that name, and the node installs it before it publishes (`via-join-admitted` `installed`, then
-/// `via-ready` under the row's name). The stream carries `node.joined`, `node.started` and ends
-/// `Complete`; every admin lists the same birth `ready-for-traffic` at `mesh1.admin.3.old`, and the rpc
-/// node holds it publishing that name. What must NOT happen: an admin listing the parked birth at
-/// `mesh1.admin.3`, the start refused (`UnknownNode`, `JoinMismatch("name")`), or a span of the
-/// started node after its join naming `mesh1.admin.3`.
+/// CONTRACT (R-JN1; node-replace.md steps 1-2 and Rollback step 2; node-start.md step 2; R12/R13;
+/// CLAUDE.md read rule): in a mesh of three node-admins, the non-primary `mesh1.admin.3` has its
+/// connections deleted, leaves its mesh and the backbone, is renamed `mesh1.admin.3.old` live and is
+/// stopped there, as the predecessor's half of a replace recipe. Every admin lists the parked birth at
+/// the row's name, `mesh1.admin.2`, which performed no rename, included: its view reads the name from
+/// the row on the shared store root. `node.start` of `mesh1.admin.3.old` makes the same process
+/// rejoin: its join presents `mesh1.admin.3.old`, the name it took off its mesh, and is admitted under
+/// it (`via-join` `admitted_as`); the node installs the answer's name before it publishes
+/// (`via-join-admitted` `installed`, then `via-ready` under that name). The stream carries
+/// `node.joined`, `node.started` and ends `Complete`; every admin lists the same birth
+/// `ready-for-traffic` at `mesh1.admin.3.old`, and the rpc node holds it publishing that name. What must
+/// NOT happen: an admin listing the parked birth at `mesh1.admin.3`, the start refused (`UnknownNode`,
+/// `JoinMismatch("name")`), or a span of the started node after its join naming `mesh1.admin.3`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_admin() {
-    let test = "a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_admin";
+async fn a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_holds_on_every_admin() {
+    let test = "a_node_admin_renamed_off_its_mesh_and_stopped_starts_under_the_name_it_holds_on_every_admin";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 3, 1)]).await;
     estate.settled_views(&[("mesh1", 3, 1)]).await;
@@ -438,15 +364,16 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     let rpc = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::RpcNode).cloned().expect("the rpc node");
     let pid = estate.pid_of(path.to_string().as_str()).await;
 
-    let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
-    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let parked = view_of(&nodes, &path).await;
-    assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
-
-    // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let birth = rdm_client::ExactBirth { target: rdm_transport::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
-    let reply = nodes.name_update(&birth, &primary.node_id, &rdm_transport::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
-    assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
+    // The predecessor's half of a replace: its connections, its mesh, its name live, then its stop.
+    use rdm_core::build::RecipeStep;
+    let steps = vec![
+        RecipeStep::DeleteConnections { node: path.clone() },
+        RecipeStep::LeaveMesh { node: path.clone() },
+        RecipeStep::Update { node: path.clone(), name: renamed.clone() },
+        RecipeStep::Stop { node: renamed.clone() },
+    ];
+    let half = frames(nodes.recipe(steps).await.expect("the recipe was accepted")).await;
+    assert_eq!(half.last(), Some(&Frame::Complete), "{half:?}");
     // Every admin's view names the parked birth by its row, the one that performed no rename included.
     for admin in &admins {
         let listed = estate
@@ -480,7 +407,7 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     let spans = estate.spans();
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && s(&sp["attributes"]["node"]) == renamed.to_string()).expect("the start command was sent");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed" && sp["trace_id"] == sent["trace_id"]).expect("the start's rejoin was installed");
-    assert_eq!((s(&join["attributes"]["node"]), s(&join["attributes"]["admitted_as"])), (path.to_string(), renamed.to_string()), "the join presents the last accepted name and is admitted under the row's: {join:#?}");
+    assert_eq!((s(&join["attributes"]["node"]), s(&join["attributes"]["admitted_as"])), (renamed.to_string(), renamed.to_string()), "the join presents the name the node took off its mesh and is admitted under it: {join:#?}");
     let admitted = named(&spans, "rdm.mesh.node.update.via-join-admitted").into_iter().find(|sp| s(&sp["attributes"]["installed"]) == renamed.to_string()).expect("the started node installed the row's name its join answer handed");
     let ready: Vec<&Value> = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == renamed.to_string()).collect();
     assert_eq!(ready.len(), 1, "the started node reports ready under the row's name: {ready:?}");

@@ -337,7 +337,7 @@ pub(crate) fn recipe_births(steps: &[RecipeStep], pinned: &[(PathName, PinnedBir
                 birth
             }
             RecipeStep::Delete { node } => at.remove(node).ok_or_else(unknown)?,
-            RecipeStep::Stop { node } | RecipeStep::Start { node } => at.get(node).cloned().ok_or_else(unknown)?,
+            RecipeStep::Stop { node } | RecipeStep::Start { node } | RecipeStep::DeleteConnections { node } | RecipeStep::LeaveMesh { node } => at.get(node).cloned().ok_or_else(unknown)?,
         };
         out.push(birth);
     }
@@ -1313,31 +1313,28 @@ mod tests {
         assert!(plan(&cur, &o, None).operations.len() >= 3);
     }
 
-    /// The replace recipe of `node` (lifecycles/node-replace.md 1-4 and the predecessor's delete).
+    /// The replace recipe of `node` (lifecycles/node-replace.md steps 1-3, the predecessor retained).
     fn replace_recipe(node: &PathName) -> Vec<RecipeStep> {
         vec![
-            RecipeStep::Create { node: node.successor() },
-            RecipeStep::Stop { node: node.clone() },
+            RecipeStep::DeleteConnections { node: node.clone() },
+            RecipeStep::LeaveMesh { node: node.clone() },
             RecipeStep::Update { node: node.clone(), name: node.renamed() },
-            RecipeStep::Stop { node: node.successor() },
-            RecipeStep::Update { node: node.successor(), name: node.clone() },
-            RecipeStep::Start { node: node.clone() },
-            RecipeStep::Delete { node: node.renamed() },
+            RecipeStep::Stop { node: node.renamed() },
+            RecipeStep::Create { node: node.clone() },
         ]
     }
 
     /// CONTRACT (build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
-    /// lifecycles/node-replace.md; the Build carrier: completed steps are not rerun): an accepted recipe
-    /// pins the birth its predecessor path holds and plans its steps in order, each its op's own
-    /// operation (`node.create:<name>.new`, `node.stop:<name>`, `node.update:<name>`,
-    /// `node.stop:<name>.new`, `node.update:<name>.new`, `node.start:<name>`,
-    /// `node.delete:<name>.old`), never a replace operation and never a generic create or retire beside
-    /// them. The predecessor's steps carry its pinned birth, followed through its rename to `.old`; the
-    /// successor's carry none (its executor resolves the node its create made). A step whose `Complete`
-    /// is receipted in an attempt that carried this recipe is not planned again; a `Complete` of the
-    /// same operation in an attempt that carried another action is no progress. Refused by name: an
-    /// empty recipe, an operation named twice, and a step on a path no birth holds and no earlier step
-    /// makes.
+    /// lifecycles/node-replace.md steps 1-3; the Build carrier: completed steps are not rerun): an
+    /// accepted recipe pins the birth its predecessor path holds and plans its steps in order, each its
+    /// op's own operation (`node.connections.delete:<name>`, `node.mesh.leave:<name>`,
+    /// `node.update:<name>`, `node.stop:<name>.old`, `node.create:<name>`), never a replace operation
+    /// and never a generic create or retire beside them. The predecessor's steps carry its pinned
+    /// birth, followed through its rename to `.old`; the successor's create carries none (its executor
+    /// resolves the node its create made at the name the rename released). A step whose `Complete` is
+    /// receipted in an attempt that carried this recipe is not planned again; a `Complete` of the same
+    /// operation in an attempt that carried another action is no progress. Refused by name: an empty
+    /// recipe, an operation named twice, and a step on a path no birth holds and no earlier step makes.
     #[test]
     fn a_recipe_plans_its_steps_in_order_and_never_reruns_a_completed_one() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
@@ -1349,13 +1346,13 @@ mod tests {
         let steps = replace_recipe(&path);
         let action = recipe_action(steps.clone(), &o).unwrap();
         assert_eq!(action, AttemptAction::Recipe { steps: steps.clone(), pinned: vec![(path.clone(), pin.clone())] }, "only the predecessor's path holds a birth at acceptance");
-        let births = [None, Some(pin.clone()), Some(pin.clone()), None, None, None, Some(pin.clone())];
+        let births = [Some(pin.clone()), Some(pin.clone()), Some(pin.clone()), Some(pin.clone()), None];
         let all: Vec<BuildOperation> = steps.iter().zip(births.iter()).map(|(s, b)| BuildOperation::RecipeStep { step: s.clone(), birth: b.clone() }).collect();
         assert_eq!(plan(&cur, &o, Some(&action)).operations, all);
         let keys: Vec<String> = all.iter().map(BuildOperation::key).collect();
         assert_eq!(
             keys,
-            ["node.create:mesh1.rpc.1.new", "node.stop:mesh1.rpc.1", "node.update:mesh1.rpc.1", "node.stop:mesh1.rpc.1.new", "node.update:mesh1.rpc.1.new", "node.start:mesh1.rpc.1", "node.delete:mesh1.rpc.1.old"]
+            ["node.connections.delete:mesh1.rpc.1", "node.mesh.leave:mesh1.rpc.1", "node.update:mesh1.rpc.1", "node.stop:mesh1.rpc.1.old", "node.create:mesh1.rpc.1"]
         );
         assert!(!keys.iter().any(|k| k.starts_with("replace-node:")));
         let receipt = |attempt: u32, operation: &str| BuildStepReceipt {

@@ -3,14 +3,14 @@
 //! Node.id of the instance at each end when the entry was written"; R12/R13: the node owns its name
 //! and `ApplyNodeName` makes it hold and publish the renamed one).
 //!
-//! CONTRACT: `mesh1.rpc.1` is born `mesh1.rpc.1.new`, and the data-plane connection it originates
-//! to its admin is a connections entry naming `mesh1.rpc.1.new` as its source. It is stopped (R-CR1a: its stop deletes every
-//! connection), its row is renamed `mesh1.rpc.1` while it is stopped, and it starts under the row's
-//! name; its peer `mesh1.rpc.2` hears the renamed digest and resolves the birth at `mesh1.rpc.1`, and
-//! nothing at `mesh1.rpc.1.new`. Each then originates a data-plane connection to the other: the
-//! renamed node's entry names `mesh1.rpc.1` as its source with its own node id and birth, and is
-//! held as its own Direct; the peer's entry names `mesh1.rpc.1` as its destination with the same
-//! node id. The Node RPC pool writes nothing (connections.md "Two planes, two words"). The entry written before the rename stays exactly as written (the log is kept). What
+//! CONTRACT: `mesh1.rpc.1` is born at that name, and the data-plane connection it originates to its
+//! admin is a connections entry naming `mesh1.rpc.1` as its source. Its connections are deleted (R-CR1a),
+//! it leaves its mesh, takes `mesh1.rpc.1.old` live and is stopped (lifecycles/node-replace.md steps 1-2),
+//! then started under the name it holds; its peer `mesh1.rpc.2` hears the renamed digest and resolves
+//! the birth at `mesh1.rpc.1.old`, and nothing at `mesh1.rpc.1`. Each then originates a data-plane
+//! connection to the other: the renamed node's entry names `mesh1.rpc.1.old` as its source with its own
+//! node id and birth, and is held as its own Direct; the peer's entry names `mesh1.rpc.1.old` as its
+//! destination with the same node id. The Node RPC pool writes nothing (connections.md "Two planes, two words"). The entry written before the rename stays exactly as written (the log is kept). What
 //! must NOT happen: an entry after the rename naming the name the node gave up, at either end, or
 //! the earlier entry rewritten.
 
@@ -59,8 +59,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         std::fs::create_dir_all(&store).unwrap();
         // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
         crate::common::store_past_state_commit(&store, &fabric).await;
-        let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
-        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let born: PathName = "mesh1.rpc.1".parse().unwrap();
+        let taken: PathName = born.renamed();
         let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
         let launch_of = |name: &PathName| {
             let dir = root.join(name.to_string());
@@ -126,8 +126,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             "the data-plane connection is an entry naming the birth's name as its source: {before:#?}"
         );
 
-        // The rename (R-CR1a): stopped, which deletes every connection it held, its row renamed while
-        // it is stopped, then started under the row's name.
+        // The rename (R-CR1a; node-replace.md steps 1-2): every connection deleted, off its mesh, the name
+        // taken live, then stopped, then started under the name it holds.
         let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
@@ -142,22 +142,28 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
                 }
             }
         };
-        let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: format!("node.stop:{born}") };
-        assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
-        // The trace (R-CR6): the stop's All deletes the data-plane connection on that connection's
-        // own span, and the pool's hard cut is the stop's own transport cut, after the whole All.
+        let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
+        assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
+        // The trace (R-CR6): the All deletes the data-plane connection on that connection's own span, and
+        // no pool is hard-cut before the whole All.
         {
             let held = during.0.lock().unwrap();
             let deleted: Vec<u64> = held.iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.connection.delete.via-connections-delete" && f.get("node") == Some(&born.to_string()) && f.get("destination").map(String::as_str) == Some("mesh1.admin.1")).map(|(k, _)| *k).collect();
-            assert_eq!(deleted.len(), 1, "the stop's All deletes the one data-plane connection on its own span");
+            assert_eq!(deleted.len(), 1, "the All deletes the one data-plane connection on its own span");
             let early: Vec<_> = held.iter().filter(|(k, (n, _, _))| n == "rdm.node_rpc.connection.delete.via-hard-cut" && **k < deleted[0]).map(|(_, (_, _, f))| f.clone()).collect();
-            assert!(early.is_empty(), "no pool is hard-cut before the stop's All has deleted its connections: {early:#?}");
+            assert!(early.is_empty(), "no pool is hard-cut before the All has deleted its connections: {early:#?}");
         }
+        let leave = StatusRequest::LeaveMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: format!("node.mesh.leave:{born}") };
+        assert!(matches!(call(leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
+        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };
+        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name off its mesh");
+        let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: format!("node.stop:{taken}") };
+        assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None });
         let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
-        admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));
+        admin.deployed_as(&renamed, &key, taken.clone(), Some(taken.clone()));
         let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 2, operation: format!("node.start:{taken}") };
-        assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
+        assert_eq!(call(start).await, StatusReply::Started, "the node starts under the name it holds");
 
         // The peer hears the renamed digest, and the feed of its own process takes it into its
         // resolver: each answer change ticks the resolver. Its book holds the digest before the
@@ -250,7 +256,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
     // The trace: each end's entry is one observed fact naming the held name.
     let observed: Vec<std::collections::BTreeMap<String, String>> =
         spans.0.lock().unwrap().values().filter(|(n, _, _)| n == "rdm.node_admin.connection.update.via-observed").map(|(_, _, f)| f.clone()).collect();
-    for (source, destination, origin) in [("mesh1.rpc.1", "mesh1.rpc.2", "dial"), ("mesh1.rpc.2", "mesh1.rpc.1", "dial")] {
+    for (source, destination, origin) in [("mesh1.rpc.1.old", "mesh1.rpc.2", "dial"), ("mesh1.rpc.2", "mesh1.rpc.1.old", "dial")] {
         assert!(
             observed.iter().any(|f| f.get("source").map(String::as_str) == Some(source) && f.get("destination").map(String::as_str) == Some(destination) && f.get("origin").map(String::as_str) == Some(origin) && f.get("outcome").map(String::as_str) == Some("landed")),
             "an observed {origin} fact {source} -> {destination} landed: {observed:#?}"
@@ -258,22 +264,22 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
     }
 }
 
-/// CONTRACT: a node renamed while it is stopped records its next connection under the name its join
-/// answer handed it (lifecycles/node-start.md step 2: the node installs the handed name before it
-/// publishes anything; node-identity-and-state.md §8: a row names the ends' path.names; R12: the node
-/// publishes only the row's name). `mesh1.rpc.1.new` originates a data-plane connection to its admin,
-/// is stopped, its row is renamed `mesh1.rpc.1` while it is stopped, and it starts: its start writes
-/// no entry (its join is Node RPC, which is no connection), and the next data-plane connection it
-/// originates to its admin names `mesh1.rpc.1` as its source, with its own node id and birth. What
-/// must NOT happen: an entry written after the start naming `mesh1.rpc.1.new`, the name the node gave
-/// up at its join, or an entry written by the join itself.
+/// CONTRACT: a node renamed off its mesh and then stopped records its next connection, after its start,
+/// under the name it holds (lifecycles/node-replace.md steps 1-2; node-start.md step 2: the node installs
+/// the handed name before it publishes anything; node-identity-and-state.md §8: a row names the ends'
+/// path.names; R12: the node publishes only the row's name). `mesh1.rpc.1` originates a data-plane
+/// connection to its admin, has its connections deleted, leaves its mesh, takes `mesh1.rpc.1.old` live,
+/// is stopped and starts: its start writes no entry (its join is Node RPC, which is no connection), and
+/// the next data-plane connection it originates to its admin names `mesh1.rpc.1.old` as its source,
+/// with its own node id and birth. What must NOT happen: an entry written after the start naming
+/// `mesh1.rpc.1`, the name the node gave up, or an entry written by the join itself.
 #[test]
-fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_name() {
+fn a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds() {
     // The stop parks the process (its parking flag is process-wide): the cell runs in a process of its own.
-    if crate::own_process::delegated(module_path!(), "a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_name") {
+    if crate::own_process::delegated(module_path!(), "a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds") {
         return;
     }
-    let cap = crate::common::capture("a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_name");
+    let cap = crate::common::capture("a_node_renamed_off_its_mesh_then_stopped_records_its_next_connection_under_the_name_it_holds");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
@@ -282,8 +288,8 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         std::fs::create_dir_all(&store).unwrap();
         // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
         crate::common::store_past_state_commit(&store, &fabric).await;
-        let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
-        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let born: PathName = "mesh1.rpc.1".parse().unwrap();
+        let taken: PathName = born.renamed();
         let dir = root.join(born.to_string());
         std::fs::create_dir_all(&dir).unwrap();
         RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
@@ -332,7 +338,7 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         };
         ping_admin(b"before the stop").await;
 
-        // Stopped (its stop deletes every connection it held), its row renamed while it is stopped.
+        // Every connection deleted, off its mesh, the name taken live, then stopped.
         let (d, _) = book.get(launch.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
@@ -347,14 +353,20 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
                 }
             }
         };
-        let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: format!("node.stop:{born}") };
+        let all = rdm_core::node_command::NodeCommandRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: rdm_core::status::ConnectionScope::All };
+        assert!(matches!(crate::common::node_command_completion(&admin.observer.client, &target, &all).await, rdm_core::node_command::NodeCommandReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
+        let leave = StatusRequest::LeaveMesh { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: format!("node.mesh.leave:{born}") };
+        assert!(matches!(call(leave).await, StatusReply::MeshLeft { .. }), "the node leaves its mesh");
+        let apply = StatusRequest::ApplyNodeName { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), name: taken.to_string() };
+        assert_eq!(call(apply).await, StatusReply::Applied, "the node takes the name off its mesh");
+        let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: format!("node.stop:{taken}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.observations_landed().await;
         let at_stop = kept_log(&store, &fabric, &born).len();
         admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None });
-        admin.deployed_as(&launch, &key, taken.clone(), Some(born.clone()));
+        admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
         let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 2, operation: format!("node.start:{taken}") };
-        assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
+        assert_eq!(call(start).await, StatusReply::Started, "the node starts under the name it holds");
         seams.connections.observations_landed().await;
         assert_eq!(kept_log(&store, &fabric, &born).len(), at_stop, "the start's join wrote no entry: Node RPC is no connection");
         ping_admin(b"after the start").await;
@@ -369,10 +381,10 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         assert_eq!(
             (&next.source.name, &next.source.node_id, next.source.incarnation.as_ref()),
             (&taken, &launch.node_id, Some(&launch.incarnation)),
-            "the entry names {taken}, the name its join answer handed, as its source: {started:#?}"
+            "the entry names {taken}, the name it holds, as its source: {started:#?}"
         );
         let gave_up: Vec<&NodeConnection> = started.iter().filter(|e| e.source.name == born).collect();
-        assert!(gave_up.is_empty(), "no entry written after the start names {born}, the name the node gave up at its join: {gave_up:#?}");
+        assert!(gave_up.is_empty(), "no entry written after the start names {born}, the name the node gave up: {gave_up:#?}");
         let _ = std::fs::remove_dir_all(&root);
     });
 }

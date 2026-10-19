@@ -100,19 +100,19 @@ async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId) {
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
-/// The replace recipe of the birth `b` (lifecycles/node-replace.md), pinned to it: a successor at
-/// `.new`, `b` stopped and renamed `.old`, the successor renamed and started, `b` deleted.
+/// The replace recipe of the birth `b` (lifecycles/node-replace.md), pinned to it: `b`'s connections
+/// deleted, its mesh left, renamed `.old` live and stopped, the successor created at its name, `b`
+/// deleted at `.old`.
 fn replace_recipe(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
     use rdm_core::build::RecipeStep;
     let node = b.0.clone();
     AttemptAction::Recipe {
         steps: vec![
-            RecipeStep::Create { node: node.successor() },
-            RecipeStep::Stop { node: node.clone() },
+            RecipeStep::DeleteConnections { node: node.clone() },
+            RecipeStep::LeaveMesh { node: node.clone() },
             RecipeStep::Update { node: node.clone(), name: node.renamed() },
-            RecipeStep::Stop { node: node.successor() },
-            RecipeStep::Update { node: node.successor(), name: node.clone() },
-            RecipeStep::Start { node: node.clone() },
+            RecipeStep::Stop { node: node.renamed() },
+            RecipeStep::Create { node: node.clone() },
             RecipeStep::Delete { node: node.renamed() },
         ],
         pinned: vec![(node, rdm_admin::build::PinnedBirth { node_id: b.1.clone(), incarnation: b.2.clone() })],

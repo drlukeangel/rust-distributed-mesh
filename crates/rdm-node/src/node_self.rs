@@ -520,33 +520,21 @@ impl NodeSelf {
         Deleted { closed, not_open, held, receipt }
     }
 
-    /// The admission block (proposal node-properties-own-commands.md §2.1 Precondition: "No new
-    /// connection is admitted from the row write through `ApplyNodeName`, retries after an
-    /// interruption included"; §2.4: it "stays in force on the node until the apply resolves"):
-    /// the client this birth originates its logged connections on opens none from here until its
-    /// name apply resolves or it starts again. The Node RPC pool and gossip are not connections and
-    /// are untouched.
+    /// The admission block (node-name-update.md Precondition: "No new connection is admitted from the
+    /// row write through `ApplyNodeName`"; node-replace.md: a node is renamed only once "nothing is
+    /// connected to it and nothing routes to it"): the client this birth originates its logged
+    /// connections on opens none from here until it starts or joins its mesh again. The Node RPC pool
+    /// and gossip are not connections and are untouched.
     fn block_new_connections(&self, cause: &str) {
         if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
-            data_plane.block_new_connections(format!("{} ({}): {cause}; it opens no new connection until its name apply resolves or it starts", self.held_name(), self.node_id));
+            data_plane.block_new_connections(format!("{} ({}): {cause}; it opens no new connection until it starts or joins its mesh again", self.held_name(), self.node_id));
         }
         if let Some(reg) = self.data_connections.lock().unwrap().clone() {
             reg.block_new_connections();
         }
     }
 
-    /// The apply of its row's name resolved at this birth: `Applied`, or `AlreadyApplied` for the
-    /// name it holds (proposal node-properties-own-commands.md §2.4: the admission block "stays in
-    /// force on the node until the apply resolves"). The block lifts for a live birth; every
-    /// connection it opens from here is under the name it now holds. A birth stopping or stopped
-    /// admits no connection: its block lifts at its start.
-    pub fn name_apply_resolved(&self) {
-        if matches!(*self.cycle.lock().unwrap(), Cycle::Live(_)) {
-            self.admit_new_connections();
-        }
-    }
-
-    /// Lift the admission block: a birth that starts, or whose name apply resolved, opens
+    /// Lift the admission block: a birth that starts, or that joins its mesh again, opens
     /// connections again.
     fn admit_new_connections(&self) {
         if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {

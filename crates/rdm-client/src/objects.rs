@@ -120,19 +120,6 @@ impl std::fmt::Display for NameHeld {
 
 impl std::error::Error for NameHeld {}
 
-/// Whether the node a `node.name.update` names admits connections, as its mesh-primary holds it: a
-/// name changes only when it is not ready-for-traffic and holds no connection (R-CR1a, R-CR2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Traffic {
-    /// The held status is stopped.
-    Stopped,
-    /// The node's `node.connections.delete { All }` completed and its mesh-primary holds its `node.connections.deleted` of every
-    /// connection.
-    ConnectionsDeleted,
-    /// Anything else: the node can carry traffic.
-    Routed,
-}
-
 /// What `build.create` is given.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildSpec {

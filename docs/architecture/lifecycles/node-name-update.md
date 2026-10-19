@@ -30,8 +30,9 @@ step. A node's other properties have their own commands ([node properties](../no
    `NameHeld { by }` with nothing written.
 4. The mesh-primary writes the row with the new name. The old name's key is released. This is the
    durable name move.
-5. The left node is sent `ApplyNodeName`. It publishes its digest with the new
-   name only on that apply and answers `Applied`, `AlreadyApplied` for a name it already holds, or
+5. The left node is sent `ApplyNodeName`. It holds the new name and, off its mesh, publishes nothing
+   ([node.mesh.leave](node-mesh-leave.md)): its stop or its next join carries the name. It answers
+   `Applied`, `AlreadyApplied` for a name it already holds, or
    `BusyHoldingConnections { connections }` naming each connection it still holds; `Busy` after the row is the
    interrupted case under [Failure and receipts](#failure-and-receipts).
 6. `node.name.updated` is emitted [by case](#completion-by-case).
@@ -67,7 +68,7 @@ sequenceDiagram
     C->>M: node.name.update (exact birth, name)
     Note over M: validate from held record, claim name, put row (renamed_from), release old key
     M->>N: ApplyNodeName (live, left its mesh, no connection held)
-    N-->>M: Applied (digest published under new name)
+    N-->>M: Applied (name held; nothing published off its mesh)
     M-->>C: node.name.updated
 ```
 

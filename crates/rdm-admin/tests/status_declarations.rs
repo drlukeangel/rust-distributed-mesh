@@ -509,8 +509,15 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
 
 /// mesh1's primary's config door, telling births through a client that resolves `node`.
 async fn configs_door(rig: &Rig, node: &ServedNode) {
+    configs_door_for(rig, &[node]).await
+}
+
+/// mesh1's primary's config door, telling births through a client that resolves each of `nodes`.
+async fn configs_door_for(rig: &Rig, nodes: &[&ServedNode]) {
     let resolver = Arc::new(StaticResolver::new());
-    resolver.insert(node.resolved.clone());
+    for node in nodes {
+        resolver.insert(node.resolved.clone());
+    }
     let ep = rdm_transport::endpoint::bind(rig.admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let _ = rig.authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
 }
@@ -1194,14 +1201,15 @@ async fn successor_new(rig: &Rig) -> (Birth, ServedNode) {
 }
 
 /// [`successor_new`], its connections deleted (connections-deleting in the mesh-primary's view and its declared state),
-/// answering `node.connections.delete` with every connection cut and nothing held, and every other
-/// request `Applied`.
+/// answering `node.connections.delete` with every connection cut and nothing held, `node.mesh.leave`
+/// with its mesh left, and every other request `Applied`.
 async fn successor_connections_deleted(rig: &Rig) -> (Birth, ServedNode) {
     let mut b = birth("mesh1.rpc.3.new", NodeKind::RpcNode, "mesh1", false, false);
     (b.node.status, b.node.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
     rig.topology.write().await.nodes.push(b.node.clone());
     let node = serve_node_with(&b, |req| match req {
         StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![rdm_core::ConnectionId::mint()], not_open: vec![], held: vec![], receipt: None },
+        StatusRequest::LeaveMesh { node_id, incarnation, .. } => StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![rdm_core::status::WhichMesh::Own] },
         _ => StatusReply::Applied,
     })
     .await;
@@ -1227,6 +1235,38 @@ async fn stopped_with_row(rig: &Rig, b: &Birth, tags: &[&str]) {
     }
     let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
     rig.nodes.put_node_row(&row).await.unwrap().unwrap();
+}
+
+/// The mesh-primary holds `b` as a rename needs it (node-name-update.md Precondition): live and
+/// connections-deleting in its view, its `node.connections.deleted` of an `All` held with nothing held,
+/// then its `node.mesh.left`.
+async fn hold_left(rig: &Rig, b: &Birth) {
+    if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == b.node.node_id) {
+        (n.status, n.declared, n.parked) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()), false);
+    }
+    let birth = (b.node.node_id.clone(), b.node.incarnation_id.clone().unwrap());
+    let mut declared = rig.authority.declared.lock().unwrap();
+    declared.connections_deleted.insert(birth.clone(), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![], status_at_cut: NodeStatus::ConnectionsDeleting });
+    declared.meshes_left.insert(birth);
+}
+
+/// `b` live and off its mesh as a rename needs it ([`hold_left`]), its row at its name carrying
+/// `tags`; served, answering every request `Applied`, and mesh1's primary's config door resolving it.
+async fn left_with_row(rig: &Rig, b: &Birth, tags: &[&str]) -> ServedNode {
+    hold_left(rig, b).await;
+    let row = rdm_admin::storage::NodeRow { name: b.node.name.clone(), node_id: b.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(tags), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+    rig.nodes.put_node_row(&row).await.unwrap().unwrap();
+    let node = serve_node(b).await;
+    configs_door(rig, &node).await;
+    node
+}
+
+fn apply_name(b: &Birth, to: &PathName) -> StatusRequest {
+    StatusRequest::ApplyNodeName { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: to.to_string() }
+}
+
+fn leave_mesh(b: &Birth, operation: &str) -> StatusRequest {
+    StatusRequest::LeaveMesh { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: operation.into() }
 }
 
 /// Each span's `(outcome, connections)`.
@@ -1268,20 +1308,23 @@ fn a_ready_for_traffic_nodes_rename_is_refused_admitting_connections_and_nothing
     eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.3.new name=3 traffic=ReadyForTraffic connections=none-deleted outcome=rejected-admitting-connections");
 }
 
-/// CONTRACT (proposal §2.1 Precondition: "this mesh-primary holds the birth's
-/// `node.connections.deleted` of an `All` made while the node was not ready-for-traffic and it holds
-/// zero connections"; §2.2 steps 4 and 6; §2.3 "Live connections-deleted node: `node.name.updated`
-/// after `Applied`"): the successor `mesh1.rpc.3.new`, ConnectionsDeleting in the mesh-primary's view, is refused
-/// the rename to `3` `RejectedAdmittingConnections { status: ConnectionsDeleting, held_connections: [] }`, nothing
-/// claimed and nothing told. A caller's `node.connections.delete { All }` through the mesh-primary is
-/// carried to the exact birth and answered with the birth's `node.connections.deleted`, which the
-/// mesh-primary holds; the same `node.name.update` then claims `mesh1.rpc.3`, puts the row there
-/// carrying `renamed_from: mesh1.rpc.3.new`, releases the old key, tells the birth `ApplyNodeName`
-/// and ends `NameUpdated` on its `Applied`. A start begins the birth's next cycle: the receipt is not
-/// carried over, and a rename after it is refused again. What must NOT happen: a node whose
-/// connections were not deleted taking another name, or a started one renamed on its last cycle's cut.
+/// CONTRACT (node-name-update.md Precondition: "The node is live and admits no connection: this
+/// mesh-primary holds the birth's `node.connections.deleted` of an `All`, then its `node.mesh.left`
+/// ..., and it holds zero connections"; steps 4-5; Completion "The left node: `node.name.updated` after
+/// `Applied`"): the successor `mesh1.rpc.3.new`, ConnectionsDeleting in the mesh-primary's view, is
+/// refused the rename to `3` `RejectedAdmittingConnections { status: ConnectionsDeleting,
+/// held_connections: [] }`, nothing claimed and nothing told. A caller's `node.connections.delete {
+/// All }` through the mesh-primary is carried to the exact birth and answered with the birth's
+/// `node.connections.deleted`, which the mesh-primary holds; the same rename is refused again, the
+/// birth still on its mesh (`connections=deleted`, `mesh=on-mesh`). The mesh-primary carries
+/// `LeaveMesh` to the exact birth (node-mesh-leave.md) and holds its `MeshLeft`; the same
+/// `node.name.update` then claims `mesh1.rpc.3`, puts the row there carrying `renamed_from:
+/// mesh1.rpc.3.new`, releases the old key, tells the birth `ApplyNodeName` and ends `NameUpdated` on its
+/// `Applied`. A start begins the birth's next cycle: neither receipt is carried over, and a rename after
+/// it is refused again. What must NOT happen: a node whose connections were not deleted, or one still
+/// on its mesh, taking another name, or a started one renamed on its last cycle's receipts.
 #[test]
-fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
+fn a_nodes_rename_is_refused_until_its_connections_are_deleted_and_it_has_left_its_mesh_then_applied() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
@@ -1295,35 +1338,48 @@ fn a_nodes_rename_is_refused_until_its_connections_are_deleted_then_applied() {
         let deleted = reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await);
         assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the mesh-primary answers the birth's node.connections.deleted: {deleted:?}");
         assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ)], "the delete is carried to the exact birth");
+        let on_mesh = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
+        assert_eq!(on_mesh, StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::ConnectionsDeleting, held_connections: vec![] }, "a birth still on its mesh keeps its name");
+        assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap(), None, "nothing is claimed while the birth is on its mesh");
+
+        let left = rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.3.new").await;
+        assert!(matches!(&left, Ok(StatusReply::MeshLeft { .. })), "the mesh-primary carries the leave and the birth answers MeshLeft: {left:?}");
+        assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.3.new")), "the leave is carried to the exact birth");
         let applied = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(applied, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the row at the new name");
         assert_eq!((row.node_id, row.renamed_from), (succ.node.node_id.clone(), Some(succ.node.name.clone())), "the row at the new name holds the birth and names the key it moved from");
         assert_eq!(rig.nodes.node_row_at(&succ.node.name).await.unwrap(), None, "the old key is released");
-        assert_eq!(
-            node.seen.lock().unwrap().last().cloned(),
-            Some(StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }),
-            "the live birth is told its name"
-        );
+        assert_eq!(node.seen.lock().unwrap().last().cloned(), Some(apply_name(&succ, &taken)), "the left birth is told its name");
 
-        // A start begins the birth's next cycle: its last cycle's cut does not carry over.
+        // A start begins the birth's next cycle: its last cycle's receipts do not carry over.
         rig.authority.begin_cycle(&succ.node, succ.node.incarnation_id.as_ref().unwrap()).await;
         let again = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3.new")).await);
-        assert!(matches!(&again, StatusReply::RejectedAdmittingConnections { held_connections, .. } if held_connections.is_empty()), "a started birth is refused until its connections are deleted again: {again:?}");
+        assert!(matches!(&again, StatusReply::RejectedAdmittingConnections { held_connections, .. } if held_connections.is_empty()), "a started birth is refused until its connections are deleted and it leaves its mesh again: {again:?}");
     });
     let spans = cap.spans(NAME_SPAN);
+    let labels_of = |spans: &[(String, BTreeMap<String, String>)]| spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("connections").cloned().unwrap_or_default(), a.get("mesh").cloned().unwrap_or_default())).collect::<Vec<_>>();
+    let s = |v: &str| v.to_string();
     assert_eq!(
-        outcomes_and_connections(&spans),
-        vec![("rejected-admitting-connections".to_string(), "none-deleted".to_string()), ("name-updated".to_string(), "deleted".to_string()), ("rejected-admitting-connections".to_string(), "none-deleted".to_string())],
+        labels_of(&spans),
+        vec![
+            (s("rejected-admitting-connections"), s("none-deleted"), s("on-mesh")),
+            (s("rejected-admitting-connections"), s("deleted"), s("on-mesh")),
+            (s("name-updated"), s("deleted"), s("left")),
+            (s("rejected-admitting-connections"), s("none-deleted"), s("on-mesh")),
+        ],
         "{spans:?}"
     );
-    assert_eq!(spans[1].1.get("answered").map(String::as_str), Some("applied"), "{spans:?}");
+    assert_eq!(spans[2].1.get("answered").map(String::as_str), Some("applied"), "{spans:?}");
     let carried = cap.spans("rdm.node_admin.node.connections.delete.via-mesh-primary");
     assert_eq!(carried.len(), 1, "{carried:?}");
     assert_eq!((carried[0].1.get("scope").map(String::as_str), carried[0].1.get("status_at_cut").map(String::as_str), carried[0].1.get("outcome").map(String::as_str)), (Some("all"), Some("ConnectionsDeleting"), Some("connections-deleted")), "{carried:?}");
+    let leaves = cap.spans("rdm.node_admin.node.mesh.update.via-mesh-primary");
+    assert_eq!(leaves.iter().map(|(_, a)| (a.get("subject").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![(s("mesh1.rpc.3.new"), s("mesh-left"))], "{leaves:?}");
     eprintln!("trace {}: rdm.node_admin.node.connections.delete.via-mesh-primary scope=all status_at_cut=ConnectionsDeleting outcome=connections-deleted", carried[0].0);
+    eprintln!("trace {}: rdm.node_admin.node.mesh.update.via-mesh-primary subject=mesh1.rpc.3.new outcome=mesh-left", leaves[0].0);
     for (trace, attrs) in &spans {
-        eprintln!("trace {trace}: {NAME_SPAN} outcome={:?} connections={:?} traffic={:?} to={:?} answered={:?}", attrs.get("outcome"), attrs.get("connections"), attrs.get("traffic"), attrs.get("to"), attrs.get("answered"));
+        eprintln!("trace {trace}: {NAME_SPAN} outcome={:?} connections={:?} mesh={:?} traffic={:?} to={:?} answered={:?}", attrs.get("outcome"), attrs.get("connections"), attrs.get("mesh"), attrs.get("traffic"), attrs.get("to"), attrs.get("answered"));
     }
 }
 
@@ -1355,7 +1411,8 @@ fn a_connections_deleted_node_still_holding_a_connection_is_refused_naming_it_an
 }
 
 /// CONTRACT (proposal §2.1 Claim and move: "a held name answers `NameHeld { by: node.id }` and
-/// nothing is written"): a rename of a stopped successor into a name another node holds is refused
+/// nothing is written"): a rename of a successor off its mesh (its connections deleted, its mesh left)
+/// into a name another node holds is refused
 /// `NameHeld { by }` by the store adapter's insert-and-fail; nothing is written and the birth is told
 /// nothing. A live node that can carry traffic renamed to `1.old` is refused
 /// `RejectedAdmittingConnections` naming its status.
@@ -1365,10 +1422,8 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
     cap.run(async {
         let (rig, b) = rig().await;
         let (succ, node) = successor_new(&rig).await;
-        // Stopped: the name check is the claim's alone.
-        if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == succ.node.node_id) {
-            (n.parked, n.status) = (true, NodeStatus::Leaving);
-        }
+        // Live and off its mesh: the name check is the claim's alone.
+        hold_left(&rig, &succ).await;
         let holder = NodeId::mint();
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         rig.nodes.put_node_row(&rdm_admin::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, app_types: None, inherited_by: None }).await.unwrap().unwrap();
@@ -1389,7 +1444,8 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
 /// CONTRACT (proposal §2.1 Caller / executor: "Caller to the node's mesh-primary ... (Forward `0x1A`
 /// when not directly reachable)"): a caller of another mesh whose client reaches mesh1's primary only
 /// through a carrier (mesh1.admin.2) renames the successor `mesh1.rpc.3.new`, whose
-/// `node.connections.deleted` mesh1's primary holds, to the name `3` with `node.name.update`: the call
+/// `node.connections.deleted` and then `node.mesh.left` mesh1's primary holds, to the name `3` with
+/// `node.name.update`: the call
 /// ends `NameUpdated` naming the exact birth, the row at `mesh1.rpc.3` holds it, the birth was told
 /// `ApplyNodeName` once; the route span says `via-peer` with the carrier, and the mesh-primary's
 /// `via-writer` span says `name-updated` after the apply answered `applied`. What must NOT happen: the
@@ -1401,6 +1457,8 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         let (rig, b) = rig().await;
         let (succ, node) = successor_connections_deleted(&rig).await;
         assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }), "the successor's connections are deleted first");
+        let leave = leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.3.new");
+        assert!(matches!(rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.3.new").await, Ok(StatusReply::MeshLeft { .. })), "then it leaves its mesh");
         let (carrier, _carrier_router) = carrier_admin(&b["admin2"], &rig.resolved).await;
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(carrier.clone());
@@ -1413,7 +1471,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         assert_eq!(reply, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() }]);
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), leave, apply_name(&succ, &taken)]);
     });
     let updates = cap.spans(NAME_SPAN);
     assert_eq!(updates.len(), 1, "{updates:?}");
@@ -1467,58 +1525,27 @@ fn a_stopped_nodes_rename_is_refused_admitting_connections_and_nothing_is_claime
     eprintln!("trace {}: {NAME_SPAN} from=mesh1.rpc.2 name=2.old traffic=Stopped connections=stopped outcome=rejected-admitting-connections (nothing claimed, nothing told)", spans[0].0);
 }
 
-/// CONTRACT (proposal §2.2 steps 4-5, §2.3 "Stopped node: `node.name.updated` after both writes of the
-/// move ... Nothing is sent to the node"; §2.1 Idempotency: a repeat "for a stopped node ... completes
-/// on the row"): `node.name.update` renaming the stopped `mesh1.rpc.2` (parked in the mesh-primary's
-/// view) to the name `2.old` ends `NameUpdated`: the row at `mesh1.rpc.2.old` holds the node and names
-/// `mesh1.rpc.2` as the key it moved from, the old key is released, the mesh-primary's view lists it at
-/// the new name, and the birth is told nothing (the span records no apply answer). The same rename
-/// again ends `NameUpdated` on the row, writing nothing new.
-#[test]
-fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_nothing() {
-    let cap = capture();
-    cap.run(async {
-        let (rig, b) = rig().await;
-        quiet_door(&rig).await;
-        let stopped = &b["rpc2"];
-        stopped_with_row(&rig, stopped, &[]).await;
-        let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
-        let done = StatusReply::NameUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() };
-        assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await), done);
-        let row = rig.nodes.node_row_at(&to).await.unwrap().expect("the row moved to the new name");
-        assert_eq!((row.node_id.clone(), row.renamed_from.clone()), (stopped.node.node_id.clone(), Some(stopped.node.name.clone())));
-        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), None, "the old key is released");
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == to), "the view lists the stopped node at the row's name");
-        assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await), done, "a repeat for a stopped node completes on the row");
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap(), Some(row), "the repeat writes nothing new");
-    });
-    let spans = cap.spans(NAME_SPAN);
-    assert_eq!(spans.len(), 2, "{spans:?}");
-    let (trace_id, attrs) = &spans[0];
-    assert_eq!((attrs.get("outcome").map(String::as_str), attrs.get("traffic").map(String::as_str), attrs.get("to").map(String::as_str), attrs.get("answered")), (Some("name-updated"), Some("Stopped"), Some("mesh1.rpc.2.old"), None), "{attrs:?}");
-    assert_eq!(spans[1].1.get("outcome").map(String::as_str), Some("name-updated"), "{spans:?}");
-    eprintln!("trace {trace_id}: {NAME_SPAN} from=mesh1.rpc.2 to=mesh1.rpc.2.old traffic=Stopped outcome=name-updated (no apply sent)");
-}
-
 /// CONTRACT (proposal §9, ruled A: "a rename may take any name within the name grammar ..., unique
 /// within its path ... Cell: a stopped node renamed to an arbitrary name within the same path
-/// succeeds"): the stopped `mesh1.rpc.2` renamed to the name `9` ends `NameUpdated`: the row is at
-/// `mesh1.rpc.9`, `mesh1.rpc.2` is released and the view lists the node at `mesh1.rpc.9`. What must
-/// NOT happen: a refusal because `9` is not a `.old` / `.new` toggle of the old name.
+/// succeeds"; node-name-update.md Precondition): the live `mesh1.rpc.2`, its connections deleted and
+/// its mesh left, renamed to the name `9` ends `NameUpdated`: the row is at `mesh1.rpc.9`,
+/// `mesh1.rpc.2` is released, the view lists the node at `mesh1.rpc.9`, and the birth is told
+/// `ApplyNodeName { mesh1.rpc.9 }`. What must NOT happen: a refusal because `9` is not a `.old` toggle
+/// of the old name.
 #[test]
-fn a_stopped_node_renamed_to_any_name_within_its_path_ends_name_updated() {
+fn a_left_node_renamed_to_any_name_within_its_path_ends_name_updated() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
-        let stopped = &b["rpc2"];
-        stopped_with_row(&rig, stopped, &[]).await;
+        let left = &b["rpc2"];
+        let node = left_with_row(&rig, left, &[]).await;
         let to: PathName = "mesh1.rpc.9".parse().unwrap();
-        let reply = reply(&call(&rig, &b["admin2"], &update_name(stopped, "9")).await);
-        assert_eq!(reply, StatusReply::NameUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
-        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the row is at the new name");
-        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), None, "the old key is released");
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == to), "the view lists the node at the new name");
+        let reply = reply(&call(&rig, &b["admin2"], &update_name(left, "9")).await);
+        assert_eq!(reply, StatusReply::NameUpdated { node_id: left.node.node_id.clone(), incarnation: left.node.incarnation_id.clone().unwrap() });
+        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(left.node.node_id.clone()), "the row is at the new name");
+        assert_eq!(rig.nodes.node_row_at(&left.node.name).await.unwrap(), None, "the old key is released");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.name == to), "the view lists the node at the new name");
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(left, &to)], "the birth is told its name");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("to").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-updated".to_string(), "mesh1.rpc.9".to_string())], "{spans:?}");
@@ -1527,7 +1554,8 @@ fn a_stopped_node_renamed_to_any_name_within_its_path_ends_name_updated() {
 
 /// CONTRACT (proposal §2.1 Validation: "the name is within the name grammar, else `RejectedName {
 /// reason }`"; §4: path and mesh immutable by construction; §2.4 "Refused before the claim ...: nothing
-/// written"): the stopped `mesh1.rpc.2` asked for the names `Two` (outside the grammar), `rpc.2` and
+/// written"): the left `mesh1.rpc.2` (its connections deleted, its mesh left) asked for the names
+/// `Two` (outside the grammar), `rpc.2` and
 /// `2.older` (whose join at its path `mesh1.rpc` is no `path.name` this build keys) is refused
 /// `RejectedName` naming the name each time; its row stays at `mesh1.rpc.2`, its id index names that
 /// key, and the view keeps it there. What must NOT happen: a row written at any other key, or the path
@@ -1537,15 +1565,15 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
-        let stopped = &b["rpc2"];
-        stopped_with_row(&rig, stopped, &[]).await;
+        let left = &b["rpc2"];
+        let node = left_with_row(&rig, left, &[]).await;
         for bad in ["Two", "rpc.2", "2.older"] {
-            let refused = reply(&call(&rig, &b["admin2"], &update_name(stopped, bad)).await);
+            let refused = reply(&call(&rig, &b["admin2"], &update_name(left, bad)).await);
             assert!(matches!(&refused, StatusReply::RejectedName { reason } if reason.contains(bad)), "{bad}: {refused:?}");
         }
-        assert_eq!(rig.nodes.node_row_name("mesh1", &stopped.node.node_id).await.unwrap(), Some(stopped.node.name.clone()), "the node's row stays at its key");
-        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == stopped.node.name), "the view keeps the node at its name");
+        assert_eq!(rig.nodes.node_row_name("mesh1", &left.node.node_id).await.unwrap(), Some(left.node.name.clone()), "the node's row stays at its key");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == left.node.node_id && n.name == left.node.name), "the view keeps the node at its name");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["rejected-name"; 3], "{spans:?}");
@@ -1555,20 +1583,20 @@ fn a_name_outside_the_grammar_or_the_path_name_shape_is_refused_by_name_and_noth
 /// CONTRACT (proposal §2.4: "The put succeeded and the release of the old key fails or is
 /// interrupted: the node holds both keys, and the destination row's `renamed_from` names the source.
 /// The command ends incomplete naming the new key as claimed and the old key's release as pending";
-/// §7: "the retry finishes it and continues"): the stopped `mesh1.rpc.2` renamed to `2.old` while the
-/// nodes store refuses the release ends `NameNotApplied { node: mesh1.rpc.2.old, answered:
-/// release-pending }` naming the old key: the row at `mesh1.rpc.2.old` holds the node with
-/// `renamed_from: mesh1.rpc.2`, and `mesh1.rpc.2` still holds it. The same command again releases the
-/// old key and ends `NameUpdated`. What must NOT happen: `NodeRowRefused` (which says nothing was
+/// §7: "the retry finishes it and continues"): the left `mesh1.rpc.2` (its connections deleted, its
+/// mesh left) renamed to `2.old` while the nodes store refuses the release ends `NameNotApplied { node:
+/// mesh1.rpc.2.old, answered: release-pending }` naming the old key: the row at `mesh1.rpc.2.old` holds
+/// the node with `renamed_from: mesh1.rpc.2`, `mesh1.rpc.2` still holds it, and the birth is told
+/// nothing yet. The same command again releases the old key, tells the birth its name and ends
+/// `NameUpdated` on its `Applied`. What must NOT happen: `NodeRowRefused` (which says nothing was
 /// written) after the put, a second row written, or the put rolled back.
 #[test]
 fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retry_finishes_the_release() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
         let stopped = &b["rpc2"];
-        stopped_with_row(&rig, stopped, &[]).await;
+        let node = left_with_row(&rig, stopped, &[]).await;
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         rig.refuse_release.store(true, Ordering::SeqCst);
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await);
@@ -1579,13 +1607,15 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
         let moved = rig.nodes.node_row_at(&to).await.unwrap().expect("the put at the new key stands");
         assert_eq!((moved.node_id.clone(), moved.renamed_from.clone()), (stopped.node.node_id.clone(), Some(stopped.node.name.clone())));
         assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap().map(|r| r.node_id), Some(stopped.node.node_id.clone()), "the node holds both keys");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing while the release is pending");
         let done = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await);
         assert_eq!(done, StatusReply::NameUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
         assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), None, "the retry released the old key");
         assert_eq!(rig.nodes.node_row_at(&to).await.unwrap(), Some(moved), "the destination row stands as written");
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![apply_name(stopped, &to)], "the retry told the birth its name");
     });
     let spans = cap.spans(NAME_SPAN);
-    assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-not-applied".to_string(), "release-pending".to_string()), ("name-updated".to_string(), String::new())], "{spans:?}");
+    assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-not-applied".to_string(), "release-pending".to_string()), ("name-updated".to_string(), "applied".to_string())], "{spans:?}");
     let releases = cap.spans("rdm.node_admin.node.name.update.via-pending-release");
     assert_eq!(releases.iter().map(|(_, a)| (a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("mesh1.rpc.2".to_string(), "released".to_string())], "{releases:?}");
     eprintln!("trace {}: {NAME_SPAN} to=mesh1.rpc.2.old outcome=name-not-applied answered=release-pending; trace {}: rdm.node_admin.node.name.update.via-pending-release from=mesh1.rpc.2 outcome=released", spans[0].0, releases[0].0);
@@ -1593,7 +1623,7 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
 
 /// CONTRACT (proposal §2.1 "Claim and move": "a row whose `renamed_from` key still holds the same node
 /// id has a pending release, and the writer releases it ... It runs wherever a writer meets the row";
-/// §2.4: "the release is finished by whichever writer next meets the row"): the stopped `mesh1.rpc.2`
+/// §2.4: "the release is finished by whichever writer next meets the row"): the left `mesh1.rpc.2`
 /// renamed to `2.old` while the nodes store refuses the release ends `release-pending`, both keys
 /// held; the next `node.config.update` of the node releases `mesh1.rpc.2` before its put. Renamed back
 /// to `2` under a second refused release, `mesh1.rpc.2.old` is held twice over the same way, and the
@@ -1606,9 +1636,8 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
         let stopped = &b["rpc2"];
-        stopped_with_row(&rig, stopped, &[]).await;
+        let _node = left_with_row(&rig, stopped, &[]).await;
         let (base, old): (PathName, PathName) = (stopped.node.name.clone(), "mesh1.rpc.2.old".parse().unwrap());
         let holds = |name: PathName| {
             let nodes = rig.nodes.clone();
@@ -1641,8 +1670,8 @@ fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
 /// CONTRACT (proposal §2.1 Idempotency: "A repeat naming the name the row already holds ... for a
 /// live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`"; §2.3 "Row
 /// written, apply unresolved ... the resubmit resends `ApplyNodeName`, and completes on `Applied` or
-/// `AlreadyApplied` from the node, never from the row"): the connections-deleted successor
-/// `mesh1.rpc.3.new` renamed to `3` answers the apply `NotReady`: the command ends `NameNotApplied {
+/// `AlreadyApplied` from the node, never from the row"): the successor `mesh1.rpc.3.new`, its
+/// connections deleted and its mesh left, renamed to `3` answers the apply `NotReady`: the command ends `NameNotApplied {
 /// node: mesh1.rpc.3, answered: not-ready }` with the row moved. The same command again resends
 /// `ApplyNodeName`, which the node answers `AlreadyApplied`, and ends `NameUpdated`. What must NOT
 /// happen: `NameUpdated` on the row alone, or the resubmit refused because the row already holds the name.
@@ -1658,12 +1687,15 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let a = applies.clone();
         let node = serve_node_with(&succ, move |req| match req {
             StatusRequest::DeleteConnections { .. } => StatusReply::ConnectionsDeleted { closed: vec![], not_open: vec![], held: vec![], receipt: None },
+            StatusRequest::LeaveMesh { node_id, incarnation, .. } => StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![rdm_core::status::WhichMesh::Own] },
             StatusRequest::ApplyNodeName { .. } if a.fetch_add(1, Ordering::SeqCst) == 0 => StatusReply::NotReady { reason: "the node's digest does not exist yet".into() },
             _ => StatusReply::AlreadyApplied,
         })
         .await;
         configs_door(&rig, &node).await;
         assert!(matches!(reply(&call(&rig, &b["admin2"], &delete_all(&succ)).await), StatusReply::ConnectionsDeleted { .. }));
+        let leave = leave_mesh(&succ, "node.mesh.leave:mesh1.rpc.3.new");
+        assert!(matches!(rig.authority.carry_mesh_leave(&succ.node.node_id, succ.node.incarnation_id.as_ref().unwrap(), "3vzt99cnx0xe", 1, "node.mesh.leave:mesh1.rpc.3.new").await, Ok(StatusReply::MeshLeft { .. })));
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
         let incomplete = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert!(matches!(&incomplete, StatusReply::NameNotApplied { node, answered, .. } if node == "mesh1.rpc.3" && answered == "not-ready"), "{incomplete:?}");
@@ -1671,7 +1703,7 @@ fn a_same_name_retry_after_an_unresolved_apply_resends_the_apply_and_completes_o
         let done = reply(&call(&rig, &b["admin2"], &update_name(&succ, "3")).await);
         assert_eq!(done, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let apply = StatusRequest::ApplyNodeName { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), name: taken.to_string() };
-        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), apply.clone(), apply], "the resubmit resent the apply");
+        assert_eq!(node.seen.lock().unwrap().clone(), vec![delete_all(&succ), leave, apply.clone(), apply], "the resubmit resent the apply");
     });
     let spans = cap.spans(NAME_SPAN);
     assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned().unwrap_or_default())).collect::<Vec<_>>(), vec![("name-not-applied".to_string(), "not-ready".to_string()), ("name-updated".to_string(), "already-applied".to_string())], "{spans:?}");
@@ -1684,7 +1716,8 @@ fn labels(l: &[&str]) -> std::collections::BTreeSet<String> {
 
 /// CONTRACT (R-PC1, states.md "The initial fabric before ready-for-traffic"; proposal §1: each command
 /// "is refused `fabric-not-ready` until the initial fabric has first reached ready-for-traffic"): until
-/// then, a caller's `node.name.update` of the stopped `mesh1.rpc.2` at its mesh-primary is refused
+/// then, a caller's `node.name.update` of the left `mesh1.rpc.2` (its connections deleted, its mesh
+/// left) at its mesh-primary is refused
 /// `RejectedFabricNotReady`, naming the workflow with its node and the fabric's status (state-sync).
 /// Nothing is written: no row at `mesh1.rpc.2.old`, the row at `mesh1.rpc.2` as it was. One
 /// `rdm.node_admin.node.reject.via-fabric-not-ready` span says the same, and the name span ends
@@ -1696,9 +1729,8 @@ fn a_node_name_update_before_the_fabric_first_reaches_ready_for_traffic_is_refus
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
         let rpc2 = &b["rpc2"];
-        stopped_with_row(&rig, rpc2, &[]).await;
+        let _node = left_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::StateSync;
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
 
@@ -1806,8 +1838,9 @@ fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traff
 /// ready-for-traffic; proposal Part C1 step 2's R-PB1 pre-check is decided on the same fact): mesh1's
 /// primary has not heard the fabric ready (its view still holds the initial fabric in state-commit, as
 /// the fabric state gossip brings can lag the row, and it never knew it ready) while its mesh's status
-/// rows already hold the ready-for-traffic row. A caller's `node.name.update` of the stopped
-/// `mesh1.rpc.2` is decided on the row and ends `NameUpdated`, the admin saying how it knows
+/// rows already hold the ready-for-traffic row. A caller's `node.name.update` of the left
+/// `mesh1.rpc.2` (its connections deleted, its mesh left) is decided on the row and ends `NameUpdated`,
+/// the admin saying how it knows
 /// (`rdm.node_admin.fabric.update.via-first-ready`, reason `ready-for-traffic-row-on-store-root`). What
 /// must NOT happen: `RejectedFabricNotReady` for a fabric whose ready row is on the root.
 #[test]
@@ -1815,9 +1848,8 @@ fn a_node_name_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_d
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
         let rpc2 = &b["rpc2"];
-        stopped_with_row(&rig, rpc2, &[]).await;
+        let _node = left_with_row(&rig, rpc2, &[]).await;
         rig.topology.write().await.fabric.status = ScopeStatus::StateCommit;
         let fabric_id = rig.topology.read().await.fabric.id.clone();
         rig.storage.put_fabric_event(&rdm_admin::status_storage::FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
@@ -1836,17 +1868,18 @@ fn a_node_name_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_d
 /// ready, neither touches the name"; node-identity-and-state.md "A rewrite is lossless for every field its
 /// writer knows"): a caller's `node.tags.create { rabbit, red }` of the live `mesh1.rpc.1` writes its row
 /// and the tags index with the birth told nothing. A `node.config.update` of rpc.1 then writes its row
-/// with the new config and the same tags, the index unchanged. The stopped `mesh1.rpc.2`, whose row
-/// carries {red}, renamed to `2.old` keeps its tags at the row's new name and in the index. What must
-/// NOT happen: a tags command sending `ApplyNodeName`, or a config put or a rename dropping the tags.
+/// with the new config and the same tags, the index unchanged. The left `mesh1.rpc.2` (its connections
+/// deleted, its mesh left), whose row carries {red}, renamed to `2.old` keeps its tags at the row's new
+/// name and in the index. What must NOT happen: a tags command sending `ApplyNodeName`, or a config put
+/// or a rename dropping the tags.
 #[test]
 fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_tags() {
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        let rpc1 = &b["rpc1"];
-        let node = serve_node(rpc1).await;
-        configs_door(&rig, &node).await;
+        let (rpc1, rpc2) = (&b["rpc1"], &b["rpc2"]);
+        let (node, rpc2_node) = (serve_node(rpc1).await, serve_node(rpc2).await);
+        configs_door_for(&rig, &[&node, &rpc2_node]).await;
         let tagged = |l: &'static str| {
             let nodes = rig.nodes.clone();
             async move { nodes.tagged(l).await.unwrap() }
@@ -1866,8 +1899,9 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         assert_eq!((row.config, row.tags), (config, labels(&["rabbit", "red"])), "the config put writes the new config and keeps the tags");
         assert_eq!(tagged("rabbit").await, [rpc1.node.node_id.clone()].into(), "the index is unchanged by a config put");
 
-        let rpc2 = &b["rpc2"];
-        stopped_with_row(&rig, rpc2, &["red"]).await;
+        hold_left(&rig, rpc2).await;
+        let row = rdm_admin::storage::NodeRow { name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        rig.nodes.put_node_row(&row).await.unwrap().unwrap();
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_name(rpc2, "2.old")).await);
         assert_eq!(renamed, StatusReply::NameUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
@@ -1875,7 +1909,7 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
         assert_eq!(tagged("red").await, [rpc1.node.node_id.clone(), rpc2.node.node_id.clone()].into(), "the index still names the renamed node: it is keyed by node id");
     });
     let spans = cap.spans(NAME_SPAN);
-    assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned())).collect::<Vec<_>>(), vec![("name-updated".to_string(), None)], "{spans:?}");
+    assert_eq!(spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("answered").cloned())).collect::<Vec<_>>(), vec![("name-updated".to_string(), Some("applied".to_string()))], "{spans:?}");
     let creates = cap.spans("rdm.node_admin.node.tags.create.via-writer");
     assert_eq!(creates.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["tags-created".to_string()], "{creates:?}");
     let configs = cap.spans("rdm.node_admin.node.update.via-config");
@@ -1887,7 +1921,8 @@ fn a_tags_create_tells_the_node_nothing_and_a_config_put_or_a_rename_keeps_the_t
 /// CONTRACT (proposal §2.2 step 6: "A live connections-deleted node is sent `ApplyNodeName`";
 /// node_config.rs: the mesh-primary is a member of its mesh and the writer of its own row, and applies
 /// its own config in-process): a caller's `node.name.update` renaming mesh1's primary itself, ConnectionsDeleting
-/// and holding the `node.connections.deleted` of an `All` cut that left nothing held, to the name
+/// and holding the `node.connections.deleted` of an `All` cut that left nothing held and its own
+/// `node.mesh.left`, to the name
 /// `1.old` ends `NameUpdated`: the row moves, and the mesh-primary takes the name through its own name
 /// decision in-process, which is asked exactly that name. What must NOT happen: the mesh-primary
 /// calling itself over Node RPC ("Connecting to ourself is not supported") and ending `NameNotApplied`
@@ -1905,6 +1940,7 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
             (n.status, n.declared) = (NodeStatus::ConnectionsDeleting, Some("ConnectionsDeleting".into()));
         }
         rig.authority.declared.lock().unwrap().connections_deleted.insert((me.node.node_id.clone(), inc.clone()), rdm_admin::status_rpc::ConnectionsDeletedReceipt { all: true, held: vec![], status_at_cut: NodeStatus::ConnectionsDeleting });
+        rig.authority.declared.lock().unwrap().meshes_left.insert((me.node.node_id.clone(), inc.clone()));
         let asked: Arc<Mutex<Vec<PathName>>> = Arc::default();
         let a = asked.clone();
         let held: PathName = me.node.name.clone();
@@ -2126,71 +2162,62 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
     }
 }
 
-/// CONTRACT (docs/architecture/lifecycles/node-replace.md, Luke 2026-10-13 D2: "Retained predecessor
-/// labels are removed from the active index, not erased from its row. Rollback must restore the
-/// predecessor's index entries under its original id. A repeated cutover must preserve the successor's
-/// already-inherited values rather than overwrite subsequent updates"):
-/// 1. When the predecessor `mesh1.rpc.2` (moved to `mesh1.rpc.2.old` with config `{zone: a}` and tags
-///    `{rabbit, red}`) is cut over to the successor `mesh1.rpc.2.new` (`Cutover` to `2`), the successor
-///    at `mesh1.rpc.2` inherits `{zone: a}` and `{rabbit, red}` under its own id, and the retained
-///    predecessor row at `mesh1.rpc.2.old` is marked `inherited_by` the successor (keeping `{rabbit,
-///    red}` on the row while removing the predecessor's id from the active tag index).
-/// 2. Subsequent config and tag updates on the successor (`{zone: b, tier: gold}`, tags `{rabbit,
-///    blue}`) are preserved across a repeated cutover — both when the successor's row is already at
-///    `mesh1.rpc.2` and when the successor is moved back to `mesh1.rpc.2.new` and cut over to `2` a
-///    second time.
-/// 3. Rollback (moving the stopped successor back to `mesh1.rpc.2.new` and moving the stopped
-///    predecessor from `mesh1.rpc.2.old` back to `mesh1.rpc.2`) restores the predecessor's row at
-///    `mesh1.rpc.2` with `app_types: None, inherited_by: None` and restores the predecessor's tag-index entries under its
-///    original `node_id`.
+/// CONTRACT (docs/architecture/lifecycles/node-replace.md Inherited, Luke 2026-10-13 D2: "Config and
+/// tags are inherited from the retained `<name>.old` row ... The successor's tag-index entries use its
+/// own id. Retained predecessor labels are removed from the active index, not erased from its row. A
+/// repeated cutover keeps the successor's already-inherited values and never overwrites a later
+/// update"; Rollback step 3: the predecessor renamed to `<name>`, "its tag-index entries restored under
+/// its own id"):
+/// 1. The predecessor `mesh1.rpc.2`, live and off its mesh with config `{zone: a}` and tags `{rabbit,
+///    red}`, is renamed `mesh1.rpc.2.old` (step 2). The successor's claim at `mesh1.rpc.2`, the name it
+///    released (step 3, `ClaimFor::Successor`), carries `{zone: a}` and `{rabbit, red}` under the
+///    successor's id, and the retained row at `mesh1.rpc.2.old` is marked `inherited_by` the
+///    successor: it keeps `{rabbit, red}` on the row while the active tags index names only the
+///    successor.
+/// 2. The successor's later config and tags (`{zone: b, tier: gold}`, `{rabbit, blue}`) survive a
+///    repeated claim (the create's resume), which writes nothing and finds the retained row marked.
+/// 3. Rollback: the successor deleted (its `Deleted` row at `mesh1.rpc.2`), the predecessor renamed
+///    back to `mesh1.rpc.2` stands there with `{zone: a}`, `{rabbit, red}` and no `inherited_by`,
+///    `mesh1.rpc.2.old` is released, and the tags index names the predecessor again under its own id.
 #[test]
-fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_predecessor_tag_index() {
-    use rdm_admin::node_name_update::Cutover;
+fn a_replace_successor_inherits_the_retained_row_keeps_its_later_updates_on_a_repeated_claim_and_the_rollback_rename_restores_the_predecessor() {
+    use rdm_admin::node_rows::{ClaimFor, NodeRows};
     use rdm_core::status::TagScope;
     let cap = capture();
     cap.run(async {
         let (rig, b) = rig().await;
-        quiet_door(&rig).await;
         let pred = &b["rpc2"];
-        stopped_with_row(&rig, pred, &["rabbit", "red"]).await;
+        hold_left(&rig, pred).await;
+        let row = rdm_admin::storage::NodeRow { name: pred.node.name.clone(), node_id: pred.node.node_id.clone(), status: NodeStatus::ConnectionsDeleting, config: Default::default(), tags: labels(&["rabbit", "red"]), allocated: None, renamed_from: None, app_types: None, inherited_by: None };
+        rig.nodes.put_node_row(&row).await.unwrap().unwrap();
+        let mut succ = birth("mesh1.rpc.2", NodeKind::RpcNode, "mesh1", false, false);
+        succ.node.status = NodeStatus::Pending;
+        let (pred_node, succ_node) = (serve_node(pred).await, serve_node(&succ).await);
+        configs_door_for(&rig, &[&pred_node, &succ_node]).await;
         let pred_cfg: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
         assert_eq!(
             reply(&call(&rig, &b["admin2"], &StatusRequest::UpdateNodeConfig { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap(), config: pred_cfg.clone() }).await),
             StatusReply::ConfigUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
         );
-        // Step 1 of replace: predecessor moved from mesh1.rpc.2 to mesh1.rpc.2.old.
-        let old_name: PathName = "mesh1.rpc.2.old".parse().unwrap();
-        assert_eq!(
-            rig.authority.update_name(&update_name(pred, "2.old"), None).await,
-            StatusReply::NameUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
-        );
+        // Step 2: the predecessor, off its mesh, takes `.old`.
+        let (base_name, old_name): (PathName, PathName) = ("mesh1.rpc.2".parse().unwrap(), "mesh1.rpc.2.old".parse().unwrap());
+        assert_eq!(rig.authority.update_name(&update_name(pred, "2.old")).await, StatusReply::NameUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() });
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [pred.node.node_id.clone()].into());
         assert_eq!(rig.nodes.tagged("red").await.unwrap(), [pred.node.node_id.clone()].into());
 
-        // Step 2: successor created at mesh1.rpc.2.new (stopped here so the row move is tested directly).
-        let mut succ = birth("mesh1.rpc.2.new", NodeKind::RpcNode, "mesh1", false, false);
-        (succ.node.parked, succ.node.status) = (true, NodeStatus::Leaving);
+        // Step 3: the successor's claim at the name the predecessor released.
         rig.topology.write().await.nodes.push(succ.node.clone());
-        stopped_with_row(&rig, &succ, &[]).await;
-
-        let cutover = Cutover { retained: old_name.clone(), retained_id: pred.node.node_id.clone() };
-        let base_name: PathName = "mesh1.rpc.2".parse().unwrap();
-        let new_name: PathName = "mesh1.rpc.2.new".parse().unwrap();
-        assert_eq!(
-            rig.authority.update_name(&update_name(&succ, "2"), Some(&cutover)).await,
-            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
-        );
-        // After cutover: successor holds mesh1.rpc.2 with inherited config & tags under its own id;
-        // retained predecessor row at .old keeps its tags on the row with inherited_by set, and its id
-        // is removed from the active tag index.
+        let rows = NodeRows::new(rig.admin.node.name.clone(), rig.admin.node.node_id.clone(), rig.topology.clone(), rig.nodes.clone());
+        let claim = || rows.claim(&base_name, &succ.node.node_id, "node.create:mesh1.rpc.2", None, ClaimFor::Successor);
+        assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::Written { .. })), "the successor claims the released name");
         let succ_row = rig.nodes.node_row_at(&base_name).await.unwrap().expect("successor row at mesh1.rpc.2");
         assert_eq!((succ_row.node_id.clone(), succ_row.config.clone(), succ_row.tags.clone()), (succ.node.node_id.clone(), pred_cfg.clone(), labels(&["rabbit", "red"])));
         let retained = rig.nodes.node_row_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2.old");
         assert_eq!((retained.node_id.clone(), retained.tags.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), labels(&["rabbit", "red"]), Some(succ.node.node_id.clone())));
-        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [succ.node.node_id.clone()].into(), "only the successor's id is in the active index after cutover");
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [succ.node.node_id.clone()].into(), "only the successor's id is in the active index after its claim");
         assert_eq!(rig.nodes.tagged("red").await.unwrap(), [succ.node.node_id.clone()].into());
 
-        // Subsequent updates on the successor after inheritance.
+        // Later updates on the successor, then a repeated claim (the create's resume).
         let succ_cfg: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tier".to_string(), "gold".to_string())].into();
         assert_eq!(
             reply(&call(&rig, &b["admin2"], &StatusRequest::UpdateNodeConfig { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), config: succ_cfg.clone() }).await),
@@ -2204,47 +2231,15 @@ fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_
             reply(&call(&rig, &b["admin2"], &delete_tags(&succ, TagScope::Labels(labels(&["red"])))).await),
             StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: Default::default() }
         );
+        assert!(matches!(claim().await, Ok(rdm_admin::node_rows::Claimed::HeldByNode(_))), "a repeated claim finds the successor's own row");
+        let row_after = rig.nodes.node_row_at(&base_name).await.unwrap().unwrap();
+        assert_eq!((row_after.config, row_after.tags), (succ_cfg, labels(&["rabbit", "blue"])), "a repeated claim keeps the successor's later updates");
+        assert!(rig.nodes.tagged("red").await.unwrap().is_empty(), "the deleted tag red is not resurrected from .old");
 
-        // D2(b) case 1: same-name repeated cutover while successor is at mesh1.rpc.2.
+        // Rollback: the successor deleted, the predecessor renamed back to `mesh1.rpc.2`.
+        rows.deleted(&succ.node, "node.delete:mesh1.rpc.2").await.expect("the successor's Deleted row at mesh1.rpc.2");
         assert_eq!(
-            rig.authority.update_name(&update_name(&succ, "2"), Some(&cutover)).await,
-            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
-        );
-        let row_after_same = rig.nodes.node_row_at(&base_name).await.unwrap().unwrap();
-        assert_eq!((row_after_same.config, row_after_same.tags), (succ_cfg.clone(), labels(&["rabbit", "blue"])), "a same-name repeated cutover preserves subsequent updates");
-
-        // D2(b) case 2: successor moved back to mesh1.rpc.2.new and cut over to mesh1.rpc.2 again.
-        assert_eq!(
-            rig.authority.update_name(&update_name(&succ, "2.new"), None).await,
-            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
-        );
-        assert_eq!(
-            rig.authority.update_name(&update_name(&succ, "2"), Some(&cutover)).await,
-            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
-        );
-        let row_after_recutover = rig.nodes.node_row_at(&base_name).await.unwrap().unwrap();
-        assert_eq!(
-            (row_after_recutover.config, row_after_recutover.tags),
-            (succ_cfg, labels(&["rabbit", "blue"])),
-            "a repeated cutover from .new preserves the successor's already-inherited and updated values rather than overwriting them from .old"
-        );
-        assert_eq!(rig.nodes.tagged("blue").await.unwrap(), [succ.node.node_id.clone()].into());
-        assert!(rig.nodes.tagged("red").await.unwrap().is_empty(), "the deleted tag red was not resurrected from .old");
-
-        // D2(a): Rollback moves the stopped successor back to mesh1.rpc.2.new and moves the stopped
-        // predecessor from mesh1.rpc.2.old back to mesh1.rpc.2, restoring the predecessor's tag-index
-        // entries under its original id.
-        assert_eq!(
-            rig.authority.update_name(&update_name(&succ, "2.new"), None).await,
-            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
-        );
-        assert_eq!(
-            reply(&call(&rig, &b["admin2"], &delete_tags(&succ, TagScope::All)).await),
-            StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: Default::default() }
-        );
-        assert_eq!(rig.nodes.node_row_at(&new_name).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()));
-        assert_eq!(
-            rig.authority.update_name(&update_name(pred, "2"), None).await,
+            rig.authority.update_name(&update_name(pred, "2")).await,
             StatusReply::NameUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
         );
         let restored = rig.nodes.node_row_at(&base_name).await.unwrap().expect("predecessor row restored at mesh1.rpc.2");
@@ -2257,8 +2252,10 @@ fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_
         assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [pred.node.node_id.clone()].into(), "rollback restores rabbit in the tag index under the predecessor's original id");
         assert_eq!(rig.nodes.tagged("red").await.unwrap(), [pred.node.node_id.clone()].into(), "rollback restores red in the tag index under the predecessor's original id");
     });
+    let marks = cap.spans("rdm.node_admin.node.update.via-inherited-row");
+    assert_eq!(marks.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["inherited".to_string(), "already-inherited".to_string()], "{marks:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-inherited-row subject=mesh1.rpc.2.old outcome=inherited", marks[0].0);
 }
-
 
 /// CONTRACT (i144 R22; Luke Q9: "Caller → mesh-primary: Status DeleteConnections, direct or forwarded,
 /// for either scope. Mesh-primary → subject node: streaming 0x22 NodeCommand"; "a forwarded caller

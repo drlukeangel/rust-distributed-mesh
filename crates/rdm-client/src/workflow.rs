@@ -181,6 +181,11 @@ fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
         RecipeStep::Start { .. } => start_rows!("node.start", &[], NodeStep::Start).into(),
         // node.delete's own workflow, whatever the node's name: a stopped birth's runs no stop half.
         RecipeStep::Delete { .. } => delete_rows(),
+        RecipeStep::DeleteConnections { .. } => vec![
+            row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
+            row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], false),
+        ],
+        RecipeStep::LeaveMesh { .. } => vec![row("node.mesh.leave", "LeaveMesh", NodeStep::MeshLeave, &[NodeEvent::MeshLeft], false), row("node.mesh.leave", "Complete", NodeStep::MeshLeave, &[], false)],
     };
     for r in &mut rows {
         r.terminal = false;
@@ -197,6 +202,8 @@ fn recipe_node_step(step: &RecipeStep) -> NodeStep {
         RecipeStep::Update { .. } => NodeStep::Update,
         RecipeStep::Start { .. } => NodeStep::Start,
         RecipeStep::Delete { .. } => NodeStep::Delete,
+        RecipeStep::DeleteConnections { .. } => NodeStep::ConnectionsDelete,
+        RecipeStep::LeaveMesh { .. } => NodeStep::MeshLeave,
     }
 }
 

@@ -27,15 +27,17 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
             BuildRequest::Create {
                 submit: BuildSubmit::Change(BuildChange::Recipe {
                     steps: vec![
-                        RecipeStep::Create { node: "m.rpc.1.new".parse().unwrap() },
-                        RecipeStep::Stop { node: "m.rpc.1".parse().unwrap() },
+                        RecipeStep::DeleteConnections { node: "m.rpc.1".parse().unwrap() },
+                        RecipeStep::LeaveMesh { node: "m.rpc.1".parse().unwrap() },
                         RecipeStep::Update { node: "m.rpc.1".parse().unwrap(), name: "m.rpc.1.old".parse().unwrap() },
-                        RecipeStep::Start { node: "m.rpc.1".parse().unwrap() },
+                        RecipeStep::Stop { node: "m.rpc.1.old".parse().unwrap() },
+                        RecipeStep::Create { node: "m.rpc.1".parse().unwrap() },
+                        RecipeStep::Start { node: "m.rpc.1.old".parse().unwrap() },
                         RecipeStep::Delete { node: "m.rpc.1.old".parse().unwrap() },
                     ],
                 }),
             },
-            "00 00 0b 05 00 0b 6d2e7270632e312e6e6577 01 07 6d2e7270632e31 02 07 6d2e7270632e31 0b 6d2e7270632e312e6f6c64 03 07 6d2e7270632e31 04 0b 6d2e7270632e312e6f6c64",
+            "00 00 0b 07 05 07 6d2e7270632e31 06 07 6d2e7270632e31 02 07 6d2e7270632e31 0b 6d2e7270632e312e6f6c64 01 0b 6d2e7270632e312e6f6c64 00 07 6d2e7270632e31 03 0b 6d2e7270632e312e6f6c64 04 0b 6d2e7270632e312e6f6c64",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::DeleteFabric) }, "00 00 0c"),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),

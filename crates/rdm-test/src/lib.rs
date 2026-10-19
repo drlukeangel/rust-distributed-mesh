@@ -60,6 +60,8 @@ pub mod disk_faults;
 pub mod link_faults;
 pub mod netfault;
 pub mod process_faults;
+/// Rafka's replace recipe and its rollback as a test caller submits them (lifecycles/node-replace.md).
+pub mod recipes;
 
 /// The directory under an estate's data root where a scenario records the OS-clock skew of one
 /// node: the file `<root>/os-clock-skew/<path.name>` holds signed milliseconds.

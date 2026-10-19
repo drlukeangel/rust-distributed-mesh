@@ -188,6 +188,26 @@ impl UpdateStep {
     }
 }
 
+/// The steps of a recipe's `node.mesh.leave` as a Build operation (`node.mesh.leave:<path>`,
+/// node-mesh-leave.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaveStep {
+    /// The node's mesh-primary carried `LeaveMesh` to the exact birth and holds its `node.mesh.left`.
+    LeaveMesh,
+    /// The leave is done.
+    Complete,
+}
+
+impl LeaveStep {
+    /// The step's name as it appears in receipts and spans.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::LeaveMesh => "LeaveMesh",
+            Self::Complete => "Complete",
+        }
+    }
+}
+
 /// The steps of creating a mesh (`create-mesh:<mesh>`, node-identity-and-state.md §2.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateMeshStep {
@@ -1341,6 +1361,13 @@ impl DeploymentPipeline<'_> {
     pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let claim_for = if req.data_dir.is_some() { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
         self.create_with_claim(req, claim_for, before_ready, before_launch).await
+    }
+
+    /// `create_with` for a recipe's create of a replace's successor at the name its predecessor
+    /// released (`ClaimFor::Successor`, node-replace.md step 3): a fresh data dir, its row inheriting
+    /// the predecessor's config and tags.
+    pub(crate) async fn create_successor_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+        self.create_with_claim(req, crate::node_rows::ClaimFor::Successor, before_ready, None).await
     }
 
     /// `create_with` for a recovery Build (`ClaimFor::Recovery` even when `req.data_dir` is `None`
@@ -2515,8 +2542,25 @@ impl DeploymentPipeline<'_> {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", node.name, node.node_id)))
     }
 
+    /// A recipe's node.mesh.leave of `node` (`node.mesh.leave:<path>`, node-mesh-leave.md): `leave`
+    /// is the mesh-primary's carry of `LeaveMesh` to the exact birth, then `Complete`.
+    pub async fn leave_mesh<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, leave: F) -> Result<(), PipelineError>
+    where
+        F: std::future::Future<Output = Result<(), String>>,
+    {
+        use tracing::Instrument;
+        let span = self.pipeline_span("leave", build_id, node, attempt);
+        async {
+            let mut run = self.begin(build_id, attempt, node, format!("node.mesh.leave:{node}")).await?;
+            self.step(&mut run, LeaveStep::LeaveMesh.name(), leave).await?;
+            self.step(&mut run, LeaveStep::Complete.name(), async { Ok(()) }).await
+        }
+        .instrument(span)
+        .await
+    }
+
     /// node.name.update of the name of `node` as a recipe's step (node-name-update.md;
-    /// lifecycles/node-replace.md 3-4), as ONE operation `node.update:<path>`: `UpdateNode`, the
+    /// lifecycles/node-replace.md step 2), as ONE operation `node.update:<path>`: `UpdateNode`, the
     /// update `put` (node.name.update's own core at the node's mesh-primary, answered `NameUpdated`
     /// or refused by name), then `Complete`.
     pub async fn update_name<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, put: F) -> Result<(), PipelineError>

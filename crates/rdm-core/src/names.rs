@@ -193,6 +193,9 @@ pub enum NodeEvent {
     Restarted,
     /// `node.updated`: the node's row holds what the update put (lifecycles/node-name-update.md).
     Updated,
+    /// `node.mesh.left`: the node left its mesh, and the backbone a node-admin, keeping its endpoint
+    /// (lifecycles/node-mesh-leave.md).
+    MeshLeft,
 }
 
 impl NodeEvent {
@@ -208,6 +211,7 @@ impl NodeEvent {
             Self::Restarting => "node.restarting",
             Self::Restarted => "node.restarted",
             Self::Updated => "node.updated",
+            Self::MeshLeft => "node.mesh.left",
         }
     }
 
@@ -223,6 +227,7 @@ impl NodeEvent {
             Self::Restarting => tracing::info_span!("rdm.node_admin.node.restarting.via-reply-frame", event = "node.restarting"),
             Self::Restarted => tracing::info_span!("rdm.node_admin.node.restarted.via-reply-frame", event = "node.restarted"),
             Self::Updated => tracing::info_span!("rdm.node_admin.node.updated.via-reply-frame", event = "node.updated"),
+            Self::MeshLeft => tracing::info_span!("rdm.node_admin.node.mesh.left.via-reply-frame", event = "node.mesh.left"),
         }
     }
 }
@@ -247,6 +252,8 @@ pub enum NodeStep {
     Delete,
     /// `node.update`.
     Update,
+    /// `node.mesh.leave`.
+    MeshLeave,
 }
 
 impl NodeStep {
@@ -261,6 +268,7 @@ impl NodeStep {
             Self::Restart => "node.restart",
             Self::Delete => "node.delete",
             Self::Update => "node.update",
+            Self::MeshLeave => "node.mesh.leave",
         }
     }
 }

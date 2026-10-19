@@ -745,7 +745,7 @@ mod tests {
             attempt: 2,
             reason: crate::build_state::AttemptReason::Recipe,
             action: Some(crate::accepted::AttemptAction::Recipe {
-                steps: vec![RecipeStep::Create { node: node.successor() }, RecipeStep::Stop { node: node.clone() }, RecipeStep::Update { node: node.clone(), name: node.renamed() }, RecipeStep::Delete { node: node.renamed() }],
+                steps: vec![RecipeStep::DeleteConnections { node: node.clone() }, RecipeStep::LeaveMesh { node: node.clone() }, RecipeStep::Update { node: node.clone(), name: node.renamed() }, RecipeStep::Stop { node: node.renamed() }, RecipeStep::Create { node: node.clone() }, RecipeStep::Delete { node: node.renamed() }],
                 pinned: vec![(node.clone(), pin)],
             }),
             opened_by: "mesh1.admin.1".into(),

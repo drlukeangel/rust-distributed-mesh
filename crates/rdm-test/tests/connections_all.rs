@@ -302,17 +302,17 @@ fn a_status_request_the_rigs_admin_side_has_no_handler_for_is_answered_not_handl
 }
 
 /// CONTRACT: once `node.connections.delete { All }` has closed a live node's connections, the node opens
-/// no new connection until it starts again (proposal node-properties-own-commands.md §2.1 Precondition:
-/// "No new connection is admitted from the row write through `ApplyNodeName`, retries after an
-/// interruption included"; §2.4: "The admission block stays in force on the node until the apply
-/// resolves, so no connection is opened under the old name while the row carries the new one"). After
+/// no new connection until it starts or joins its mesh again (node-name-update.md Precondition: "No new
+/// connection is admitted from the row write through `ApplyNodeName`"; node-replace.md: a node is
+/// renamed once "nothing is connected to it", and a rename is followed by its stop or its rejoin). After
 /// `All` answers holding nothing, the node's data-plane call to its admin ends `NotSent`
 /// `AdmissionBlocked` naming the node, before any dial: one
 /// `rdm.node_rpc.connection.reject.via-admission-block` span, `at = dial`, names the destination. The log
-/// holds nothing, and `ApplyNodeName` answers `Applied`. The apply resolved, so the block lifts: the
-/// node's next data-plane call is answered, its entry naming the name it took as its source. What must
-/// NOT happen: the call before the apply answered on a new connection, a Direct entry written between
-/// `All` and the apply, `BusyHoldingConnections`, or the block cutting the Node RPC pool
+/// holds nothing, and `ApplyNodeName` answers `Applied`. The block stays: the next call is refused the
+/// same way. The node joins its mesh again (`JoinMesh`): the block lifts, and its next data-plane call is
+/// answered, its entry naming the name it took as its source. What must NOT happen: a call answered on a
+/// new connection before the join, a Direct entry written between `All` and the join,
+/// `BusyHoldingConnections`, or the block cutting the Node RPC pool
 /// (`rdm.node_rpc.connection.delete.via-hard-cut`).
 #[test]
 fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
@@ -341,16 +341,25 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination").map(String::as_str)), (Some("dial"), Some("mesh1.admin.1")), "{refusals:#?}");
 
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
-        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.to_string() };
+        let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
         assert_eq!(running.membership.held_name(&launch.name), taken, "the node holds the applied name");
 
-        // The apply resolved: the block lifts, and the next connection is under the name taken.
+        // The block stays after the apply: a renamed node opens nothing until it starts or joins its mesh
+        // again (node-replace.md: it is renamed once nothing is connected to it).
+        let still = admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
+        assert!(still.contains("joins its mesh again"), "the refusal says what lifts it: {still}");
+        // It joins its mesh again under the name it took: the block lifts, and the next connection is
+        // under that name.
+        let key = node::load_or_mint_key(&dir).unwrap();
+        admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
+        let join = StatusRequest::JoinMesh { node_id, incarnation, build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "node.mesh.join:mesh1.rpc.1".into() };
+        assert!(matches!(call_on(&admin, &target, &join, None).await, StatusReply::MeshJoined { .. }), "the node joins its mesh again");
         let after = ping_admin(&seams, &admin, &CallOptions::default()).await;
-        assert!(matches!(after, RpcOutcome::Reply(_)), "once the apply resolved the node opens connections again: {after:?}");
+        assert!(matches!(after, RpcOutcome::Reply(_)), "once it joined its mesh again the node opens connections: {after:?}");
         let routes = seams.connections.held_routes().await;
         assert_eq!(routes.iter().map(|r| (r.source.name.clone(), r.destination.name.to_string())).collect::<Vec<_>>(), vec![(taken.clone(), "mesh1.admin.1".to_string())], "the next connection names the name the node took: {routes:?}");
-        assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 1, "nothing is refused after the apply");
+        assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 2, "one refusal before the apply and one after it, none after the join");
         assert!(fields_of(&spans, "rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "the block cuts no Node RPC pool");
         let _ = std::fs::remove_dir_all(&dir);
     })

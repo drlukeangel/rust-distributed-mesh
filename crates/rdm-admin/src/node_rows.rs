@@ -181,6 +181,12 @@ pub enum ClaimFor {
     /// takes the tags with the config from the `Deleted` row at the key, indexed under the new node's
     /// id in that one write (§8, recovery).
     Recovery,
+    /// A recipe's node.create of a replace's successor at the `<name>` its predecessor released
+    /// (node-replace.md step 3, Inherited): the row takes the config and the tags of the predecessor's
+    /// row, the retained `<name>.old` row or else the `Deleted` row at the key, its tags indexed under
+    /// the new node's id in that one write, and the predecessor's `node_type`; a retained `.old` row is
+    /// then marked inherited by the successor, its labels out of the active tags index.
+    Successor,
 }
 
 /// What a claim of a name did.
@@ -408,43 +414,6 @@ impl NodeRows {
         }
     }
 
-    /// Cut over a replacement successor (`<name>.new` -> `<name>`) while the predecessor stands at
-    /// `retained` (`<name>.old`), inheriting config, tags and `node_type` from the retained row and
-    /// marking the retained row `inherited_by` the successor.
-    pub async fn cutover_row(&self, successor: &Node, to: &PathName, retained: &PathName, retained_id: &NodeId) -> Result<NodeRow, RowRefused> {
-        let me = self.writer_check(&successor.mesh, to).await?;
-        let pred_row = self
-            .storage
-            .node_row_at(retained)
-            .await
-            .map_err(|e| RowRefused::Unwritten(format!("{me}: the row at {retained} could not be read: {e}")))?
-            .filter(|r| r.node_id == *retained_id)
-            .ok_or_else(|| RowRefused::Unwritten(format!("{me}: no row stands at {retained} for the retained predecessor {retained_id}")))?;
-        let pred_type = self.node_type_of(retained_id, retained);
-        let known = self.written.known_row(&*self.storage, &successor.mesh, &successor.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
-        let from = known.as_ref().map_or_else(|| successor.name.clone(), |r| r.name.clone());
-        let app_types = known.as_ref().and_then(|r| r.app_types.clone());
-        let (config, tags) = if pred_row.inherited_by.as_ref() == Some(&successor.node_id) {
-            known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (successor.config.clone(), Default::default()))
-        } else {
-            (pred_row.config.clone(), pred_row.tags.clone())
-        };
-        let written = match move_row(&*self.storage, &me, successor, config, tags, app_types, &from, to).await {
-            Ok((_, Some(row))) => {
-                self.written.hold(&row);
-                row
-            }
-            Ok((_, None)) => self.storage.node_row_at(to).await.map_err(|e| RowRefused::Unwritten(format!("{me}: {e}")))?.ok_or_else(|| RowRefused::Unwritten(format!("{me}: no row stands at {to}")))?,
-            Err(RenameRefused::NameHeld(h)) => return Err(RowRefused::NameHeld(h)),
-            Err(RenameRefused::Unwritten(why)) => return Err(RowRefused::Unwritten(why)),
-        };
-        self.written.hold_node_type(&successor.node_id, pred_type);
-        let marked = NodeRow { inherited_by: Some(successor.node_id.clone()), ..pred_row };
-        self.storage.put_node_row(&marked).await.map_err(|e| RowRefused::Unwritten(format!("{me}: {e}")))?.map_err(RowRefused::NameHeld)?;
-        self.written.hold(&marked);
-        Ok(written)
-    }
-
     /// Hold the row `node_id` holds at `name` as this writer's record of it, read from the store (R13:
     /// "Rebuild after a seat change reads the mesh's own rows"), the same point read a claim or an
     /// arrival makes: a mesh leave's roster birth this writer's views never held (the admin created
@@ -642,14 +611,25 @@ impl NodeRows {
     /// its one row where the rename put it, whatever name a view still lists it at.
     #[allow(clippy::too_many_arguments)]
     async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
-        match self.written.known_row(&*self.storage, &name.mesh, node_id).await {
-            Ok(Some(held)) => return Ok(Claimed::HeldByNode(held)),
-            Ok(None) => {}
+        let claimed = match self.written.known_row(&*self.storage, &name.mesh, node_id).await {
+            Ok(Some(held)) => Claimed::HeldByNode(held),
+            Ok(None) => {
+                let claimed = seeded_put(&*self.storage, me, name, node_id, status, own, allocated, of, span, prefix).await?;
+                match &claimed {
+                    Claimed::Written { row, .. } | Claimed::HeldByNode(row) => self.written.hold(row),
+                }
+                claimed
+            }
             Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the row {node_id} holds could not be read before its row at {name} was written: {e}"))),
-        }
-        let claimed = seeded_put(&*self.storage, me, name, node_id, status, own, allocated, of, span, prefix).await?;
-        match &claimed {
-            Claimed::Written { row, .. } | Claimed::HeldByNode(row) => self.written.hold(row),
+        };
+        if of == ClaimFor::Successor {
+            if let Claimed::Written { seeded_from: Some(from), .. } = &claimed {
+                if let Some(node_type) = self.written.node_type_of(from) {
+                    self.written.hold_node_type(node_id, node_type);
+                }
+            }
+            // The claim's last write, on its first run and on any repeat: the retained row is marked.
+            mark_retained(&*self.storage, me, &self.written, name, node_id).await.map_err(RowRefused::Unwritten)?;
         }
         Ok(claimed)
     }
@@ -811,14 +791,10 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
         span.record("awaiting", "done");
         return Ok(Claimed::HeldByNode(p.clone()));
     }
-    // The tags come with the config only for a recovery's claim, from the Deleted row at this key.
-    let tags = previous.as_ref().filter(|p| of == ClaimFor::Recovery && p.status == NodeStatus::Deleted).map(|p| p.tags.clone()).unwrap_or_default();
-    // A successor born at `<name>.new` (node-replace.md step 1) reads no `.old` row: it inherits
-    // at its cutover (`crate::node_name_update::Cutover`). The `.old` row seeds the create of an
-    // exited predecessor's successor at the path (the replace of an exited predecessor).
+    // The `.old` row seeds the create at the name a replaced predecessor released (node-replace.md
+    // step 3) and the create of an exited predecessor's successor at the path.
     let seed = match previous {
         Some(p) => Some(p),
-        None if name.new => None,
         None => {
             span.record("awaiting", "read-old-row");
             let old = storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id);
@@ -827,6 +803,17 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
             old
         }
     };
+    // The tags come with the config for a recovery's claim, from the Deleted row at this key, and for a
+    // replace's successor, from the predecessor's row that seeds it.
+    let tags = seed
+        .as_ref()
+        .filter(|p| match of {
+            ClaimFor::Create => false,
+            ClaimFor::Recovery => p.name == *name && p.status == NodeStatus::Deleted,
+            ClaimFor::Successor => p.name != *name || p.status == NodeStatus::Deleted,
+        })
+        .map(|p| p.tags.clone())
+        .unwrap_or_default();
     let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
     if let Some(p) = &seed {
         span.record("seeded_from", p.node_id.as_str());
@@ -845,6 +832,58 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
         Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
         Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the row of {name} ({node_id}): {e}"))),
     }
+}
+
+/// A replace successor's claim's last write (node-replace.md Inherited: "Retained predecessor labels
+/// are removed from the active index, not erased from its row"): the retained predecessor's row at
+/// `<name>.old` is put again at its own key carrying `inherited_by: successor`, its config and tags
+/// kept; the store takes every label of it out of the tags index in that put (`NodeRow::tag_moves`).
+/// A row that says it already, or no retained row (the predecessor was deleted), writes nothing. One
+/// `rdm.node_admin.node.update.via-inherited-row` span, its outcome `inherited`, `already-inherited`,
+/// `none-retained` or `row-refused`; `Err` names the refusal.
+async fn mark_retained(storage: &dyn NodesStorage, me: &PathName, written: &WrittenRows, name: &PathName, successor: &NodeId) -> Result<(), String> {
+    let retained = name.renamed();
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.update.via-inherited-row",
+        node = %me,
+        subject = %retained,
+        node_id = tracing::field::Empty,
+        inherited_by = %successor,
+        tags = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let r = tracing::Instrument::instrument(
+        async {
+            let row = match storage.node_row_at(&retained).await {
+                Ok(Some(row)) if row.node_id != *successor => row,
+                Ok(_) => return Ok("none-retained"),
+                Err(e) => return Err(format!("{me}: the retained row at {retained} could not be read to mark it inherited by {successor}: {e}")),
+            };
+            span.record("node_id", row.node_id.as_str()).record("tags", labels(&row.tags).as_str());
+            if row.inherited_by.as_ref() == Some(successor) {
+                return Ok("already-inherited");
+            }
+            let row = NodeRow { inherited_by: Some(successor.clone()), ..row };
+            match storage.put_node_row(&row).await {
+                Ok(Ok(())) => {
+                    written.hold(&row);
+                    Ok("inherited")
+                }
+                Ok(Err(held)) => Err(format!("{me}: nodes.storage refused the retained row at {retained}: {held}")),
+                Err(e) => Err(format!("{me}: nodes.storage refused the retained row at {retained}: {e}")),
+            }
+        },
+        span.clone(),
+    )
+    .await;
+    match &r {
+        Ok(outcome) => span.record("outcome", *outcome),
+        Err(why) => span.record("outcome", "row-refused").record("detail", why.as_str()),
+    };
+    span.in_scope(|| tracing::info!("node.replace: the retained row's labels leave the tags index"));
+    r.map(|_| ())
 }
 
 /// Fabric recovery's hand-over of the `path.name` an admin started on an inherited root takes

@@ -1494,9 +1494,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     Ok(rdm_core::reply::applied())
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {
-                    // R12: the node owns its name and takes the row's name only with no traffic. It is
-                    // held first, so every later publish carries it; a live node publishes now, a
-                    // stopped one presents nothing until it starts.
+                    // R12: the node owns its name and takes the row's name only with no traffic, off its
+                    // mesh (node-name-update.md Precondition). It is held first, so every later publish
+                    // carries it; off its mesh it publishes nothing (node-mesh-leave.md), and its stop
+                    // or its next join carries the name.
                     let held = me.membership.with_config(&me.digest).node.name;
                     let asked = match name.parse::<rdm_core::PathName>() {
                         Ok(n) => n,
@@ -1516,8 +1517,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     let published = match decision {
                         crate::node_name::NameApply::Applied => {
                             me.membership.set_name(asked.clone());
-                            if me.own.is_parked() {
-                                "stopped"
+                            if *me.status.lock().unwrap() == MemberStatus::Leaving {
+                                "off-mesh"
                             } else {
                                 let mut d = me.digest.clone();
                                 d.status = *me.status.lock().unwrap();
@@ -1529,10 +1530,6 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                         _ => "unchanged",
                     };
-                    // The apply resolved: the admission block `All` set lifts, under the name now held.
-                    if matches!(decision, crate::node_name::NameApply::Applied | crate::node_name::NameApply::AlreadyApplied) {
-                        me.own.name_apply_resolved();
-                    }
                     let held_routes = routes.iter().map(crate::node_name::route_name).collect::<Vec<_>>().join(", ");
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));

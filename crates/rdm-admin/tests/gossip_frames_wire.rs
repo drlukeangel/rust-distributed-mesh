@@ -219,12 +219,11 @@ fn facts() -> Vec<BuildFact> {
             reason: AttemptReason::Recipe,
             action: Some(AttemptAction::Recipe {
                 steps: vec![
-                    RecipeStep::Create { node: node.successor() },
-                    RecipeStep::Stop { node: node.clone() },
+                    RecipeStep::DeleteConnections { node: node.clone() },
+                    RecipeStep::LeaveMesh { node: node.clone() },
                     RecipeStep::Update { node: node.clone(), name: node.renamed() },
-                    RecipeStep::Stop { node: node.successor() },
-                    RecipeStep::Update { node: node.successor(), name: node.clone() },
-                    RecipeStep::Start { node: node.clone() },
+                    RecipeStep::Stop { node: node.renamed() },
+                    RecipeStep::Create { node: node.clone() },
                     RecipeStep::Delete { node: node.renamed() },
                 ],
                 pinned: vec![(node, pin)],

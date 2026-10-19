@@ -3,30 +3,27 @@
 //! and the name only: the path never travels, so it cannot move. From what the mesh-primary holds, in
 //! order (§2.1 Validation): the exact birth matches its record (`RejectedStaleIncarnation`); it is the
 //! node's writer, the mesh-primary or, before the mesh has one, the fabric-primary
-//! (`ReceiverNotPrimary`); the node admits no connection, stopped, or holding the birth's
-//! `node.connections.deleted` of an `All` made while it was not ready-for-traffic and leaving nothing
-//! held (`RejectedAdmittingConnections { status, held_connections }`); the name is within the name
-//! grammar and its join with the held record's path is a `path.name` this build keys
-//! (`RejectedName`). Then, one change at a time with every other change to a node record: the new name
-//! is claimed by insert-and-fail in the store adapter (`NameHeld { by }`, nothing written) and the row
-//! moved through the one writer of a row's move (`crate::node_rows::move_row`): put at the new key
-//! carrying `renamed_from`, then the old key released. A release that fails leaves both keys held and
-//! ends the command incomplete naming it (`NameNotApplied`, `release-pending`); the next writer that
-//! meets the row finishes it (`crate::node_rows::finish_release`). A stopped node is told nothing and
-//! the command completes on the row; a live one is told `ApplyNodeName` (this admin itself in-process,
-//! through its own name decision) and the command completes only on its `Applied` or `AlreadyApplied`
-//! (§2.3). A repeat naming the name the row already holds finishes any pending release and then, for a
-//! live node, resends `ApplyNodeName` (§2.1 Idempotency). A replace's cutover ([`Cutover`],
-//! node-replace.md step 4) is the same command with the retained predecessor's row named: the
-//! successor's row is put at the name with that row's config and tags, the old key released, then the
-//! retained row marked inherited (`NodeRow::inherited_by`), its labels out of the tags index.
+//! (`ReceiverNotPrimary`); the node is live and admits no connection: this mesh-primary holds the
+//! birth's `node.connections.deleted` of an `All` that left nothing held, then its `node.mesh.left`
+//! (`RejectedAdmittingConnections { status, held_connections }`; a stopped node is never renamed and is
+//! refused the same way); the name is within the name grammar and its join with the held record's path
+//! is a `path.name` this build keys (`RejectedName`). Then, one change at a time with every other change
+//! to a node record: the new name is claimed by insert-and-fail in the store adapter (`NameHeld { by }`,
+//! nothing written) and the row moved through the one writer of a row's move
+//! (`crate::node_rows::move_row`): put at the new key carrying `renamed_from`, then the old key
+//! released. A release that fails leaves both keys held and ends the command incomplete naming it
+//! (`NameNotApplied`, `release-pending`); the next writer that meets the row finishes it
+//! (`crate::node_rows::finish_release`). The node is told `ApplyNodeName` (this admin itself
+//! in-process, through its own name decision) and the command completes only on its `Applied` or
+//! `AlreadyApplied` (§2.3). A repeat naming the name the row already holds finishes any pending release
+//! and then resends `ApplyNodeName` (§2.1 Idempotency).
 
 use crate::model::{Node, PathName};
 use crate::node_rows::{Moved, RenameRefused};
 use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rdm_core::ConnectionId;
-use rdm_client::{ExactBirth, NodeRpc, Traffic};
+use rdm_client::{ExactBirth, NodeRpc};
 use rdm_transport::{CallOptions, NodeTarget, RouteChoice};
 use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use tokio::sync::RwLock;
@@ -45,29 +42,15 @@ pub struct NameDoors<'a> {
 
 pub use crate::node_properties::FirstReadyOnRoot;
 
-/// A replace's cutover (node-replace.md step 4: "the mesh-primary seeds the successor's config from
-/// the `<name>.old` row"; proposal node-properties-own-commands.md §8, replace): the stopped successor
-/// takes its name with the config and tags of the predecessor's retained row, in the put that claims
-/// the name, and once the old key is released the retained row says it was inherited
-/// (`NodeRow::inherited_by`). The recipe's step passes it to the writer; a caller's `UpdateName`
-/// carries none, and any name stays renameable (§9 A).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Cutover {
-    /// The key of the predecessor's retained row (`<name>.old`).
-    pub retained: PathName,
-    /// The predecessor: the row at `retained` is inherited only while it is this node's.
-    pub retained_id: rdm_core::NodeId,
-}
-
 /// Serve an `UpdateName` at the admin `me` (born `me_id`): one span holds the whole command, its
 /// outcome the reply's name.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest, cutover: Option<&Cutover>) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: NameDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.name.update.via-writer",
         node = %me, node_id = %node_id, incarnation_id = %incarnation.as_str(), name = %name, from = tracing::field::Empty, to = tracing::field::Empty,
-        inherited_from = tracing::field::Empty, keys = tracing::field::Empty, tags = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
+        keys = tracing::field::Empty, tags = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, mesh = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let reply = tracing::Instrument::instrument(
@@ -77,7 +60,7 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
                 None => {
                     // A snapshot of the view: no read lock is held across the row write's I/O.
                     let now = view.read().await.clone();
-                    rename(me, me_id, &now, storage, doors, deleted, node_id, incarnation, name, cutover, &span).await
+                    rename(me, me_id, &now, storage, doors, deleted, left, node_id, incarnation, name, &span).await
                 }
             }
         },
@@ -89,35 +72,45 @@ pub async fn update(me: &PathName, me_id: &rdm_core::NodeId, view: &RwLock<Topol
     reply
 }
 
-/// Whether the held node admits a connection (R-CR1a, R-CR2), from what this mesh-primary holds.
+/// Whether the held node may take a name (R-CR1a, R-CR2; node-name-update.md Precondition), from what
+/// this mesh-primary holds.
 struct Admission {
-    /// The span's `(traffic, connections)`.
-    labels: (String, &'static str),
-    /// It admits none, and why; or it admits one: the status the refusal names, the connections it
-    /// still held, and why in words.
-    quiet: Result<Traffic, (crate::model::NodeStatus, Vec<ConnectionId>, String)>,
+    /// The span's `(traffic, connections, mesh)`.
+    labels: (String, &'static str, &'static str),
+    /// It is live, admits no connection and has left its mesh; or it may not take a name: the status
+    /// the refusal names, the connections it still held, and why in words.
+    quiet: Result<(), (crate::model::NodeStatus, Vec<ConnectionId>, String)>,
 }
 
-/// [`Admission`] of `held`: stopped, or its `node.connections.deleted` of an `All` cut made while it
-/// was not ready-for-traffic, leaving nothing held.
-fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>) -> Admission {
+/// [`Admission`] of `held`: live, its `node.connections.deleted` of an `All` held with nothing left
+/// held, then its `node.mesh.left` (`left`). A stopped node is never renamed: it is renamed live, after
+/// its connections and its mesh, and stopped after (node-replace.md).
+fn admission_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, left: bool) -> Admission {
     if held.parked {
-        return Admission { labels: ("Stopped".into(), "stopped"), quiet: Ok(Traffic::Stopped) };
+        return Admission {
+            labels: ("Stopped".into(), "stopped", "stopped"),
+            quiet: Err((held.status, vec![], "is stopped, and a stopped node is never renamed: a node is renamed live, after its node.connections.delete { All } and its node.mesh.leave, and stopped after".into())),
+        };
     }
+    let on_mesh = if left { "left" } else { "on-mesh" };
     match deleted {
         None => Admission {
-            labels: (format!("{:?}", held.status), "none-deleted"),
+            labels: (format!("{:?}", held.status), "none-deleted", on_mesh),
             quiet: Err((held.status, vec![], format!("is {:?} and its mesh-primary holds no node.connections.deleted for this birth", held.status))),
         },
         Some(r) if !r.all => Admission {
-            labels: (format!("{:?}", r.status_at_cut), "partial"),
+            labels: (format!("{:?}", r.status_at_cut), "partial", on_mesh),
             quiet: Err((r.status_at_cut, vec![], format!("is {:?}, and its last node.connections.delete named exact connections, not All: it holds no node.connections.deleted of every connection", r.status_at_cut))),
         },
         Some(r) if !r.held.is_empty() => Admission {
-            labels: (format!("{:?}", r.status_at_cut), "held"),
+            labels: (format!("{:?}", r.status_at_cut), "held", on_mesh),
             quiet: Err((r.status_at_cut, r.held.clone(), format!("is {:?} and still held {} connection(s) after its node.connections.delete: {}", r.status_at_cut, r.held.len(), r.held.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")))),
         },
-        Some(r) => Admission { labels: (format!("{:?}", r.status_at_cut), "deleted"), quiet: Ok(Traffic::ConnectionsDeleted) },
+        Some(r) if !left => Admission {
+            labels: (format!("{:?}", r.status_at_cut), "deleted", on_mesh),
+            quiet: Err((r.status_at_cut, vec![], format!("is {:?}: its connections are deleted, but its mesh-primary holds no node.mesh.left for this birth: it is still on its mesh", r.status_at_cut))),
+        },
+        Some(r) => Admission { labels: (format!("{:?}", r.status_at_cut), "deleted", on_mesh), quiet: Ok(()) },
     }
 }
 
@@ -129,10 +122,10 @@ async fn rename(
     storage: &dyn NodesStorage,
     doors: NameDoors<'_>,
     deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>,
+    left: bool,
     node_id: &rdm_core::NodeId,
     incarnation: &rdm_core::IncarnationId,
     name: &str,
-    cutover: Option<&Cutover>,
     span: &tracing::Span,
 ) -> StatusReply {
     // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never a
@@ -158,11 +151,11 @@ async fn rename(
         span.record("detail", needed.as_str());
         return rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed });
     }
-    // 3. The node admits no connection.
-    let admission = admission_of(&held, deleted);
-    span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1);
+    // 3. The node is live, admits no connection and has left its mesh.
+    let admission = admission_of(&held, deleted, left);
+    span.record("traffic", admission.labels.0.as_str()).record("connections", admission.labels.1).record("mesh", admission.labels.2);
     if let Err((status, held_connections, why)) = admission.quiet {
-        span.record("detail", format!("{me}: {} {why}; a name moves only when the node admits no connection (stopped, or its node.connections.delete {{ All }} completed with nothing held): nothing is claimed or written", held.name).as_str());
+        span.record("detail", format!("{me}: {} {why}; a name moves only on a live node off its mesh, its node.connections.delete {{ All }} completed with nothing held and then its node.mesh.leave: nothing is claimed or written", held.name).as_str());
         return rdm_core::reply::status::bounded_rejected_admitting_connections(crate::views::node_status(status), &held_connections);
     }
     // 4. The name: within the grammar, and joined at the held record's path into a key this build keys.
@@ -193,41 +186,18 @@ async fn rename(
     // The key the node's row stands at now: the row's own, else the name the view holds.
     let from = known.as_ref().map_or_else(|| held.name.clone(), |r| r.name.clone());
     if from == to {
-        // A repeat naming the name the row already holds: any release still pending is finished first,
-        // then a cutover's mark of the retained row, when it is still to be written.
+        // A repeat naming the name the row already holds: any release still pending is finished first.
         if let Some(row) = &known {
             if let Err(why) = crate::node_rows::finish_release(storage, me, row, "retry").await {
                 return release_pending(me, node_id, &to, row.renamed_from.as_ref().unwrap_or(&from), &why, span);
-            }
-        }
-        if let Some(c) = cutover {
-            if let Err(why) = mark_inherited(storage, me, door.written(), c, node_id).await {
-                return rdm_core::reply::status::bounded_node_row_refused(&c.retained.to_string(), &why);
             }
         }
     } else {
         let Some(moved) = doors.moved.get() else {
             return rdm_core::reply::status::not_ready(format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name));
         };
-        // A cutover's row carries the retained predecessor row's config and tags once; a repeated
-        // cutover after the retained row already named this successor preserves the successor's own.
         let app_types = known.as_ref().and_then(|r| r.app_types.clone());
-        let own = || known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default()));
-        let (config, tags) = match cutover {
-            Some(c) => match retained_row(storage, me, c).await {
-                Ok(r) if r.inherited_by.as_ref() == Some(node_id) => own(),
-                Ok(r) => {
-                    span.record("inherited_from", c.retained_id.as_str());
-                    (r.config, r.tags)
-                }
-                Err(why) => {
-                    let why = format!("{why}: the cutover of {} to {to} inherits nothing, and nothing is claimed or written", held.name);
-                    span.record("detail", why.as_str());
-                    return rdm_core::reply::status::bounded_node_row_refused(&to.to_string(), &why);
-                }
-            },
-            None => own(),
-        };
+        let (config, tags) = known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default()));
         span.record("keys", config.len() as u64).record("tags", crate::node_rows::labels(&tags).as_str());
         let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, app_types, &from, &to).await {
             Ok((m, written)) => {
@@ -247,18 +217,8 @@ async fn rename(
         if let Some(why) = pending {
             return release_pending(me, node_id, &to, &from, &why, span);
         }
-        // The cutover's last write: the retained row's labels leave the tags index.
-        if let Some(c) = cutover {
-            if let Err(why) = mark_inherited(storage, me, door.written(), c, node_id).await {
-                return rdm_core::reply::status::bounded_node_row_refused(&c.retained.to_string(), &why);
-            }
-        }
     }
     let done = StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
-    if held.parked {
-        // A stopped node is told nothing: it reads its name in its join answer at its next start.
-        return done;
-    }
     // The live birth takes the row's name. This admin itself takes it through its own name
     // decision in-process, as its config door applies its own config: it never calls itself.
     let applied = if held.node_id == *me_id {
@@ -293,61 +253,4 @@ fn release_pending(me: &PathName, node_id: &rdm_core::NodeId, to: &PathName, fro
     let detail = format!("{me}: {node_id} holds {to} (its row carries renamed_from {from}) and the release of {from} is pending: {why}; a resubmit releases it and continues to the apply");
     span.record("answered", "release-pending").record("detail", detail.as_str());
     rdm_core::reply::status::bounded_name_not_applied(&to.to_string(), "release-pending", &detail)
-}
-
-/// The predecessor's retained row a cutover inherits from: the row at `c.retained` while it is
-/// `c.retained_id`'s, read through its `path.name` key; anything else is named.
-async fn retained_row(storage: &dyn NodesStorage, me: &PathName, c: &Cutover) -> Result<crate::storage::NodeRow, String> {
-    match storage.node_row_at(&c.retained).await {
-        Ok(Some(r)) if r.node_id == c.retained_id => Ok(r),
-        Ok(Some(r)) => Err(format!("{me}: the row at {} is node {}'s, not the retained predecessor {}'s", c.retained, r.node_id, c.retained_id)),
-        Ok(None) => Err(format!("{me}: no row stands at {} for the retained predecessor {}", c.retained, c.retained_id)),
-        Err(e) => Err(format!("{me}: the row at {} could not be read for the retained predecessor {}: {e}", c.retained, c.retained_id)),
-    }
-}
-
-/// The cutover's last write (proposal node-properties-own-commands.md §8, replace: "the predecessor's
-/// index entries gone"): the retained row at `c.retained` is put again at its own key carrying
-/// `inherited_by: by`, its config and tags kept; the store takes every label of it out of the tags
-/// index in that put (`NodeRow::tag_moves`). A row that says it already is not written again. One
-/// `rdm.node_admin.node.update.via-inherited-row` span, its outcome `inherited`, `already-inherited` or
-/// `row-refused`; answers the refusal's words.
-async fn mark_inherited(storage: &dyn NodesStorage, me: &PathName, written: &crate::node_rows::WrittenRows, c: &Cutover, by: &rdm_core::NodeId) -> Result<(), String> {
-    let span = tracing::info_span!(
-        "rdm.node_admin.node.update.via-inherited-row",
-        node = %me,
-        subject = %c.retained,
-        node_id = %c.retained_id,
-        inherited_by = %by,
-        tags = tracing::field::Empty,
-        outcome = tracing::field::Empty,
-        detail = tracing::field::Empty,
-        "otel.kind" = "internal",
-    );
-    let r = tracing::Instrument::instrument(
-        async {
-            let row = retained_row(storage, me, c).await?;
-            span.record("tags", crate::node_rows::labels(&row.tags).as_str());
-            if row.inherited_by.as_ref() == Some(by) {
-                return Ok("already-inherited");
-            }
-            let row = crate::storage::NodeRow { inherited_by: Some(by.clone()), ..row };
-            match storage.put_node_row(&row).await {
-                Ok(Ok(())) => {
-                    written.hold(&row);
-                    Ok("inherited")
-                }
-                Ok(Err(held)) => Err(format!("{me}: nodes.storage refused the retained row at {}: {held}", c.retained)),
-                Err(e) => Err(format!("{me}: nodes.storage refused the retained row at {}: {e}", c.retained)),
-            }
-        },
-        span.clone(),
-    )
-    .await;
-    match &r {
-        Ok(outcome) => span.record("outcome", *outcome),
-        Err(why) => span.record("outcome", "row-refused").record("detail", why.as_str()),
-    };
-    span.in_scope(|| tracing::info!("node.replace: the retained row's labels leave the tags index"));
-    r.map(|_| ())
 }

@@ -9,7 +9,8 @@
 //! `DeleteConnections { All }` answers `ConnectionsDeleted` closing both routes' open entries and
 //! holding none, each drop written under `mesh1.rpc.1.new`; the same `ApplyNodeName` then answers
 //! `Applied`. No `connected` entry under `mesh1.rpc.1.new` is the latest of its pair after the
-//! rename, and the next entry the node writes (it dials its peer again) names `mesh1.rpc.1`. What must
+//! rename, and once the node joins its mesh again the next entry it writes (it dials its peer again)
+//! names `mesh1.rpc.1`. What must
 //! NOT happen: a node that still holds connections takes another name, a route left open
 //! under the name it gave up, or a drop written under another name.
 
@@ -159,7 +160,12 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
         assert_eq!(call(apply).await, StatusReply::Applied, "with no connection held the name moves");
         assert_eq!(renamed_seams.connections.own().name, taken, "the node holds its new name");
 
-        // It dials its peer again: the node's next entry names the name it holds.
+        // It joins its mesh again under the name it holds (its admission block lifts there), then dials
+        // its peer again: the node's next entry names the name it holds.
+        let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
+        admin.deployed_as(&renamed, &key, taken.clone(), Some(taken.clone()));
+        let join = StatusRequest::JoinMesh { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: format!("node.mesh.join:{taken}") };
+        assert!(matches!(call(join).await, StatusReply::MeshJoined { .. }), "the node joins its mesh again");
         let _ = renamed_seams.client.call::<Ping>(&NodeTarget::ExactNode(peer.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await;
         renamed_seams.connections.observations_landed().await;
         let log = kept_log(&store, &fabric, &born);

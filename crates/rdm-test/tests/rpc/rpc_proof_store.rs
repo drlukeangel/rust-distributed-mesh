@@ -120,18 +120,8 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // 4. The replace recipe does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
     {
-        use rdm_core::build::RecipeStep;
         let node: rdm_core::PathName = NODE.parse().unwrap();
-        let recipe = vec![
-            RecipeStep::Create { node: node.successor() },
-            RecipeStep::Stop { node: node.clone() },
-            RecipeStep::Update { node: node.clone(), name: node.renamed() },
-            RecipeStep::Stop { node: node.successor() },
-            RecipeStep::Update { node: node.successor(), name: node.clone() },
-            RecipeStep::Start { node: node.clone() },
-            RecipeStep::Delete { node: node.renamed() },
-        ];
-        let mut stream = estate.nodes_obj().await.recipe(recipe).await.expect("the replace recipe was accepted");
+        let mut stream = estate.nodes_obj().await.recipe(rdm_test::recipes::replace(&node)).await.expect("the replace recipe was accepted");
         Estate::complete(&mut stream).await;
     }
     let replacement = estate

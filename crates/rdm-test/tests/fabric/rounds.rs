@@ -650,7 +650,7 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
         ("node.restart mesh1.admin.1", refused("restart", nodes.restart(&path("mesh1.admin.1")).await)),
         ("node.stop mesh1.admin.1", refused("stop", nodes.stop(&path("mesh1.admin.1")).await)),
         ("node.connections.delete mesh1.admin.1 (a seat holder)", refused("node.connections.delete", carrier.create(Change::DeleteConnections { node: path("mesh1.admin.1") }).await)),
-        ("recipe (node.create:mesh2.admin.1.new)", refused("recipe", carrier.create(Change::Recipe { steps: vec![rdm_core::build::RecipeStep::Create { node: path("mesh2.admin.1").successor() }] }).await)),
+        ("recipe (node.connections.delete:mesh2.admin.1)", refused("recipe", carrier.create(Change::Recipe { steps: vec![rdm_core::build::RecipeStep::DeleteConnections { node: path("mesh2.admin.1") }] }).await)),
         ("node.stop mesh2.rpc.1", refused("stop", nodes.stop(&path("mesh2.rpc.1")).await)),
         ("node.delete mesh2.rpc.1", refused("delete", nodes.delete(&path("mesh2.rpc.1")).await)),
         ("mesh.delete mesh2", refused("mesh.delete", carrier.create(Change::RemoveMesh { mesh: "mesh2".into() }).await)),

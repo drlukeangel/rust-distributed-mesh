@@ -118,7 +118,6 @@ impl Caller {
 /// the admin it named as soon as it is named.
 async fn replace_by_recipe(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
     use rdm_client::{NodeSelector, Nodes};
-    use rdm_core::build::RecipeStep;
     let peers = estate.peers().await;
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
     for mesh in ["mesh1", "mesh2"] {
@@ -127,16 +126,7 @@ async fn replace_by_recipe(estate: &Estate, entry: &rdm_client::PathName, p: &st
         }
     }
     let node: rdm_core::PathName = p.parse().unwrap();
-    let recipe = vec![
-        RecipeStep::Create { node: node.successor() },
-        RecipeStep::Stop { node: node.clone() },
-        RecipeStep::Update { node: node.clone(), name: node.renamed() },
-        RecipeStep::Stop { node: node.successor() },
-        RecipeStep::Update { node: node.successor(), name: node.clone() },
-        RecipeStep::Start { node: node.clone() },
-        RecipeStep::Delete { node: node.renamed() },
-    ];
-    let mut stream = nodes.recipe(recipe).await.expect("the replace recipe was accepted");
+    let mut stream = nodes.recipe(rdm_test::recipes::replace(&node)).await.expect("the replace recipe was accepted");
     let build = stream.accepted().build_id.to_string();
     let caller = Caller { peers, entry: entry.clone(), kind: stream.kind().clone(), accepted: stream.accepted().clone() };
     let frames = tokio::spawn(async move {
@@ -378,8 +368,9 @@ fn at_ns(sp: &Value) -> u64 {
 /// replace recipe (lifecycles/node-replace.md: one Build of node primitives the rectifier executes;
 /// never a signal). Its stop of P is executed by its same-mesh successor H (node-admin-lifecycle.md
 /// §1.3), the admin P's mesh seats once P is gone: the lowest Ready NodeId of P's mesh (elections §3),
-/// the other admin N or P's successor born `<P>.new`. P holds both seats and is its mesh's row writer,
-/// so it moves them itself before its stop runs:
+/// the other admin N (P's successor is created after P's seats moved, node-replace.md steps 1 and 3). P
+/// holds both seats and is its mesh's row writer, so it moves them itself before its
+/// node.connections.delete, the recipe's first step, runs:
 /// 1. P claims the attempt the update runs in for itself (C1 step 1: "The holder is commanded from
 ///    above, as a step of the Build"; `build.update.via-claim-decision` at P, won, before its row), says
 ///    "primary updating" (`via-announce-primary-updating`, sent on the backbone and its mesh channel),
@@ -396,7 +387,7 @@ fn at_ns(sp: &Value) -> u64 {
 /// 4. Only then does the commanding Build continue (step 8; build.md: "A live run is reattached, never
 ///    re-claimed"): H claims the next attempt and dispatches the stop of P; H says nothing for P's row
 ///    (P said it; a `seat.update.via-row-acknowledged` at H for P's row, if any, announced nothing). The
-///    recipe's steps on P, its stop first, run after P's "primary updated".
+///    recipe's steps on P, its connections delete first, run after P's "primary updated".
 /// Must NOT happen: a view showing two fabric-primaries; an observer resolving P's mesh or the fabric
 /// with no primary between the replace and the fabric's ready-for-traffic; H writing a seat row for P or
 /// saying "primary updated" before P's stop cut its transport; H claiming or dispatching, or a step on P
@@ -439,8 +430,11 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let successor_id = successor_id.expect("the replaced admin's path is ready again under a new birth");
-    // H: the lowest NodeId of N and P's successor, which was born `<P>.new` and took P's name.
-    let (h_name, h_id) = if successor_id < n_id { (p.parse::<rdm_core::PathName>().unwrap().successor().to_string(), successor_id.clone()) } else { (n_name.clone(), n_id.clone()) };
+    // H: N, the other admin of P's mesh. P's seats move at its node.connections.delete, the recipe's
+    // first step, before P's successor exists (node-replace.md steps 1 and 3).
+    let (h_name, h_id) = (n_name.clone(), n_id.clone());
+    let p_old = p.parse::<rdm_core::PathName>().unwrap().renamed().to_string();
+    assert_ne!(successor_id, p_id, "P's path holds a new birth");
     assert!(worst <= 1, "a view showed {worst} fabric primaries");
     // The fabric is ready-for-traffic once its planned births are all ready and the state-sync,
     // state-commit and open-traffic rounds have run under the new fabric-primary.
@@ -490,9 +484,9 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     // say nothing more (R-NS2; C1 failure contract: "the next writer to read the row publishes
     // 'updated'"), under the span naming the stopped holder, never before P's stop cut its transport.
     let by_h: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-primary-updated").into_iter().filter(|sp| attr(sp, "node") == h_name && num(sp, "attempt") == Some(transfer_attempt)).collect();
-    let p_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| attr(sp, "node") == p).map(sp_end).min();
+    let p_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| attr(sp, "node") == p || attr(sp, "node") == p_old).map(sp_end).min();
     for said in &by_h {
-        let after_stop = named(&spans, "rdm.mesh.seat.update.via-holder-stopped").into_iter().find(|h| attr(h, "node") == h_name && attr(h, "holder") == p && descends_from(&spans, said, h)).cloned();
+        let after_stop = named(&spans, "rdm.mesh.seat.update.via-holder-stopped").into_iter().find(|h| attr(h, "node") == h_name && (attr(h, "holder") == p || attr(h, "holder") == p_old) && descends_from(&spans, said, h)).cloned();
         let after_stop = after_stop.unwrap_or_else(|| panic!("the successor said primary updated other than after the holder's stop: {said:#?}"));
         assert!(p_cut.is_some_and(|cut| cut <= at_ns(&after_stop)), "the successor said primary updated only after P's stop cut its transport ({p_cut:?}): {after_stop:#?}");
         eprintln!("H said primary updated after P's stop: trace {}", s(&after_stop["trace_id"]));
@@ -512,24 +506,15 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert!(sp_end(&p_said) <= at_ns(&h_claim), "H claimed only after P said primary updated: {h_claim:#?}");
     let h_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1));
     assert!(sp_end(&p_said) <= at_ns(&h_dispatch), "H dispatched the replace only after P said primary updated: {h_dispatch:#?}");
-    // The replace's steps on P (lifecycles/node-replace.md steps 2 and 6): P's own stop (step 2) runs in
-    // H's attempt `transfer_attempt + 1`, after P's "primary updated". Step 6 (`node[2].start` of `<P>.new`
-    // after step 5 renamed it to P) runs in `transfer_attempt + 1` when H is N, or in `transfer_attempt + 3`
-    // when H is `<P>.new` (elections.md §3: lowest Ready NodeId of P's mesh): H stops and renames P in
-    // `transfer_attempt + 1`, claims `transfer_attempt + 2` for its own `node.primary.update` to N before
-    // step 4 (`node[2].stop` of `<P>.new`, node-stop.md "Seat holder", node-primary-update.md steps 1 & 8),
-    // and N stops, renames and starts `<P>.new` as P in `transfer_attempt + 3`.
-    let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
+    // The replace's steps on P and at its path (lifecycles/node-replace.md steps 1-3): P's connections
+    // delete, its leave, its rename, its stop as `.old`, the successor's create at P and P's delete at
+    // `.old` all run in H's attempt `transfer_attempt + 1`, after P's "primary updated": the successor
+    // holds no seat, so no seat moves again.
+    let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && (attr(sp, "node") == p || attr(sp, "node") == p_old) && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
     p_steps.sort_by_key(|sp| at_ns(sp));
-    let start_attempt = if h_id == successor_id { transfer_attempt + 3 } else { transfer_attempt + 1 };
-    assert!(!p_steps.is_empty() && num(p_steps[0], "attempt") == Some(transfer_attempt + 1), "P's stop began in attempt {}: {p_steps:#?}", transfer_attempt + 1);
-    let mut in_start = false;
+    assert!(!p_steps.is_empty(), "the recipe's steps on P ran: {p_steps:#?}");
     for sp in &p_steps {
-        if attr(sp, "step").starts_with("Start") {
-            in_start = true;
-        }
-        let expected = if in_start { start_attempt } else { transfer_attempt + 1 };
-        assert_eq!(num(sp, "attempt"), Some(expected), "step {} on P ran in its exact attempt: {sp:#?}", attr(sp, "step"));
+        assert_eq!(num(sp, "attempt"), Some(transfer_attempt + 1), "step {} on P ran in H's attempt: {sp:#?}", attr(sp, "step"));
         assert!(at_ns(sp) >= sp_end(&p_said), "no step on P ran before P said primary updated: {sp:#?}");
     }
     // No seatless window: from the replace until the fabric is ready again (the fabric's own
@@ -558,10 +543,9 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert!(matches!(first.last(), Some(rdm_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends SeatMoved naming H: {first:?}, broke: {broke:?}");
     let p_refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(!p_refused.is_empty() && p_refused.iter().all(|sp| attr(sp, "to") == h_name), "P's drive lost the seat at the committed record naming H: {p_refused:#?}");
-    // When H is P's successor `<P>.new`, the recipe's stop of `.new` moves the seats once more, to
-    // N, its own same-mesh successor; no SeatMoved of the Build names anyone else.
+    // Every SeatMoved of the Build names H: the seats move once.
     let moved: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build).collect();
-    assert!(moved.iter().any(|sp| attr(sp, "to") == h_name) && moved.iter().all(|sp| attr(sp, "to") == h_name || attr(sp, "to") == n_name), "every SeatMoved of the Build names H, then N: {moved:#?}");
+    assert!(!moved.is_empty() && moved.iter().all(|sp| attr(sp, "to") == h_name), "every SeatMoved of the Build names H: {moved:#?}");
     // A planned move leaves no fault anywhere in the run (the fault span of a handler is a root of its
     // own trace, so the whole run is read).
     let faults = named(&spans, "rdm.node_rpc.handler.reject.via-internal-rpc-failure");
@@ -580,8 +564,8 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the recipe's Build is complete: {receipts:?}");
     let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the recipe's steps");
     let step_keys: Vec<String> = {
-        let (p, succ) = (p.parse::<rdm_core::PathName>().unwrap(), p.parse::<rdm_core::PathName>().unwrap().successor());
-        vec![format!("node.create:{succ}"), format!("node.stop:{p}"), format!("node.update:{p}"), format!("node.stop:{succ}"), format!("node.update:{succ}"), format!("node.start:{p}"), format!("node.delete:{}", p.renamed())]
+        let p = p.parse::<rdm_core::PathName>().unwrap();
+        vec![format!("node.connections.delete:{p}"), format!("node.mesh.leave:{p}"), format!("node.update:{p}"), format!("node.stop:{p_old}"), format!("node.create:{p}"), format!("node.delete:{p_old}")]
     };
     for key in &step_keys {
         assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");
@@ -649,8 +633,7 @@ async fn a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_d
     let spans = estate.spans();
     // C1 step 5: P's ONE row is the commit, written under its Build-log decision lock
     // (fabric_handover.rs `update_primary_in`), before its successor installs it.
-    // P's own seat row: the recipe moves the seats once more when P's successor `<P>.new` takes
-    // them first (its stop then hands them to N), and that row is `.new`'s, not P's.
+    // P's own seat row, written at its node.connections.delete, the recipe's first step.
     let row: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "build_id") == replace_id && attr(sp, "node") == p && attr(sp, "holder").contains(&p_id)).collect();
     assert_eq!(row.len(), 1, "P wrote one seat row for the replace: {row:#?}");
     assert_eq!(attr(row[0], "node"), p, "the holder P wrote the row: {:#?}", row[0]);

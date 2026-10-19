@@ -149,7 +149,8 @@ pub enum BuildChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecipeStep {
     /// node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name`
-    /// (`<name>.new` for a replace's successor), claimed by insert-and-fail before anything is launched.
+    /// (for a replace's successor, the `<name>` its predecessor released), claimed by insert-and-fail
+    /// before anything is launched.
     Create {
         /// The `path.name` the node is created at.
         node: PathName,
@@ -160,7 +161,8 @@ pub enum RecipeStep {
         node: PathName,
     },
     /// node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the
-    /// rename precondition: the node is stopped, or drained with `node.connections.deleted`).
+    /// rename precondition: the node is live, its `node.connections.deleted` of an `All` and then its
+    /// `node.mesh.left` held, and it holds no connection; a stopped node is never renamed).
     Update {
         /// The node.
         node: PathName,
@@ -177,13 +179,27 @@ pub enum RecipeStep {
         /// The node.
         node: PathName,
     },
+    /// node.connections.delete `{ scope: All }` of the live node at `node`
+    /// (lifecycles/node-connections-delete.md): every connection it holds is closed; it keeps running
+    /// on its mesh.
+    DeleteConnections {
+        /// The node.
+        node: PathName,
+    },
+    /// node.mesh.leave of the live node at `node`, once its connections are deleted
+    /// (lifecycles/node-mesh-leave.md): it leaves its mesh (and the backbone, a node-admin) and its Node
+    /// RPC pool, its endpoint kept bound.
+    LeaveMesh {
+        /// The node.
+        node: PathName,
+    },
 }
 
 impl RecipeStep {
     /// The `path.name` the step acts on when it runs.
     pub fn node(&self) -> &PathName {
         match self {
-            Self::Create { node } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } => node,
+            Self::Create { node } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } | Self::DeleteConnections { node } | Self::LeaveMesh { node } => node,
         }
     }
 }

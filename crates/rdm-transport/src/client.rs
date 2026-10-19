@@ -373,10 +373,9 @@ impl NodeRpcClient {
     /// Open no new connection from now on, naming `why`, until [`Self::admit_new_connections`]: a
     /// call that would dial ends `NotSent` `AdmissionBlocked`, and a dial already running closes the
     /// connection it opens instead of pooling it. A pooled connection is untouched. The admission
-    /// block of the client a node originates its logged connections on (proposal
-    /// node-properties-own-commands.md §2.1 Precondition, §2.4): set when its
-    /// `node.connections.delete { All }` closes them, lifted when its name apply resolves or it
-    /// starts.
+    /// block of the client a node originates its logged connections on (node-name-update.md
+    /// Precondition): set when its `node.connections.delete { All }` closes them, lifted when it
+    /// starts or joins its mesh again.
     pub fn block_new_connections(&self, why: impl Into<String>) {
         self.admission.block(why.into());
     }

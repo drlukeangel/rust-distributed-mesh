@@ -497,9 +497,9 @@ impl ControlPlane {
     /// (`fabric-not-ready`, R-PC1); a recipe with no step, one naming an operation twice, or one
     /// acting on a path that holds no birth and that no earlier step makes
     /// ([`crate::accepted::recipe_action`]); a step in a mesh held by its own drift attempt (R-BI7
-    /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a stop
-    /// or delete of a seat holder while no other node of its type in its mesh can take its seat
-    /// (R-MT1, Q7).
+    /// caveat 3); a step on a node of a peer mesh this fabric-primary holds unheard (R-D1); a
+    /// node.connections.delete, stop or delete of a seat holder while no other node of its type in its
+    /// mesh can take its seat (R-MT1, Q7).
     pub async fn open_recipe_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rdm_core::build::RecipeStep>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
@@ -533,6 +533,9 @@ impl ControlPlane {
                 let action = match step {
                     rdm_core::build::RecipeStep::Stop { .. } => Some("stop"),
                     rdm_core::build::RecipeStep::Delete { .. } => Some("delete"),
+                    // A seat holder's seats move at its node.connections.delete { All }, the first step of
+                    // a replace (node-connections-delete.md step 0; node-replace.md step 1).
+                    rdm_core::build::RecipeStep::DeleteConnections { .. } => Some("node.connections.delete"),
                     _ => None,
                 };
                 if let Some(reject) = action.and_then(|a| last_admin(node, a, &t)) {

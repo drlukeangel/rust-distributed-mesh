@@ -49,6 +49,11 @@ pub struct Declared {
     /// cycle (R-CR2: what a rename of a live birth needs). Memory of this tenure: a successor holds
     /// none, and refuses a live rename until the delete is carried again.
     pub connections_deleted: std::collections::HashMap<(NodeId, IncarnationId), ConnectionsDeletedReceipt>,
+    /// Per birth `(node id, incarnation)` of this admin's mesh: the births that answered `MeshLeft` to
+    /// the `node.mesh.leave` this mesh-primary carried to them, in their current cycle (what a rename
+    /// needs after the connections, node-name-update.md Precondition). Memory of this tenure, as the
+    /// connections receipt is.
+    pub meshes_left: std::collections::HashSet<(NodeId, IncarnationId)>,
 }
 
 /// A birth's `node.connections.deleted`, as its mesh-primary holds it for the rename precondition.
@@ -601,17 +606,81 @@ impl StatusAuthority {
         self.apply_from(peer, sender, req).await
     }
 
-    /// `node.name.update` (`UpdateName`) at this admin, a caller's (`cutover` `None`) or a replace
-    /// recipe's step in-process, which names its cutover's retained row
-    /// ([`crate::node_name_update::Cutover`]): the one validator and writer of a rename.
-    pub async fn update_name(&self, req: &StatusRequest, cutover: Option<&crate::node_name_update::Cutover>) -> StatusReply {
+    /// `node.name.update` (`UpdateName`) at this admin, a caller's or a replace recipe's step
+    /// in-process: the one validator and writer of a rename.
+    pub async fn update_name(&self, req: &StatusRequest) -> StatusReply {
         let StatusRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
         let me = self.held_name().await;
         // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
-        let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
+        let (deleted, left) = {
+            let declared = self.declared.lock().unwrap();
+            let birth = (node_id.clone(), incarnation.clone());
+            (declared.connections_deleted.get(&birth).cloned(), declared.meshes_left.contains(&birth))
+        };
         let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
         let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
-        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), first_ready, req, cutover).await
+        crate::node_name_update::update(&me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), left, first_ready, req).await
+    }
+
+    /// node.mesh.leave of the birth `(node_id, incarnation)` of this admin's mesh, its connections
+    /// deleted (node-mesh-leave.md; node-replace.md step 1): this mesh-primary sends `LeaveMesh` on
+    /// 0x1B to the exact birth and, on its `MeshLeft`, holds the birth's `node.mesh.left` for its
+    /// rename (node-name-update.md Precondition). The birth's own answer is returned whatever it is
+    /// (`BusyHoldingConnections` naming what it still holds, a stale incarnation); a refusal this
+    /// mesh-primary decides is its own reply, and nothing is sent; a call that ended in no reply is
+    /// `Err` naming how it ended. One `rdm.node_admin.node.mesh.update.via-mesh-primary` span.
+    pub async fn carry_mesh_leave(&self, node_id: &NodeId, incarnation: &IncarnationId, build_id: &str, attempt: u32, operation: &str) -> Result<StatusReply, String> {
+        use tracing::Instrument;
+        let view = self.topology.read().await.clone();
+        let me_name = self.held_name_in(&view);
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.mesh.update.via-mesh-primary",
+            node = %me_name, subject_id = %node_id, subject = tracing::field::Empty, operation = %operation,
+            left = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
+        );
+        let end = async {
+            let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
+                tracing::Span::current().record("detail", format!("{me_name}: node {node_id} is not in the mesh-primary's view; it cannot be commanded off its mesh through it").as_str());
+                return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+            };
+            tracing::Span::current().record("subject", subject.name.to_string().as_str());
+            if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
+                return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::ReceiverNotPrimary { needed: format!("the mesh-primary of {}", subject.mesh) }));
+            }
+            match subject.incarnation_id.clone() {
+                Some(held) if held != *incarnation => return Ok(rdm_core::reply::stale(held)),
+                Some(_) => {}
+                None => {
+                    tracing::Span::current().record("detail", format!("{me_name}: {} has no known birth; it cannot be commanded off its mesh", subject.name).as_str());
+                    return Ok(rdm_core::reply::status::rejected_not_authority(NotAuthority::SubjectUnknown));
+                }
+            }
+            let Some(configs) = self.configs.get() else {
+                return Ok(rdm_core::reply::status::not_ready(format!("{me_name} has no node-RPC client yet to carry node.mesh.leave to {}; nothing is sent", subject.name)));
+            };
+            let req = StatusRequest::LeaveMesh { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
+            let target = rdm_transport::NodeTarget::ExactNode(node_id.clone());
+            match configs.client().call::<rdm_core::status::Status>(&target, &req, &rdm_transport::CallOptions::default()).await.0 {
+                rdm_core::outcome::RpcOutcome::Reply(r) => {
+                    let reply = r.into_value();
+                    if let StatusReply::MeshLeft { left, .. } = &reply {
+                        tracing::Span::current().record("left", format!("{left:?}").as_str());
+                        self.declared.lock().unwrap().meshes_left.insert((node_id.clone(), incarnation.clone()));
+                    }
+                    Ok(reply)
+                }
+                other => {
+                    let why = format!("{me_name} carried node.mesh.leave to {} and the call ended {} ({}) with no reply: {other:?}", subject.name, other.name(), other.code().name());
+                    tracing::Span::current().record("detail", why.as_str());
+                    Err(why)
+                }
+            }
+        }
+        .instrument(span.clone())
+        .await;
+        span.record("outcome", match &end { Ok(r) => r.name(), Err(_) => "no-reply" });
+        span.in_scope(|| tracing::info!("node.mesh.leave carried by the mesh-primary"));
+        end
     }
 
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
@@ -649,7 +718,7 @@ impl StatusAuthority {
                     None => rdm_core::reply::status::not_ready(format!("{me_name} has not yet built its rounds; {} is refused", req.op())),
                 };
             }
-            StatusRequest::UpdateName { .. } => return self.update_name(req, None).await,
+            StatusRequest::UpdateName { .. } => return self.update_name(req).await,
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
                 return crate::node_properties::tags(&me_name, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), first_ready, req).await;
@@ -783,8 +852,13 @@ impl StatusAuthority {
     /// is held, as every applied state is.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
         let _operation = self.operation_effects.write().await;
-        // The cut of its last cycle is not its next cycle's: a started birth holds connections again.
-        self.declared.lock().unwrap().connections_deleted.remove(&(node.node_id.clone(), birth.clone()));
+        // The cut of its last cycle is not its next cycle's: a started birth holds connections again,
+        // and is on its mesh again.
+        {
+            let mut declared = self.declared.lock().unwrap();
+            declared.connections_deleted.remove(&(node.node_id.clone(), birth.clone()));
+            declared.meshes_left.remove(&(node.node_id.clone(), birth.clone()));
+        }
         let held = self.declared.lock().unwrap().node(&node.node_id, birth);
         let Some(state) = held else { return };
         let outcome = match self.status_storage.remove_node_declared(&node.node_id, birth).await {
