@@ -1190,6 +1190,18 @@ async fn forward_stream_dir(
     }
 }
 
+/// The reason the acceptor's 412 close carries, when it refused this connection at admission.
+fn refused_close(conn: &iroh::endpoint::Connection) -> Option<String> {
+    match conn.close_reason()? {
+        iroh::endpoint::ConnectionError::ApplicationClosed(frame)
+            if u32::try_from(frame.error_code.into_inner()).ok() == Some(CLOSE_CODE_REFUSED) =>
+        {
+            Some(String::from_utf8_lossy(&frame.reason).into_owned())
+        }
+        _ => None,
+    }
+}
+
 fn propagate_leg_close(
     err: &iroh::endpoint::ConnectionError,
     other_leg: &iroh::endpoint::Connection,
@@ -1517,6 +1529,10 @@ impl Dialer {
         let floor = rdm_core::cadence::staleness_floor();
         let verdict: AdmitVerdict = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
             Ok(Ok(Some(v))) => v,
+            // The acceptor's 412 close carries its refusal when the verdict itself did not arrive.
+            Ok(Ok(None)) | Ok(Err(_)) if refused_close(&quic_conn).is_some() => {
+                AdmitVerdict::Refused { reason: refused_close(&quic_conn).unwrap_or_default() }
+            }
             Ok(Ok(None)) => {
                 let reason = "acceptor closed control stream before verdict".to_string();
                 self.record_direct_failure(own, destination, &reason, caller_span).await;
@@ -1534,7 +1550,11 @@ impl Dialer {
         };
 
         match verdict {
+            // A refusal is a named end of this dial (node-connections-admit.md step 5): a Direct
+            // Failed row with the acceptor's reason, so this source's reconnect series exists and
+            // continues from it (connections.md §9.1, §9.3).
             AdmitVerdict::Refused { reason } => {
+                self.record_direct_failure(own, destination, &format!("refused: {reason}"), caller_span).await;
                 quic_conn.close(
                     iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
                     reason.as_bytes(),

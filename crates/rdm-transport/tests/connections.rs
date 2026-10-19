@@ -424,10 +424,11 @@ async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept()
         Some("expired member cert")
     );
 
-    // Flip admitter to allow -> open succeeds and reaches accept().
+    // Flip admitter to allow -> the dialer's reconnect series' next attempt (the refusal left its
+    // Direct Failed row, connections.md §9.1) is admitted and reaches accept().
     admitter.allow.store(true, Ordering::SeqCst);
     let accept_task = tokio::spawn(async move { acceptor_b.accept().await.unwrap() });
-    let conn_a = dialer_a.open(&peer_b.birth).await.unwrap();
+    let conn_a = peer_a.registry.probe_direct(&peer_b.birth, ALPN_A).await.unwrap();
     let conn_b = accept_task.await.unwrap();
     assert_eq!(conn_a.id(), conn_b.id());
 
