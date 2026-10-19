@@ -4854,7 +4854,8 @@ async fn proxy_run(cell: &str, shape: Shape) {
     events.push(json!({"event": "carried", "seeded": seeded.out, "call": carried.out, "t0_ns": t_car0, "t1_ns": t_car1}));
 
     // C13: the destination dials the source while the Proxy is proven: the accept wakes the source's own dial
-    // (R-CN1), and only that dial's Direct Connected owes the retirement. The retirement write is refused (the dial's own
+    // (R-CN1), unless the due time its Failed row sets came first (connections.md §9.4: either arms the one
+    // attempt), and only that dial's Direct Connected owes the retirement. The retirement write is refused (the dial's own
     // history append goes through): the Proxy stays the route; the retirement lands once the write can, and only
     // then is Direct effective.
     let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
@@ -4931,12 +4932,24 @@ async fn proxy_run(cell: &str, shape: Shape) {
         assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the retirement landed");
         let observed: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
         assert!(!observed.iter().any(|sp| sp["attributes"]["origin"] == "accept"), "the accept is no fact (R-CN1): {observed:?}");
-        let wakes: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
-        assert_eq!(wakes.iter().filter(|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("pending" | "coalesced"))).count(), 1, "the destination's accept woke one attempt of the source's own: {wakes:?}");
+        let mut wakes: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
+        wakes.sort_by_key(|sp| start_ns(sp));
         let dials: Vec<&Value> = named(spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str()).collect();
-        assert_eq!(dials.len(), 1, "one dial of the source's own: {dials:?}");
+        assert_eq!(dials.len(), 1, "one dial of the source's own, whatever armed it (connections.md §9.4: the accept never creates a second attempt): {dials:?}");
         assert_eq!(dials[0]["attributes"]["fact"], "connected", "{:?}", dials[0]);
-        let entry = observed.iter().find(|sp| sp["attributes"]["origin"] == "dial" && sp["attributes"]["state"] == "connected" && sp["attributes"]["entry"] == dials[0]["attributes"]["entry"]).unwrap_or_else(|| panic!("the dial's own Direct Connected entry: {observed:?}"));
+        // The dial's entry, whenever the dial ran: before the accept when its due time came first.
+        let facts: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str()).collect();
+        let entry = facts.iter().copied().find(|sp| sp["attributes"]["origin"] == "dial" && sp["attributes"]["state"] == "connected" && sp["attributes"]["entry"] == dials[0]["attributes"]["entry"]).unwrap_or_else(|| panic!("the dial's own Direct Connected entry: {facts:?}"));
+        // connections.md §9.4: the destination falling due under its Failed row and its accept arm the one
+        // reconciler, whichever comes first. An accept before the dial's Direct Connected wakes (or joins)
+        // the pending attempt; one after it finds the Direct already connected.
+        let first = wakes.first().copied().unwrap_or_else(|| panic!("the destination's accept reached the source: {wakes:?}"));
+        match first["attributes"]["outcome"].as_str() {
+            Some("pending" | "coalesced") => assert!(start_ns(first) <= start_ns(entry), "an accept that woke the attempt came before its Direct Connected: {first} {entry}"),
+            Some("direct-connected") => assert!(start_ns(entry) <= start_ns(first), "an accept that found the Direct connected came after the due attempt's entry: {first} {entry}"),
+            other => panic!("the destination's accept is the source's own recovery trigger, or finds its Direct connected: {other:?} {wakes:?}"),
+        }
+        assert!(wakes.iter().filter(|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("pending" | "coalesced"))).count() <= 1, "the accept armed at most one attempt: {wakes:?}");
         assert!(refused.iter().all(|sp| start_ns(sp) >= start_ns(entry)), "every retirement attempt follows the dial's entry");
         inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; the destination's accept wakes the source's own dial, whose Direct does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
         json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_retirement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
