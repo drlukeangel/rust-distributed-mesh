@@ -47,6 +47,8 @@ testkit-gossip = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "time"] }
+# The testkit's channel member: the one rig the app-channel cells and an embedding's use.
+rdm-test = { path = "../rdm-test" }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 ctor = "0.2"
 proptest = "1"

@@ -31,18 +31,30 @@ impl Member {
     /// of `fabric`, joined through `seeds` and declaring `types`, under a publisher identity minted
     /// for it. A member that cannot bind or join is a defect of the cell: it panics naming why.
     pub async fn join(fabric: &FabricId, mesh: &MeshId, name: &str, seeds: &[MemberAddr], types: &[&str]) -> Member {
-        let _ = (fabric, mesh, seeds, types, IncarnationId::mint, NodeId::mint);
-        panic!("{name}: rdm_test::channel_member::Member::join is not built yet")
+        let transport = iroh::endpoint::QuicTransportConfig::builder().build();
+        let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().expect("a loopback socket address"), vec![iroh_gossip::ALPN.to_vec()], transport)
+            .await
+            .unwrap_or_else(|e| panic!("{name}: the member's endpoint does not bind: {e}"));
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+        let author = PublisherId { node: name.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let mesh_name = name.split('.').next().unwrap_or(name);
+        let membership = Membership::join(&gossip, &endpoint, fabric, mesh_name, mesh, name, rdm_transport::clock::os_clock(), seeds.iter().map(|s| s.0.clone()).collect(), types)
+            .await
+            .unwrap_or_else(|e| panic!("{name}: the member does not join mesh {mesh_name} ({mesh}): {e}"));
+        membership.set_author(&author);
+        Member { membership, author, endpoint, gossip, _router: router }
     }
 
     /// Where this member is reached: its endpoint and the loopback address it bound.
     pub fn addr(&self) -> MemberAddr {
-        MemberAddr(iroh::EndpointAddr::new(self.endpoint.id()))
+        MemberAddr(iroh::EndpointAddr::new(self.endpoint.id()).with_ip_addr(self.bound_addr()))
     }
 
     /// The loopback address its endpoint bound.
     pub fn bound_addr(&self) -> std::net::SocketAddr {
-        unimplemented!("not built yet")
+        let port = self.endpoint.bound_sockets().into_iter().find(|a| a.is_ipv4()).expect("the member's endpoint binds an IPv4 socket").port();
+        ([127, 0, 0, 1], port).into()
     }
 
     /// Its endpoint's id: how RDM's own transport cells name it to the gossip protocol.

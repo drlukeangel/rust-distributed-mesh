@@ -3,92 +3,22 @@
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use iroh::protocol::Router;
-use rdm_core::{FabricId, IncarnationId, MeshId, NodeId, PublisherId};
+use rdm_core::{FabricId, IncarnationId, MeshId, NodeId};
+use rdm_test::channel_member::{Member, MemberAddr};
 use rdm_transport::gossip::{channel_id, Channel, ChannelError, Event};
-use rdm_transport::membership::Membership;
 use std::time::Duration;
 
 const TYPE: &str = "rafka.entity.channel-proof";
 
-struct Node {
-    ep: iroh::Endpoint,
-    gossip: iroh_gossip::net::Gossip,
-    membership: Membership,
-    author: PublisherId,
-    _router: Router,
-}
-
-async fn node(
-    fabric: &FabricId,
-    mesh: &MeshId,
-    name: &str,
-    seeds: Vec<iroh::EndpointAddr>,
-) -> Node {
-    node_declaring(fabric, mesh, name, seeds, &[TYPE]).await
-}
-
-async fn node_declaring(
-    fabric: &FabricId,
-    mesh: &MeshId,
-    name: &str,
-    seeds: Vec<iroh::EndpointAddr>,
-    types: &[&str],
-) -> Node {
-    let transport = iroh::endpoint::QuicTransportConfig::builder().build();
-    let ep = rdm_transport::endpoint::bind_exact(
-        iroh::SecretKey::generate(),
-        "127.0.0.1:0".parse().unwrap(),
-        vec![iroh_gossip::ALPN.to_vec()],
-        transport,
-    )
-    .await
-    .unwrap();
-    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
-    let router = Router::builder(ep.clone())
-        .accept(iroh_gossip::ALPN, gossip.clone())
-        .spawn();
-    let author = PublisherId {
-        node: name.into(),
-        node_id: NodeId::mint(),
-        incarnation: IncarnationId::mint(),
-    };
-    let membership = Membership::join(
-        &gossip,
-        &ep,
-        fabric,
-        "mesh1",
-        mesh,
-        name,
-        rdm_transport::clock::os_clock(),
-        seeds,
-        types,
-    )
-    .await
-    .unwrap();
-    membership.set_author(&author);
-    Node {
-        ep,
-        gossip,
-        membership,
-        author,
-        _router: router,
-    }
-}
-
-fn address(n: &Node) -> iroh::EndpointAddr {
-    let port =
-        n.ep.bound_sockets()
-            .into_iter()
-            .find(|a| a.is_ipv4())
-            .unwrap()
-            .port();
-    iroh::EndpointAddr::new(n.ep.id()).with_ip_addr(([127, 0, 0, 1], port).into())
+/// A member of the mesh declaring [`TYPE`]: the testkit's channel member, the rig an embedding's
+/// app-channel cells use too.
+async fn node(fabric: &FabricId, mesh: &MeshId, name: &str, seeds: Vec<MemberAddr>) -> Member {
+    Member::join(fabric, mesh, name, &seeds, &[TYPE]).await
 }
 
 async fn pair() -> (
-    Node,
-    Node,
+    Member,
+    Member,
     Channel,
     Channel,
     iroh_gossip::api::GossipSender,
@@ -97,13 +27,13 @@ async fn pair() -> (
     let fabric = FabricId::mint();
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, "mesh1.rpc.1", vec![]).await;
-    let b = node(&fabric, &mesh, "mesh1.rpc.2", vec![address(&a)]).await;
+    let b = node(&fabric, &mesh, "mesh1.rpc.2", vec![a.addr()]).await;
     let ca = a.membership.join_channel(TYPE).await.unwrap();
     let cb = b.membership.join_channel(TYPE).await.unwrap();
     // Neighbour readiness is a protocol event, not an elapsed-time assumption.
     let mut raw = a
-        .gossip
-        .subscribe(channel_id(&fabric, TYPE), vec![b.ep.id()])
+        .gossip()
+        .subscribe(channel_id(&fabric, TYPE), vec![b.endpoint_id()])
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), raw.joined())
@@ -111,8 +41,8 @@ async fn pair() -> (
         .expect("the app-channel neighbour joins")
         .unwrap();
     let mut other = b
-        .gossip
-        .subscribe(channel_id(&fabric, TYPE), vec![a.ep.id()])
+        .gossip()
+        .subscribe(channel_id(&fabric, TYPE), vec![a.endpoint_id()])
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), other.joined())
@@ -139,7 +69,7 @@ async fn receive(channel: &mut Channel) -> rdm_transport::gossip::Received {
         .expect("the channel remains open")
 }
 
-fn encoded(n: &Node, kind: &str, id: &str, subject: &str, data: Vec<u8>, reverse: bool) -> Vec<u8> {
+fn encoded(n: &Member, kind: &str, id: &str, subject: &str, data: Vec<u8>, reverse: bool) -> Vec<u8> {
     let birth = n.membership.author_birth().unwrap();
     let mut attributes = vec![
         ("specversion".to_string(), "1.0".to_string()),
@@ -572,14 +502,14 @@ async fn a_learned_type_is_receivable_but_its_undeclared_author_cannot_publish_i
     );
 }
 
-fn member_digest(n: &Node) -> rdm_core::MeshDigest {
+fn member_digest(n: &Member) -> rdm_core::MeshDigest {
     rdm_core::MeshDigest {
         fabric_id: n.membership.fabric_id().clone(),
         node: rdm_core::MeshNode {
             node_id: n.author.node_id.clone(),
             name: n.author.node.parse().unwrap(),
-            endpoint_id: rdm_core::EndpointId(n.ep.id().to_string()),
-            transport_addr: address(n).ip_addrs().next().copied().unwrap(),
+            endpoint_id: rdm_core::EndpointId(n.endpoint_id().to_string()),
+            transport_addr: n.bound_addr(),
             incarnation: n.author.incarnation.clone(),
             supersedes: None,
             runtime: None,
@@ -606,11 +536,11 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     let fabric = FabricId::mint();
     let mesh = MeshId::mint();
     let a = node(&fabric, &mesh, "mesh1.admin.1", vec![]).await;
-    let b = node(&fabric, &mesh, "mesh1.admin.2", vec![address(&a)]).await;
+    let b = node(&fabric, &mesh, "mesh1.admin.2", vec![a.addr()]).await;
     while a.membership.neighbours() < 1 || b.membership.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
-    let c = node_declaring(&fabric, &mesh, "mesh1.rpc.1", vec![address(&b)], &[LATER]).await;
+    let c = Member::join(&fabric, &mesh, "mesh1.rpc.1", &[b.addr()], &[LATER]).await;
     while b.membership.neighbours() < 2 || c.membership.neighbours() < 1 {
         tokio::task::yield_now().await;
     }
@@ -628,24 +558,24 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     // bootstrap peer, before A joins LATER through B so B's HyParView active_view
     // already holds C when A's Join arrives at B.
     let mut member = c
-        .gossip
-        .subscribe(channel_id(&fabric, LATER), vec![b.ep.id()])
+        .gossip()
+        .subscribe(channel_id(&fabric, LATER), vec![b.endpoint_id()])
         .await
         .unwrap();
     let mut middle = b
-        .gossip
+        .gossip()
         .subscribe(channel_id(&fabric, LATER), vec![])
         .await
         .unwrap();
     member.joined().await.unwrap();
-    while !member.neighbors().any(|p| p == b.ep.id()) {
+    while !member.neighbors().any(|p| p == b.endpoint_id()) {
         member
             .next()
             .await
             .expect("the publisher stays subscribed")
             .unwrap();
     }
-    while !middle.neighbors().any(|p| p == c.ep.id()) {
+    while !middle.neighbors().any(|p| p == c.endpoint_id()) {
         middle
             .next()
             .await
@@ -663,7 +593,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         .await
         .unwrap();
     let mut observed = a
-        .gossip
+        .gossip()
         .subscribe(channel_id(&fabric, LATER), vec![])
         .await
         .unwrap();
@@ -671,8 +601,8 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         .joined()
         .await
         .expect("the new type joins through its reporting holder, even with no boot seeds");
-    while !middle.neighbors().any(|p| p == a.ep.id())
-        || !middle.neighbors().any(|p| p == c.ep.id())
+    while !middle.neighbors().any(|p| p == a.endpoint_id())
+        || !middle.neighbors().any(|p| p == c.endpoint_id())
     {
         middle
             .next()
@@ -680,7 +610,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the middle holder stays subscribed")
             .unwrap();
     }
-    while !member.neighbors().any(|p| p == a.ep.id()) {
+    while !member.neighbors().any(|p| p == a.endpoint_id()) {
         member
             .next()
             .await
@@ -696,14 +626,14 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     drop(receiver);
     drop(observed);
     a.membership.park().await;
-    while middle.neighbors().any(|p| p == a.ep.id()) {
+    while middle.neighbors().any(|p| p == a.endpoint_id()) {
         middle
             .next()
             .await
             .expect("the middle holder stays subscribed")
             .unwrap();
     }
-    while member.neighbors().any(|p| p == a.ep.id()) {
+    while member.neighbors().any(|p| p == a.endpoint_id()) {
         member
             .next()
             .await
@@ -715,7 +645,7 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
     }
     a.membership.unpark().await;
     let mut rejoined = a
-        .gossip
+        .gossip()
         .subscribe(channel_id(&fabric, LATER), vec![])
         .await
         .unwrap();
@@ -723,14 +653,14 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
         .joined()
         .await
         .expect("the held type rejoins its reporting holder");
-    while !middle.neighbors().any(|p| p == a.ep.id()) {
+    while !middle.neighbors().any(|p| p == a.endpoint_id()) {
         middle
             .next()
             .await
             .expect("the middle holder stays subscribed")
             .unwrap();
     }
-    while !member.neighbors().any(|p| p == a.ep.id()) {
+    while !member.neighbors().any(|p| p == a.endpoint_id()) {
         member
             .next()
             .await

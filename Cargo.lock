@@ -3245,6 +3245,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rdm-core",
+ "rdm-test",
  "serde",
  "serde_json",
  "sysinfo",
