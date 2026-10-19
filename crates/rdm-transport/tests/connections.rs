@@ -435,6 +435,55 @@ async fn an_inbound_connection_on_a_registered_alpn_passes_admit_before_accept()
     peer_b.shutdown().await;
 }
 
+/// CONTRACT (node-connections-admit.md step 5, connections.md §9.1, §9.3; decided 2026-10-19): a
+/// refusal is the acceptor's `Refused` fact and, on the dialer, a Direct `Failed` row with the named
+/// reason, so the dialer's reconnect series exists and continues: a new call dials nothing over the
+/// standing `Failed` row (`NoActiveRoute`), each refused attempt of the series is the next ordinal,
+/// and the attempt that is admitted is Direct `Connected`.
+#[tokio::test]
+async fn a_refusal_is_a_refused_fact_on_the_acceptor_and_a_failed_row_on_the_dialer() {
+    let dialer = TestPeer::bind("mesh1.rpc.1", &[alpn(ALPN_A)]).await;
+    let acceptor = TestPeer::bind("mesh1.rpc.2", &[alpn(ALPN_A)]).await;
+    dialer.know(&acceptor);
+    acceptor.know(&dialer);
+    let admitter = Arc::new(PolicyAdmitter { allow: AtomicBool::new(false), calls: AtomicUsize::new(0) });
+    acceptor.registry.set_admitter(admitter.clone());
+    let (opener, _) = dialer.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut accepts) = acceptor.registry.connections(ALPN_A).unwrap().split();
+
+    let refused = ConnectError::Refused { reason: "expired member cert".into() };
+    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), refused);
+    let facts: Vec<_> = acceptor.sink.history().into_iter().filter(|r| r.state == ConnectionState::Refused).collect();
+    assert_eq!(facts.len(), 1, "{facts:#?}");
+    assert_eq!((facts[0].source.name.clone(), facts[0].reason.as_deref()), (dialer.birth.name.clone(), Some("expired member cert")));
+
+    let direct_rows = |peer: &TestPeer| -> Vec<NodeConnection> {
+        peer.sink.history().into_iter().filter(|r| r.kind == CoreConnectionKind::Direct && r.destination.name == acceptor.birth.name && r.alpn == ALPN_A).collect()
+    };
+    let rows = direct_rows(&dialer);
+    assert_eq!(rows.len(), 1, "the dialer writes one Direct row for the refused dial: {rows:#?}");
+    assert_eq!(rows[0].state, ConnectionState::Failed);
+    assert_eq!(rows[0].reason.as_deref(), Some("refused: expired member cert"), "the acceptor's named reason");
+    assert_eq!(rows[0].recovery.map(|r| r.attempt_ordinal), Some(1));
+    assert_eq!(rows[0].destination.incarnation.as_ref(), Some(&acceptor.birth.incarnation));
+
+    assert_eq!(opener.open(&acceptor.birth).await.unwrap_err(), ConnectError::NoActiveRoute, "the series owns the retry; a new call dials nothing over it");
+    assert_eq!(admitter.calls.load(Ordering::SeqCst), 1);
+
+    assert_eq!(dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await.unwrap_err(), refused, "the series' next attempt is refused again");
+    let rows = direct_rows(&dialer);
+    assert_eq!(rows.iter().map(|r| (r.state, r.recovery.map(|x| x.attempt_ordinal))).collect::<Vec<_>>(), vec![(ConnectionState::Failed, Some(1)), (ConnectionState::Failed, Some(2))]);
+    assert_eq!(rows[0].recovery.map(|r| r.recovery_round), rows[1].recovery.map(|r| r.recovery_round), "one recovery round");
+
+    admitter.allow.store(true, Ordering::SeqCst);
+    let accepted = tokio::spawn(async move { accepts.accept().await.unwrap() });
+    let conn = dialer.registry.probe_direct(&acceptor.birth, ALPN_A).await.unwrap();
+    assert_eq!(accepted.await.unwrap().id(), conn.id());
+    assert_eq!(direct_rows(&dialer).last().map(|r| r.state), Some(ConnectionState::Connected), "the admitted attempt is Direct Connected");
+    dialer.shutdown().await;
+    acceptor.shutdown().await;
+}
+
 /// A dialer that holds a raw QUIC connection on a registered ALPN and presents what the cell says.
 struct RawDialer {
     ep: iroh::Endpoint,

@@ -24,7 +24,7 @@ use rdm_node::connection_reconnect::{
 use rdm_node::connections_writer::ConnectionsWriter;
 use rdm_node::storage::{ConnectionsStorage, FileConnectionsStorage};
 use rdm_node::store_root::StoreRoot;
-use rdm_transport::connections::{Alpn, Birth, ConnectionKind, ConnectionsRegistry};
+use rdm_transport::connections::{Admitter, Alpn, Birth, ConnectError, ConnectionKind, ConnectionsRegistry};
 use rdm_transport::{ResolvedNode, StaticResolver};
 
 const ALPN_A: &[u8] = b"test-reconnect-a/1";
@@ -871,4 +871,50 @@ async fn alpn_interference_restores_a_while_b_keeps_its_proxy_from_the_shared_st
     carrier.shutdown().await;
     dst.shutdown().await;
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Admits while its gate is open; otherwise refuses `expired` by name.
+struct GateAdmitter(Arc<std::sync::atomic::AtomicBool>);
+
+impl Admitter for GateAdmitter {
+    fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) { Ok((0, "no-certs")) } else { Err("expired".into()) }
+    }
+}
+
+/// CONTRACT (node-connections-admit.md step 5, connections.md §9.1, §9.5; decided 2026-10-19): a
+/// refused dial is a Direct `Failed` row, so the source's reconnect series exists; a refused attempt
+/// of the series continues it at the next ordinal (never spent as `no-fact`), and the attempt the
+/// acceptor admits ends it, with no command from anyone.
+#[tokio::test]
+async fn a_refused_dial_starts_a_series_a_refused_attempt_continues_and_an_admitted_one_ends() {
+    let dir = temp_data_dir("refused-series");
+    let alpns = [forwardable_alpn(ALPN_A)];
+    let gw = DurableNode::bind_fresh(&dir, "mesh1.gateway.1", &alpns).await;
+    let brk = DurableNode::bind_fresh(&dir, "mesh1.broker.1", &alpns).await;
+    gw.know(&brk);
+    brk.know(&gw);
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    brk.registry.set_admitter(Arc::new(GateAdmitter(open.clone())));
+    let (opener, _) = gw.registry.connections(ALPN_A).unwrap().split();
+    let (_, mut accepts) = brk.registry.connections(ALPN_A).unwrap().split();
+
+    assert_eq!(opener.open(&brk.birth).await.unwrap_err(), ConnectError::Refused { reason: "expired".into() });
+    let obs = obligations(&gw.writer);
+    assert_eq!(obs.len(), 1, "the refused dial starts the source's series: {obs:?}");
+    assert_eq!((obs[0].destination.name.clone(), obs[0].alpn.as_slice(), obs[0].recovery.attempt_ordinal), (brk.birth.name.clone(), ALPN_A, 1));
+
+    let dial = registry_recovery_dial(&gw.registry, None);
+    run_due_at(&gw.writer, &dial, obs[0].due_ms).await;
+    let obs = obligations(&gw.writer);
+    assert_eq!(obs.len(), 1, "a refused attempt continues the series, never spent as no-fact: {obs:?}");
+    assert_eq!(obs[0].recovery.attempt_ordinal, 2);
+
+    open.store(true, std::sync::atomic::Ordering::SeqCst);
+    let accepted = tokio::spawn(async move { accepts.accept().await.unwrap() });
+    run_due_at(&gw.writer, &dial, obs[0].due_ms).await;
+    accepted.await.unwrap();
+    assert!(obligations(&gw.writer).is_empty(), "the admitted attempt is Direct Connected and ends the series");
+    gw.shutdown().await;
+    brk.shutdown().await;
 }
