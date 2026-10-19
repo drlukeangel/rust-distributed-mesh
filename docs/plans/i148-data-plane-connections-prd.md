@@ -1,6 +1,6 @@
 # i148 — the data plane through RDM's `Connections`: one endpoint, RDM owns every ALPN
 
-**Status:** approved 2026-10-17 (Luke: "yes", after the i147 e5 shape). Not started. **Record:** this
+**Status:** approved 2026-10-17 (Luke: "yes", after the i147 e5 shape). Landed: e1 `f2f4bc8d`, e2 `dd60d1fb`, e3 `d67e987f`, the demo acceptance `4c324354` (re-run green at `f536f3ae` and in release run `b7548453`); open: i141 e12 (rafka-v2). **Record:** this
 file; every state or remaining-work update goes in an epic's row below. **Owner:** the i143 lead;
 Codex in lane e7s3, after i147 e5 (the rafka lead stays on i144). **Sibling of i147 e5:** e5 is the
 gossip half of "Rafka links iroh only through RDM"; this is the connections half. **Not i145:**
