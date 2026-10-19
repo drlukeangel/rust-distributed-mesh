@@ -695,8 +695,22 @@ async fn a_later_held_type_joins_through_the_peer_that_reported_it() {
             .expect("the publisher stays subscribed")
             .unwrap();
     }
+    // Q72 = b: after a rejoin, gossip is best-effort and an app event is the app's to order by
+    // its own `sequence`. B's forwarded copy of event 1, sent before A left, may arrive on A's
+    // new subscription; the app skips any event at or below the sequence it already applied.
     let mut receiver = a.membership.join_channel(LATER).await.unwrap();
     publisher.publish(event(2, vec![8])).await.unwrap();
-    assert_eq!(receive(&mut receiver).await.data.as_ref(), &[8]);
+    let next = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let got = receiver.recv().await.expect("the channel remains open");
+            if got.sequence.is_some_and(|sequence| sequence > 1) {
+                return got;
+            }
+        }
+    })
+    .await
+    .expect("event 2 arrives within the cell's bound");
+    assert_eq!(next.sequence, Some(2));
+    assert_eq!(next.data.as_ref(), &[8]);
 }
 
