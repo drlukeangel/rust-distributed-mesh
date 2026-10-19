@@ -129,7 +129,11 @@ async fn gossip_node() -> GossipNode {
 
 /// CONTRACT (gossip.md §3.3): a Day-0 node-admin (mesh1.admin.1, mesh1's primary) and mesh1.admin.2,
 /// launched by it, both ready. mesh1.admin.2 holds mesh1's projection from mesh1.admin.1's publications
-/// on mesh1's channel, and the Digest of the primary its seat record names. A delta of mesh1 under
+/// on mesh1's channel, among them the publication that carries its own ReadyForTraffic, and the Digest
+/// of the primary its seat record names. The gap is forged only then: a top-up read answered older than
+/// a full this node installed on another channel is refused (R-RX3), so a gap forged before the
+/// primary's Ready publication can be topped up from a read the backbone's full has overtaken (gate
+/// gates-e4s2-ca0d0046). A delta of mesh1 under
 /// mesh1.admin.1's revision whose base is not the version mesh1.admin.2 holds reaches it on that channel
 /// (`via-version-gap`): mesh1.admin.2 marks the source desynchronized and tops up from its own Mesh's
 /// primary (`rdm.mesh.entry.update.via-top-up`, served by mesh1.admin.1). Afterwards it holds no
@@ -189,6 +193,19 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let channel = Membership::join(&probe.gossip, &probe.ep, &root_digest.fabric_id, "mesh1", &mesh_id, "mesh1.rpc.9", rdm_transport::clock::os_clock(), vec![admin_addr], &[]).await.expect("the cell joins mesh1's channel");
         crate::declare_gossip_probe(&channel);
         until("the cell's endpoint to hold the primary's replayed full", WRONG, || channel.held_source_version("mesh1").is_some_and(|(p, _)| p == root_publisher)).await;
+        // mesh1.admin.2's own ReadyForTraffic moves the primary's projection, which the primary then
+        // publishes on the backbone and on mesh1's channel. A top-up read older than a full installed on
+        // another channel is refused, so the gap waits for mesh1.admin.2 to hold, on mesh1's channel,
+        // the publication that carries its Ready: the cell's endpoint shows which version that is.
+        until("the primary to publish mesh1.admin.2's ReadyForTraffic on mesh1's channel", WRONG, || {
+            channel.projected_member_at(&admin_digest.node.endpoint_id.0).is_some_and(|d| d.status == MemberStatus::ReadyForTraffic)
+        })
+        .await;
+        let (_, ready_at) = channel.held_source_version("mesh1").expect("the cell's endpoint holds mesh1");
+        until("mesh1.admin.2 to hold the primary's publication of its ReadyForTraffic", WRONG, || {
+            admin.membership.held_source_version("mesh1").is_some_and(|(p, v)| p == root_publisher && v >= ready_at)
+        })
+        .await;
 
         // A delta of mesh1 under the primary's epoch whose base is not what mesh1.admin.2 holds.
         let (_, held) = admin.membership.held_source_version("mesh1").expect("mesh1.admin.2 holds mesh1");
