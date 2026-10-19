@@ -29,8 +29,8 @@ pub const RUNTIME_IMAGE: &str = "rafka-node-runtime:empty";
 pub trait ContainerEstate {
     /// The Fabric's id: its Docker network is `rafka-<fabric_id>`.
     fn fabric_id(&self) -> &str;
-    /// The running container of `node`.
-    fn container_of(&self, node: &str) -> Option<String>;
+    /// The running container of `node`'s current birth, by the container id its RuntimeFact names.
+    fn container_of(&self, node: &str) -> impl std::future::Future<Output = Option<String>> + Send;
     /// Every running container of the Fabric as (node `path.name`, Docker id).
     fn live_containers(&self) -> Vec<(String, String)>;
 }
@@ -66,8 +66,8 @@ pub struct Unplugged {
 }
 
 /// Disconnect the running container of `node` from its Fabric's network.
-pub fn unplug(estate: &impl ContainerEstate, node: &str) -> Result<Unplugged, String> {
-    let id = estate.container_of(node).ok_or_else(|| format!("{node}: no running container of fabric {}", estate.fabric_id()))?;
+pub async fn unplug(estate: &impl ContainerEstate, node: &str) -> Result<Unplugged, String> {
+    let id = estate.container_of(node).await.ok_or_else(|| format!("{node}: no running container of fabric {}", estate.fabric_id()))?;
     let network = network_of(estate);
     let ip = docker(&["inspect", "--format", &format!("{{{{(index .NetworkSettings.Networks \"{network}\").IPAddress}}}}"), &id])?;
     if ip.is_empty() {
@@ -218,21 +218,21 @@ pub struct Silenced {
 /// Silence `nodes` against the rest of the estate. `fabric_primary` is the node-admin holding the
 /// fabric-primary seat: a set that holds it is refused before anything is touched. A member that
 /// cannot be silenced leaves the ones already silenced restored, and the error says which.
-pub fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
-    let silenced = prepare_silence(estate, nodes, fabric_primary)?;
+pub async fn silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
+    let silenced = prepare_silence(estate, nodes, fabric_primary).await?;
     silenced.install()?;
     Ok(silenced)
 }
 
 /// Resolve the exact containers and addresses before the timed silence starts; install nothing.
-pub fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
+pub async fn prepare_silence(estate: &impl ContainerEstate, nodes: &[String], fabric_primary: &str) -> Result<Silenced, String> {
     if nodes.iter().any(|n| n == fabric_primary) {
         return Err(format!("refused: the silenced set {nodes:?} holds the fabric-primary node-admin {fabric_primary}"));
     }
     let gateway = gateway_of(estate)?;
     let mut members = Vec::new();
     for n in nodes {
-        let id = estate.container_of(n).ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
+        let id = estate.container_of(n).await.ok_or_else(|| format!("{n}: no running container of fabric {}", estate.fabric_id()))?;
         members.push(Member { node: n.clone(), ip: address_of(estate, &id)?, id });
     }
     let mut unheard = Vec::new();
@@ -516,8 +516,8 @@ pub struct ExactContainer {
 
 impl ExactContainer {
     /// The container the daemon holds for `node` of the estate's Fabric right now.
-    pub fn of(estate: &impl ContainerEstate, node: &str) -> Result<Self, Refusal> {
-        let id = estate.container_of(node).ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node} of fabric {}", estate.fabric_id()) })?;
+    pub async fn of(estate: &impl ContainerEstate, node: &str) -> Result<Self, Refusal> {
+        let id = estate.container_of(node).await.ok_or_else(|| Refusal::NoSuchContainer { id: format!("{node} of fabric {}", estate.fabric_id()) })?;
         let i = inspect(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         let (fabric_id, node) = labels_of(&id).map_err(|reason| Refusal::Unreadable { id: id.clone(), reason })?;
         Ok(Self { id, fabric_id, node, started_at: i.started_at, pid: i.pid })

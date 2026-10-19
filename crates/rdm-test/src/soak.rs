@@ -1298,7 +1298,7 @@ impl Driver {
     /// runtime exits).
     async fn kill(&mut self, node: &str, entry: &mut Value) -> Result<(), Broken> {
         if self.estate.owner.provider == "container" {
-            let u = container_faults::unplug(&self.estate, node).map_err(|e| broken("fault-applies", e))?;
+            let u = container_faults::unplug(&self.estate, node).await.map_err(|e| broken("fault-applies", e))?;
             entry["unplugged"] = json!(u.id);
             return Ok(());
         }
@@ -1340,7 +1340,7 @@ impl Driver {
         let release: Box<dyn Fn() -> Result<Value, String> + Send>;
         let mut hold_rt: Option<ExactRuntime> = None;
         if container {
-            let id = self.estate.container_of(&path).ok_or_else(|| broken("fault-names-an-exact-runtime", format!("{path}: no running container")))?;
+            let id = self.estate.container_of(&path).await.ok_or_else(|| broken("fault-names-an-exact-runtime", format!("{path}: no running container")))?;
             container_faults::pause(&id).map_err(|e| broken("fault-applies", e))?;
             ev.primitive = Some(Primitive { armed: true, ack: json!({"paused": id}) });
             let id2 = id.clone();
@@ -1458,7 +1458,7 @@ impl Driver {
         if self.estate.owner.provider != "container" {
             return self.cut_udp(mesh, nodes, members, entry).await;
         }
-        let sil = container_faults::silence(&self.estate, &members, &fp).map_err(|e| broken("fault-applies", e))?;
+        let sil = container_faults::silence(&self.estate, &members, &fp).await.map_err(|e| broken("fault-applies", e))?;
         if !sil.active().map_err(|e| broken("fault-is-observed", e))? {
             return Err(broken("fault-is-observed", format!("{mesh}: the silence chain is not installed on every member")));
         }

@@ -505,16 +505,21 @@ impl Estate {
     /// admin executed its creation, so the entry admin's view is read first and then every other
     /// ready node-admin's, each as that admin's own `node.get`.
     pub async fn data_dir(&self, node: &str) -> String {
+        self.advertised_data_dir(node).await.unwrap_or_else(|| panic!("no live admin advertises {node}'s data dir"))
+    }
+
+    /// [`Self::data_dir`], or `None` when no live admin advertises it.
+    pub async fn advertised_data_dir(&self, node: &str) -> Option<String> {
         let entry = self.entry().await;
         let mut admins = vec![entry.clone()];
         admins.extend(self.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic && n.name != entry).map(|n| n.name));
         for admin in admins {
             let Some(views) = self.node_views_at(&admin).await else { continue };
             if let Some(dir) = views.into_iter().find(|n| n.name.to_string() == node).and_then(|n| n.data_dir) {
-                return dir;
+                return Some(dir);
             }
         }
-        panic!("no live admin advertises {node}'s data dir")
+        None
     }
 
     /// The attempt the accepted Build `build_id` has reached, as `build.get` reads it.

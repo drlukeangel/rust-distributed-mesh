@@ -58,9 +58,9 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
 
     let before = estate.node_value(NODE).await;
     assert_eq!(before["provider"], "container", "{before}");
-    let killed = estate.container_of(NODE).expect("the rpc node runs in a container labelled with its fabric and path");
+    let killed = estate.container_of(NODE).await.expect("the rpc node runs in a container labelled with its fabric and path");
     assert_eq!(killed.len(), 64, "the immutable container id: {killed}");
-    let survivor = estate.container_of("mesh1.rpc.2").expect("the other rpc node's container");
+    let survivor = estate.container_of("mesh1.rpc.2").await.expect("the other rpc node's container");
 
     // The real kill: SIGKILL to the container's init, from outside every admin.
     let out = Command::new("docker").args(["kill", &killed]).output().unwrap();
@@ -74,14 +74,14 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
             (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
         })
         .await;
-    let recreated = estate.container_of(NODE).expect("the re-created node runs in a container");
+    let recreated = estate.container_of(NODE).await.expect("the re-created node runs in a container");
     assert_ne!(recreated, killed, "a new container, never the killed one restarted");
     assert_ne!(after["node_id"], before["node_id"], "node-recovery.md: recovery creates a new node id at the retained path");
     // The provider's inspection of the killed container's exact id is the proof (exit 137, SIGKILL); the
     // replace that follows stops the exited container, keeps its logs beside the node's data and removes it,
     // so the proof is read from the drift attempt's span, never from a container the replace has removed.
     assert_eq!(docker_state(&killed), "", "the replace removed the killed container after the provider's proof");
-    assert_eq!(estate.container_of("mesh1.rpc.2").as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
+    assert_eq!(estate.container_of("mesh1.rpc.2").await.as_deref(), Some(survivor.as_str()), "the other node's container was untouched");
     assert_eq!(after["provider"], "container");
 
     // Evidence: the proof opened the next attempt of the same Build, and that attempt re-created

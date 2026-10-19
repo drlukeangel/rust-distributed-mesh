@@ -317,7 +317,10 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     assert_eq!(control["direct"]["reply"]["executing_node"], target_id.as_str(), "{control}");
 
     // The provider's view of every container before the cut.
-    let containers_before: BTreeMap<String, String> = isolated_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_else(|| panic!("{n}: no running container")))).collect();
+    let mut containers_before: BTreeMap<String, String> = BTreeMap::new();
+    for n in &isolated_names {
+        containers_before.insert(n.clone(), estate.container_of(n).await.unwrap_or_else(|| panic!("{n}: no running container")));
+    }
     let network = container_faults::network_of(&estate);
 
     // The cut: every container of the mesh silenced against the rest of the estate, held. Each keeps
@@ -330,7 +333,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let hold = Duration::from_millis(u64::try_from(floor.as_millis()).expect("the declared floor fits milliseconds").saturating_mul(hold_floors));
     let planned_silence = floor + Duration::from_secs(20);
     assert!(planned_silence < hold, "planned silence {planned_silence:?} must be under the declared hold {hold_floors} × {floor:?} = {hold:?}");
-    let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).expect("the exact containers and addresses are resolved before the cut");
+    let silenced = container_faults::prepare_silence(&estate, &isolated_names, &fabric_primary).await.expect("the exact containers and addresses are resolved before the cut");
     let silence_started = std::time::Instant::now();
     let release_at = silence_started + planned_silence;
     silenced.install().expect("the isolated mesh's containers are silenced");
@@ -499,7 +502,10 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
         exact_runtime_alive: provider_alive_during,
         replaced_during: inc_during != target_inc || attempt_during != attempt_before || s(&fabric_during["build_id"]) != fabric_build,
     });
-    let containers_after: BTreeMap<String, String> = isolated_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_default())).collect();
+    let mut containers_after: BTreeMap<String, String> = BTreeMap::new();
+    for n in &isolated_names {
+        containers_after.insert(n.clone(), estate.container_of(n).await.unwrap_or_default());
+    }
     let mut rec = Reconciliation::default();
     rec.check("every isolated node runs in the container it ran in before the cut", containers_after == containers_before, format!("before {containers_before:?}, after {containers_after:?}"));
     rec.check(
@@ -669,7 +675,10 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
 
     // The mesh to lose: its containers, by exact id, before the fault.
     let lost_names: Vec<String> = all.iter().filter(|n| n.starts_with(&format!("{lost_mesh}."))).cloned().collect();
-    let containers_before: BTreeMap<String, String> = lost_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_else(|| panic!("{n}: no running container")))).collect();
+    let mut containers_before: BTreeMap<String, String> = BTreeMap::new();
+    for n in &lost_names {
+        containers_before.insert(n.clone(), estate.container_of(n).await.unwrap_or_else(|| panic!("{n}: no running container")));
+    }
     let lost_admins: Vec<String> = lost_names.iter().filter(|n| n.contains(".admin.")).cloned().collect();
     let lost_births: BTreeMap<String, String> = births(&before).into_iter().filter(|(n, _)| lost_admins.contains(n)).collect();
     let lost_mesh_rpc_births: BTreeSet<(String, String)> = births(&before).into_iter().filter(|(n, _)| lost_names.contains(n) && !lost_admins.contains(n)).collect();
@@ -722,7 +731,10 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     assert_eq!(after.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])), Some(holder.clone()), "the seat stayed in {kept_mesh}");
     let kept_after: BTreeSet<(String, String)> = births(&after).into_iter().filter(|(n, _)| n.starts_with(&format!("{kept_mesh}."))).collect();
     assert_eq!(kept_after, kept_births, "the surviving mesh's births were never re-created");
-    let containers_after: BTreeMap<String, String> = lost_names.iter().map(|n| (n.clone(), estate.container_of(n).unwrap_or_default())).collect();
+    let mut containers_after: BTreeMap<String, String> = BTreeMap::new();
+    for n in &lost_names {
+        containers_after.insert(n.clone(), estate.container_of(n).await.unwrap_or_default());
+    }
     for n in &lost_admins {
         assert!(!containers_after[n].is_empty() && containers_after[n] != containers_before[n], "{n}: runs in a new container ({} -> {})", containers_before[n], containers_after[n]);
     }
@@ -837,7 +849,7 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
     let mut containers_before: BTreeMap<String, (String, Inspected)> = BTreeMap::new();
     for n in &before {
         let name = s(&n["name"]);
-        let id = estate.container_of(&name).unwrap_or_else(|| panic!("{name}: no running container"));
+        let id = estate.container_of(&name).await.unwrap_or_else(|| panic!("{name}: no running container"));
         let ins = container_faults::inspect(&id).unwrap_or_else(|e| panic!("{name}: {e}"));
         containers_before.insert(name, (id, ins));
     }
@@ -940,7 +952,7 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
     for (name, (id, was)) in containers_before.iter().filter(|(n, _)| n.starts_with(&format!("{survivor_mesh}."))) {
         let now = container_faults::inspect(id).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert!(now.running && now.pid == was.pid && now.started_at == was.started_at && now.restart_count == 0, "{name}: the surviving container is the one it was: {was:?} -> {now:?}");
-        assert_eq!(estate.container_of(name).as_deref(), Some(id.as_str()), "{name} still runs in container {id}");
+        assert_eq!(estate.container_of(name).await.as_deref(), Some(id.as_str()), "{name} still runs in container {id}");
         survivors_inspected.insert(name.clone(), json!({"id": id, "pid": now.pid, "started_at": now.started_at}));
     }
 
@@ -1097,7 +1109,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let survivors_before: BTreeSet<String> = nodes0.iter().map(|n| s(&n["node_id"])).collect();
 
     // ---- Forged identities: refused by name, nothing sent.
-    let hold_c = ExactContainer::of(&estate, &hold).expect("the held node's container");
+    let hold_c = ExactContainer::of(&estate, &hold).await.expect("the held node's container");
     let restarted = hold_c.with_started_at("2001-01-01T00:00:00Z").apply(Fault::Pause);
     assert!(matches!(restarted, Err(Refusal::NotThisContainer { .. })), "a container under another start time is refused: {restarted:?}");
     let other_node = hold_c.with_node(&kill).apply(Fault::Kill);
@@ -1159,13 +1171,13 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let mut rec = Reconciliation::default();
     rec.check("the value stored before the pause is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-fault"}), kept.to_string());
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == hold_n["incarnation_id"] && kept["reply"]["executing_node"] == hold_n["node_id"], kept.to_string());
-    rec.check("the exact container is the one that was paused (same id, same start)", ExactContainer::of(&estate, &hold).as_ref() == Ok(&hold_c), format!("{hold_c:?}"));
+    rec.check("the exact container is the one that was paused (same id, same start)", ExactContainer::of(&estate, &hold).await.as_ref() == Ok(&hold_c), format!("{hold_c:?}"));
     rec.check("the Build gained no attempt", estate.attempt_of_build(&build_id).await == attempt_before, format!("attempt {attempt_before}"));
     rec.check("the seats equal the public candidates' after the release", seats_after, detail_after);
     ev.reconciliation = Some(rec);
 
     // ---- Kill: the exact container of another rpc node exits; the rectifier recovers the path.
-    let kill_c = ExactContainer::of(&estate, &kill).expect("the killed node's container");
+    let kill_c = ExactContainer::of(&estate, &kill).await.expect("the killed node's container");
     let killed = kill_c.apply(Fault::Kill).expect("the exact container is killed");
     assert!(killed.exited && killed.exit_code == 137, "the daemon observed the SIGKILL exit: {killed:?}");
     assert!(matches!(kill_c.apply(Fault::Kill), Err(Refusal::AlreadyExited { .. }) | Err(Refusal::NoSuchContainer { .. })), "a second kill finds nothing running");
@@ -1174,7 +1186,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
         (n["status"] == "ready-for-traffic" && n["node_id"] != kill_n["node_id"]).then_some(n)
     })
     .await;
-    let replacement_c = ExactContainer::of(&estate, &kill).expect("the replacement's container");
+    let replacement_c = ExactContainer::of(&estate, &kill).await.expect("the replacement's container");
     assert_ne!(replacement_c.id, kill_c.id, "the replacement runs in a new container");
     let fresh = estate.probe(&["get", "--target", &format!("path:{kill}"), "--key", "83"]);
     assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "before-fault"}), "the recovered node serves the store of the data dir it inherited: {fresh}");
@@ -1186,7 +1198,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let nodes = estate.node_values().await;
     let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = s(&admin_n["name"]);
-    let admin_c = ExactContainer::of(&estate, &admin).expect("the admin's container");
+    let admin_c = ExactContainer::of(&estate, &admin).await.expect("the admin's container");
     let admin_killed = admin_c.apply(Fault::Kill).expect("the admin's exact container is killed");
     assert!(admin_killed.exited);
     let admin_new = wait_for("a new logical node holds the admin's path", Duration::from_secs(180), || async {
@@ -1310,10 +1322,10 @@ async fn container_node_held_past_the_hold_is_terminated_and_recovered_serving_i
     let put = estate.probe(&["put", "--target", &format!("exact:{id}"), "--key", "held", "--value", "before-hold"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
     assert_eq!(put["reply"]["incarnation_id"], inc.as_str(), "{put}");
-    let container = estate.container_of(&name).unwrap_or_else(|| panic!("{name}: no running container"));
+    let container = estate.container_of(&name).await.unwrap_or_else(|| panic!("{name}: no running container"));
 
     // The silence, never lifted: the terminate ends the container that holds it.
-    let silenced = container_faults::prepare_silence(&estate, &[name.clone()], &fabric_primary).expect("the exact container and its addresses are resolved before the cut");
+    let silenced = container_faults::prepare_silence(&estate, &[name.clone()], &fabric_primary).await.expect("the exact container and its addresses are resolved before the cut");
     silenced.install().expect("the node's container is silenced");
     let cut_at = now_nanos();
     let held = wait_for(&format!("{name} surfaces held_running on node.get"), crate::node_recovery_due(), || async {

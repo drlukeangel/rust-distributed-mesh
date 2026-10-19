@@ -74,8 +74,10 @@ fn birth(n: &Value) -> Value {
 /// fabric-primary (Node RPC -> reconcile -> node.update.via-build), is stop then start on the parked
 /// process: it keeps its NodeId, incarnation and data dir and serves the value written before it, the
 /// Put and the Get after the restart each naming the executing birth exactly as the node-admin view
-/// holds it. What must NOT happen: the restarted node answering absent, or the restart reaching the
-/// node other than through the Build it was accepted as.
+/// holds it. A holder of its type's seat has the seat moved first, in the request's attempt, and is
+/// restarted in the attempt claimed after that one's hand-off (node-stop.md, Seat holder). What must
+/// NOT happen: the restarted node answering absent, or the restart reaching the node other than
+/// through the Build it was accepted as.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn proof_holder_restarts_preserves_same_node_store() {
     let cell = "proof_holder_restarts_preserves_same_node_store";
@@ -93,6 +95,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
 
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
+    // Whether the restarted node holds its type's seat: then the request's attempt moves the seat first.
+    let holder = view(&estate, NODE).await["is_primary"] == true;
     let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
     let restart_attempt = Estate::complete(&mut restart).await;
     let restart_build = restart_attempt.build_id.to_string();
@@ -113,11 +117,33 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
-    // The restart ran as the Build attempt its node.restart call opened: the call, then the
-    // rectifier's node update of this path under the same Build.
-    let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == restart_build.as_str() && sp["attributes"]["node"] == NODE).cloned().expect("the restart's build.create span");
-    let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| sp["attributes"]["build_id"] == restart_build.as_str() && sp["attributes"]["node"] == NODE).cloned().expect("the restart's node update");
-    assert_eq!(update["attributes"]["attempt"], accepted["attributes"]["attempt"], "the node update runs the attempt the request opened");
+    // The restart ran as the Build its node.restart call was accepted as: the call, then the
+    // rectifier's node update of this path under the same Build. A restart of its type's seat holder
+    // moves the seat first (node-stop.md, Seat holder): the request's attempt carries the
+    // node.primary.update and ends handed-off, and the restart runs in the attempt the fabric-primary
+    // claims next (node-rpc-envelope.md: "Hand-off is the fabric-primary's next claim and call").
+    let bare = |v: &Value| s(v).trim_start_matches("bid_").replace('-', "");
+    let build = bare(&json!(restart_build));
+    let of_build = |sp: &&Value| bare(&sp["attributes"]["build_id"]) == build;
+    let attempt_of = |sp: &Value| s(&sp["attributes"]["attempt"]).parse::<u32>().unwrap_or_else(|_| panic!("a span without its attempt: {sp}"));
+    let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE).cloned().expect("the restart's build.create span");
+    let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().filter(of_build).find(|sp| sp["attributes"]["node"] == NODE).cloned().expect("the restart's node update");
+    let opened = attempt_of(&accepted);
+    let seat_move = if holder {
+        let moved = named(&spans, "rdm.node_admin.seat.update.via-primary-update")
+            .into_iter()
+            .filter(of_build)
+            .find(|sp| attempt_of(sp) == opened && s(&sp["attributes"]["operation"]).ends_with(&format!(":{opened}:node.restart:{NODE}")))
+            .cloned()
+            .unwrap_or_else(|| panic!("{NODE} held its type's seat: the request's attempt {opened} moves it first"));
+        let handed = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(of_build).find(|sp| attempt_of(sp) == opened && sp["attributes"]["outcome"] == "handed-off").cloned();
+        assert!(handed.is_some(), "the seat move's attempt {opened} ends handed-off");
+        assert_eq!(attempt_of(&update), opened + 1, "the restart runs in the attempt the fabric-primary claims after the seat move's hand-off");
+        json!({"attempt": opened, "operation": moved["attributes"]["operation"], "span_id": moved["span_id"]})
+    } else {
+        assert_eq!(attempt_of(&update), opened, "the node update runs the attempt the request opened");
+        Value::Null
+    };
     let reconcile = spans.iter().find(|sp| sp["span_id"] == update["parent_span_id"]).cloned().unwrap_or(Value::Null);
     // The restart is stop then start on the parked process: the Get after it is served by the incarnation that served the Put.
     assert_eq!(kept_span["attributes"]["incarnation_id"], put_span["attributes"]["incarnation_id"], "the restarted node is the same birth");
@@ -131,6 +157,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
         "presence_control": before["reply"],
         "kept": kept["reply"],
         "restart_build": restart_build,
+        "seat_holder": holder,
+        "seat_move": seat_move,
         "spans": {
             "put": {"trace_id": put_span["trace_id"], "span_id": put_span["span_id"], "parent_span_id": put_span["parent_span_id"]},
             "kept": {"trace_id": kept_span["trace_id"], "span_id": kept_span["span_id"], "parent_span_id": kept_span["parent_span_id"]},

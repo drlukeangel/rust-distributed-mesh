@@ -59,17 +59,51 @@ fn consumer_set() -> BindingSet {
 const REQUIRED: [&str; 3] = ["broker", "gateway", "compute"];
 
 /// Host processes running any of `paths` (by `/proc/<pid>/exe`).
+/// Whether `pid` is this test process or one of its descendants: the cell's own runtimes (the Day-0
+/// admin is the estate's own child, every node its launcher's). Another cell's estate on the same
+/// host runs the same bound executables and is none of this cell's.
+fn is_mine(pid: u32) -> bool {
+    let me = std::process::id();
+    let mut p = pid;
+    for _ in 0..64 {
+        if p == me {
+            return true;
+        }
+        // The parent pid is the second field after the parenthesised command name.
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{p}/stat")) else { return false };
+        let Some(ppid) = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)).and_then(|v| v.parse::<u32>().ok()) else { return false };
+        if ppid <= 1 {
+            return false;
+        }
+        p = ppid;
+    }
+    false
+}
+
+/// This cell's processes running one of `paths`.
 fn processes_running(paths: &[PathBuf]) -> Vec<(u32, PathBuf)> {
     let mut out = Vec::new();
     for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
         if let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) {
-            if paths.contains(&exe) {
+            if paths.contains(&exe) && is_mine(pid) {
                 out.push((pid, exe));
             }
         }
     }
     out
+}
+
+/// The prefix of every estate root this cell's process makes (`rdm_test::estate::estate_root`:
+/// `i143-<test>-<pid>-<n>` in the temporary directory).
+fn my_estate_roots(cell: &str) -> String {
+    std::env::temp_dir().join(format!("i143-{cell}-{}-", std::process::id())).display().to_string()
+}
+
+/// The estate roots this cell's process has made.
+fn estate_roots_made(cell: &str) -> Vec<PathBuf> {
+    let prefix = my_estate_roots(cell);
+    std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.display().to_string().starts_with(&prefix)).collect()
 }
 
 fn docker(args: &[&str]) -> String {
@@ -78,23 +112,26 @@ fn docker(args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// Containers (any state) with a bind mount whose source is one of `paths`.
-fn containers_mounting(paths: &[PathBuf]) -> Vec<String> {
+/// This cell's containers (any state) with a bind mount whose source is one of `paths`: each also
+/// mounts a directory under one of this cell's estate roots (its data dir).
+fn containers_mounting(paths: &[PathBuf], cell: &str) -> Vec<String> {
+    let mine = my_estate_roots(cell);
     let ids = docker(&["ps", "-a", "-q", "--no-trunc"]);
     let mut out = Vec::new();
     for id in ids.lines().filter(|l| !l.is_empty()) {
         let Ok(m) = std::process::Command::new("docker").args(["inspect", "--format", "{{range .Mounts}}{{.Source}}\n{{end}}", id]).output() else { continue };
-        if String::from_utf8_lossy(&m.stdout).lines().any(|s| paths.iter().any(|p| p.as_os_str() == s)) {
+        let sources = String::from_utf8_lossy(&m.stdout).to_string();
+        if sources.lines().any(|s| paths.iter().any(|p| p.as_os_str() == s)) && sources.lines().any(|s| s.starts_with(&mine)) {
             out.push(id.to_string());
         }
     }
     out
 }
 
-/// What is running the bound executables right now: host processes and containers.
-fn provider_actions(paths: &[PathBuf]) -> Value {
+/// What of this cell's is running the bound executables right now: its host processes and containers.
+fn provider_actions(paths: &[PathBuf], cell: &str) -> Value {
     let procs = processes_running(paths);
-    let containers = if provider() == "container" { containers_mounting(paths) } else { Vec::new() };
+    let containers = if provider() == "container" { containers_mounting(paths, cell) } else { Vec::new() };
     json!({ "processes": procs.iter().map(|(p, e)| json!({"pid": p, "exe": e})).collect::<Vec<_>>(), "containers": containers })
 }
 
@@ -158,7 +195,7 @@ fn variant(e: &BindingError) -> String {
 async fn observe_launch(estate: &Estate, node: &str) -> Value {
     let n = estate.node_value(node).await;
     if provider() == "container" {
-        let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
+        let id = estate.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container"));
         let inspect: Value = serde_json::from_str(&docker(&["inspect", "--format", "{{json .}}", &id])).unwrap();
         let path = inspect["Path"].as_str().unwrap().to_string();
         // The mount that supplies the entry point: the executable itself (a node), or its directory
@@ -200,10 +237,11 @@ fn launched_path(o: &Value) -> PathBuf {
 /// executables and no built-in. A set with a missing or non-executable file, a hash, candidate or
 /// image mismatch, a duplicate or an incomplete map is refused by its own named rule before any
 /// file or process is made, and the provider then holds no runtime of the set. The complete set
-/// starts the Day-0 admin, a second admin and the broker, gateway and compute the admin launches;
-/// each runs the bound path with the bound hash (read from the provider, not a span); a proof
-/// round-trip through the launched nodes succeeds; restarting a node and the second admin launches
-/// the same binding under a new incarnation and the same NodeId; the estate's spans carry the
+/// starts the Day-0 admin, a second admin and the two brokers, gateway and compute the admin
+/// launches; each runs the bound path with the bound hash (read from the provider, not a span); a
+/// proof round-trip through the launched nodes succeeds; restarting a node and the second admin
+/// runs the same binding under the same NodeId and incarnation (the restarted broker holds its type's
+/// seat, so the second broker takes it first: node-stop.md, Seat holder); the estate's spans carry the
 /// consumer admin's service and never the built-in admin's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_launches_explicit_external_binary_set() {
@@ -217,8 +255,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     std::fs::create_dir_all(&scratch).unwrap();
 
     // 1. Every planted defect is refused by name before anything is launched.
-    let estate_root = std::env::temp_dir().join(format!("i143-{cell}-{}", std::process::id()));
-    let before = provider_actions(&bound);
+    let before = provider_actions(&bound, cell);
     assert_eq!(before, json!({"processes": [], "containers": []}), "nothing runs a bound executable before the cell starts");
     let mut refusals = Vec::new();
     for pl in planted(&sha, &scratch) {
@@ -228,18 +265,23 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
             Err(e) => e,
         };
         assert_eq!(variant(&err), pl.rule, "planted `{}` is refused by `{}`, got: {err}", pl.name, pl.rule);
-        let after = provider_actions(&bound);
+        let after = provider_actions(&bound, cell);
         assert_eq!(after, before, "planted `{}`: a refusal makes no provider action", pl.name);
-        assert!(!estate_root.exists(), "planted `{}`: a refusal makes no estate root", pl.name);
+        assert_eq!(estate_roots_made(cell), Vec::<PathBuf>::new(), "planted `{}`: a refusal makes no estate root", pl.name);
         refusals.push(json!({ "planted": pl.name, "rule": pl.rule, "refusal": err.to_string(), "provider_actions_after": after }));
     }
     let _ = std::fs::remove_dir_all(&scratch);
 
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
     let mut estate = Estate::bootstrap_external(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
-    let names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.broker.1", "mesh1.gateway.1", "mesh1.compute.1"].iter().map(|n| n.to_string()).collect();
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
+    let names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1", "mesh1.compute.1"].iter().map(|n| n.to_string()).collect();
     estate.settled_named(&names).await;
+    // The presence control of the refusals' observation: scoped to this cell, it sees every runtime of
+    // the healthy estate, one per node, so the empty observation after each refusal is evidence.
+    let running = provider_actions(&bound, cell);
+    let seen = running["processes"].as_array().unwrap().len() + running["containers"].as_array().unwrap().len();
+    assert_eq!(seen, names.len(), "the cell's own observation sees one runtime per node of its estate: {running}");
 
     let by_kind = |kind: &str| set.bindings.iter().find(|b| b.launch_id == kind).unwrap().clone();
     let expect_for = |node: &str| by_kind(match node.split('.').nth(1).unwrap() { "admin" => "node_admin", k => k });
@@ -308,7 +350,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
         assert_eq!(reconcile["parent_span_id"], rest["span_id"], "{node}: the reconcile is the child of the restart call's request span");
         chains.push(json!({ "node": node, "rest": {"trace_id": rest["trace_id"], "span_id": rest["span_id"]}, "reconcile": {"trace_id": reconcile["trace_id"], "span_id": reconcile["span_id"], "parent_span_id": reconcile["parent_span_id"], "attempt": reconcile["attributes"]["attempt"]}, "update": update["span_id"], "steps": steps.len(), "reconcile_trace_is_restart_calls_trace": reconcile["trace_id"] == rest["trace_id"] }));
     }
-    let leftover = provider_actions(&bound);
+    let leftover = provider_actions(&bound, cell);
 
     write_result(
         &dir,
@@ -702,9 +744,10 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
         let receipt = receipt.expect("the clean job's receipt");
         let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(keys(&receipt), ["job", "issue", "layer", "source_sha", "dirty_paths", "started", "finished", "outcome", "cells"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>(), "exactly the canonical receipt: {receipt}");
-        assert_eq!(keys(&receipt["cells"][0]), ["name", "evidence", "outcome", "refusal", "artifacts"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
+        assert_eq!(keys(&receipt["cells"][0]), ["name", "evidence", "outcome", "refusal", "skip", "artifacts"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
         assert_eq!((receipt["outcome"].as_str(), receipt["source_sha"].as_str()), (Some("ok"), Some(head.as_str())));
         assert!(receipt["cells"][0]["refusal"].is_null());
+        assert!(receipt["cells"][0]["skip"].is_null(), "a clean cell skipped nothing: {receipt}");
         let arts = receipt["cells"][0]["artifacts"].as_object().unwrap();
         for n in ["gate.log", "manifest.json", "result.json", "spans.json"] {
             assert!(arts.iter().any(|(p, h)| p.ends_with(&format!("/{n}")) && h.as_str().unwrap().len() == 64), "{n} is hashed in the receipt");

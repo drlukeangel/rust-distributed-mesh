@@ -84,11 +84,10 @@ async fn pending_contract(cell: &str) {
     // The provider every mesh2 member actually ran on, from the view (and, on containers, its
     // immutable container id).
     let provider = estate.owner.provider.clone();
-    let mesh2_runtimes: Vec<Value> = nodes
-        .iter()
-        .filter(|n| n.mesh == "mesh2" && n.kind != NodeKind::NodeAdmin)
-        .map(|n| json!({"node": n.name.to_string(), "provider": n.provider, "container": estate.container_of(&n.name.to_string())}))
-        .collect();
+    let mut mesh2_runtimes: Vec<Value> = Vec::new();
+    for n in nodes.iter().filter(|n| n.mesh == "mesh2" && n.kind != NodeKind::NodeAdmin) {
+        mesh2_runtimes.push(json!({"node": n.name.to_string(), "provider": n.provider, "container": estate.container_of(&n.name.to_string()).await}));
+    }
     for r in &mesh2_runtimes {
         assert_eq!(r["provider"], provider.as_str(), "{r}");
         if provider == "container" {

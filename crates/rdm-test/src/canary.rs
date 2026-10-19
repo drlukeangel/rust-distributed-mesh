@@ -20,7 +20,7 @@ fn ready(node: &Value) -> bool {
 /// The runtime `node` runs in: its pid (process provider) or its container id (container provider).
 async fn runtime_of(estate: &Estate, node: &str) -> Value {
     if estate.owner.provider == "container" {
-        json!({"container": estate.container_of(node), "provider": "container"})
+        json!({"container": estate.container_of(node).await, "provider": "container"})
     } else {
         json!({"pid": estate.pid_of(node).await, "provider": "process"})
     }

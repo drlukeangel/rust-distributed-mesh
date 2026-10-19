@@ -766,7 +766,7 @@ impl Estate {
     /// container's init as the host sees it (container provider).
     pub async fn pid_of(&self, node: &str) -> u64 {
         if self.owner.provider == "container" {
-            let id = self.container_of(node).unwrap_or_else(|| panic!("{node}: no running container of fabric {}", self.fabric_id));
+            let id = self.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container of fabric {}", self.fabric_id));
             return docker(&["inspect", "--format", "{{.State.Pid}}", &id]).ok().and_then(|p| p.parse().ok()).filter(|p| *p > 0).unwrap_or_else(|| panic!("{node}: container {id} has no running init"));
         }
         let dir = self.data_dir(node).await;
@@ -979,7 +979,7 @@ impl Estate {
         if let Some(mut c) = self.bootstrap.take() {
             // A containerised Day-0 admin: the kill reaches its container, not only the attached CLI.
             if self.owner.provider == "container" {
-                if let Some(id) = self.container_of(&format!("{}.admin.1", self.root_mesh())) {
+                if let Some(id) = self.container_launched_as(&format!("{}.admin.1", self.root_mesh())) {
                     let _ = docker(&["kill", &id]);
                 }
             }
@@ -1014,9 +1014,24 @@ impl Estate {
         String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.split_once(' ').map(|(n, i)| (n.to_string(), i.to_string()))).collect()
     }
 
-    /// The running container of `node` (container provider).
-    pub fn container_of(&self, node: &str) -> Option<String> {
-        self.live_containers().into_iter().find(|(n, _)| n == node).map(|(_, id)| id)
+    /// The running container of `node`'s current birth (container provider): the container id its
+    /// birth's RuntimeFact names, which the provider writes to the birth's data dir (`runtime.json`).
+    /// Never the `rafka.node` label: that is the name the container was launched under, and a node
+    /// renamed since (the replace recipe's successor, born `<path.name>.new`) keeps it.
+    pub async fn container_of(&self, node: &str) -> Option<String> {
+        if self.owner.provider != "container" {
+            return None;
+        }
+        let dir = self.advertised_data_dir(node).await?;
+        let fact: Value = serde_json::from_slice(&std::fs::read(Path::new(&dir).join(rdm_core::runtime::RUNTIME_FILE)).ok()?).ok()?;
+        let id = fact["locator"]["id"].as_str().filter(|_| fact["locator"]["kind"] == "container")?.to_string();
+        (docker(&["inspect", "--format", "{{.State.Running}}", &id]).ok()?.trim() == "true").then_some(id)
+    }
+
+    /// The running container launched under `name` (its `rafka.node` label): the bootstrap admin's,
+    /// which the estate holds as the birth it started.
+    fn container_launched_as(&self, name: &str) -> Option<String> {
+        self.live_containers().into_iter().find(|(n, _)| n == name).map(|(_, id)| id)
     }
 
     /// Remove every container of this estate's Fabric and its network (container provider).
@@ -1482,7 +1497,7 @@ impl crate::container_faults::ContainerEstate for Estate {
     fn fabric_id(&self) -> &str {
         &self.fabric_id
     }
-    fn container_of(&self, node: &str) -> Option<String> {
+    fn container_of(&self, node: &str) -> impl std::future::Future<Output = Option<String>> + Send {
         Estate::container_of(self, node)
     }
     fn live_containers(&self) -> Vec<(String, String)> {

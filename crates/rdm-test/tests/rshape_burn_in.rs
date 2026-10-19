@@ -195,7 +195,7 @@ async fn observe_launch(estate: &Estate, node: &str) -> Value {
     use rdm_client::binding::sha256_file;
     let n = estate.node_value(node).await;
     if provider() == "container" {
-        let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
+        let id = estate.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container"));
         let inspect: Value = serde_json::from_str(&docker(&["inspect", "--format", "{{json .}}", &id])).unwrap();
         let path = inspect["Path"].as_str().unwrap().to_string();
         let mount = inspect["Mounts"]
@@ -2991,7 +2991,7 @@ impl Rt {
 
 async fn exact_runtime(f: &Formed, node: &str) -> Rt {
     if provider() == "container" {
-        let id = f.estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container of the fabric"));
+        let id = f.estate.container_of(node).await.unwrap_or_else(|| panic!("{node}: no running container of the fabric"));
         Rt::Container(container_faults::inspect(&id).unwrap_or_else(|e| panic!("{node}: inspect {id}: {e}")))
     } else {
         let dir = f.estate.data_dir(node).await;
@@ -5645,20 +5645,21 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
         .await;
     }
 
-    // Each side elects from what it hears: one fabric-primary per side, the near side's the one it had, the
-    // far side's its own mesh primary. A non-primary admin of a side names its own side's fabric-primary.
+    // The fabric seat stays where it was on both sides: a living holder keeps its seat and silence is no
+    // proof of loss (mesh-investigation.md: a crash is not leaving; fabric-node-lifecycle-elections.md §5),
+    // so every admin of either side names the near side's fabric-primary, and a non-primary admin of either
+    // side refuses a topology request naming it.
     let mut seats = Vec::new();
     for (name, mesh) in &sides {
         let v = f.estate.node_values_at(name).await;
         let fps = fabric_primaries_of(&v);
-        let want = if *mesh == near_mesh { near_fp.clone() } else { s(&far_primary["name"]) };
-        assert_eq!(fps, vec![want.clone()], "{name} holds its own side's one fabric-primary during the cut: {fps:?}");
+        assert_eq!(fps, vec![near_fp.clone()], "{name} ({mesh}) holds the fabric seat where it was, on {near_fp}, through the cut: {fps:?}");
         seats.push(json!({"admin": name, "mesh": mesh, "fabric_primary": fps}));
     }
     let mut non_writer = Vec::new();
-    for (adm, own_fp, target) in [(&near_secondary, near_fp.clone(), format!("{near_mesh}.gateway.1")), (&far_secondary, s(&far_primary["name"]), format!("{far_mesh}.gateway.1"))] {
+    for (adm, target) in [(&near_secondary, format!("{near_mesh}.gateway.1")), (&far_secondary, format!("{far_mesh}.gateway.1"))] {
         let v = ask(&f.estate, &s(&adm["name"]), BuildChange::Restart { node: path_of(&target) }).await;
-        assert_eq!((v["reply"].as_str(), v["fabric_primary"].as_str()), (Some("not-fabric-primary"), Some(own_fp.as_str())), "{}: a non-writer of its side names its side's fabric-primary: {v}", adm["name"]);
+        assert_eq!((v["reply"].as_str(), v["fabric_primary"].as_str()), (Some("not-fabric-primary"), Some(near_fp.as_str())), "{}: a non-writer names the fabric-primary it holds, {near_fp}: {v}", adm["name"]);
         a.refused_writes.push(json!({"sent_to": adm["name"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "path": target, "route": "restart", "t_ms": now_ms()}));
         non_writer.push(json!({"admin": adm["name"], "answer": v}));
     }
@@ -5701,7 +5702,7 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     }
     assert_eq!(build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64(), Some(attempt0), "the refusals opened no attempt");
     inv.holds(
-        &format!("C9: during the A/B cut {near_fp} (the near side's writer) refused a restart of each far node it holds unheard by name `node-not-live` and opened no attempt; a non-writer of each side named its own side's fabric-primary"),
+        &format!("C9: during the A/B cut {near_fp} (the near side's writer) refused a restart of each far node it holds unheard by name `node-not-live` and opened no attempt; a non-writer of either side named the fabric-primary it holds, {near_fp}"),
         true,
         json!({"refusals": far_refusals, "attempt": attempt0}),
     );
@@ -5846,20 +5847,21 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
         .await;
     }
 
-    // Each side elects from what it hears: one fabric-primary per side, the near side's the one it had, the
-    // far side's its own mesh primary. A non-primary admin of a side names its own side's fabric-primary.
+    // The fabric seat stays where it was on both sides: a living holder keeps its seat and silence is no
+    // proof of loss (mesh-investigation.md: a crash is not leaving; fabric-node-lifecycle-elections.md §5),
+    // so every admin of either side names the near side's fabric-primary, and a non-primary admin of either
+    // side refuses a topology request naming it.
     let mut seats = Vec::new();
     for (name, mesh) in &sides {
         let v = f.estate.node_values_at(name).await;
         let fps = fabric_primaries_of(&v);
-        let want = if *mesh == near_mesh { near_fp.clone() } else { s(&far_primary["name"]) };
-        assert_eq!(fps, vec![want.clone()], "{name} holds its own side's one fabric-primary during the cut: {fps:?}");
+        assert_eq!(fps, vec![near_fp.clone()], "{name} ({mesh}) holds the fabric seat where it was, on {near_fp}, through the cut: {fps:?}");
         seats.push(json!({"admin": name, "mesh": mesh, "fabric_primary": fps}));
     }
     let mut non_writer = Vec::new();
-    for (adm, own_fp, target) in [(&near_secondary, near_fp.clone(), format!("{near_mesh}.gateway.1")), (&far_secondary, s(&far_primary["name"]), format!("{far_mesh}.gateway.1"))] {
+    for (adm, target) in [(&near_secondary, format!("{near_mesh}.gateway.1")), (&far_secondary, format!("{far_mesh}.gateway.1"))] {
         let v = ask(&f.estate, &s(&adm["name"]), BuildChange::Restart { node: path_of(&target) }).await;
-        assert_eq!((v["reply"].as_str(), v["fabric_primary"].as_str()), (Some("not-fabric-primary"), Some(own_fp.as_str())), "{}: a non-writer of its side names its side's fabric-primary: {v}", adm["name"]);
+        assert_eq!((v["reply"].as_str(), v["fabric_primary"].as_str()), (Some("not-fabric-primary"), Some(near_fp.as_str())), "{}: a non-writer names the fabric-primary it holds, {near_fp}: {v}", adm["name"]);
         a.refused_writes.push(json!({"sent_to": adm["name"], "reply": v["reply"], "fabric_primary": v["fabric_primary"], "path": target, "route": "restart", "t_ms": now_ms()}));
         non_writer.push(json!({"admin": adm["name"], "answer": v}));
     }
@@ -5876,7 +5878,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     }
     assert_eq!(build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64(), Some(attempt0), "the refusals opened no attempt");
     inv.holds(
-        &format!("C9: during the A/B cut {near_fp} (the near side's writer) refused a restart of each far node it holds unheard by name `node-not-live` and opened no attempt; a non-writer of each side named its own side's fabric-primary"),
+        &format!("C9: during the A/B cut {near_fp} (the near side's writer) refused a restart of each far node it holds unheard by name `node-not-live` and opened no attempt; a non-writer of either side named the fabric-primary it holds, {near_fp}"),
         true,
         json!({"refusals": far_refusals, "attempt": attempt0}),
     );
@@ -5978,9 +5980,10 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
 }
 
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
-/// rule install). Each side elects from what it hears: every admin holds its own mesh ready and the other mesh
-/// unheard, with one fabric-primary of its own side (the near side keeps the one it had), and a non-primary admin
-/// of each side refuses a topology request naming its own side's fabric-primary. The near writer refuses a
+/// rule install). Every admin holds its own mesh ready and the other mesh
+/// unheard, and the fabric seat stays where it was on both sides (a living holder keeps its seat; silence is
+/// no proof of loss): every admin names the near side's fabric-primary, and a non-primary admin of either side
+/// refuses a topology request naming it. The near writer refuses a
 /// restart of each far node it holds unheard (a gateway, both node-admins) by name `node-not-live` and opens no
 /// attempt. The same writer adds a gateway to the near mesh: a second topology Build sent while that one is in
 /// flight is refused by name `build-in-progress` naming the Build, the near mesh's primary executes it, the near
@@ -6044,7 +6047,9 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let far_victim = format!("{far_mesh}.gateway.1");
     let far_before = at(&st, &far_victim).clone();
     let formation = f.build_id.clone();
-    let attempt0 = build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64().unwrap();
+    let b0 = build_attempt(&f.estate, &st, &formation).await;
+    let attempt0 = b0["attempt"].as_u64().unwrap();
+    let lane0 = b0["lanes"][near_mesh.as_str()]["attempt"].as_u64().unwrap_or(0);
     let rt = if fault == NearFault::HardKill { Some(exact_runtime(&f, &victim).await) } else { None };
 
     let cut = Partition::start(&udp_ports(&st.nodes, &near), &udp_ports(&st.nodes, &far)).unwrap_or_else(|why| panic!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between the meshes: {why}"));
@@ -6077,22 +6082,29 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             .await;
             assert_eq!((&born["node_id"], &born["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{victim}: a restart keeps the logical node and its incarnation (node-restart.md)");
             near_builds = want;
+            assert!(near_builds > attempt0, "the restart is the fabric lane's next attempt of the formation Build ({attempt0} -> {near_builds})");
         }
         NearFault::HardKill => {
             let ack = kill_exact_runtime(&victim, rt.as_ref().unwrap());
             f.actions.push(json!({"t_ms": now_ms(), "action": "fault.kill-runtime", "node": victim, "ack": ack}));
+            // Node recovery is the next attempt of the current Build in its mesh's lane (node-recovery.md, R-BI7):
+            // the near mesh's lane of the formation Build moves on by one; the fabric lane gains no attempt.
             let born = wait_for(&format!("{near_mesh}'s mesh-primary recovers {victim} under the cut"), Duration::from_secs(120), || async {
                 let v = f.estate.node_values_at(&st.fp_name()).await;
                 let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != victim_id.as_str()).cloned()?;
                 let b = build_attempt(&f.estate, &st, &formation).await;
-                (b["state"] == "complete").then_some(n)
+                let lane = &b["lanes"][near_mesh.as_str()];
+                (lane["state"] == "complete" && lane["attempt"].as_u64().unwrap_or(0) > lane0).then_some(n)
             })
             .await;
-            near_builds = build_attempt(&f.estate, &st, &formation).await["attempt"].as_u64().unwrap();
+            let b = build_attempt(&f.estate, &st, &formation).await;
+            let lane = &b["lanes"][near_mesh.as_str()];
+            assert_eq!((lane["attempt"].as_u64(), lane["reason"].as_str()), (Some(lane0 + 1), Some("recovery")), "{victim}: its recovery is the next attempt of {near_mesh}'s lane of the formation Build: {b}");
+            assert_eq!(b["attempt"].as_u64(), Some(attempt0), "{victim}: the fabric lane of the formation Build gained no attempt: {b}");
+            near_builds = lane0 + 1;
             assert_ne!(born["node_id"], before["node_id"], "{victim}: a killed gateway is replaced by a new NodeId");
         }
     }
-    assert!(near_builds > attempt0, "the near side advanced the formation Build ({attempt0} -> {near_builds})");
 
     // The far side keeps holding for the whole silence window: its Build is where it was, its view of the
     // victim is still the birth it heard, and it holds as many nodes as it did.
@@ -6223,19 +6235,22 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
 /// restarted birth ready under its NodeId and no admin refuses it as departed. Canon: node-admin-lifecycle.md
 /// rule 4 (silence is not departure; only exact provider evidence proves a runtime gone, and only by the side
 /// that owns the control domain) and R-D1 (loss of peer-mesh control-plane visibility fences lifecycle mutation
-/// for every node of that mesh). What must NOT happen: an attempt of the far side for a near node, a NodeDeleted
+/// for every node of that mesh). Each mesh holds a second gateway: a standalone restart never yields a seat
+/// without a successor, so a restart of the gateway that holds its type's seat moves the seat first
+/// (node-stop.md, Seat holder). What must NOT happen: an attempt of the far side for a near node, a NodeDeleted
 /// for the restarted node, a second birth, a `via-departed-birth` refusal of the live birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_cut_restart_of_a_near_node_is_held_by_the_far_side() {
-    cut_near_fault_run("mock_cut_restart_of_a_near_node_is_held_by_the_far_side", any_tier(), NearFault::Restart).await;
+    let tier = any_tier();
+    cut_near_fault_run("mock_cut_restart_of_a_near_node_is_held_by_the_far_side", Shape { gateway: tier.gateway.max(2), ..tier }, NearFault::Restart).await;
 }
 
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped and the provider kills the
 /// exact runtime of a near gateway. The far side's fabric-primary reads the exit on the shared host and holds
 /// it as the unheard near mesh's (one `build.reject.via-unheard-mesh` naming the exact birth and its exit
-/// proof), opening nothing. The near mesh's own mesh-primary proves the exit and submits the one recovery
-/// (node-recovery.md), which the fabric-primary admits as an attempt of the formation's Build and which
-/// creates the gateway under a new NodeId at the same path.name. The cut is dropped: every admin holds the
+/// proof), opening nothing. The near mesh's own mesh-primary proves the exit and opens the one recovery
+/// (node-recovery.md), the next attempt of the near mesh's lane of the formation's Build (R-BI7; the fabric
+/// lane gains no attempt), which creates the gateway under a new NodeId at the same path.name. The cut is dropped: every admin holds the
 /// recovered gateway ready; then a far gateway is killed and the far mesh's own mesh-primary, heard again,
 /// recovers it with one submit: the hold is gone and left no tombstone. What must NOT happen: an attempt by
 /// the far side for a near node during the cut, a proven-drift attempt by a fabric-primary for either
@@ -6246,9 +6261,10 @@ async fn mock_cut_kill_of_a_near_node_is_repaired_by_the_near_side_and_held_by_t
 }
 
 /// CONTRACT: in the formed estate every UDP path between the two meshes is dropped (acknowledged by the host's
-/// rule install). Each side elects from what it hears: every admin holds its own mesh ready and the other mesh
-/// unheard, with one fabric-primary of its own side (the near side keeps the one it had), and a non-primary admin
-/// of each side refuses a topology request naming its own side's fabric-primary. The near writer refuses a
+/// rule install). Every admin holds its own mesh ready and the other mesh
+/// unheard, and the fabric seat stays where it was on both sides (a living holder keeps its seat; silence is
+/// no proof of loss): every admin names the near side's fabric-primary, and a non-primary admin of either side
+/// refuses a topology request naming it. The near writer refuses a
 /// restart of each far node it holds unheard (a gateway, both node-admins) by name `node-not-live` and opens no
 /// attempt. The same writer restarts a near gateway: the next attempt of the formation's Build, executed by the
 /// near mesh's primary, brings the gateway back under its NodeId. The far side, whose provider sees the old
