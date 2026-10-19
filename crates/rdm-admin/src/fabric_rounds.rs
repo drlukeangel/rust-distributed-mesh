@@ -26,7 +26,7 @@ use crate::wiring::{FabricHooks, StateSyncRound, SyncState};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tracing::Instrument;
@@ -198,7 +198,8 @@ pub struct FabricRounds {
     pub mesh_book: RoundBook,
     /// The check-ins of the mesh primaries, as the fabric-primary.
     pub fabric_book: RoundBook,
-    drivers: Mutex<HashSet<RoundKey>>,
+    /// The mesh rounds a driver runs, each with the opening of its round the driver drives.
+    drivers: Mutex<HashMap<RoundKey, u64>>,
     /// The rounds whose own action this admin stored, as its mesh's primary: a round run again
     /// (a re-opened round after a cut-off, a re-sent command) checks in from this record and never
     /// runs the action twice.
@@ -213,7 +214,7 @@ pub struct FabricRounds {
 impl FabricRounds {
     /// The rounds of the admin `env` describes.
     pub(crate) fn new(env: RoundEnv) -> Arc<Self> {
-        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashSet::new()), acted: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
+        Arc::new(Self { env, mesh_book: RoundBook::default(), fabric_book: RoundBook::default(), drivers: Mutex::new(HashMap::new()), acted: Mutex::new(HashSet::new()), gossip: std::sync::OnceLock::new(), climb: tokio::sync::Mutex::new(Climb::default()), climb_wake: tokio::sync::Notify::new() })
     }
 
     /// The paths the current Build plans in each mesh (`node.get` names a birth its view no longer
@@ -796,21 +797,31 @@ impl FabricRounds {
     /// Drive `key` as this mesh's primary: command every planned member of this mesh, run this
     /// admin's own action, and when the checklist is complete report upward. `owes_upward`: the
     /// round came down from the fabric-primary, which the completion is owed to; `false` when this
-    /// admin is the fabric-primary and the mesh round is its own.
+    /// admin is the fabric-primary and the mesh round is its own. A driver drives one opening of the
+    /// round: a round closed and opened again (a tenure that ended and a climb that opens it again)
+    /// gets a driver of its own, and the driver of the closed opening ends.
     fn spawn_mesh_driver(self: &Arc<Self>, key: RoundKey, owes_upward: bool, parent: tracing::Span) {
-        if !self.drivers.lock().unwrap().insert(key.clone()) {
-            return;
+        let Some(opening) = self.mesh_book.opening(&key) else { return };
+        {
+            let mut drivers = self.drivers.lock().unwrap();
+            if drivers.get(&key) == Some(&opening) {
+                return;
+            }
+            drivers.insert(key.clone(), opening);
         }
         let this = self.clone();
         tokio::spawn(async move {
             let me = this.held_name().await;
             let span = tracing::info_span!(parent: &parent, "rdm.node_admin.fabric.update.via-mesh-round", node = %me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, superseded_by = tracing::field::Empty, own_action = tracing::field::Empty, "otel.kind" = "internal");
-            this.drive_mesh(&key, owes_upward).instrument(span.clone()).await;
-            this.drivers.lock().unwrap().remove(&key);
+            this.drive_mesh(&key, owes_upward, opening).instrument(span.clone()).await;
+            let mut drivers = this.drivers.lock().unwrap();
+            if drivers.get(&key) == Some(&opening) {
+                drivers.remove(&key);
+            }
         });
     }
 
-    async fn drive_mesh(self: &Arc<Self>, key: &RoundKey, owes_upward: bool) {
+    async fn drive_mesh(self: &Arc<Self>, key: &RoundKey, owes_upward: bool, opening: u64) {
         let mesh = self.env.me.mesh.clone();
         let mut own_done = self.acted.lock().unwrap().contains(key);
         if own_done {
@@ -825,11 +836,15 @@ impl FabricRounds {
         loop {
             book_tick.borrow_and_update();
             view_tick.borrow_and_update();
+            if self.mesh_book.opening(key) != Some(opening) {
+                tracing::info!("the opening of the round this driver drives is closed: an opening of it again has a driver of its own");
+                return;
+            }
             let view = self.env.topology.read().await.clone();
             let me = self.held_name_in(&view);
             if !view.cohort_primary(&mesh, NodeKind::NodeAdmin).is_some_and(|n| n.node_id == self.env.node_id) {
                 tracing::info!("this admin no longer holds its mesh's primary seat: the round is the next primary's");
-                self.mesh_book.close(key);
+                self.mesh_book.close_opening(key, opening);
                 return;
             }
             // A builds store that cannot be read plans nothing this turn, named: the planned births
@@ -852,7 +867,7 @@ impl FabricRounds {
                 if let Some(why) = round_superseded_by(key, b, &*self.env.builds, &me.to_string()).await {
                     round_span.record("superseded_by", why.as_str());
                     tracing::info!(superseded_by = %why, "the current Build moved past this round: it commands nothing more and owes no completion");
-                    self.mesh_book.close(key);
+                    self.mesh_book.close_opening(key, opening);
                     return;
                 }
             }
@@ -884,7 +899,7 @@ impl FabricRounds {
                     Err(e) => {
                         tracing::info_span!("rdm.node_admin.fabric.update.via-round-action-failed", node = %me, round = key.kind.command(), error = %e, "otel.kind" = "internal")
                             .in_scope(|| tracing::info!("this admin's own action failed: it owes no check-in"));
-                        self.mesh_book.close(key);
+                        self.mesh_book.close_opening(key, opening);
                         return;
                     }
                 }
@@ -1558,5 +1573,68 @@ mod tests {
         assert!(one_pending.cohort_primary("mesh1", NodeKind::NodeAdmin).is_some(), "mesh1 has its primary");
         let blockers: Vec<String> = mesh_blockers(&one_pending, &meshes, &planned).iter().map(|m| m.to_string()).collect();
         assert_eq!(blockers, ["mesh1.rpc.1(not-ready)"], "the one node that is not ready is what blocks entry");
+    }
+
+    /// CONTRACT (i146 Q45; states.md, The round checklist: "A new primary, through election or recovery,
+    /// re-sends the current round. Members already done check in again"; `fabric_book_reset`: "a round
+    /// it opens again re-runs this admin's own mesh round, whose members check in again from their
+    /// record"): the fabric-primary's own mesh round is open, its planned member commanded and not yet
+    /// checked in, when the tenure that opened it ends. Opened again, the round is driven again: its own
+    /// action from the record, and the member commanded again under the reopened round. Must NOT
+    /// happen: the reopened round with no driver, its member never commanded again, so the fabric holds
+    /// in state-commit on the fabric-primary's own check-in (release run 5 at 7e13f37e, owed_check_ins
+    /// state-commit, "mesh1.admin.1(no-check-in)" for 57 s).
+    #[tokio::test]
+    async fn a_fabric_primary_whose_tenure_ended_drives_its_own_mesh_round_again_when_it_opens_it_again() {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+        let capture = crate::span_capture::Capture::new("i146-e3-reopened-round-driven");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let id = crate::build::BuildId::parse("amrrv6tggykq").unwrap();
+        let meshes = [
+            ("mesh1".to_string(), MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]))),
+            ("mesh2".to_string(), MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))),
+        ];
+        builds.publish_accepted(&BuildAccepted { build_id: id.clone(), topology: FabricTopology { fabric: "fabric1".into(), meshes: meshes.into() }, submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        claim(&builds, &id, 1).await;
+        let (fp, m2) = fabric_primary_and_mesh2();
+        let member = node("mesh1.rpc.1", NodeStatus::ReadyForTraffic, false);
+        let view = projected(vec![fp.clone(), member, m2]);
+        let records = Arc::new(Records::default());
+        let rounds = rounds_of(&fp, view.clone(), builds.clone(), records.clone(), FabricId::mint(), Arc::new(NoScratchpad)).await;
+        rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        let settle = || async {
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+        };
+        settle().await;
+        // The tenure ends: its rounds and its own mesh's rounds close, and the round's driver runs on the
+        // close before the climb opens the round again.
+        rounds.fabric_book_reset();
+        settle().await;
+        rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &view }).await;
+        settle().await;
+        // Closing the reopened round ends what it holds open, so every span of the cell is read.
+        rounds.fabric_book_reset();
+        let ended = commands_ended_to(&capture, "mesh1.rpc.1", 2).await;
+        assert_eq!(ended.len(), 2, "the member is commanded under each opening of the round: {ended:?}");
+        let own = mesh_rounds_ended(&capture, 2).await;
+        assert_eq!(own, ["run", "from-record"], "the reopened round has a driver of its own, which takes this admin's action from its record");
+    }
+
+    /// The `own_action` of each ended `via-mesh-round` span, in end order, once `n` have ended or
+    /// within 10 s.
+    async fn mesh_rounds_ended(capture: &crate::span_capture::Capture, n: usize) -> Vec<String> {
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let ended: Vec<String> = capture.named("rdm.node_admin.fabric.update.via-mesh-round").into_iter().map(|s| s.attributes.get("own_action").cloned().unwrap_or_default()).collect();
+            if ended.len() >= n || tokio::time::Instant::now() >= until {
+                return ended;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }

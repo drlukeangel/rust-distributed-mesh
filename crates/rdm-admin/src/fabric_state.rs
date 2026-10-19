@@ -196,6 +196,8 @@ enum Command {
 
 #[derive(Debug, Default)]
 struct Round {
+    /// Which opening of its key this round is: a round closed and opened again is a new opening.
+    opening: u64,
     expected: BTreeMap<NodeId, Expected>,
     /// Planned births the primary's view holds no birth of yet: each blocks completion by name.
     unresolved: Vec<Missing>,
@@ -209,6 +211,8 @@ struct Round {
 #[derive(Debug, Default)]
 pub struct RoundBook {
     rounds: Mutex<HashMap<RoundKey, Round>>,
+    /// The openings this book has made, the last one's number.
+    openings: Mutex<u64>,
     tick: watch::Sender<u64>,
 }
 
@@ -217,13 +221,25 @@ fn deliverable(n: &Node) -> bool {
 }
 
 impl RoundBook {
-    /// Open the round `key`: the primary received (or issued) its down op. Whether it is new.
+    /// Open the round `key`: the primary received (or issued) its down op. Whether it is new. A new
+    /// round is a new opening of its key ([`Self::opening`]).
     pub fn open(&self, key: &RoundKey) -> bool {
-        let new = !self.rounds.lock().unwrap().contains_key(key);
-        if new {
-            self.rounds.lock().unwrap().insert(key.clone(), Round::default());
+        let mut rounds = self.rounds.lock().unwrap();
+        if rounds.contains_key(key) {
+            return false;
         }
-        new
+        let opening = {
+            let mut openings = self.openings.lock().unwrap();
+            *openings += 1;
+            *openings
+        };
+        rounds.insert(key.clone(), Round { opening, ..Round::default() });
+        true
+    }
+
+    /// Which opening of `key` is open now, if it is open.
+    pub fn opening(&self, key: &RoundKey) -> Option<u64> {
+        self.rounds.lock().unwrap().get(key).map(|r| r.opening)
     }
 
     /// The rounds this book holds.
@@ -271,6 +287,17 @@ impl RoundBook {
     pub fn close(&self, key: &RoundKey) {
         self.rounds.lock().unwrap().remove(key);
         self.bump();
+    }
+
+    /// [`Self::close`] the round only while `opening` is the one open: a driver ends its own opening
+    /// of the round, never a later one.
+    pub fn close_opening(&self, key: &RoundKey, opening: u64) {
+        let mut rounds = self.rounds.lock().unwrap();
+        if rounds.get(key).is_some_and(|r| r.opening == opening) {
+            rounds.remove(key);
+            drop(rounds);
+            self.bump();
+        }
     }
 
     /// Replace the planned births the round's checklist names. A check-in already held for a birth
