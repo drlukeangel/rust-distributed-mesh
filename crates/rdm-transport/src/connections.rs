@@ -219,24 +219,9 @@ pub enum ConnectError {
     },
 }
 
-/// Verification of a dialer's presented member cert during `node.connections.admit`.
-pub trait Admitter: Send + Sync {
-    /// Verify `cert` presented by `caller` on `alpn`.
-    ///
-    /// Returns `Ok((cert_expires_at_ms, clock_name))` when admitted, or `Err(reason)` when refused.
-    fn verify(&self, caller: &Birth, alpn: &[u8], cert: &[u8]) -> Result<(u64, &'static str), String>;
-}
-
-/// The `NoCerts` admitter (`node-connections-admit.md`: "admits every connection by name, spanned
-/// `via-no-certs-configured`").
-#[derive(Debug, Default)]
-pub struct NoCertsAdmitter;
-
-impl Admitter for NoCertsAdmitter {
-    fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
-        Ok((0, "no-certs"))
-    }
-}
+mod admit;
+pub use admit::{Admitter, NoCertsAdmitter};
+use admit::{AdmitVerdict, PresentFrame};
 
 /// Where the data-plane `Connections` runtime records `NodeConnection` rows and reads the held projection.
 #[async_trait::async_trait]
@@ -382,19 +367,6 @@ impl ConnectionsSink for MemoryConnectionsSink {
         }
         closed
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PresentFrame {
-    caller: Birth,
-    cert: Vec<u8>,
-    traceparent: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-enum AdmitVerdict {
-    Admitted,
-    Refused { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -847,79 +819,10 @@ impl std::fmt::Debug for AlpnProtocolHandler {
 impl iroh::protocol::ProtocolHandler for AlpnProtocolHandler {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), iroh::protocol::AcceptError> {
         let floor = rdm_core::cadence::staleness_floor();
-        let Ok(Ok((mut ctrl_send, mut ctrl_recv))) = tokio::time::timeout(floor, connection.accept_bi()).await else {
+        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
+        let Some(admit::Admitted { mut ctrl_send, mut ctrl_recv, present }) = admit::admit(&self.registry, &self.alpn, &connection).await else {
             return Ok(());
         };
-        let present: PresentFrame = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
-            Ok(Ok(Some(p))) => p,
-            _ => return Ok(()),
-        };
-        let own = self.registry.inner.sink.own_birth();
-        let alpn_str = String::from_utf8_lossy(&self.alpn.name).into_owned();
-        let verify_res = self
-            .registry
-            .inner
-            .admitter
-            .lock()
-            .unwrap()
-            .verify(&present.caller, &self.alpn.name, &present.cert);
-        match verify_res {
-            Err(reason) => {
-                let span = tracing::info_span!(
-                    "rdm.node.connections.reject.via-refused",
-                    source = %present.caller.name,
-                    destination = %own.name,
-                    connection = connection.stable_id(),
-                    alpn = %alpn_str,
-                    cert_expires_at = 0u64,
-                    clock = "no-certs",
-                    reason = %reason,
-                );
-                if let Some(tp) = present.traceparent.as_deref() {
-                    crate::set_parent(&span, tp);
-                }
-                span.in_scope(|| tracing::info!("inbound connection refused at node.connections.admit"));
-                let refused_row = NodeConnection {
-                    id: ConnectionId::mint(),
-                    source: present.caller.to_end(),
-                    destination: own.to_end(),
-                    kind: CoreKind::Direct,
-                    alpn: self.alpn.name.clone(),
-                    state: ConnectionState::Refused,
-                    carrier: None,
-                    recovery: None,
-                    reason: Some(reason.clone()),
-                    logged_at_ms: 0,
-                };
-                let _ = self.registry.inner.sink.record_row(refused_row).await;
-                let _ = write_control_msg(&mut ctrl_send, &AdmitVerdict::Refused { reason: reason.clone() }).await;
-                let _ = ctrl_send.finish();
-                let _ = tokio::time::timeout(floor, connection.closed()).await;
-                connection.close(
-                    iroh::endpoint::VarInt::from_u32(CLOSE_CODE_REFUSED),
-                    reason.as_bytes(),
-                );
-                return Ok(());
-            }
-            Ok((cert_expires_at, clock)) => {
-                let span = tracing::info_span!(
-                    "rdm.node.connections.create.via-admitted",
-                    source = %present.caller.name,
-                    destination = %own.name,
-                    connection = connection.stable_id(),
-                    alpn = %alpn_str,
-                    cert_expires_at,
-                    clock,
-                );
-                if let Some(tp) = present.traceparent.as_deref() {
-                    crate::set_parent(&span, tp);
-                }
-                span.in_scope(|| tracing::info!("inbound connection admitted"));
-                if write_control_msg(&mut ctrl_send, &AdmitVerdict::Admitted).await.is_err() {
-                    return Ok(());
-                }
-            }
-        }
 
         let intent: ControlIntent = match tokio::time::timeout(floor, read_control_msg(&mut ctrl_recv)).await {
             Ok(Ok(Some(i))) => i,
