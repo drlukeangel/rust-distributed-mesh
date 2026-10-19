@@ -5409,7 +5409,11 @@ impl Observer {
         use futures_lite::StreamExt as _;
         use rdm_transport::membership::{backbone_channel, learn_addresses, mesh_channel, Frame};
         let transport = iroh::endpoint::QuicTransportConfig::builder().keep_alive_interval(Duration::from_secs(1)).max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap())).build();
-        let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        // The local address the host routes to the seeds: loopback for the process provider, the host's
+        // bridge address for the container provider, whose nodes a loopback socket cannot reach.
+        let seed = seeds.iter().find_map(|a| a.ip_addrs().next().copied()).expect("a seed names its address");
+        let bind = rdm_client::client_bind_for(seed).unwrap_or_else(|why| panic!("the observer has no route to its seed {seed}: {why}"));
+        let endpoint = rdm_transport::endpoint::bind_exact(iroh::SecretKey::generate(), bind, vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
         learn_addresses(&endpoint, &seeds).unwrap();
         let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
         let router = iroh::protocol::Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();

@@ -159,7 +159,7 @@ impl Peers {
 
 /// Ask the kernel for the concrete source address of this destination. The temporary socket
 /// is dropped before the endpoint binds; its ephemeral port is never advertised or reused.
-fn client_bind_for(target: std::net::SocketAddr) -> Result<std::net::SocketAddr, String> {
+pub fn client_bind_for(target: std::net::SocketAddr) -> Result<std::net::SocketAddr, String> {
     let unspecified: std::net::SocketAddr = if target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }.parse().unwrap();
     let socket = std::net::UdpSocket::bind(unspecified).map_err(|e| format!("the client route to {target} cannot open a local socket: {e}"))?;
     socket.connect(target).map_err(|e| format!("the client has no local route to {target}: {e}"))?;

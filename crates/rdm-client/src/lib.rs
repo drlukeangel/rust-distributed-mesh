@@ -14,7 +14,7 @@ pub use rdm_core::names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep
 pub use objects::{
     await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, NameHeld, NodeSelector, NodeSpec, Nodes, TagFilter,
 };
-pub use peers::{birth_of_line, birth_of_view, Peers, BIRTH_LINE};
+pub use peers::{birth_of_line, birth_of_view, client_bind_for, Peers, BIRTH_LINE};
 /// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).
 pub use rdm_core::MeshNode;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
