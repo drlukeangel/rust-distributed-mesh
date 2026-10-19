@@ -3,7 +3,7 @@
 This ledger records every Rafka transport/pool/reachability change that RDM must disposition before i143 can publish an import-eligible revision.
 
 **Fixed audit base:** `8704558070`  
-**Review-through tip for this reconciliation:** `77fdfd4948660b7ff2cd87cd77f8e31bab52adcb` (extended 2026-10-18 from `67755f3cdf41c1993da07c65761ca20dd02aa544`; the rows of the extension are the table below the first boundary table)  
+**Review-through tip for this reconciliation:** `2a02378db468247fd2785af32605de5876294f0a` (extended 2026-10-19 from `77fdfd4948660b7ff2cd87cd77f8e31bab52adcb`, and 2026-10-18 from `67755f3cdf41c1993da07c65761ca20dd02aa544`; each extension's rows are its own boundary table below)  
 **Canonical ownership:** `docs/architecture/build.md` and `docs/architecture/deployment-provider.md`
 
 The fixed base does not move. A newer Rafka tip extends the audit range.
@@ -412,3 +412,19 @@ File location alone never decides ownership.
 ```
 
 Any nonzero `mirror_pending` means `eligible=false`.
+
+### Boundary commits 77fdfd4948..2a02378db4
+
+Read 2026-10-19 by the i143 lead. Every non-merge boundary commit after `77fdfd4948` through
+`2a02378db4` (six of 34). One moves Rafka's one Node RPC call onto RDM's own dial and dispatch,
+which RDM's cells carry; none adds byte movement, request certainty, dial or pool freshness,
+dispatch or admission of Rafka's own. No row is MIRROR pending.
+
+| Rafka SHA | issue | change | disposition / proof |
+|---|---|---|---|
+| `267fadf88e` | i142 L2, i141 U3.1 | Rafka's Node RPC is RDM's `rdm-transport` / `rdm-core` at `f536f3ae`; `ping` dials the transport identity it probes as named (`NodeTarget::Endpoint`), the `HeardBirths` resolver is deleted (`StaticResolver`), and `node_rpc_ping.rs`'s foreign-node refusal half is removed | **MIRROR**. RDM `cf7ff748` (i143.e12.s42): an endpoint target is dialled as named and served, its evidence naming no node; carrying test `crates/rdm-transport/tests/one_endpoint.rs::a_call_to_an_endpoint_no_record_names_is_dialled_as_named_and_served`. RDM `8750b8ef` (i143.e12.s75): a target naming another node is dispatched, never refused; carrying test `crates/rdm-core/src/dispatch.rs::a_target_naming_another_node_or_none_is_dispatched_never_refused`. The 421 half stays Rafka's `an_unheld_tag_is_421_never_dispatched` |
+| `cc10512f15` | vocabulary | the topic record's storage-policy stamp counts revisions (`topics.rs`, a `jobs.rs` doc line) | **RAFKA DOMAIN**. Topic record product state, renamed; no transport change |
+| `aba123da7d` | i141, i142 `[now]` | `recovery_round` cell names, `before_ready`, citations retargeted from the deleted `node-lifecycle.md` stub (node-base, reach-reroute, mesh-ops) | **RAFKA DOMAIN**. Names and citations only; no behavior |
+| `3f4abbd02f` | i141 U3 | `node_rpc::register_rafka_ops`: the transitional adapters registered once, for this process's server and node-admin's `serve_app` | **RAFKA DOMAIN**. The same adapters through RDM's `ServerBuilder::adapter` under Rafka's product family; `wiring::tests` holds `serve_app`'s catalog equal to the direct registration's; no transport change |
+| `8f95f45b8e` | i141 U3 | `rdm_launch.rs`: the reader of RDM's launch environment (`rdm_core::launch`) and the Rafka role a `path.name`'s kind runs; uncalled until i141 e3.s6 | **RAFKA DOMAIN**. Reads what RDM hands a launched node; no transport change |
+| `197274aea2` | i141 U3 | `leadership.rs`: the one `LeadershipView` reader over RDM's membership (mesh primary, fabric-primary, cohort primaries as the held seat records name them); uncalled | **RAFKA DOMAIN**. Reads RDM's seat records; no transport change |
