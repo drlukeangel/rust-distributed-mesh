@@ -1166,6 +1166,77 @@ mod tests {
         }
     }
 
+    /// CONTRACT (fabric-state-sync.md, sequence: "all planned meshes ready; enter state-sync", then
+    /// "state-sync hook (round + trace context)"; states.md, Resize and roll: "A resize or roll puts the
+    /// fabric back to pending"): a Build that changes the accepted topology while the fabric's
+    /// state-sync has not gone out holds the climb. The application is asked to sync no round of a
+    /// Build whose planned meshes the fabric did not find ready, and once state-sync went out the
+    /// fabric is back to pending. Must NOT happen (gate red `e4s2-604f6d1c`, rounds.rs:201, "the
+    /// application is called once per round of state-sync", left 2): `sync_state` called for the
+    /// two-mesh Build at attempt 0 inside the one-mesh Build's state-sync (span `9962960417b0f787`,
+    /// trace `9449f79f`), then again in that Build's own round.
+    #[tokio::test]
+    async fn a_topology_accepted_before_state_sync_went_out_holds_the_climb_and_asks_the_application_nothing() {
+        use crate::accepted::MeshTopology;
+        use crate::build::MeshDesired;
+        use crate::build_state::{BuildAccepted, MemoryBuildStateAdapter};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let mesh = |m: &str| (m.to_string(), MeshTopology::of(&MeshDesired::of(m, [(NodeKind::NodeAdmin, 1)])));
+        let one_mesh = FabricTopology { fabric: "fabric1".into(), meshes: [mesh("mesh1")].into() };
+        let mut two_meshes = one_mesh.clone();
+        two_meshes.meshes.extend([mesh("mesh2")]);
+        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
+        builds.publish_accepted(&BuildAccepted { build_id: one.clone(), topology: one_mesh.clone(), submitted_change: None, submitted_at_ms: 1_000 }).await.unwrap();
+        builds.publish_accepted(&BuildAccepted { build_id: two.clone(), topology: two_meshes.clone(), submitted_change: None, submitted_at_ms: 2_000 }).await.unwrap();
+        let current = builds.current().await.unwrap().expect("a current Build");
+        assert_eq!((&current.build_id, current.attempt), (&two, 0), "the two-mesh Build is accepted and no attempt of it is claimed yet");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook = {
+            let calls = calls.clone();
+            SyncState::Hook(Arc::new(move |round: StateSyncRound| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move { round })
+            }))
+        };
+        let ep = rdm_transport::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let records = Arc::new(Records::default());
+        let rounds = FabricRounds::new(RoundEnv {
+            me: "mesh1.admin.1".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            fabric_id: FabricId::mint(),
+            topology: Arc::new(RwLock::new(projected(Vec::new()))),
+            client: Arc::new(NodeRpcClient::new(ep, Arc::new(rdm_transport::StaticResolver::new()))),
+            builds: builds.clone(),
+            contexts: Arc::new(AttemptContexts::in_memory()),
+            declarer: Declarer::new(),
+            wake: records.wake.clone(),
+            records: records.clone(),
+            hooks: FabricHooks { sync_state: Some(hook), traffic_opened: None },
+            actions: Arc::new(NoScratchpad),
+        });
+        // The one-mesh Build's climb entered state-sync; the frame that says so has not gone out yet.
+        records.set_published_fabric_state(Some(FabricState::Pending));
+        records.set_fabric_state(FabricState::StateSync);
+        let mut climb = rounds.climb.lock().await;
+        climb.tracked = Some(one_mesh.clone());
+        rounds.step_state_sync(&mut climb).await;
+        assert!(
+            climb.sync.is_none(),
+            "no sync_state round is opened for the two-mesh Build inside the one-mesh Build's state-sync: {:?}",
+            climb.sync.as_ref().map(|run| (run.sent.build_id.clone(), run.sent.attempt))
+        );
+        assert_eq!(records.fabric_state(), FabricState::StateSync, "the move back to pending waits until state-sync went out");
+        // State-sync went out: the changed topology puts the fabric back to pending.
+        records.set_published_fabric_state(Some(FabricState::StateSync));
+        rounds.step_state_sync(&mut climb).await;
+        assert_eq!(records.fabric_state(), FabricState::Pending, "the changed topology puts the fabric back to pending");
+        drop(climb);
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the application was asked to sync no round");
+    }
+
     /// CONTRACT (R-S2): only an admission ends a round command. A refusal by name rests on the receiver's own view, which
     /// heals, and a call that got no reply never reached it: both wait for an eligible event. Must NOT happen: a
     /// refusal that is final, which strands the round when a new primary commands members that still name the old one.
