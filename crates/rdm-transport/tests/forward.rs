@@ -227,15 +227,55 @@ async fn an_unreachable_target_under_the_origins_default_budget_is_carrier_edge_
 ///
 /// CONTRACT: the carrier's inner call is bounded by the origin's remaining budget less the reply
 /// reserve, so an unreachable target under a 500 ms budget answers `CarrierEdgeLost` inside it.
-#[tokio::test]
-async fn an_unreachable_target_under_a_500ms_budget_is_carrier_edge_lost_inside_it() {
-    let _trace = std::env::var("FWD_TRACE").ok().map(|_| tracing::subscriber::set_default(tracing_subscriber::fmt().with_test_writer().with_env_filter(tracing_subscriber::EnvFilter::new(std::env::var("FWD_TRACE").unwrap())).with_target(true).with_ansi(false).finish()));
-    let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), false).await;
-    r.target.router.shutdown().await.unwrap();
-    let started = std::time::Instant::now();
-    let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &overall(Duration::from_millis(500))).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::CarrierEdgeLost(_))), "{out:?}");
-    assert!(started.elapsed() < Duration::from_millis(500), "the named answer arrived inside the budget: {:?}", started.elapsed());
+///
+/// The cell runs on one thread, as a `#[tokio::test]` does, under an evidence capture, and prints from
+/// its trace where the origin's 500 ms went: the remaining budget the origin measured at its write, the
+/// carrier's `serve.via-carried-inner` span (the inner call bounded by that less the reserve), and the
+/// origin's call end.
+#[test]
+fn an_unreachable_target_under_a_500ms_budget_is_carrier_edge_lost_inside_it() {
+    let capture = rdm_transport::EvidenceCapture::start(&crate::evidence_dir(), "rdm-transport-forward-500ms-budget").expect("the cell's evidence file can be created");
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the cell's runtime");
+    let (trace, out, elapsed) = rt.block_on(async {
+        let root = tracing::info_span!("rdm.test.forward.reject.via-unreachable-target-under-500ms");
+        let trace = crate::delivery::trace_of(&root);
+        let (out, elapsed) = tracing::Instrument::instrument(
+            async {
+                let r = rig_with(Some(Arc::new(EdgeFact(Some("Direct Failed (dial failed)".into())))), false).await;
+                r.target.router.shutdown().await.unwrap();
+                let started = std::time::Instant::now();
+                let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &overall(Duration::from_millis(500))).await;
+                (out, started.elapsed())
+            },
+            root,
+        )
+        .await;
+        (trace, out, elapsed)
+    });
+    drop(rt);
+    let spans = capture.spans().expect("the cell's spans reached its evidence file");
+    let in_trace = |name: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace.as_str()).collect() };
+    let nano = |v: &serde_json::Value| v.as_u64().unwrap_or(0);
+    let forward_op = Forward::OP.to_string();
+    let call = in_trace("rdm.node_rpc.request.update.via-call").into_iter().find(|c| c["attributes"]["op"].as_str() == Some(forward_op.as_str()));
+    let t0 = call.map(|c| nano(&c["start_unix_nano"])).unwrap_or(0);
+    let at = |t: u64| (i128::from(t) - i128::from(t0)) / 1_000_000;
+    let measured = call
+        .and_then(|c| c["events"].as_array().and_then(|es| es.iter().find(|e| e["attributes"]["step"] == "remaining-measured").cloned()))
+        .map(|e| format!("{} ms remaining at {} ms", e["attributes"]["remaining_ms"].as_str().unwrap_or("?"), at(nano(&e["time_unix_nano"]))));
+    let inner: Vec<String> = in_trace("rdm.node_rpc.request.serve.via-carried-inner")
+        .iter()
+        .map(|s| format!("{}..{} ms ({})", at(nano(&s["start_unix_nano"])), at(nano(&s["end_unix_nano"])), s["attributes"]["outcome"].as_str().unwrap_or("?")))
+        .collect();
+    let ended = call.map(|c| format!("{} ms ({})", at(nano(&c["end_unix_nano"])), c["attributes"]["outcome"].as_str().unwrap_or("?")));
+    let timeline = format!(
+        "from the origin's call start: {measured:?} measured at the write; the carrier's inner call {inner:?}; the origin's call ended {ended:?}; reserve {} ms; flame {}",
+        rdm_core::forward::FORWARD_REPLY_RESERVE.as_millis(),
+        crate::delivery::flame(&trace)
+    );
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::CarrierEdgeLost(_))), "{out:?}; {timeline}");
+    assert!(elapsed < Duration::from_millis(500), "the named answer arrived inside the budget: {elapsed:?}; {timeline}");
+    println!("forward under a 500 ms budget: {elapsed:?}; {timeline}");
 }
 
 /// A carrier whose durable write of its own Direct fact is slow: reading the fact back waits 400 ms, naming
