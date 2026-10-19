@@ -5539,8 +5539,8 @@ async fn control_run(cell: &str, shape: Shape) {
         // reinforced; a lifecycle climbing pending, state-sync, state-commit, ready-for-traffic within
         // milliseconds sends only the last of them five times). A sender that holds its seat at the end sent all
         // five of its newest change.
-        let (odd, status_messages) = odd_status_messages(&sends, &final_seats);
-        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat or a newer change replaced it: {odd:?}");
+        let (odd, status_messages) = odd_status_messages(spans, &sends, &final_seats);
+        assert!(odd.is_empty(), "every status message is five sends of one change per publisher term, unless its sender lost the seat or a newer change replaced it: {odd:?}");
         let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= marks.2 && start_ns(sp) <= marks.3).collect();
         assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
         // Versions: a publisher's topology_version never goes backward; one birth's digest_seq never goes backward
@@ -5577,25 +5577,36 @@ async fn control_run(cell: &str, shape: Shape) {
     .await;
 }
 
-/// The status messages that are not five sends of one change, and how many messages there were. A sender may stop early by losing the seat it
-/// publishes for, or because a newer change of the same scope replaced it (`StatusReinforcement::observe`: a
-/// change replaces any change still being reinforced); a sender that holds its seat at the end sent all five of
-/// its newest change.
-fn odd_status_messages(sends: &[&Value], seats: &BTreeSet<String>) -> (Vec<((String, String, String), usize)>, usize) {
+/// The status messages that are not five sends of one change, and how many messages there were. A message is
+/// one change under one publisher term: a sender whose mesh publisher role stops (its view cut off, or its seat
+/// gone) and starts again adopts the fact it held and republishes it, the same `changed_at_rafka_ms`, five
+/// sends again (`MeshStatusPublisher::observe` / `StatusReinforcement::republish`: "the lifecycle state did not
+/// change, so the fact keeps its old `changed_at_rafka_ms`"); a term begins at the sender's
+/// `via-aggregate-publisher` start. A sender may stop early by losing the seat it publishes for, or because a
+/// newer change of the same scope replaced it (`StatusReinforcement::observe`: a change replaces any change
+/// still being reinforced); a sender that holds its seat at the end sent all five of its newest change.
+fn odd_status_messages(spans: &[Value], sends: &[&Value], seats: &BTreeSet<String>) -> (Vec<((String, String, String), usize)>, usize) {
+    let mut starts: BTreeMap<(String, String), Vec<u64>> = BTreeMap::new();
+    for sp in named(spans, "rdm.mesh.backbone.update.via-aggregate-publisher").into_iter().filter(|sp| sp["attributes"]["role"] == "start") {
+        starts.entry((s(&sp["attributes"]["node"]), format!("mesh:{}", s(&sp["attributes"]["mesh"])))).or_default().push(start_ns(sp));
+    }
+    let term = |node: &str, scope: &str, at: u64| starts.get(&(node.to_string(), scope.to_string())).map(|v| v.iter().filter(|t| **t <= at).count()).unwrap_or(0);
     let mut groups: BTreeMap<(String, String, String), usize> = BTreeMap::new();
     for sp in sends {
-        *groups.entry((s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]))).or_default() += 1;
+        let (node, scope, changed_at) = (s(&sp["attributes"]["node"]), s(&sp["attributes"]["scope"]), s(&sp["attributes"]["changed_at_rafka_ms"]));
+        let t = term(&node, &scope, start_ns(sp));
+        *groups.entry((node, scope, format!("{changed_at}#{t}"))).or_default() += 1;
     }
     let mut newest: BTreeMap<(String, String), u64> = BTreeMap::new();
     for (sender, scope, changed_at) in groups.keys() {
-        let at = changed_at.parse::<u64>().unwrap_or_else(|_| panic!("status send changed_at_rafka_ms '{changed_at}' is not a number"));
+        let at = changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap_or_else(|_| panic!("status send changed_at_rafka_ms '{changed_at}' is not a number"));
         let n = newest.entry((sender.clone(), scope.clone())).or_default();
         *n = (*n).max(at);
     }
     let messages = groups.len();
     let odd = groups
         .into_iter()
-        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && seats.contains(sender) && newest[&(sender.clone(), scope.clone())] == changed_at.parse::<u64>().unwrap()))
+        .filter(|((sender, scope, changed_at), n)| *n > 5 || (*n < 5 && seats.contains(sender) && newest[&(sender.clone(), scope.clone())] == changed_at.split('#').next().unwrap_or_default().parse::<u64>().unwrap()))
         .collect();
     (odd, messages)
 }
@@ -6400,14 +6411,14 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         }
     }
     let refed_at = now_ns();
-    // A mesh primary that is silent loses its seat to its mesh-mate in every other admin's view.
+    // A mesh primary that is silent keeps its seat: the seat never moves before the exit proof (R-EL1;
+    // i143-rulings-2026-10-14-g3-claim-ids.md: "The seat never moves before the proof"), and a cut primary is
+    // running, so none exists (a held-running primary is terminated only past RDM_HUNG_HOLD_FLOORS floors, R-FM1,
+    // longer than this cut). Its mesh-mate's own view still names it the primary.
     if which == Victims::MeshPrimary {
-        let mname = s(&mate["name"]);
-        wait_for(&format!("{mname} holds the seat of {other_mesh} in its own view"), bound, || async {
-            let v = f.estate.node_values_at(&mname).await;
-            v.iter().find(|n| n["name"] == mname.as_str() && n["is_primary"] == true).map(|_| ())
-        })
-        .await;
+        let (mname, pname) = (s(&mate["name"]), s(&primary_victim["name"]));
+        let v = f.estate.node_values_at(&mname).await;
+        assert!(v.iter().any(|n| n["name"] == pname.as_str() && n["is_primary"] == true), "{mname}'s view still names the silent {pname} the primary of {other_mesh}: no exit proof, no seat move");
     }
     // The cut is held two more windows: repair stays bounded and nothing changes shape.
     tokio::time::sleep(window * 2).await;
@@ -6449,24 +6460,30 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let final_seats: BTreeSet<String> = st2.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
     let (mate_n, mate_id, wm) = (s(&mate["name"]), s(&mate["node_id"]), window_ms);
     let (f0, vn2, vmeshes) = (formation.clone(), vnames.clone(), victims.iter().map(|v| (s(&v["name"]), s(&v["mesh"]))).collect::<Vec<_>>());
+    // The cut primary's mesh: its aggregate is the backbone receipt every peer-mesh admin's coverage of that
+    // mesh's admins comes from (gossip.md section 6), so their coverage of its mesh-mates lapses with it.
+    let pv_mesh = s(&primary_victim["mesh"]);
     let scenarios: &[&str] = &["C14"];
     close_run(f, a, inv, nodes, launches, primaries, connections, scenarios, json!({"events": events}), move |_f, spans, inv| {
         // Status frames are event-driven: every message is five identical sends of one change; none in the closing quiet window.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
-        let (odd, status_messages) = odd_status_messages(&sends, &final_seats);
-        assert!(odd.is_empty(), "every status message is five sends of one change, unless its sender lost the seat or a newer change replaced it: {odd:?}");
+        let (odd, status_messages) = odd_status_messages(spans, &sends, &final_seats);
+        assert!(odd.is_empty(), "every status message is five sends of one change per publisher term, unless its sender lost the seat or a newer change replaced it: {odd:?}");
         let quiet_after: Vec<&&Value> = sends.iter().filter(|sp| start_ns(sp) >= after0 && start_ns(sp) <= after1).collect();
         assert!(quiet_after.is_empty(), "the converged fabric is quiet: {} status sends in the closing window", quiet_after.len());
         let tv = topology_versions(spans);
         for (p, seq) in &tv {
             assert!(seq.windows(2).all(|w| w[0] <= w[1]), "{p}: topology_version went backward: {seq:?}");
         }
-        // Repair is bounded (one attempt per pair per window) and aimed at the cut: every attempt names a victim.
+        // Repair is bounded (one attempt per pair per window) and aimed at the cut: every attempt names a victim,
+        // or a member of the cut primary's mesh, whose coverage at a peer-mesh admin came from that primary's
+        // aggregate (gossip.md section 6: "A peer mesh the primary cannot hear goes stale in every node-admin of
+        // the mesh, and each one re-feeds it").
         let att = refeeds(spans, cut_at);
         let mut per_pair: BTreeMap<(String, String), u64> = BTreeMap::new();
         for sp in att.iter().filter(|sp| start_ns(sp) <= healed_at) {
             let (obs, peer) = (s(&sp["attributes"]["node"]), s(&sp["attributes"]["peer_node"]));
-            assert!(vn2.contains(&obs) || vn2.contains(&peer), "a repair attempt names no victim: {sp}");
+            assert!(vn2.contains(&obs) || vn2.contains(&peer) || peer.split('.').next() == Some(pv_mesh.as_str()), "a repair attempt names no victim nor a member of the cut primary's mesh {pv_mesh}: {sp}");
             *per_pair.entry((obs, peer)).or_default() += 1;
         }
         let held_ns = healed_at - cut_at;
@@ -6484,7 +6501,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
         assert_eq!(created, BTreeSet::from([f0.clone()]), "no Build was accepted through cut and heal");
         let seat_to_mate = if which == Victims::MeshPrimary {
             let moved = named(spans, "rdm.mesh.election.resolve.via-mesh-primary").into_iter().filter(|sp| sp["attributes"]["observer"] == mate_n.as_str() && sp["attributes"]["winner_node_id"] == mate_id.as_str() && start_ns(sp) >= cut_at && start_ns(sp) <= healed_at).count();
-            assert!(moved >= 1, "the mesh-mate {mate_n} announced itself mesh primary while the victim was silent");
+            assert_eq!(moved, 0, "the mesh-mate {mate_n} was not seated while the victim was silent: no exit proof, no seat move (R-EL1)");
             moved
         } else {
             0
