@@ -1426,6 +1426,47 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
     eprintln!("trace {}: rdm.node_rpc.route.resolve.via-connections route=via-peer carrier=mesh1.admin.2 protocol=status; trace {mp_trace}: {NAME_SPAN} answered=applied outcome=name-updated", carried[0].0);
 }
 
+/// CONTRACT (node-name-update.md Precondition: "A stopped node is never renamed"; Validation: "the
+/// precondition holds, else `RejectedAdmittingConnections { status, held_connections }`"; Failure and
+/// receipts: "Refused before the claim ...: nothing written, nothing changed"; node-replace.md: "A node
+/// is renamed only while it is live ... it is stopped after"): `node.name.update` renaming the stopped
+/// `mesh1.rpc.2` (parked in the mesh-primary's view, its row at `mesh1.rpc.2`) to `2.old` is refused
+/// `RejectedAdmittingConnections { status: Leaving, held_connections: [] }`, `Leaving` being the status
+/// a stopped birth is held at. Nothing is claimed at `mesh1.rpc.2.old`, the row stays at `mesh1.rpc.2`
+/// as it was, the view lists the node at `mesh1.rpc.2`, and the birth is told nothing. The same rename
+/// again is refused the same way. One `via-writer` span per call says `rejected-admitting-connections`
+/// with `traffic=Stopped` and `connections=stopped`, its detail naming the rule. What must NOT happen:
+/// `NameUpdated`, a row at the new key, or a stopped node renamed to read its name at its next join.
+#[test]
+fn a_stopped_nodes_rename_is_refused_admitting_connections_and_nothing_is_claimed_or_told() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        quiet_door(&rig).await;
+        let stopped = &b["rpc2"];
+        stopped_with_row(&rig, stopped, &[]).await;
+        let row = rig.nodes.node_row_at(&stopped.node.name).await.unwrap();
+        let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        let refused = StatusReply::RejectedAdmittingConnections { status: rdm_core::views::NodeStatus::Leaving, held_connections: vec![] };
+        assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await), refused);
+        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap(), None, "nothing is claimed at the new name");
+        assert_eq!(rig.nodes.node_row_at(&stopped.node.name).await.unwrap(), row, "the row stands at its key as it was");
+        assert!(rig.topology.read().await.nodes.iter().any(|n| n.node_id == stopped.node.node_id && n.name == stopped.node.name), "the view lists the stopped node at its name");
+        assert_eq!(reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await), refused, "a repeat is refused the same way");
+    });
+    let spans = cap.spans(NAME_SPAN);
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    for (_, attrs) in &spans {
+        assert_eq!(
+            (attrs.get("outcome").map(String::as_str), attrs.get("traffic").map(String::as_str), attrs.get("connections").map(String::as_str), attrs.get("answered")),
+            (Some("rejected-admitting-connections"), Some("Stopped"), Some("stopped"), None),
+            "{attrs:?}"
+        );
+        assert!(attrs.get("detail").is_some_and(|d| d.contains("a stopped node is never renamed")), "the refusal names the rule: {attrs:?}");
+    }
+    eprintln!("trace {}: {NAME_SPAN} from=mesh1.rpc.2 name=2.old traffic=Stopped connections=stopped outcome=rejected-admitting-connections (nothing claimed, nothing told)", spans[0].0);
+}
+
 /// CONTRACT (proposal §2.2 steps 4-5, §2.3 "Stopped node: `node.name.updated` after both writes of the
 /// move ... Nothing is sent to the node"; §2.1 Idempotency: a repeat "for a stopped node ... completes
 /// on the row"): `node.name.update` renaming the stopped `mesh1.rpc.2` (parked in the mesh-primary's
