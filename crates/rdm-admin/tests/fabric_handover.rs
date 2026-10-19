@@ -2653,6 +2653,29 @@ fn the_fabric_primary_commands_an_rpc_cohorts_primary_update_only_through_its_me
     });
 }
 
+/// CONTRACT (node-primary-update.md, Failure contract: "An identical retry of the call replays the
+/// committed result before any revision check; a call with a conflicting payload for the same operation
+/// is refused by name"; "A later attempt that reads the committed row has discovered the commit"): X,
+/// the fabric-primary, commands the update of mesh1's rpc seat held by B1 through P; P writes the row
+/// and its view then names B2. X sends the identical command again (the same operation, the same
+/// holder B1), as a later attempt of the same run does after an incomplete answer: P replays the
+/// committed result from the row. Must NOT happen: P judging the call against the holder its view names
+/// now (B2) and refusing it as a conflict with its own row, or a second row.
+#[test]
+fn a_retry_of_a_commanded_cohort_update_replays_from_the_row_once_the_mesh_primary_names_the_successor() {
+    let cap = trace_capture("fabric-handover");
+    cap.run(async {
+        let f = cohort_fabric(true).await;
+        let b1 = f.x.door.topology.read().await.members().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        let op = update_operation(Seat::Cohort(RPC), "b2", 2, "node.restart:mesh1.rpc.1");
+        let moved = f.x.door.command_update_primary(&b1, "b2", 2, &op).await.expect("the proxied update moves the seat");
+        assert_eq!(f.p.door.topology.read().await.cohort_primary("mesh1", RPC).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"), "P's view names B2 after its row");
+        let again = f.x.door.command_update_primary(&b1, "b2", 3, &op).await.expect("the identical retry replays from P's row");
+        assert_eq!(again, moved, "the retry is answered with the committed result");
+        assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "still one row");
+    });
+}
+
 /// CONTRACT (proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update`
 /// commanded for a cohort with no other node of that type in the mesh is refused by name, `cannot
 /// transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available. The
