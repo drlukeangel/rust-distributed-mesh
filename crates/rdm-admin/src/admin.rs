@@ -3110,6 +3110,7 @@ mod tests {
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(std::sync::OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(std::sync::OnceLock::new()),

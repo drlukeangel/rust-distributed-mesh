@@ -330,6 +330,10 @@ pub struct StatusAuthority {
     pub status_storage: Arc<dyn crate::status_storage::StatusStorage>,
     /// The mesh ids this admin holds, by mesh name.
     pub mesh_ids: Arc<dyn Fn() -> BTreeMap<String, MeshId> + Send + Sync>,
+    /// The births this admin's offline tick watches through durable rows alone (`durable_births`: a
+    /// birth of a planned path its view holds nothing at, one born while this admin was silent),
+    /// refreshed every tick (`Records::durable`).
+    pub durable: Arc<Mutex<Vec<crate::model::Node>>>,
     /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
     /// digest published), filled once it has joined: what a node-admin's status kick asks of it.
     pub republish: Republish,
@@ -1646,6 +1650,7 @@ mod tests {
             declared: Arc::new(Mutex::new(Declared::default())),
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
@@ -1711,6 +1716,7 @@ mod tests {
             declared: Arc::new(Mutex::new(Declared::default())),
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
@@ -1786,6 +1792,7 @@ mod tests {
             declared: Arc::new(Mutex::new(Declared::default())),
             status_storage: status,
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
@@ -2002,6 +2009,7 @@ mod tests {
             declared: Arc::new(Mutex::new(Declared::default())),
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
@@ -2070,6 +2078,7 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Default::default(),
             commands: Default::default(),
             own: Default::default(),
@@ -2095,6 +2104,42 @@ mod tests {
     /// its own mesh's primary like every other kind's. mesh2's primary applies mesh2.admin.2's
     /// ReadyForTraffic; the fabric-primary, of mesh1, refuses it naming the seat it needs, the
     /// mesh-primary of mesh2. Must NOT happen: a node-admin's status set by the fabric-primary.
+    /// CONTRACT (Q11 = a; node-status.md "Status report": every kind reports to its mesh's primary, which
+    /// sets its status): a mesh-primary decides a declaration for a birth its offline tick watches through
+    /// durable rows alone (born while this admin was silent: its view holds nothing at the path) as the
+    /// birth's authority: the exact birth's ReadyForTraffic is applied. A node id neither its view nor its
+    /// durable births hold is still `SubjectUnknown`. Must NOT happen: the re-born mesh-primary answering a
+    /// resumed member's ReadyForTraffic `SubjectUnknown`, which ends the member's owed declaration and
+    /// leaves it `pending` (kept/e6s7-i144-e4-re-born-admin-follower-hold-race, trace
+    /// f1c56aff7dee1b7a4d25e8564d306141).
+    #[test]
+    fn a_declaration_for_a_birth_watched_through_durable_rows_is_decided_by_its_mesh_primary() {
+        let mut m2p = node("mesh2.admin.1");
+        m2p.kind = NodeKind::NodeAdmin;
+        m2p.mesh = "mesh2".into();
+        m2p.status = crate::model::NodeStatus::ReadyForTraffic;
+        m2p.is_primary = true;
+        let mut member = node("mesh2.rpc.1");
+        member.kind = NodeKind::RpcNode;
+        member.mesh = "mesh2".into();
+        member.status = crate::model::NodeStatus::PendingReconnect;
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![m2p.clone()],
+        };
+        let auth = authority_of(&m2p, view.clone());
+        auth.durable.lock().unwrap().push(member.clone());
+        let declare = |n: &crate::model::Node| StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic, operation: None };
+        let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(&member));
+        assert_eq!(reply, R::Applied, "the mesh-primary applies the ReadyForTraffic of a birth it watches through durable rows");
+        assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic, None)) if row.node_id == member.node_id && row.name == member.name), "{effect:?}");
+        let stranger = node("mesh2.rpc.9");
+        let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare(&stranger));
+        assert_eq!(reply, R::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a birth neither viewed nor watched is unknown");
+        assert!(effect.is_none());
+    }
+
     #[test]
     fn a_node_admins_declaration_is_applied_by_its_own_mesh_primary_never_the_fabric_primary() {
         let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
@@ -2395,6 +2440,7 @@ mod tests {
             declared: Arc::new(Mutex::new(Declared::default())),
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
@@ -2493,6 +2539,7 @@ mod tests {
             declared: Arc::new(Mutex::new(Declared::default())),
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
+            durable: Default::default(),
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),

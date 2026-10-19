@@ -115,7 +115,7 @@ impl NodeObserver for LiveMesh {
                     meshes: vec![], nodes: vec![me, node.clone()],
                 })),
                 declared: Default::default(), status_storage: Arc::new(rdm_admin::status_storage::MemoryStatusStorage::default()),
-                nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default),
+                nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 republish: Default::default(), commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
                 hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), configs: Default::default(),
                 configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,

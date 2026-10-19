@@ -1033,6 +1033,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     topology: control.topology.clone(),
                                     declared: records.declared.clone(),
                                     mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
+                                    durable: Default::default(),
                                     republish: republish.clone(),
                                     commands: commands.clone(),
                                     own: own_commands.clone(),
