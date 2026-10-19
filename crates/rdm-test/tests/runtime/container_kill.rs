@@ -55,6 +55,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     .await;
     let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await.build_id.to_string();
     estate.settles_to(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     let before = estate.node_value(NODE).await;
     assert_eq!(before["provider"], "container", "{before}");

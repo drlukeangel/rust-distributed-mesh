@@ -100,7 +100,7 @@ async fn fixture(cell: &str) -> Fixture {
     // The fault falls on an established fabric: a cut that falls while the commit-state or
     // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
-    wait_for("the fabric is ready-for-traffic before the fault", Duration::from_secs(60), || async { (estate.fabric_view().await.status == ScopeStatus::ReadyForTraffic).then_some(()) }).await;
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     Fixture { estate, accepted, attempt_before, fabric_primary, lost, lost_mesh_id, before }
 }
 
@@ -666,6 +666,7 @@ async fn two_peer_meshes_whose_admins_are_lost_together_are_two_investigations_e
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     let fp = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let fp_mesh = fp.split('.').next().unwrap().to_string();
     let lost: Vec<String> = ["mesh1", "mesh2", "mesh3"].iter().filter(|m| **m != fp_mesh).map(|m| m.to_string()).collect();

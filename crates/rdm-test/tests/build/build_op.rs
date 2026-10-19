@@ -15,7 +15,7 @@
 
 use iroh::SecretKey;
 use rdm_core::{NodeKind, PathName};
-use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
+use rdm_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, StartDisposition, WorkflowKind, WorkflowStream};
 use rdm_admin::build_state::{BuildFact, StepOutcome};
 use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::build::{Build, BuildReply, BuildRequest, StepResult};
@@ -125,10 +125,7 @@ async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)
     caller.learn().await;
     // A workflow a caller submits is refused until the initial fabric has first reached ready-for-traffic
     // (states.md "The initial fabric before ready-for-traffic").
-    Fabrics::new(carrier.clone())
-        .fact("ready-for-traffic: the initial fabric has climbed", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic)
-        .await
-        .unwrap_or_else(|end| panic!("{end}"));
+    estate.until_fabric_ready(Duration::from_secs(90)).await;
     (carrier, frames)
 }
 
@@ -668,10 +665,8 @@ struct Lost {
 async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Caller, carrier: &BuildCarrier, cut: Value, survivor_holds: Option<&str>) -> Lost {
     let fp = carrier.fabric_primary().to_string();
     let root = estate.fabric_store_root();
-    Fabrics::new(carrier.clone())
-        .fact("ready-for-traffic: its first state-commit has published the rows held in the scratchpad", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic)
-        .await
-        .unwrap_or_else(|end| panic!("{end}"));
+    // Ready-for-traffic: its first state-commit has published the rows held in the scratchpad.
+    estate.until_fabric_ready(Duration::from_secs(90)).await;
 
     let door = Door::at(&estate, &fp).await;
     door.arm("cut", cut).await;

@@ -89,6 +89,7 @@ async fn the_current_build_read_from_the_build_facts_is_the_one_accepted_topolog
     assert!(matches!(&refused, Err(CallEnd::BuildInProgress { current }) if current.as_str() == a), "a second change while {a} reconciles is refused build-in-progress, naming it: {:?}", refused.as_ref().err());
     estate.follow(stream).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let built = build_log::build_value(&estate.carrier().await, &a).await;
     assert_eq!(paths(&built, "mesh1"), ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"], "{built}");
     assert_eq!(built["submitted_change"]["kind"], "reconcile_fabric", "the change is kept as history: {built}");

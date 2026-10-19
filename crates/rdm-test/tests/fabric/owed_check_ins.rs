@@ -74,7 +74,7 @@ async fn a_members_check_in_owed_while_its_mesh_primary_is_suspended_is_delivere
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 2, 1)]).await;
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     let admin_of = |primary: bool| views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary == primary).cloned().expect("mesh2 has two admins");
     let (holder, member) = (admin_of(true), admin_of(false));
     assert!(!holder.is_fabric_primary, "mesh2's primary is not the fabric-primary: the climb goes on around it");
@@ -132,7 +132,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
     let views = estate.settled_views(&[("mesh1", 2, 1), ("mesh2", 3, 1)]).await;
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     let holder = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 has a primary");
     assert!(!holder.is_fabric_primary, "mesh2's primary is not the fabric-primary: the climb goes on around it");
     let mut others: Vec<NodeView> = views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && !n.is_primary).cloned().collect();
@@ -196,7 +196,7 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
     let views = estate.settled_views(&[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
-    until_fabric(&estate, ScopeStatus::ReadyForTraffic, None, Duration::from_secs(60)).await;
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     let primary = views.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).cloned().expect("mesh2 has a primary");
     let fp = views.iter().find(|n| n.is_fabric_primary).cloned().expect("the fabric has a primary");
     assert_eq!(fp.mesh, "mesh1", "the fabric-primary is mesh1's admin");

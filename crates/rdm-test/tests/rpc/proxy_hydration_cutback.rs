@@ -64,6 +64,7 @@ async fn born(cell: &str) -> Estate {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The settled view is the admin's. The source records a Proxy to the destination through the
     // carrier, so its own resolver must hold both births first: a node learns a peer's birth by
     // gossip, and a source that has not heard the destination yet refuses it Unknown by name.

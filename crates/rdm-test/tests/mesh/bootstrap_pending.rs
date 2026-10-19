@@ -281,6 +281,7 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     let built = estate.reconcile_shape("fabric1", &shape).await;
     let accepted = built.build_id.to_string();
     let before = estate.settled_views(&shape).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let fabric_holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
     // The lost mesh is a sole-admin mesh that does not hold the fabric seat.
     let lost_admin = sole_admin_off_the_seat(&before);

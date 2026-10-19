@@ -58,6 +58,8 @@ async fn estate(cell: &str) -> (Estate, rdm_client::BuildId) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     (estate, accepted.build_id)
 }
 

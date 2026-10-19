@@ -49,6 +49,7 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
     let brokers: Cohort = ("mesh1".into(), "broker".into());
     let nodes = settle(&estate, "roles").await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     assert_eq!(nodes.iter().filter(|n| n["kind"] == "broker").count(), 3, "{nodes:#?}");
     let primaries = advertised_primaries(&nodes);
     assert_eq!(primaries.keys().map(|c| c.1.as_str()).collect::<Vec<_>>(), ["broker", "compute", "gateway", "node_admin"]);

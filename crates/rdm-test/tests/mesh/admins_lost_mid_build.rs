@@ -75,6 +75,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     estate.reconcile(&shape(3)).await;
     let before = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mesh2_id = estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string();
     // mesh2's members are grown by mesh2's admin primary (the lowest NodeId of its admins).
     let mesh2_primary = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).unwrap();

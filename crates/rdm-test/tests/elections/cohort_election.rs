@@ -396,6 +396,7 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     let hold = Duration::from_secs(4);
 
     build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // A peer mesh's members reach this admin through its primary's backbone
     // publication: the view settles within a publication round or two.
     let nodes = estate

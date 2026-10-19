@@ -346,6 +346,8 @@ async fn form(cell: &str, shape: Shape) -> Formed {
     actions.push(json!({"t_ms": t0, "action": "build.create", "via": "build.create", "attempt": reconciled.attempt, "build_id": build_id, "body": body}));
     let build = build_now(&estate, &build_id).await;
     actions.push(json!({"t_ms": now_ms(), "action": "build.complete", "build_id": build_id, "attempt": build["attempt"], "executor": build["executor"]}));
+    // Every fault the run arms comes after the fabric's start (Q74).
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     Formed { cell: cell.into(), dir, shape, seed: seed(), candidate, set, bound, estate, actions, topology_initial, provider_before, started_ms, build_id, build }
 }
 

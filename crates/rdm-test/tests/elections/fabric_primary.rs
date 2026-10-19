@@ -315,6 +315,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     .await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let gone = estate.until_node("mesh1.rpc.2", "this admin hears mesh1.rpc.2", Duration::from_secs(30), |n| n.cloned()).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.kill_node("mesh1.rpc.2").await;
     estate
         .until_view("a new birth restores two ready rpc nodes", rdm_transport::membership::staleness_floor() + Duration::from_secs(60), |views| {

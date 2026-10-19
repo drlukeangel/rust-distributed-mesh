@@ -29,11 +29,12 @@ fn ready(n: &rdm_client::NodeView) -> bool {
     n.status == NodeStatus::ReadyForTraffic
 }
 
-/// Bootstraps mesh1 and builds 1 more node-admin and 2 rpc nodes, all ready.
+/// Bootstraps mesh1 and builds 1 more node-admin and 2 rpc nodes, all ready, on a fabric ready for traffic.
 async fn small_estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     estate.settles_to(&[("mesh1", 2, 2)], SETTLE).await;
+    estate.until_fabric_ready(SETTLE).await;
     estate
 }
 
@@ -161,6 +162,7 @@ async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() 
     let build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await.build_id.to_string();
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"].iter().map(|s| s.to_string()).collect();
     let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
     let holder_dir = if holder.to_string() == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&holder.to_string()).await) };
     let rpc_id = estate.node_view("mesh1.rpc.1").await.node_id;

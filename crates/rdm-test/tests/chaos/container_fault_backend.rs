@@ -668,6 +668,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
     let before = values(&estate.settles_to_named(&all, Duration::from_secs(60)).await);
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let kept_mesh = holder.split('.').next().unwrap().to_string();
     let lost_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
@@ -1104,6 +1105,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 3, 3)]).await;
     estate.settled_views(&[("mesh1", 3, 3)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let floor = rdm_transport::membership::staleness_floor();
     let build_id = estate.accepted_build_id().await;
     let nodes0 = estate.node_values().await;

@@ -189,6 +189,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
 
     // 3 + 5. Lose mesh2's admin primary: its successor publishes mesh2 and
     // forwards mesh1, and mesh2's rpc nodes hold mesh1 again.
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let old = primary(&nodes, "mesh2");
     let (old_name, old_id) = (s(&old["name"]), s(&old["node_id"]));
     estate.kill_node(&old_name).await;
