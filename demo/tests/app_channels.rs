@@ -116,7 +116,8 @@ async fn broker(
         data_dir: dir.into(),
         store_dir: shared.into(),
         mesh_id: d.mesh_id.clone(),
-        mesh_issuer: None,
+        issuing: None,
+        roots: Vec::new(),
         connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let _ = root.runner.joins.expect(rdm_admin::join::Deployed {
