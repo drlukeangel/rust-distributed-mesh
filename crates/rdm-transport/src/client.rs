@@ -842,6 +842,43 @@ impl NodeRpcClient {
         Ok(OwedCall { guard, frames, attempted, evidence, attempts, _task: AbortOnDrop(Some(handle)) })
     }
 
+    /// [`Self::owe_steps`]'s wait for an Owed request's receiver this caller's view does not hold yet
+    /// (`Unknown`, node-rpc.md §43: "never on absence from a view"): read again at the resend pacing
+    /// (first at the publish cadence, then backoff to the floor) and on every change of the view.
+    /// Returns once the receiver resolves, or once the view holds it proven gone or exited, which ends
+    /// the request as before.
+    async fn until_resolved(&self, target: &NodeTarget, span: &tracing::Span) {
+        let pacing = self.delivery.pacing();
+        let mut changes = self.resolver.changes();
+        let mut waits = 0u32;
+        loop {
+            if let Some(c) = changes.as_mut() {
+                c.borrow_and_update();
+            }
+            if !matches!(self.reach(target), Err(NotSentReason::Resolve(ResolveFailure::Unknown))) {
+                return;
+            }
+            if waits == 0 {
+                span.in_scope(|| tracing::info!(step = "unresolved", "the owed request's receiver is not in this caller's view yet: it stays owed and is opened once it resolves"));
+            }
+            waits += 1;
+            let moved = async {
+                // A view that no longer reports changes leaves the pacing alone to read it again.
+                let changed = match changes.as_mut() {
+                    Some(c) => c.changed().await.is_ok(),
+                    None => false,
+                };
+                if !changed {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(pacing.after(waits)) => {}
+                () = moved => {}
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn owe_steps<R, D>(
         &self,
@@ -865,6 +902,12 @@ impl NodeRpcClient {
             (Budget::Stream { .. } | Budget::Owed, None) => None,
             (Budget::Overall(_), None) => unreachable!(),
         };
+        // node-rpc.md §43: an Owed request is never ended by its receiver's absence from this caller's
+        // view. Its delivery identity is minted against the receiver's endpoint, so a receiver the view
+        // does not hold yet is waited for before anything is minted; only the owner's drop ends the wait.
+        if matches!(opts.budget, Budget::Owed) {
+            self.until_resolved(target, span).await;
+        }
         let mut owed = match self.owe(target, final_target, op, payload, max_reply, opts, true, (send_deadline, overall), span) {
             Ok(o) => o,
             Err((out, ev)) => return (out.retyped().expect("no reply before anything is owed"), ev),
