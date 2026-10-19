@@ -153,7 +153,8 @@ fn exact_group(proc: &str, pid: u32, start: Option<u64>) -> Group {
 
 /// The leader's `stat` read at `path` against the handle's start token `start`: `None` when it names
 /// that process, so its thread group is read; `Gone` when it names another process or the pid no
-/// longer exists; `Unreadable` when no start token can be read from it.
+/// longer exists (gone before the open, or released between the open and the read: [`task_exited`]);
+/// `Unreadable` when no start token can be read from it.
 fn start_token_group(path: &str, read: std::io::Result<String>, start: u64) -> Option<Group> {
     match read {
         Ok(stat) => match rdm_core::runtime::start_token_of_stat(&stat) {
@@ -161,7 +162,7 @@ fn start_token_group(path: &str, read: std::io::Result<String>, start: u64) -> O
             Some(_) => None,
             None => Some(Group::unreadable(path, format!("no start token in {stat:?}"))),
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Group::Gone),
+        Err(e) if task_exited(&e) => Some(Group::Gone),
         Err(e) => Some(Group::unreadable(path, e)),
     }
 }
