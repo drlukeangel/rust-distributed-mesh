@@ -163,6 +163,20 @@ fn rule4_scenario_on_node_base_fails() {
 
 /// A throwaway workspace: `knobs` has a `test-knobs` feature, `app` (a binary) depends on it with the
 /// feature enabled from `[dependencies]` (`shipped`) or from `[dev-dependencies]` only.
+/// CONTRACT (PRD §14: no second generic internal mTLS stack): a workspace member that depends
+/// directly on a TLS stack fails rule 6, naming the member and the stack; a member that reaches the
+/// stack only through Iroh, or only as a dev-dependency, passes. Must NOT happen: a second TLS
+/// stack beside the one Iroh's endpoint carries entering any RDM crate unseen.
+#[test]
+fn rule6_a_member_depending_directly_on_a_tls_stack_fails_and_iroh_s_own_passes() {
+    let f = Fixture::new(&[("rdm-transport", &[("iroh", ""), ("rustls", "")])], &[("iroh", &[("rustls", "")]), ("rustls", NONE)]);
+    assert_eq!(check(&f), vec![Violation::SecondTlsStack { package: "rdm-transport".into(), tls: "rustls".into() }]);
+    let f = Fixture::new(&[("rdm-transport", &[("iroh", "")])], &[("iroh", &[("rustls", "")]), ("rustls", NONE)]);
+    assert_eq!(check(&f), vec![], "the stack Iroh carries is reached only through Iroh");
+    let f = Fixture::new(&[("rdm-node", &[("native-tls", "dev")])], &[("native-tls", NONE)]);
+    assert_eq!(check(&f), vec![], "a dev-only TLS crate never ships");
+}
+
 fn knobs_fixture(shipped: bool) -> Fixture {
     let f = Fixture::new(&[("knobs", NONE), ("app", &[("knobs", "")])], &[]);
     let ws = f.root();

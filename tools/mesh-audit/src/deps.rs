@@ -14,6 +14,9 @@
 //!    Cargo feature (R-I3: a test-only setting never reaches a shipped binary
 //!    through feature unification). Read from `cargo tree -p <package>
 //!    -e normal,build`, the feature set `cargo build -p <package>` resolves.
+//! 6. no workspace member depends directly (normal/build) on a TLS stack: the one
+//!    TLS stack is the one Iroh's endpoint carries, reached only through it (§14:
+//!    no second generic internal mTLS stack).
 //!
 //! A rule over a package that does not exist yet is vacuous; it starts biting
 //! the commit that adds the package.
@@ -69,6 +72,8 @@ pub enum Violation {
     PrivateInterface { package: String, dependency: String },
     /// Rule 5: a binary package's shipped build enables a dependency's `test-knobs` feature.
     TestKnobsShipped { package: String, dependency: String },
+    /// Rule 6: a workspace member depends directly on a TLS stack.
+    SecondTlsStack { package: String, tls: String },
     /// `cargo metadata` could not run.
     Metadata(String),
 }
@@ -97,6 +102,10 @@ impl fmt::Display for Violation {
             Self::TestKnobsShipped { package, dependency } => write!(
                 f,
                 "rule 5: `{package}` builds `{dependency}` with the `test-knobs` feature; it may be enabled from [dev-dependencies] only"
+            ),
+            Self::SecondTlsStack { package, tls } => write!(
+                f,
+                "rule 6: `{package}` depends directly on TLS stack `{tls}`; the one TLS stack is the one Iroh's endpoint carries, reached only through it"
             ),
             Self::Metadata(e) => write!(f, "cargo metadata failed: {e}"),
         }
@@ -245,6 +254,21 @@ pub fn check_graph(g: &Graph) -> Vec<Violation> {
     }
     out
 }
+
+/// The TLS stacks rule 6 refuses as a workspace member's direct dependency.
+pub const TLS_STACKS: &[&str] = &[
+    "rustls",
+    "tokio-rustls",
+    "hyper-rustls",
+    "openssl",
+    "openssl-sys",
+    "native-tls",
+    "tokio-native-tls",
+    "hyper-tls",
+    "boring",
+    "boring-sys",
+    "s2n-tls",
+];
 
 /// The feature every shipped build must resolve without.
 pub const TEST_KNOBS: &str = "test-knobs";
