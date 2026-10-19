@@ -50,7 +50,8 @@ sequenceDiagram
 
 ## Failure and receipts
 
-An admin that refuses the material by name (another mesh, a cert the root does not verify) ends the
+An admin that refuses the material by name (another mesh, a CA no root in its set verifies, an issuing
+cert the CA does not verify) ends the
 workflow `Failed { step: node.issuer.update:<path.name>, reason }`; the next tick runs it again from
 the row. A successor fabric-primary folds the issuer rows and continues the schedule from them.
 

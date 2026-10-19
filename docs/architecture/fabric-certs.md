@@ -20,36 +20,40 @@ passes in and what the cert means outward, to clients and other systems. The who
 | Level | Held by | Signs |
 |---|---|---|
 | fabric root | every node-admin, from the app at bootstrap (`CertChoice::Ca`) or minted on day 0; the trust anchor every verifier holds | the fabric CA, nothing else |
-| fabric CA `CaCert { ca_pub, expiry_ms }` | every node-admin; minted by the fabric-primary on day 0 (`fabric.ca.create`) and rotated internally (`fabric.ca.renew`) | each mesh's issuing cert |
+| fabric CA `CaCert { ca_pub, expiry_ms }` | every node-admin, kept as `fabric-ca` beside its data dir; minted under the root by the bootstrap admin, the fabric-primary, on day 0 (`fabric.ca.create`, step 1 of fabric.create) and rotated internally (`fabric.ca.renew`) | each mesh's issuing cert |
 | mesh issuing cert `IssuingCert { mesh, issuer_pub, expiry_ms }` | that mesh's node-admins, in memory | member certs whose path.name is in that mesh |
 | member cert `SignedCert { cert: NodeCert, sig, issuer: SignedIssuingCert }` | the birth it was issued to | nothing |
 
 The chain verifies member → issuer → CA → root against the fabric's root set, the anchors every
 node holds (one, or two during a root rotation). A node-admin never issues a member cert that
-outlives its issuer (`MemberOutlivesIssuer`). Every node-admin holds the root (§Custody).
+outlives its issuer (`MemberOutlivesIssuer`), nor an issuing cert that outlives its CA
+(`IssuerOutlivesCa`). Every node-admin holds the root (§Custody).
 
 Verification (RDM's, in [node.connections.admit](lifecycles/node-connections-admit.md); Rafka's own accept
 loop too until i145 e4 removes it) checks the chain in this order and
 refuses at the first failure:
 
-1. `IssuerBadSignature`: the root does not verify the issuing cert;
-2. `IssuerExpired`: the issuing cert has expired;
-3. `IssuerMeshMismatch`: the first segment of the member's path.name is not the issuer's mesh;
-4. `BadSignature`: the issuing key does not verify the member cert;
-5. `Expired`: the member cert has expired.
+1. `CaBadSignature`: no root in the node's set verifies the CA cert;
+2. `CaExpired`: the CA cert has expired;
+3. `IssuerBadSignature`: the CA does not verify the issuing cert;
+4. `IssuerExpired`: the issuing cert has expired;
+5. `IssuerMeshMismatch`: the first segment of the member's path.name is not the issuer's mesh;
+6. `BadSignature`: the issuing key does not verify the member cert;
+7. `Expired`: the member cert has expired.
 
 ## Where a node-admin's signing material comes from
 
 The bootstrap admin is started with the fabric root (`CertChoice::Ca`: `RDM_CA_SECRET`,
 else `ca-secret` beside its data dir, else minted on day 0 when it has no seeds and no anchor:
 `fabric.ca.create`, a step of [fabric.create](lifecycles/fabric-create.md)). A launched admin is
-started with the root and its mesh's issuing material, written by the launching admin into its
-environment at launch (`RDM_CA_SECRET`, `RDM_ISSUING_KEY`, `RDM_ISSUING_CERT`), the way `RDM_MESH_ID`
-is (`mesh.issuer.create`, a step of [mesh.create](lifecycles/mesh-create.md)). It holds its mesh's
-issuer as given and mints no second one; it mints another mesh's issuer from its own copy of the root
-only while it holds the fabric seat (§Custody: only the fabric-primary mints). An admin with seeds or
-an anchor and no root refuses to start by name. No admin signs a member cert that outlives its issuer
-(`MemberOutlivesIssuer`).
+started with the root, the fabric CA's key and its mesh's issuing material, written by the launching
+admin into its environment at launch (`RDM_CA_SECRET`, `RDM_FABRIC_CA_KEY`, `RDM_ISSUING_KEY`,
+`RDM_ISSUING_CERT`; the CA's cert travels inside the issuing cert), the way `RDM_MESH_ID` is
+(`mesh.issuer.create`, a step of [mesh.create](lifecycles/mesh-create.md)). It holds its mesh's issuer
+and the fabric CA as given and mints no second one; it mints another mesh's issuer under that CA only
+while it holds the fabric seat (§Custody: only the fabric-primary mints). An admin with seeds or an
+anchor and no root refuses to start by name, and so does a root holder off day 0 with no CA. No admin
+signs a member cert that outlives its issuer (`MemberOutlivesIssuer`).
 
 ## How RDM is instantiated
 
@@ -127,7 +131,10 @@ own outward credentials never enter this chain. Every node-admin holds the root 
 today: written into its launch environment beside its mesh's issuing material (`RDM_CA_SECRET`, the
 way `RDM_ISSUING_KEY` is) and kept as `ca-secret` beside its data dir; a root rotation refreshes it on
 every admin through `node.roots.update` (the secret to admins, the public set to every other node); an
-internal CA rotation touches no node's trust set. Every admin also holds the current CA material.
+internal CA rotation touches no node's trust set. Every admin also holds the current CA material:
+written into its launch beside the root (`RDM_FABRIC_CA_KEY`; the bootstrap admin mints it on day 0,
+`fabric.ca.create`) and kept as `fabric-ca` beside its data dir, which it reads back on a restart the
+way it reads `ca-secret`.
 Only the fabric-primary mints and rotates with it; a successor seated by election over a proven-exited
 holder mints and rotates from its own copy, so the loss of a fabric-primary costs the chain nothing.
 The root is never in a row, a frame or a digest.
@@ -138,8 +145,8 @@ No cert is checked on a Node RPC call or a gossip frame: inside RDM's control pl
 is its iroh endpoint key, and admission to the mesh is the JoinNode check against the deployed birth
 ([node-create.md](lifecycles/node-create.md) step 4). On every inbound connection of an ALPN the
 embedding app registered at `bind`, the acceptor reads the dialer's member cert on the connection's
-first bi-stream, verifies it (signature to the issuer, the issuer to the root, the issuer's mesh, both
-expiries), writes the verdict back, and admits or drops the connection
+first bi-stream, verifies it (signature to the issuer, the issuer to the CA, the CA to a root the node
+holds, the issuer's mesh, the three expiries), writes the verdict back, and admits or drops the connection
 ([node.connections.admit](lifecycles/node-connections-admit.md)); the verdict is a connection fact
 ([connections.md](connections.md) §1.2, §12). RDM never registers the step for its own two ALPNs: a
 registration naming `rdm_transport::ALPN` or `iroh_gossip::ALPN` is refused by name at `bind`. The
