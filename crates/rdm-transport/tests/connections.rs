@@ -599,14 +599,15 @@ fn a_node_rpc_and_a_gossip_connection_carry_no_admission_span() {
     let spans = capture.spans().expect("the cell's spans reached its evidence file");
     let admission: Vec<&serde_json::Value> = spans
         .iter()
-        .filter(|s| matches!(s["name"].as_str(), Some("rdm.node.connections.create.via-admitted" | "rdm.node.connections.reject.via-refused" | "rdm.node.connections.update.via-presented")))
+        .filter(|s| matches!(s["name"].as_str(), Some("rdm.node.connections.create.via-admitted" | "rdm.node.connections.create.via-no-certs-configured" | "rdm.node.connections.reject.via-refused" | "rdm.node.connections.update.via-presented")))
         .collect();
     let product = String::from_utf8_lossy(ALPN_A).into_owned();
     assert!(
         admission.iter().all(|s| s["attributes"]["alpn"] == product.as_str()),
         "no admission span names Node RPC's or gossip's ALPN: {admission:#?}"
     );
-    let admitted: Vec<_> = admission.iter().filter(|s| s["name"] == "rdm.node.connections.create.via-admitted" && s["attributes"]["destination"] == acceptor_birth.as_str()).collect();
+    // The acceptor holds no certs: its one admission is by name (`NoCerts`).
+    let admitted: Vec<_> = admission.iter().filter(|s| s["name"] == "rdm.node.connections.create.via-no-certs-configured" && s["attributes"]["destination"] == acceptor_birth.as_str()).collect();
     assert_eq!(admitted.len(), 1, "exactly the one product dial was admitted: {admission:#?}");
 }
 
@@ -1414,9 +1415,10 @@ fn the_tunnel_handshake_carries_the_destinations_admitted_at_the_exact_birth_and
         trace_spans.push(row);
     }
 
+    // The peers hold no certs: each admission is by name (node-connections-admit.md `NoCerts`).
     let admits: Vec<_> = trace_spans
         .iter()
-        .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted")
+        .filter(|s| s["name"] == "rdm.node.connections.create.via-admitted" || s["name"] == "rdm.node.connections.create.via-no-certs-configured")
         .collect();
     assert_eq!(
         admits.len(),

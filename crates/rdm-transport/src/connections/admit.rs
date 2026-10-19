@@ -18,6 +18,13 @@ pub trait Admitter: Send + Sync {
     ///
     /// Returns `Ok((cert_expires_at_ms, clock_name))` when admitted, or `Err(reason)` when refused.
     fn verify(&self, caller: &Birth, alpn: &[u8], cert: &[u8]) -> Result<(u64, &'static str), String>;
+
+    /// Whether this admitter judges no cert and admits every connection by name: a node started
+    /// with no certs (node-connections-admit.md `NoCerts`). Its admissions are spanned
+    /// `via-no-certs-configured`, never `via-admitted`.
+    fn admits_by_name(&self) -> bool {
+        false
+    }
 }
 
 /// The `NoCerts` admitter (`node-connections-admit.md`: "admits every connection by name, spanned
@@ -28,6 +35,10 @@ pub struct NoCertsAdmitter;
 impl Admitter for NoCertsAdmitter {
     fn verify(&self, _caller: &Birth, _alpn: &[u8], _cert: &[u8]) -> Result<(u64, &'static str), String> {
         Ok((0, "no-certs"))
+    }
+
+    fn admits_by_name(&self) -> bool {
+        true
     }
 }
 
@@ -187,26 +198,34 @@ pub(super) async fn admit(registry: &ConnectionsRegistry, alpn: &Alpn, connectio
     };
     let own = registry.inner.sink.own_birth();
     let alpn_str = String::from_utf8_lossy(&alpn.name).into_owned();
-    let verify_res = registry.inner.admitter.lock().unwrap().verify(&present.caller, &alpn.name, &present.cert);
+    let (verify_res, by_name) = {
+        let admitter = registry.inner.admitter.lock().unwrap().clone();
+        (admitter.verify(&present.caller, &alpn.name, &present.cert), admitter.admits_by_name())
+    };
     match verify_res {
         Err(reason) => {
             refuse(registry, alpn, connection, Some(&mut ctrl_send), Some(&present), &reason).await;
             None
         }
         Ok((cert_expires_at, clock)) => {
-            let span = tracing::info_span!(
-                "rdm.node.connections.create.via-admitted",
-                source = %present.caller.name,
-                destination = %own.name,
-                connection = connection.stable_id(),
-                alpn = %alpn_str,
-                cert_expires_at,
-                clock,
-            );
+            // A node started with no certs judged no cert: it admitted by name, and says so.
+            let span = if by_name {
+                tracing::info_span!("rdm.node.connections.create.via-no-certs-configured", source = %present.caller.name, destination = %own.name, connection = connection.stable_id(), alpn = %alpn_str)
+            } else {
+                tracing::info_span!(
+                    "rdm.node.connections.create.via-admitted",
+                    source = %present.caller.name,
+                    destination = %own.name,
+                    connection = connection.stable_id(),
+                    alpn = %alpn_str,
+                    cert_expires_at,
+                    clock,
+                )
+            };
             if let Some(tp) = present.traceparent.as_deref() {
                 crate::set_parent(&span, tp);
             }
-            span.in_scope(|| tracing::info!("inbound connection admitted"));
+            span.in_scope(|| if by_name { tracing::info!("inbound connection admitted by name: this node holds no certs") } else { tracing::info!("inbound connection admitted") });
             if write_control_msg(&mut ctrl_send, &AdmitVerdict::Admitted).await.is_err() {
                 return None;
             }
