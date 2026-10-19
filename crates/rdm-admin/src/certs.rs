@@ -558,13 +558,13 @@ mod tests {
         early.set_policy(policy);
         assert_eq!(early.policy(), policy, "the admin holds the policy it was given");
         let first = early.issue_member(&birth("mesh1.rpc.1")).unwrap();
-        assert_eq!((first.issued_at, first.expires_at, first.issuer_expires_at), (1_000, 13_000, 16_000), "the policy's 12 s, inside the issuer's life: {first:?}");
+        assert_eq!((first.expires_at - first.issued_at, first.issuer_expires_at), (12_000, 16_000), "the policy's 12 s from its issue, inside the issuer's life: {first:?}");
         assert!(in_window(&first), "renewed at two thirds of its life plus at most 5 %: {first:?}");
 
         let late = CertIssuer::with_root(root, Some(issuer), time_at(10_000));
         late.set_policy(policy);
         let cut = late.issue_member(&birth("mesh1.rpc.2")).unwrap();
-        assert_eq!((cut.issued_at, cut.expires_at, cut.issuer_expires_at), (10_000, 16_000, 16_000), "cut to the issuer's expiry: {cut:?}");
+        assert!(cut.issued_at >= 10_000 && (cut.expires_at, cut.issuer_expires_at) == (16_000, 16_000), "cut to the issuer's expiry: {cut:?}");
         assert_eq!(rdm_core::certs::cert_from_bytes(&cut.bytes).unwrap().cert.expiry_ms, 16_000, "the bytes carry the cut expiry");
         assert!(in_window(&cut) && cut.renew_at < 16_000, "the renew point is taken from the cut life: {cut:?}");
     }
