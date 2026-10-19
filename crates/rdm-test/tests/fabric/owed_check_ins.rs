@@ -189,7 +189,9 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
 /// healed, it re-opens the round, re-runs its own mesh's round (its own action from its record). Alone
 /// in its mesh it is never cut off and keeps its seat (gossip.md §6, "A cut-off view"); its round
 /// completes once it wakes. Either way the fabric reaches ready-for-traffic under the resize, and every
-/// round action runs once per round key.
+/// round action runs once per round key. A cut-off is the suspension's only between the suspension and
+/// the cell's own `estate.stop()`: once every node is signalled, a fabric-primary whose shutdown outlasts
+/// a staleness floor hears no other member and spans a cut-off that belongs to the teardown.
 async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
@@ -221,6 +223,7 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     estate.follow(resize).await;
     until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(resize_id.as_str()), Duration::from_secs(60)).await;
 
+    let stopping_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
     let of_resize = |name: &str, node: &str, r: &str| -> Vec<Value> {
@@ -233,8 +236,9 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     // during the suspension apply; those digests are fresh, and applied first they are hearing
     // (gossip.md §6, "A cut-off view"). Alone in its mesh it is never cut off and keeps its seat. When
     // the cut-off fired, it ended the fabric-primary's tenure; healed, it ran its own mesh's round
-    // again, its own action from its record.
-    let cut_off = named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s && sp["attributes"]["role"] == "start" && start(sp) >= suspended_at);
+    // again, its own action from its record. A cut-off spanned once the cell began stopping the estate
+    // is the teardown's (every peer signalled), never the suspension's.
+    let cut_off = named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s && sp["attributes"]["role"] == "start" && (suspended_at..stopping_at).contains(&start(sp)));
     if cut_off {
         assert!(named(&spans, "rdm.node_admin.fabric.remove.via-tenure-ended").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s), "the cut-off ended {fp_s}'s tenure");
         assert!(own.len() >= 2, "{fp_s} ran its own mesh's {round} round again after the cut-off: {own:#?}");
@@ -261,8 +265,10 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
 /// re-sends the current round. Members already done check in again, and the checklist rebuilds
 /// itself"; gossip.md: "a cut-off view holds no fabric-primary authority"): a fabric-primary cut off
 /// during state-commit and healed re-runs its own mesh's round, whose members check in again from
-/// their record, and the fabric reaches ready-for-traffic. Must NOT happen: the fabric held in
-/// state-commit on the fabric-primary's own check-in, a round action run twice.
+/// their record, and the fabric reaches ready-for-traffic. A cut-off during the estate's own teardown
+/// (after the cell stops it, every peer signalled) is not the suspension's and asserts nothing. Must NOT
+/// happen: the fabric held in state-commit on the fabric-primary's own check-in, a round action run
+/// twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_cut_off_during_state_commit_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready() {
     fabric_primary_cut_off("a_fabric_primary_cut_off_during_state_commit_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready", (2, 1), "commit-state").await;
@@ -270,7 +276,7 @@ async fn a_fabric_primary_cut_off_during_state_commit_re_runs_its_own_mesh_round
 
 /// CONTRACT (i146 Q45): the same for open-traffic: a fabric-primary cut off during the open-traffic
 /// round and healed re-runs its own mesh's round and the fabric reaches ready-for-traffic; no round
-/// action runs twice.
+/// action runs twice. A cut-off during the estate's own teardown is not the suspension's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fabric_primary_cut_off_during_open_traffic_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready() {
     fabric_primary_cut_off("a_fabric_primary_cut_off_during_open_traffic_re_runs_its_own_mesh_round_and_the_fabric_reaches_ready", (2, 1), "open-traffic").await;
