@@ -212,6 +212,7 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
         Some(p) if fp_s == "mesh1.admin.1" => u64::from(p),
         _ => estate.pid_of(&fp_s).await,
     };
+    let suspended_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     signal(pid, "-STOP");
     tokio::time::sleep(rdm_transport::membership::staleness_floor() + Duration::from_secs(2)).await;
     door.release("round-action").await;
@@ -228,10 +229,13 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
         v
     };
     let own = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &fp_s, round);
-    // With another member in its mesh, the cut-off ended the fabric-primary's tenure; healed, it ran its
-    // own mesh's round again, its own action from its record. Alone in its mesh it is never cut off and
-    // keeps its seat (gossip.md §6): nothing ends its tenure.
-    if !members.is_empty() {
+    // Woken, the fabric-primary is cut off only if its watch ticks before the member digests queued
+    // during the suspension apply; those digests are fresh, and applied first they are hearing
+    // (gossip.md §6, "A cut-off view"). Alone in its mesh it is never cut off and keeps its seat. When
+    // the cut-off fired, it ended the fabric-primary's tenure; healed, it ran its own mesh's round
+    // again, its own action from its record.
+    let cut_off = named(&spans, "rdm.mesh.membership.update.via-cut-off").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s && sp["attributes"]["role"] == "start" && start(sp) >= suspended_at);
+    if cut_off {
         assert!(named(&spans, "rdm.node_admin.fabric.remove.via-tenure-ended").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s), "the cut-off ended {fp_s}'s tenure");
         assert!(own.len() >= 2, "{fp_s} ran its own mesh's {round} round again after the cut-off: {own:#?}");
         assert!(own.iter().skip(1).all(|r| r["attributes"]["own_action"] == "from-record"), "its own action came from its record: {own:#?}");
@@ -249,7 +253,7 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
         }
     }
     let flame = own.last().map(|r| s(&r["trace_id"])).unwrap_or_default();
-    println!("fabric-primary cut off during {round}: its own mesh round ran {} time(s); flame http://192.168.68.99:16687/trace/{flame}", own.len());
+    println!("fabric-primary suspended during {round} (cut off: {cut_off}): its own mesh round ran {} time(s); flame http://192.168.68.99:16687/trace/{flame}", own.len());
     estate.record_trace_url(&flame);
 }
 

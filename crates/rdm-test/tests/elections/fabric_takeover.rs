@@ -151,6 +151,13 @@ async fn a_fabric_primary_lost_with_its_mesh_and_uninspectable_is_taken_over_pas
     let sealed = std::fs::read_dir(&seal).into_iter().flatten().flatten().any(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("\"format\":\"lane-seal/1\"")));
     assert!(sealed, "the fabric lane is sealed at revision {lost_revision}: {}", seal.display());
 
+    // node.get names the winner once its book takes the seat; its takeover call goes on to release the
+    // lost birth's name and announce the seat, and only then records its outcome. The estate stops
+    // once that outcome is in the winner's evidence, so the stop never cuts the call short.
+    wait_for(&format!("{winner_name}'s takeover call ends committed"), Duration::from_secs(10), || async {
+        named(&estate.spans(), "rdm.node_admin.seat.update.via-takeover").iter().any(|sp| sp["attributes"]["outcome"] == "committed").then_some(())
+    })
+    .await;
     // Every process's evidence is flushed as it exits: the spans are read after the stop.
     estate.stop().await;
     let spans = estate.spans();
