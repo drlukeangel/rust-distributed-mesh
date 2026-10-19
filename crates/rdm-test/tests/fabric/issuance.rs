@@ -127,6 +127,8 @@ async fn a_member_cert_verifies_to_its_issuer_and_the_issuer_to_the_root() {
         assert!(root.verify_strict(&certs::issuing_cert_bytes(&issuing.cert), &issuing.sig).is_ok(), "{node}'s issuing cert is signed by the root");
         let sp = launches.iter().find(|sp| sp["attributes"]["node"] == node).unwrap();
         assert_eq!(sp["attributes"]["root"], "true", "{node} was launched with the root beside its issuing material: {sp}");
+        // R13: the fabric CA sits between the root and every mesh's issuer; a launched admin holds it.
+        assert!(!s(&sp["attributes"]["ca_cert"]).is_empty(), "{node} was launched with the fabric CA's cert beside its root and issuing material (R13): {sp}");
     }
     assert_eq!(issuing_of("mesh2.admin.1"), issuing_of("mesh2.admin.2"), "mesh2's admins carry the one issuer minted at mesh2's birth");
     let minted = named(&spans, "rdm.node_admin.cert.create.via-mesh-birth").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh2").collect::<Vec<_>>();
