@@ -165,7 +165,8 @@ No new gossip frame and no new `MemberStatus`.
   launch, one root or two. A launch with no set admits by name: absent means the launcher holds
   `NoCerts` (accepted by the lead), spanned `via-no-certs-configured`, never `via-admitted`
   (`a_no_certs_acceptor_admits_by_name`); `registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind`
-  pins both of RDM's own ALPNs refused at bind. Every e2 acceptance cell is built.
+  pins both of RDM's own ALPNs refused at bind. Every e2 acceptance cell is built. Fast gate on
+  aff72408 (gates-e6s4-aff72408, the stack on e1): one red, `rejoin_name:137` (Q79's race, not e2's).
 
 #### e3 — the cert row, `node.cert.renew`, `mesh.issuer.renew`, `node.issuer.update`, policy, the watch
 
