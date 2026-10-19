@@ -429,6 +429,19 @@ async fn a_lost_meshs_node_admin_is_re_created_from_the_fabric_lane_over_a_new_d
         }
         None => false,
     };
+    // The handback's Build ends before the estate stops: its seat row commits inside its attempt, and that
+    // attempt's dispatch, asserted below, ends only once the run behind the row has (§4.4: the new holder
+    // continues the Build from the row). Then the fabric's views name the re-created admin fabric-primary.
+    if let (true, Some(n)) = (handed_back, &recreated) {
+        let id = n.node_id.to_string();
+        let handback = seat_moves(&estate).into_iter().find(|m| m["cause"]["handover"].is_object() && m["seats"].as_array().into_iter().flatten().any(|x| x["seat"] == "FabricPrimary" && s(&x["holder"]["node_id"]) == id));
+        if let Some(cause) = handback.map(|m| m["cause"]["handover"].clone()) {
+            let build_id = rdm_core::BuildId::parse(&s(&cause["build_id"])).unwrap_or_else(|e| panic!("the handback row names a Build id: {cause}: {e}"));
+            let builds = estate.builds_obj().await;
+            wait_for(&format!("the handback's Build {build_id} is complete"), floor * 12 + Duration::from_secs(60), || async { builds.get(&build_id).await.ok().filter(|b| b.phase == rdm_core::build::BuildPhase::Complete).map(|_| ()) }).await;
+        }
+        wait_for(&format!("the fabric's views name {id} fabric-primary"), floor * 4 + Duration::from_secs(30), || async { estate.node_views().await.iter().any(|v| v.node_id.to_string() == id && v.is_fabric_primary).then_some(()) }).await;
+    }
     let moves = seat_moves(&estate);
     estate.stop().await;
     let spans = estate.spans();
