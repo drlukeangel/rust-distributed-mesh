@@ -2370,29 +2370,26 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         let e = start_ns(first);
         assert!(e < gone, "{}: the new fabric-primary's election ({e}) resolved before the old fabric-primary's process was gone ({gone})", ev["scenario"]);
         let inputs = s(&first["attributes"]["inputs"]);
-        let old_ready = format!("{old_name}={old_id}:ReadyForTraffic");
-        // The seat moves where the new holder decides it: its own election, taken with the old
-        // fabric-primary yielding (R-A2: a holder that yields hands the seat to its mesh). Every other
-        // admin learns the move from the new holder's announcement (`seat.update.via-announcement`), and
-        // its recompute reports the seat as announced, whatever status it still holds for the old holder.
+        // The seat moves by its holder's committed row, never by a status (elections §13; node-primary-update.md
+        // steps 5-8: the holder writes the one seat row naming the successor, the successor installs it, and
+        // only then is the holder stopped). A holder keeps its seat until that yield whatever its status
+        // (election.rs, R-EL1), so an election's inputs may still list the old fabric-primary ReadyForTraffic
+        // after the row moved the seat: the row's order and the decider's winner decide, never the inputs.
         let new_name = s(&ev["new_fabric_primary"]);
+        let row = named(spans, "rdm.node_admin.seat.update.via-seat-row-written")
+            .into_iter()
+            .filter(|sp| {
+                s(&sp["attributes"]["holder"]).contains(&format!(":{old_id}:"))
+                    && s(&sp["attributes"]["successor"]).contains(&format!(":{new_id}:"))
+                    && !s(&sp["attributes"]["fabric_revision"]).is_empty()
+                    && start_ns(sp) >= req
+            })
+            .min_by_key(|sp| start_ns(sp))
+            .unwrap_or_else(|| panic!("{}: no committed seat row moved the fabric seat from {old_id} to {new_id} after its removal was requested", ev["scenario"]));
+        assert!(start_ns(row) <= e, "{}: an admin announced {new_id} succeeding {old_id} ({e}) before the committed row named it ({})", ev["scenario"], start_ns(row));
+        // The decider is the new holder: its own election names it winner over the old holder (`announced`).
         let decider: Vec<&&Value> = announced.iter().copied().filter(|sp| sp["attributes"]["observer"] == new_name.as_str()).collect();
         assert!(!decider.is_empty(), "{}: the new fabric-primary {new_name} did not report its own election of the seat", ev["scenario"]);
-        for sp in &decider {
-            let own = s(&sp["attributes"]["inputs"]);
-            assert!(!own.contains(&old_ready), "{}: the new fabric-primary decided the seat while the old fabric-primary was still a ready candidate: {own}", ev["scenario"]);
-        }
-        if inputs.contains(&old_ready) {
-            let observer = s(&first["attributes"]["observer"]);
-            let heard = named(spans, "rdm.mesh.seat.update.via-announcement").into_iter().any(|an| {
-                an["attributes"]["node"] == observer.as_str()
-                    && an["attributes"]["seat"] == "fabric-primary"
-                    && s(&an["attributes"]["holder"]).contains(&format!(":{new_id}@"))
-                    && s(&an["attributes"]["previous"]).contains(&format!(":{old_id}@"))
-                    && start_ns(an) <= start_ns(first)
-            });
-            assert!(heard, "{}: {observer} moved the seat with the old fabric-primary still a ready candidate and no announcement from the new holder: {inputs}", ev["scenario"]);
-        }
         let terminate: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "StopNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         // The retiring admin executes its own retirement: its TerminateRuntime step signals its own
@@ -2403,14 +2400,14 @@ fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Val
         let after: Vec<&&Value> = recompute.iter().filter(|sp| sp["attributes"]["winner_node_id"] == old_id.as_str() && start_ns(sp) > e).collect();
         assert!(after.is_empty(), "{}: the retired fabric-primary won again after the hand-off: {after:?}", ev["scenario"]);
         out.push(json!({
-            "scenario": ev["scenario"], "old": old_name, "new": ev["new_fabric_primary"], "request_ns": req, "election_span": first["span_id"], "election_observer": first["attributes"]["observer"], "election_start_ns": e, "election_inputs": inputs,
+            "scenario": ev["scenario"], "old": old_name, "new": ev["new_fabric_primary"], "request_ns": req, "seat_row_span": row["span_id"], "seat_row_start_ns": start_ns(row), "election_span": first["span_id"], "election_observer": first["attributes"]["observer"], "election_start_ns": e, "election_inputs": inputs,
             "stop_node_steps": mark.iter().map(|sp| json!({"outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
             "terminate_step_exported": !terminate.is_empty(), "terminate_step_start_ns": terminate_start, "terminate_step_outcomes": terminate.iter().map(|sp| sp["attributes"]["outcome"].clone()).collect::<Vec<_>>(),
             "old_process_gone_ns": gone, "election_before_process_gone_ms": (gone - e) / 1_000_000,
             "election_after_terminate_step_began_ms": terminate_start.map(|t| (e as i128 - t as i128) / 1_000_000),
         }));
     }
-    inv.holds("each fabric-primary hand-off: the new fabric-primary's election resolved, with the old birth not a ready candidate, before the old birth's process was gone (the host observed its exit); the terminate step's own start is measured beside it", true, json!({"hand_offs": out}));
+    inv.holds("each fabric-primary hand-off: the old holder's committed seat row named the new fabric-primary, then the new holder's own election named it, before the old birth's process was gone (the host observed its exit); the terminate step's own start is measured beside it", true, json!({"hand_offs": out}));
     let mut kills = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.kill-and-recover") {
         let (victim, survivor) = (s(&ev["victim_node_id"]), s(&ev["survivor_node_id"]));
