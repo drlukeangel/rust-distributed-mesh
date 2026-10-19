@@ -48,17 +48,18 @@ fn births(nodes: &[Value]) -> BTreeMap<String, String> {
 
 /// CONTRACT (#2803 acceptance 2, 3, 10, 13, 14, 15, 16, 19; node-admin-lifecycle.md 4.1-4.3): a peer
 /// mesh loses its entire node-admin cohort (exact SIGKILL of both admin runtimes) and, while it has
-/// no admin, one ordinary member dies as well (`rpc.3`). The fabric primary proves the admins exited
-/// and opens an attempt of the SAME accepted Build that runs the mesh-create flow for the lost
-/// mesh's first admin with its EXISTING MeshId (no id is minted). That admin calls its maker
-/// (JoinNode), reads a local member's topology, becomes Ready and sweeps its own mesh once with a
-/// Ping: the two members that live answer, the one that died does not. The unreached member goes to
+/// no admin, one ordinary member dies as well (`rpc.3`). The fabric primary's verdict on the lost
+/// mesh opens an attempt of the SAME accepted Build that runs node.create of a node-admin into the
+/// live mesh (mesh-investigation.md steps 6-7): it joins under the mesh's EXISTING MeshId (no id is
+/// minted) through its maker (JoinNode), adopts the mesh's held state as its successor primary (no
+/// Pending is handed: the mesh is not created again), and sweeps its own mesh once with a Ping: the
+/// two members that live answer, the one that died does not. The unreached member goes to
 /// node recovery (mesh-recovery.md step 6): the new mesh-primary's tickle, then the provider's exact
 /// exit proof, then one recovery under the same Build (node.delete of the exited instance with no
 /// RPC to it, node.create at the same path.name, node.update); a missing Ping reply is the
 /// trigger, never the proof. The second admin is created by the NEW mesh primary. What must NOT
-/// happen: a new MeshId or Build id, a surviving member re-created, a member that answered
-/// recovered, the fabric primary creating the second admin.
+/// happen: a new MeshId or Build id, a Pending handed to the joining node-admin, a surviving member
+/// re-created, a member that answered recovered, the fabric primary creating the second admin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let cell = "recovery_admin_restores_lost_cohort_preserves_mesh_and_build";
@@ -138,16 +139,22 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
 
-    // The fabric primary ran the mesh-create flow for the lost mesh's first admin: Pending handed
-    // to it with the EXISTING MeshId, before any member work.
-    let handoffs: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff")
+    // The fabric primary's verdict on the lost mesh runs node.create of a node-admin into the live
+    // mesh (mesh-investigation.md step 6): an attempt of the accepted Build past the fault, which the
+    // fabric primary executes. The node-admin joins under the mesh's EXISTING MeshId and adopts the
+    // mesh's held state (step 7); no Pending is handed to it.
+    let first = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
-        .filter(|h| attr(h, "mesh") == lost && (attr(h, "outcome") == "applied" || attr(h, "outcome") == "already-applied"))
-        .collect();
-    let first = handoffs.iter().max_by_key(|h| at(h)).expect("Pending handed to the recovery admin");
-    let recovery_admin = attr(first, "target");
-    assert_eq!(attr(first, "mesh_id"), lost_mesh_id, "Pending names the same MeshId: it joined, it never minted");
-    assert_eq!(attr(first, "node"), fabric_holder, "the fabric primary ran the first admin's birth");
+        .filter(|r| attr(r, "build_id") == accepted && attr(r, "executor") == fabric_holder && attr(r, "operations").starts_with(&format!("node.create:{lost}.admin.")) && attr(r, "attempt").parse::<u64>().is_ok_and(|a| a > attempt_before))
+        .min_by_key(|r| at(r))
+        .expect("the fabric primary created a node-admin into the lost mesh under the accepted Build");
+    let recovery_admin = attr(first, "operations").trim_start_matches("node.create:").to_string();
+    let joined: Vec<&Value> = named(&spans, "rdm.node.mesh.update.via-joining").into_iter().filter(|j| attr(j, "node") == recovery_admin && at(j) > at(first)).collect();
+    assert!(!joined.is_empty() && joined.iter().all(|j| attr(j, "mesh_id") == lost_mesh_id), "{recovery_admin} joined under {lost}'s own MeshId: it never minted: {joined:?}");
+    let adopted = named(&spans, "rdm.node_admin.mesh.update.via-held-state-adopted").into_iter().filter(|a| attr(a, "publisher") == recovery_admin && attr(a, "mesh_id") == lost_mesh_id && at(a) > at(first)).count();
+    assert!(adopted > 0, "{recovery_admin} adopted {lost}'s held state as its successor primary");
+    let handed: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-pending-handoff").into_iter().filter(|h| attr(h, "mesh") == lost && at(h) > at(first)).collect();
+    assert!(handed.is_empty(), "no Pending is handed to a node-admin joining a live mesh: {handed:?}");
 
     // Its own-mesh sweep: one, once, from the recovery admin; the members that live answered, the
     // one that died did not.
@@ -225,7 +232,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         "fabric_primary": fabric_holder,
         "killed": killed,
         "recovery_admin": recovery_admin,
-        "pending_natural_key": first["attributes"]["key"],
+        "recovery_attempt": attr(first, "attempt"),
         "provider": estate.owner.provider,
         "desired_shape": shape,
         "live_before": old.len(),
