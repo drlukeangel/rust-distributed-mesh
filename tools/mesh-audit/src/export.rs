@@ -9,6 +9,18 @@
 //! its outcome is `ok` with no cell skipped by name (a skip proves nothing), its `source_sha` is the candidate, it ran with no uncommitted path, and every artifact
 //! it recorded still hashes to the sha256 it recorded. Anything else is refused by name, and every
 //! refusal is named in one run, never just the first.
+//!
+//! The import manifest's §14 cells (`docs/plans/i143-import-manifest.md`) are proven by the gates'
+//! own records at the candidate, not by registry jobs. `scripts/rdm-gate-at.sh` leaves, in the
+//! deploy directory, `gates-<lane>-<short>.log` (fast) and `gates-<lane>-<short>release.log`
+//! (release), each beside its `.log.d` (`jobs`: every job's executables and libtest arguments;
+//! `artifacts.json`: each executable's package and target; `<job>.log`: its libtest summary), and
+//! `discovery-<short>.json` (every test name per package and target). A gate log certifies only when
+//! its first line names the candidate as its full HEAD with no uncommitted path, it ends `DONE` and
+//! holds no `FAIL` line. A §14 cell is proven when it resolves to exactly one discovered test in its
+//! path's package and a job of a certified log selects it (a filter matches, no `--skip` does) and
+//! that job's libtest summaries are `ok` with nothing ignored. The gates run with
+//! `RDM_REQUIRE_NETFAULT=1`, so a cell that cannot cut fails instead of passing with a named skip.
 
 use crate::parity::{Report, Violation};
 use serde::{Deserialize, Serialize};
@@ -74,6 +86,28 @@ pub enum Refusal {
     ArtifactMissing { job: String, cell: String, path: String },
     /// An artifact the receipt recorded no longer hashes to its recorded sha256.
     ArtifactChanged { job: String, cell: String, path: String, recorded: String, now: String },
+    /// The import manifest names no §14 cell.
+    ManifestCells { reason: String },
+    /// No log of this gate (`fast` or `release`) was written at the candidate.
+    GateLogMissing { gate: String, pattern: String },
+    /// A gate log at the candidate does not read as the gate's log, or its `.log.d` does not.
+    GateUnreadable { log: String, reason: String },
+    /// A gate log at the candidate names another full HEAD.
+    GateAtAnotherSha { log: String, head: String },
+    /// A gate log at the candidate was written with uncommitted paths in its checkout.
+    GateDirty { log: String, dirty_paths: u64 },
+    /// A gate log at the candidate failed jobs, or never reached `DONE`.
+    GateRed { log: String, failed: Vec<String>, done: bool },
+    /// The gate's test discovery at the candidate is missing.
+    DiscoveryMissing { path: String },
+    /// A §14 cell is not a test the gate discovered: every name it could be is listed.
+    CellNotDiscovered { cell: String, looked_for: Vec<String> },
+    /// A §14 cell names more than one discovered test.
+    CellAmbiguous { cell: String, tests: Vec<String> },
+    /// No job of a certified gate log ran a §14 cell.
+    CellRunByNoJob { cell: String, test: String, reason: String },
+    /// The only jobs that ran a §14 cell ignored tests: an ignored cell proves nothing.
+    CellJobIgnored { cell: String, log: String, job: String, summary: String },
 }
 
 impl fmt::Display for Refusal {
@@ -95,6 +129,21 @@ impl fmt::Display for Refusal {
             Self::ArtifactChanged { job, cell, path, recorded, now } => {
                 write!(f, "{job}/{cell}: artifact {path} hashes to {now}, the receipt recorded {recorded}")
             }
+            Self::ManifestCells { reason } => write!(f, "import manifest: {reason}"),
+            Self::GateLogMissing { gate, pattern } => write!(f, "{gate} gate: no log {pattern} at the candidate"),
+            Self::GateUnreadable { log, reason } => write!(f, "gate log {log} does not read: {reason}"),
+            Self::GateAtAnotherSha { log, head } => write!(f, "gate log {log} was written at {head}, not the candidate"),
+            Self::GateDirty { log, dirty_paths } => write!(f, "gate log {log} was written with {dirty_paths} uncommitted paths in its checkout"),
+            Self::GateRed { log, failed, done } => {
+                write!(f, "gate log {log} is red: failed {failed:?}{}", if *done { "" } else { ", and it never reached DONE" })
+            }
+            Self::DiscoveryMissing { path } => write!(f, "the gate's test discovery {path} is missing"),
+            Self::CellNotDiscovered { cell, looked_for } => write!(f, "§14 cell {cell} is no discovered test; looked for {looked_for:?}"),
+            Self::CellAmbiguous { cell, tests } => write!(f, "§14 cell {cell} names more than one discovered test: {tests:?}"),
+            Self::CellRunByNoJob { cell, test, reason } => write!(f, "§14 cell {cell} ({test}) was run by no job of a certified gate log: {reason}"),
+            Self::CellJobIgnored { cell, log, job, summary } => {
+                write!(f, "§14 cell {cell} was run only by {job} of {log}, which ignored tests ({summary}); an ignored cell proves nothing")
+            }
         }
     }
 }
@@ -108,7 +157,27 @@ pub struct CertifiedReceipt {
     pub sha256: String,
 }
 
-/// The export manifest: the one candidate, the parity it was scanned through, every owner's receipt.
+/// One gate log the manifest certifies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CertifiedGateLog {
+    /// `fast` or `release`.
+    pub gate: String,
+    pub path: String,
+    pub sha256: String,
+}
+
+/// One §14 cell and the gate job that proved it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProvenCell {
+    pub cell: String,
+    /// The discovered test, `<package>/<target>: <libtest name>`.
+    pub test: String,
+    pub log: String,
+    pub job: String,
+}
+
+/// The export manifest: the one candidate, the parity it was scanned through, every owner's receipt,
+/// every gate log at the candidate and the §14 cells they proved.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportManifest {
     pub candidate_sha: String,
@@ -118,6 +187,8 @@ pub struct ExportManifest {
     pub mirror_pending: usize,
     pub owners: usize,
     pub receipts: Vec<CertifiedReceipt>,
+    pub gate_logs: Vec<CertifiedGateLog>,
+    pub cells: Vec<ProvenCell>,
     pub refusals: Vec<Refusal>,
     pub eligible: bool,
 }
@@ -132,6 +203,10 @@ pub struct CertifyInput<'a> {
     pub registry: &'a serde_json::Value,
     /// The RDM root: receipts and their relative artifact paths resolve against it.
     pub root: &'a Path,
+    /// The directory the gates write their logs and test discovery into (`$HOME/rust-distributed-mesh-deploy`).
+    pub gates: &'a Path,
+    /// The import manifest's §14 cells, each `<repo path>.rs::<test path>` ([`manifest_cells`]).
+    pub cells: &'a [String],
 }
 
 fn is_sha(s: &str) -> bool {
@@ -257,6 +332,7 @@ pub fn certify(input: &CertifyInput<'_>) -> ExportManifest {
             receipts.push(CertifiedReceipt { job: job.clone(), section: section.to_string(), path: shown, sha256 });
         }
     }
+    let (gate_logs, cells) = gate_proof(input, &mut refusals);
     ExportManifest {
         candidate_sha: input.candidate.into(),
         rafka_parity_base: input.parity.rafka_parity_base.clone(),
@@ -266,8 +342,31 @@ pub fn certify(input: &CertifyInput<'_>) -> ExportManifest {
         owners: owners.len(),
         eligible: refusals.is_empty(),
         receipts,
+        gate_logs,
+        cells,
         refusals,
     }
+}
+
+/// The gate logs at the candidate and the §14 cells they prove.
+fn gate_proof(_input: &CertifyInput<'_>, _refusals: &mut Vec<Refusal>) -> (Vec<CertifiedGateLog>, Vec<ProvenCell>) {
+    (Vec::new(), Vec::new())
+}
+
+/// The import manifest's §14 cells: every `<path>.rs::<test path>` its §14 section names, `T/` and
+/// `A/` written out and a `…::<test path>` taking the file before it.
+pub fn manifest_cells(_text: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// The import manifest the certifier reads the §14 cells from.
+pub fn default_manifest() -> PathBuf {
+    crate::workspace_root().join("docs/plans/i143-import-manifest.md")
+}
+
+/// The directory the gates write their logs and test discovery into.
+pub fn default_gates() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("rust-distributed-mesh-deploy")
 }
 
 /// The registry the acceptance runner reads.

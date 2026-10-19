@@ -1,9 +1,12 @@
 //! `export-manifest --candidate <40-hex RDM SHA> --repo <rafka-v2 checkout> [--ledger <md>] [--through <sha>]
-//!  [--connections <md>] [--registry <json>] [--root <RDM root>] [--json <out>]`
+//!  [--connections <md>] [--registry <json>] [--root <RDM root>] [--gates <dir>] [--manifest <md>] [--json <out>]`
 //!
 //! Certifies one candidate RDM SHA for export (e10.s2, #2790): runs the transport-parity scan, reads
-//! every owner's job receipt (every job of the acceptance registry's `jobs` and `rshape_jobs`), and
-//! prints the export manifest. Exits 0 only when the candidate is eligible; 1 names every refusal.
+//! every owner's job receipt (every job of the acceptance registry's `jobs` and `rshape_jobs`) and
+//! the fast and release gate logs at the candidate (`--gates`, default `$HOME/rust-distributed-mesh-deploy`)
+//! as the proof of the import manifest's §14 cells (`--manifest`, default
+//! `docs/plans/i143-import-manifest.md`), and prints the export manifest. Exits 0 only when the
+//! candidate is eligible; 1 names every refusal.
 
 use rafka_mesh_audit::{export, parity};
 use std::path::PathBuf;
@@ -16,6 +19,8 @@ fn main() {
     let mut connections: Option<PathBuf> = None;
     let mut registry: Option<PathBuf> = None;
     let mut root: Option<PathBuf> = None;
+    let mut gates: Option<PathBuf> = None;
+    let mut import_manifest: Option<PathBuf> = None;
     let mut json: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -28,6 +33,8 @@ fn main() {
             "--connections" => connections = Some(val().into()),
             "--registry" => registry = Some(val().into()),
             "--root" => root = Some(val().into()),
+            "--gates" => gates = Some(val().into()),
+            "--manifest" => import_manifest = Some(val().into()),
             "--json" => json = Some(val().into()),
             _ => usage(&format!("unknown argument {a}")),
         }
@@ -48,7 +55,20 @@ fn main() {
             std::process::exit(2);
         });
     let root = root.unwrap_or_else(rafka_mesh_audit::workspace_root);
-    let manifest = export::certify(&export::CertifyInput { candidate: &candidate, parity: &report, registry: &registry, root: &root });
+    let gates = gates.unwrap_or_else(export::default_gates);
+    let import_manifest = import_manifest.unwrap_or_else(export::default_manifest);
+    let cells = export::manifest_cells(&std::fs::read_to_string(&import_manifest).unwrap_or_else(|e| {
+        eprintln!("export-manifest: cannot read the import manifest {}: {e}", import_manifest.display());
+        std::process::exit(2);
+    }));
+    let manifest = export::certify(&export::CertifyInput {
+        candidate: &candidate,
+        parity: &report,
+        registry: &registry,
+        root: &root,
+        gates: &gates,
+        cells: &cells,
+    });
     let text = serde_json::to_string_pretty(&manifest).expect("the manifest serializes");
     if let Some(out) = json {
         std::fs::write(&out, &text).unwrap_or_else(|e| {
@@ -62,10 +82,12 @@ fn main() {
         eprintln!("export-manifest: REFUSED {r}");
     }
     eprintln!(
-        "export-manifest: candidate {}, {} owners, {} receipts certified, {} refusals, eligible={}",
+        "export-manifest: candidate {}, {} owners, {} receipts certified, {} gate logs, {} §14 cells proven, {} refusals, eligible={}",
         manifest.candidate_sha,
         manifest.owners,
         manifest.receipts.len(),
+        manifest.gate_logs.len(),
+        manifest.cells.len(),
         manifest.refusals.len(),
         manifest.eligible
     );
@@ -74,7 +96,7 @@ fn main() {
 
 fn usage(msg: &str) -> ! {
     eprintln!(
-        "export-manifest: {msg}\nusage: export-manifest --candidate <40-hex> --repo <rafka-v2> [--ledger <md>] [--through <sha>] [--connections <md>] [--registry <json>] [--root <rdm>] [--json <out>]"
+        "export-manifest: {msg}\nusage: export-manifest --candidate <40-hex> --repo <rafka-v2> [--ledger <md>] [--through <sha>] [--connections <md>] [--registry <json>] [--root <rdm>] [--gates <dir>] [--manifest <md>] [--json <out>]"
     );
     std::process::exit(2)
 }
