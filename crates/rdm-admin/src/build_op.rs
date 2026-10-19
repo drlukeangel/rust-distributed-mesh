@@ -689,10 +689,13 @@ impl VerdictSink for LocalVerdicts {
 }
 
 /// The drive of the current Build, for the reconcile loop: `ensure` it while it is in progress
-/// (R-BI3: the Build in progress is resumed).
+/// (R-BI3: the Build in progress is resumed), and once it completed, the drive this admin holds of
+/// it that has not ended (one that paused or stalled while the Build completed): its next pass reads
+/// the Build complete and ends its callers' streams.
 pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc<Drive>> {
     let id = match env.builds.current_build().await {
         Ok(crate::build_state::CurrentBuild::InProgress(id)) => id,
+        Ok(crate::build_state::CurrentBuild::Completed(id)) if drives.get(&id).is_some_and(|d| !d.ended()) => id,
         Ok(_) => return Vec::new(),
         Err(e) => {
             tracing::info!(error = %e, "Build state unreadable; nothing driven");

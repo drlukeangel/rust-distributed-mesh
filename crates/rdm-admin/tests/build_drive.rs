@@ -2317,3 +2317,62 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
     assert_eq!(attr("rdm.node_admin.build.update.via-reconcile", "executor"), vec!["mesh1.admin.1"]);
 }
 
+
+/// CONTRACT (`Drives::ensure`: "A drive that stalled or paused is picked up again here"): the drive
+/// the reconcile loop ensures while the view is cut off pauses without ending. The Build completes
+/// meanwhile (here by another pass, as its executor's verdict does). Once the view authorizes, the
+/// reconcile loop's `ensure_active` picks the paused drive up again, and its next pass reads the
+/// Build complete and ends its callers' stream `Complete`.
+/// Must NOT happen: the paused drive left holding its callers' stream because the current Build is
+/// no longer in progress (release run b7548453, owed_check_ins state_commit, Build a6v3: the
+/// fabric-primary's drive paused at the cut-off, no pass followed, and the caller's follow never ended).
+#[test]
+fn a_drive_paused_while_its_build_completes_is_picked_up_again_and_ends_its_stream_complete() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rdm_transport::span_capture("paused-drive-picked-up", exporter.clone());
+    let _g = tracing::dispatcher::set_default(&tracing::Dispatch::new(tracing_subscriber::registry().with(layer)));
+    let drive_outcomes = || -> Vec<String> {
+        capture.flush(Duration::from_secs(10)).expect("spans flush");
+        exporter
+            .get_finished_spans()
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.name == "rdm.node_admin.build.update.via-drive")
+            .map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == "outcome").map(|kv| kv.value.to_string()).unwrap_or_default())
+            .collect()
+    };
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let r = rig().await;
+        let drives = Arc::new(rdm_admin::build_drive::Drives::default());
+        r.switch.authorizes.store(false, Ordering::SeqCst);
+        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
+        let paused = drives.get(&r.build).expect("the reconcile loop holds the current Build's drive");
+        let mut reader = paused.reader(1);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while drive_outcomes() != ["paused"] {
+            assert!(tokio::time::Instant::now() < deadline, "the ensured drive ran and paused: {:?}", drive_outcomes());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!paused.ended(), "a paused drive does not end");
+
+        r.switch.authorizes.store(true, Ordering::SeqCst);
+        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal, "another pass completes the Build");
+        assert_eq!(r.builds.read_build(&r.build).await.unwrap().state, rdm_admin::build_state::BuildState::Complete);
+        rdm_admin::build_op::ensure_active(&drives, &r.env).await;
+        let terminal = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match reader.next().await {
+                    Some(Read::Terminal(t)) => break Some(t),
+                    Some(_) => {}
+                    None => break None,
+                }
+            }
+        })
+        .await;
+        match terminal {
+            Ok(Some(BuildReply::Complete { attempt, .. })) => assert_eq!(attempt, 1, "the Build completed at its first attempt"),
+            other => panic!("the paused drive's callers' stream ends Complete once the reconcile loop picks it up again, got {other:?}; via-drive outcomes {:?}", drive_outcomes()),
+        }
+    });
+}
