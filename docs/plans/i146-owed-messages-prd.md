@@ -3,7 +3,7 @@
 **Status:** approved 2026-10-16 (Luke, Q15 of the i144 stream, arm A with the a1 architect's
 corrections; ruling `docs/plans/rulings/i144-rulings-2026-10-16-delivery.md`). Page text landed on
 main's working tree the same day (node-rpc.md §43 new, §33, §41; node-rpc-envelope.md "Caller
-execution and certainty"). Nothing built. **Tracking issue:** [drlukeangel/rafka-v2#3129](https://github.com/drlukeangel/rafka-v2/issues/3129). **Record:** this file; every state or remaining-work update
+execution and certainty"). **Built and landed (record of 2026-10-18):** e1 (`ca27478f`, `d06f2f96`), e3 (`0ef6c700`, `5409bea9`), Q46 (`61ee19f5`), Q47/Q49 (`fe126388`, `01e4bd08`), Q52/Q55 (`0ef6c700`, `9e977175`), Q58 (`72a7d753`, `8ecdd1bb`, `935e038e`), Q61 (`abc212b3`); the open rows are the release reds and e3's remaining retry loop (plan-to-finish 1 and 2.4). **Tracking issue:** [drlukeangel/rafka-v2#3129](https://github.com/drlukeangel/rafka-v2/issues/3129). **Record:** this file; every state or remaining-work update
 goes in an epic's row below. **Owner:** the i143 lead; RDM engineers in pool lanes.
 
 ## Context
