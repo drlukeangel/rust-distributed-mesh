@@ -23,7 +23,7 @@ use crate::round::Missing;
 use crate::status_declare::{Authority, DeclareWake, Declarer, Key};
 use crate::topology::Topology;
 use crate::wiring::{FabricHooks, StateSyncRound, SyncState};
-use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
+use rdm_transport::{Budget, CallOptions, NodeRpcClient, NodeTarget};
 use rdm_core::outcome::RpcOutcome;
 use rdm_core::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use std::collections::{BTreeMap, HashSet};
@@ -92,9 +92,10 @@ async fn round_superseded_by(round: &RoundKey, accepted: &crate::build_state::Bu
 enum Delivery {
     /// The peer admitted the op (`Applied` or `AlreadyApplied`): it is never sent again.
     Answered(StatusReply),
-    /// The peer was not reached (`typed: false`), or replied with a refusal or that it is not ready
-    /// (`typed: true`; a refusal rests on the peer's own view, which heals):
-    /// the same op is sent again on an eligible event only (`RoundBook::take_due`).
+    /// The peer replied with a refusal or that it is not ready (`typed: true`; a refusal rests on the
+    /// peer's own view, which heals), or a command's Owed call ended without a reply (`typed: false`:
+    /// the peer's exit or removal is proven): the same op is sent again on an eligible event only
+    /// (`RoundBook::take_due`).
     Undelivered { why: String, typed: bool },
 }
 
@@ -735,8 +736,11 @@ impl FabricRounds {
 
     // ------------------------------------------------------------ commands down, one hop
 
-    /// Send the down op of `key` to the planned birth `to`, on its own task. The book it was taken
-    /// from commands it once per exact birth; an op the peer did not take waits for an eligible event.
+    /// Send the down op of `key` to the planned birth `to`, on its own task, as one Owed call
+    /// (node-rpc.md §43, i146 e3): the delivery layer resends it until the birth answers, and the call
+    /// ends only on that answer, on the birth's proven exit or removal, or when the round closes (this
+    /// owner's cancellation). The book it was taken from commands it once per exact birth; an op the
+    /// peer refused waits for an eligible event.
     fn spawn_command(self: &Arc<Self>, key: RoundKey, fabric_level: bool, to: NodeId, expected: Expected, event: &'static str, parent: tracing::Span) {
         let this = self.clone();
         tokio::spawn(async move {
@@ -746,7 +750,31 @@ impl FabricRounds {
             let req = key.kind.down(&key, to.clone(), expected.incarnation.clone());
             // The command hook runs in the path of the command it announces, before the call goes out.
             this.publish_hook(&key, false, &to, &expected.incarnation).instrument(span.clone()).await;
-            let (out, _) = this.env.client.call::<Status>(&NodeTarget::ExactNode(to.clone()), &req, &CallOptions::default()).instrument(span.clone()).await;
+            // Armed before the round is read: a close during the read is seen by the wait.
+            let mut closed = book.subscribe();
+            closed.borrow_and_update();
+            let owed = CallOptions { budget: Budget::Owed, ..CallOptions::default() };
+            let target = NodeTarget::ExactNode(to.clone());
+            let call = this.env.client.call::<Status>(&target, &req, &owed).instrument(span.clone());
+            tokio::pin!(call);
+            let out = loop {
+                if !book.is_open(&key) {
+                    break None;
+                }
+                tokio::select! {
+                    (out, _) = &mut call => break Some(out),
+                    changed = closed.changed() => {
+                        if changed.is_err() {
+                            break None;
+                        }
+                    }
+                }
+            };
+            let Some(out) = out else {
+                // Dropping the call ends its owed request: the round it commands is closed.
+                span.record("outcome", "cancelled: the round closed");
+                return;
+            };
             match delivery(&out) {
                 Delivery::Answered(r) => {
                     span.record("outcome", r.name());

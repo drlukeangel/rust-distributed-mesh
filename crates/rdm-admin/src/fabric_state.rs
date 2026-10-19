@@ -13,21 +13,19 @@
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus};
 use crate::status_declare::Destination;
 
-/// The last send of one round command. A round command still rides a bounded call, so a failed
-/// delivery waits here for a viable route (the declarer's declarations ride Owed calls and keep no
-/// route state, i146 e3).
+/// The last send of one round command that ended without the birth admitting it. A round command
+/// rides one Owed call (node-rpc.md §43, i146 e3): the delivery layer resends it until the birth
+/// answers, so a lost route is the layer's to wait out and nothing here tracks one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sent {
     pub to: Destination,
-    /// A typed reply came back: terminal until an eligible event.
+    /// A typed reply came back (the birth refused the op by name): terminal until an eligible event.
+    /// Otherwise the call ended because its birth's exit or removal is proven.
     pub typed: bool,
-    /// The view showed the target unreachable after an untyped failure: a viable route is a gain.
-    pub route_lost: bool,
 }
 
-/// Is a round command due again? When the birth addressed this admin, the destination changed to a
-/// deliverable birth, or a failed delivery gained a viable route. A target that is not deliverable is
-/// sent nothing.
+/// Is a round command due again? When the birth addressed this admin, or the destination changed to a
+/// deliverable birth. A target that is not deliverable is sent nothing.
 fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed: bool) -> bool {
     if addressed {
         return true;
@@ -37,7 +35,7 @@ fn eligible(sent: Option<&Sent>, now: &Destination, deliverable: bool, addressed
     }
     match sent {
         None => true,
-        Some(s) => &s.to != now || (!s.typed && s.route_lost),
+        Some(s) => &s.to != now,
     }
 }
 use crate::topology::Topology;
@@ -182,18 +180,17 @@ pub struct Expected {
 /// Where one planned birth's down op stands.
 #[derive(Debug, Clone)]
 enum Command {
-    /// The call is out: nothing is sent while it is. `addressed`: the target addressed this primary
-    /// while it was out, an eligible event the call does not consume: if the call ends undelivered,
-    /// the command is due again on it. `route_lost`: the target became unreachable in the view while
-    /// the call was out, so if the call ends without a reply it is due again once the target is
-    /// reachable again.
-    Out { to: Destination, status: NodeStatus, addressed: bool, route_lost: bool },
+    /// The call is out: one Owed call, resent by the delivery layer until the birth answers, and
+    /// nothing is sent beside it. `addressed`: the target addressed this primary while it was out, an
+    /// eligible event the call does not consume: if the call ends undelivered, the command is due
+    /// again on it.
+    Out { to: Destination, status: NodeStatus, addressed: bool },
     /// The birth answered (it admitted the op or refused it by name): the op is never sent again.
     Answered,
-    /// The call was not delivered, or the birth said it is not ready. Sent again only on an eligible
-    /// event (R-S2): the target is reachable again after its route was lost, the destination moved
-    /// (a new endpoint, address or incarnation), the target's state changed, or the target addressed
-    /// this admin.
+    /// The birth refused the op by name (it is not ready), or the call ended because the birth's exit
+    /// or removal is proven. Sent again only on an eligible event (R-S2): the destination moved (a new
+    /// endpoint, address or incarnation), the target's state changed, or the target addressed this
+    /// admin.
     Undelivered { sent: Sent, status: NodeStatus, addressed: bool },
 }
 
@@ -234,9 +231,11 @@ impl RoundBook {
         self.rounds.lock().unwrap().keys().cloned().collect()
     }
 
-    /// Forget every round: the tenure that opened them ended.
+    /// Forget every round: the tenure that opened them ended. A command call still out sees its round
+    /// gone and is cancelled.
     pub fn clear(&self) {
         self.rounds.lock().unwrap().clear();
+        self.bump();
     }
 
     /// Whether the round is open.
@@ -267,9 +266,11 @@ impl RoundBook {
         CompletionCarry::Carried
     }
 
-    /// Forget the round: its completion went up.
+    /// Forget the round: its completion went up, or it is no longer this admin's. A command call still
+    /// out sees its round gone and is cancelled.
     pub fn close(&self, key: &RoundKey) {
         self.rounds.lock().unwrap().remove(key);
+        self.bump();
     }
 
     /// Replace the planned births the round's checklist names. A check-in already held for a birth
@@ -305,23 +306,10 @@ impl RoundBook {
                 (None, Some(t)) => deliverable(t).then_some("first"),
                 (None, None) => None,
                 (Some(Command::Answered), _) => None,
-                (Some(Command::Out { route_lost, .. }), target) => {
-                    if target.is_none_or(|t| !deliverable(t)) {
-                        *route_lost = true;
-                    }
-                    None
-                }
-                (Some(Command::Undelivered { sent, .. }), None) => {
-                    if !sent.typed {
-                        sent.route_lost = true;
-                    }
-                    None
-                }
+                (Some(Command::Out { .. }), _) => None,
+                (Some(Command::Undelivered { .. }), None) => None,
                 (Some(Command::Undelivered { sent, status, addressed }), Some(t)) => {
                     let ok = deliverable(t);
-                    if !sent.typed && !ok {
-                        sent.route_lost = true;
-                    }
                     let now = Destination::of(t);
                     if !(eligible(Some(sent), &now, ok, *addressed) || (ok && t.status != *status)) {
                         None
@@ -329,8 +317,6 @@ impl RoundBook {
                         Some("addressed")
                     } else if sent.to != now {
                         Some("destination-changed")
-                    } else if !sent.typed && sent.route_lost {
-                        Some("reachable-again")
                     } else {
                         Some("state-changed")
                     }
@@ -338,7 +324,7 @@ impl RoundBook {
             };
             if let Some(event) = event {
                 let t = target.expect("a due birth is in the view");
-                r.commands.insert(slot, Command::Out { to: Destination::of(t), status: t.status, addressed: false, route_lost: false });
+                r.commands.insert(slot, Command::Out { to: Destination::of(t), status: t.status, addressed: false });
                 due.push((n.clone(), e.clone(), event));
             }
         }
@@ -352,24 +338,17 @@ impl RoundBook {
         }
     }
 
-    /// The down op to this birth was not delivered (`typed`: the birth replied that it is not ready;
-    /// otherwise no reply came): it waits for an eligible event. The waiter is woken so the current
-    /// view is checked against what was sent (an address, route loss, or state/destination change
-    /// while the call was out).
+    /// The down op to this birth was not taken (`typed`: the birth refused it by name; otherwise the
+    /// call ended because the birth's exit or removal is proven): it waits for an eligible event. The
+    /// waiter is woken so the current view is checked against what was sent (an address, or a state or
+    /// destination change while the call was out).
     pub fn undelivered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId, typed: bool) -> bool {
         let recorded = match self.rounds.lock().unwrap().get_mut(key) {
             Some(r) => {
                 let slot = (node_id.clone(), incarnation.clone());
                 match r.commands.get(&slot).cloned() {
-                    Some(Command::Out { to, status, addressed, route_lost }) => {
-                        r.commands.insert(
-                            slot,
-                            Command::Undelivered {
-                                sent: Sent { to, typed, route_lost: !typed && route_lost },
-                                status,
-                                addressed,
-                            },
-                        );
+                    Some(Command::Out { to, status, addressed }) => {
+                        r.commands.insert(slot, Command::Undelivered { sent: Sent { to, typed }, status, addressed });
                         true
                     }
                     _ => false,
@@ -639,18 +618,21 @@ mod tests {
         assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "commanded once ReadyForTraffic");
     }
 
-    /// CONTRACT (R-S2): a command that never got a reply is sent again when the target becomes reachable
-    /// again after its route was lost, and not while it stays unreachable.
+    /// CONTRACT (node-rpc.md §43: retry stops "on the receiver's proven exit or accepted removal";
+    /// i146 e3): a command whose call ended because its birth's exit is proven is not sent again when
+    /// the target reads reachable again: that birth is gone, and the birth that replaces it is
+    /// commanded as its own. Must NOT happen: a returned route sending the command again (the round
+    /// book's own retry, `reachable-again`).
     #[test]
-    fn an_undelivered_command_is_sent_again_when_the_target_becomes_reachable() {
+    fn a_command_whose_birth_is_gone_is_not_sent_again_when_the_target_reads_reachable() {
         let (book, k, n, _) = undelivered(false, NodeStatus::ReadyForTraffic);
         let gone = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
-        for _ in 0..2 {
-            assert!(book.take_due(&k, &view_of(vec![gone.clone()])).is_empty(), "an unreachable target is sent nothing");
-        }
-        let back = view_of(vec![n.clone()]);
-        assert_eq!(book.take_due(&k, &back).iter().map(|d| d.2).collect::<Vec<_>>(), ["reachable-again"], "reachable again: sent again");
-        assert!(book.take_due(&k, &back).is_empty(), "and once");
+        assert!(book.take_due(&k, &view_of(vec![gone])).is_empty(), "an unreachable target is sent nothing");
+        assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty(), "reachable again: nothing is sent to the birth whose exit ended the call");
+        let b = IncarnationId::mint();
+        book.expect(&k, planned(&n.node_id, &b, "mesh2.admin.1"), Vec::new());
+        let reborn = Node { incarnation_id: Some(b), ..n };
+        assert_eq!(book.take_due(&k, &view_of(vec![reborn])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "the birth that replaces it is commanded as its own");
     }
 
     /// CONTRACT (R-S2): a command that the birth refused as not ready is sent again when the birth's
@@ -703,20 +685,15 @@ mod tests {
         assert!(book.take_due(&k, &view).is_empty(), "the address counts once");
     }
 
-    /// CONTRACT (R-S2): the target becoming unreachable in the view while the command to it is out
-    /// is an eligible route loss the call does not consume: when that call ends without a reply
-    /// (`typed == false`), the command is sent again once the target is reachable again, and the book
-    /// wakes the waiter on `undelivered` so a view already holding the unreachable state is observed
-    /// before the target returns. Must NOT happen: `PendingReconnect` observed while `Command::Out`
-    /// is in flight discarded by `take_due` and `undelivered` not waking the waiter, so when the
-    /// target returns to `ReadyForTraffic` (matching the `status` recorded when the call went out)
-    /// `route_lost` stays `false` and `status == t.status` suppresses re-send forever (gate red, tree
-    /// a269d7e5, accepted_topology trace 6d1b67fa: mesh1.admin.1 sent commit-state to mesh1.admin.2
-    /// at 14.968 s while ReadyForTraffic; mesh1.admin.2 went PendingReconnect at 17.268 s while the
-    /// call was out; the call failed ReplyLost at 17.327 s; mesh1.admin.2 returned ReadyForTraffic
-    /// at 17.875 s and was never commanded again for the remaining 142 s).
+    /// CONTRACT (i146 e3; node-rpc.md §43): the target going unreachable while the command to it is
+    /// out sends nothing beside the call, and neither does its return: the Owed call carries the
+    /// command until the birth answers, a lost reply included, and a call's end wakes the round
+    /// waiter. Must NOT happen (gate red, tree a269d7e5, accepted_topology trace 6d1b67fa:
+    /// mesh1.admin.2 went PendingReconnect while the commit-state to it was out, the bounded call
+    /// failed ReplyLost, and the command was never sent again): a call that ends on a lost reply. A
+    /// refusal by name waits for an eligible event.
     #[test]
-    fn a_target_going_unreachable_while_the_command_is_out_sends_it_again_when_it_is_reachable_again() {
+    fn a_target_going_unreachable_and_back_while_the_command_is_out_sends_nothing_beside_the_call() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
         let (book, k, n) = (RoundBook::default(), key("7k63hjhgtbsw", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
         book.open(&k);
@@ -724,18 +701,16 @@ mod tests {
         let ready = view_of(vec![n.clone()]);
         let stale = view_of(vec![Node { status: NodeStatus::PendingReconnect, ..n.clone() }]);
         assert_eq!(book.take_due(&k, &ready).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
-        // Case 1: view-rebuild sees PendingReconnect while the call is Out, and the call fails after.
-        assert!(book.take_due(&k, &stale).is_empty(), "the call is out while the target goes unreachable");
+        for view in [&stale, &stale, &ready, &ready] {
+            assert!(book.take_due(&k, view).is_empty(), "the call is out: nothing is sent beside it");
+        }
         let mut rx = book.subscribe();
         let before = *rx.borrow_and_update();
-        assert!(book.undelivered(&k, &n.node_id, &inc, false));
-        assert!(*rx.borrow_and_update() > before, "undelivered wakes the round waiter");
-        assert!(book.take_due(&k, &stale).is_empty(), "still unreachable: not sent yet");
-        assert_eq!(book.take_due(&k, &ready).iter().map(|d| d.2).collect::<Vec<_>>(), ["reachable-again"], "reachable again after route loss while Out: sent again");
-        // Case 2: if a typed refusal arrives instead of a lost reply, route_lost is not set.
-        assert!(book.take_due(&k, &stale).is_empty());
-        book.undelivered(&k, &n.node_id, &inc, true);
-        assert!(book.take_due(&k, &ready).is_empty(), "typed refusal is not a lost route");
+        assert!(book.undelivered(&k, &n.node_id, &inc, true));
+        assert!(*rx.borrow_and_update() > before, "a call's end wakes the round waiter");
+        assert!(book.take_due(&k, &ready).is_empty(), "a refusal by name waits for an eligible event");
+        let changed = view_of(vec![Node { status: NodeStatus::ConnectionsDeleting, ..n.clone() }]);
+        assert_eq!(book.take_due(&k, &changed).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed: sent again");
     }
 
     #[test]

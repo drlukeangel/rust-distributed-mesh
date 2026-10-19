@@ -80,7 +80,7 @@ and the sender's settled outcome is three attributes of its call span, not a spa
 | `rdm.node_rpc.delivery.remove.via-sender-ended` | the receiver (`delivery.rs:375`) | sender, held, reason | none |
 | `rdm.node_rpc.delivery.remove.via-caller-finished` (debug) | the responder (`server.rs:719`) | delivery_id | none |
 | `rdm.node_rpc.delivery.remove.via-ack-dropped-by-seam` | the test seam (`delivery.rs:616`) | delivery_id, of | none (the seam cells count) |
-| control: no per-protocol retry span remains | — | — | i146 e3's control cell, not written (:878) |
+| control: no per-protocol retry span remains | — | — | `fabric_rounds::tests::a_round_command_is_one_owed_call_and_a_returned_route_sends_nothing_beside_it` (the round commands, the last loop); owners 2 and 3: `command_natural_key::a_check_in_owed_to_a_removed_primary_ends_unavailable_and_is_owed_to_the_next_holder`, `status_declare::tests::a_failed_delivery_is_the_layers_and_the_declarer_sends_it_again_only_to_a_new_destination` |
 
 Not built as the first bar had them: `message.resolve.via-acked` (the call span's `delivery` attribute carries
 its outcome); `read-only` as an acceptance value (that ack has no span); and `reject.via-duplicate-pending`
@@ -726,7 +726,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   `owed_check_ins::a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready`
   green on the Owed call (the release stem 5/5). The round book's down commands keep their own record and
   route-regained resend (`fabric_state.rs` `Sent`, `eligible`): the mesh primary's commands are the next
-  owner, not this one's. Its first gate (`36aaae4b`) was red at
+  owner, not this one's. **The round commands moved (2026-10-18, lane e6s4, the last per-protocol retry loop).** R7 first, green on main before the move: `fabric_rounds::tests::a_fabric_primary_with_no_round_book_reconstructs_its_round_commands_from_the_published_state_and_the_accepted_build` (a fabric-primary with no round book that hears state-commit opens the accepted attempt's round and commands mesh2's primary under its key), `…::a_new_attempt_of_the_accepted_build_commands_every_planned_primary_again_under_its_own_round` (a lifecycle operation on a primary is an attempt, and the new attempt's round commands it again, though the old round had its answer), `…::a_mesh_primary_answers_a_round_it_holds_already_applied_and_runs_its_action_once`; the member side is `command_natural_key:351`. Then `spawn_command` sends each command as one `Budget::Owed` call, dropped (the owner's cancellation) when its round closes: `RoundBook::close` and `clear` now wake the command tasks, which watch for it. `Sent.route_lost`, `Command::Out.route_lost` and the `reachable-again` event are gone. A refusal by name, or a call ended by the birth's proven exit, waits for an eligible event (addressed, destination changed, state changed). Control `fabric_rounds::tests::a_round_command_is_one_owed_call_and_a_returned_route_sends_nothing_beside_it`: RED on main (the bounded call to a primary that never answers was resent 3 times and ended at its 10 s deadline, leaving the command to the book's route-regained resend), GREEN after (one call resent past 10 s, the route lost and returned with no second command, the call cancelled by the round's close). Two round-book cells restated for the move (`a_command_whose_birth_is_gone_is_not_sent_again_when_the_target_reads_reachable`, `a_target_going_unreachable_and_back_while_the_command_is_out_sends_nothing_beside_the_call`; the second keeps its gate-red history: the call no longer ends on a lost reply). rdm-admin lib 474/474, main 429/429; rdm-test `rounds::` 8/8, `command_natural_key::` 7/7, `accepted_topology::` 1/1, `fabric_primary::` 4/4, `sticky_seat::` 5/5, `owed_check_ins::` 5/5. No page states how a round command is delivered (§43 covers every directed message), so none changes. A states.md checklist bullet for the command, beside the check-in's, is offered to Luke. Its first gate (`36aaae4b`) was red at
   `node_stop::a_stopped_births_stop_is_published_once_across_a_move_of_its_mesh_seat` (`node_stop.rs:1103`):
   the old holder's Leaving reached its successor `already-applied` 19 ms after the stop stream's
   `stopped` had recorded it; the cell asserted `applied`, the order the awaited call used to give. Q36
@@ -893,7 +893,7 @@ persists nothing (R7). No new gossip frame and no new `MemberStatus`.
   flame cited in its row.
 - [ ] The Q13 cell (`accepted_topology::the_build_fabric_build_id_names_is_the_one_accepted_topology`)
   green under suspension across the reconcile, in the release run.
-- [ ] No per-protocol retry loop remains in rdm-node or rdm-admin (the e3 controls).
+- [x] No per-protocol retry loop remains in rdm-node or rdm-admin (the e3 controls): the round commands' was the last (`fabric_rounds::tests::a_round_command_is_one_owed_call_and_a_returned_route_sends_nothing_beside_it`).
 
 ## § Dispatch ordering
 
