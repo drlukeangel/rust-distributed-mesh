@@ -1242,7 +1242,7 @@ After i141 cutover, any active Rafka-local generic comparator, incumbent ladder,
 - Direct/Proxy connections parity and target-preserving Node RPC composition are green;
 - complete-send certainty, 499, pool supersession, and carried execution are green.
 
-The final import also reconciles downstream `node-identity-and-state.md`, feature docs, tests, runbooks, and RDM `docs/i143/design.md` so target vocabulary no longer uses legacy transport `fabric_id`, ready_since/lowest-name/incumbent election scoring, launcher-private completed Build receipts/runtime metadata as runtime authority, cross-host PID/container assumptions, zero-neighbour-only repair, ordinary self-Ready fallback, or silence/RPC failure as recovery death proof.
+The final import also reconciles downstream `node-identity-and-state.md`, feature docs, tests, runbooks, and RDM `docs/plans/i143-design.md` so target vocabulary no longer uses legacy transport `fabric_id`, ready_since/lowest-name/incumbent election scoring, launcher-private completed Build receipts/runtime metadata as runtime authority, cross-host PID/container assumptions, zero-neighbour-only repair, ordinary self-Ready fallback, or silence/RPC failure as recovery death proof.
 
 ---
 
@@ -1255,11 +1255,10 @@ Each E2E/hostile run emits:
 
 ```text
 scenario manifest + seed
-FabricRecord snapshots including build_id
+the current Build, read from the Build facts (R-BI3)
 accepted Build requests/folded attempt views
 Fabric/Mesh/Node snapshots
 membership RuntimeFact snapshots
-current runtime-metadata snapshot/digest where required
 leadership candidate/result evidence
 runtime adopt/inspect/exit evidence
 provider-domain resolution/execution evidence
@@ -1274,7 +1273,7 @@ final reconciliation report
 
 Identity proof records `node_id`, `mesh_id`, `fabric_id`, `id_format="crockford60"`, and separate EndpointId evidence.
 
-Recovery proof records at least:
+Node recovery proof ([node-recovery.md](../architecture/lifecycles/node-recovery.md)) records at least:
 
 ```text
 fabric_id
@@ -1282,21 +1281,19 @@ mesh_id
 mesh_name
 build_id
 attempt
-recovery_admin_node_id
 provider
 provider_control_domain_fingerprint
 runtime_locator_kind
 runtime_locator_fingerprint
-runtime_metadata_digest where applicable
 adopter_node_id
 execution_node_id
-desired_shape
-live_before
-preserved_count
-tombstoned_count
-created_count
-live_after
+the deleted birth and the created birth at the same path.name (node.id, incarnation)
+the provider's exact exit proof (its inspection verdict)
 ```
+
+A mesh none of whose node-admins can be reached is [mesh investigation](../architecture/lifecycles/mesh-investigation.md): its proof is its probes' outcomes and its decision step (the node.create of a node-admin into the live mesh, or none). There is no mesh recovery.
+
+Amended 2026-10-19 by the lead, against the canon: `FabricRecord snapshots including build_id` became the current Build read from the Build facts (R-BI3 deleted `Fabric.build_id`); `current runtime-metadata snapshot/digest`, `recovery_admin_node_id` and `runtime_metadata_digest` are dropped (nothing produces them; the runtime evidence is the provider's adopt, inspect and exit evidence above); the mesh-recovery counts (`desired_shape`, `live_before`, `preserved_count`, `tombstoned_count`, `created_count`, `live_after`) are dropped with mesh recovery itself (mesh-investigation.md).
 
 ---
 
