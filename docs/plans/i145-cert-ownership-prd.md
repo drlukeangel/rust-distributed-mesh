@@ -155,6 +155,17 @@ No new gossip frame and no new `MemberStatus`.
   `boot.rs:555`, which also skip `validate_alpns`) go through the registry in the first step. To Luke
   when e2 starts: connections.md §1.2's reason list (four, against the admit page's six) and the
   spelling of a launched node's `NoCerts` in its launch.
+  Built 2026-10-19 on branch `i145-e2-admit` (lane e6s4, stacked on e1, held until release is green):
+  the step in `connections/admit.rs`; `no-credential` at one floor from the accept; the dialer's Direct
+  `Failed` row; the control; the admin's app ALPNs through the registry; and, by the lead's word
+  (from e5.3's drafting), the root set: `RootSet`, one holder beside the step that every admission
+  reads afresh and `node.roots.update` will replace (`ConnectionsRegistry::roots`), `CertAdmitter`
+  over it naming each refusal by its `CertError` (so the CA level's checks need no e2 change), and the
+  launch write `RDM_ROOTS` (`Launch::roots`) carrying the launching admin's set as it stands at the
+  launch, one root or two. A launch with no set admits by name (the `NoCerts` spelling question stays
+  Luke's). Not yet built: `registering_the_step_for_node_rpc_or_gossip_is_refused_at_bind` and
+  `a_no_certs_acceptor_admits_by_name` (a `NoCerts` admission is spanned `via-admitted`, clock
+  `no-certs`, not `via-no-certs-configured`).
 
 #### e3 — the cert row, `node.cert.renew`, `mesh.issuer.renew`, `node.issuer.update`, policy, the watch
 
