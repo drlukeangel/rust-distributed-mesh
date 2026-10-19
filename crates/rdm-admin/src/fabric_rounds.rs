@@ -1335,6 +1335,19 @@ mod tests {
         capture.named("rdm.node_admin.fabric.update.via-round-command").into_iter().filter(|s| s.attributes.get("to").map(String::as_str) == Some(to)).map(|s| s.attributes.get("event").cloned().unwrap_or_default()).collect()
     }
 
+    /// [`commands_to`] once `n` command spans toward `to` have ended, or what ended within 10 s: a
+    /// command's span ends with its task, which runs beside the cell.
+    async fn commands_ended_to(capture: &crate::span_capture::Capture, to: &str, n: usize) -> Vec<String> {
+        let until = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let ended = commands_to(capture, to);
+            if ended.len() >= n || tokio::time::Instant::now() >= until {
+                return ended;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// CONTRACT (i146 R7, the round commands' owner; states.md, The round checklist: "A new primary,
     /// through election or recovery, re-sends the current round. Members already done check in again,
     /// and the checklist rebuilds itself"; node-rpc.md §43: "Each owner defines how its pending
@@ -1360,7 +1373,7 @@ mod tests {
         tokio::task::yield_now().await;
         let opened = capture.named("rdm.node_admin.fabric.update.via-round-opened");
         assert!(opened.iter().any(|s| s.attributes.get("round").map(String::as_str) == Some("commit-state") && s.attributes.get("build_id") == Some(&id.to_string()) && s.attributes.get("attempt").map(String::as_str) == Some("2")), "the round of the accepted Build's attempt 2 is opened: {opened:?}");
-        assert_eq!(commands_to(&capture, "mesh2.admin.1"), ["first"], "mesh2's primary is commanded once, under the reconstructed round");
+        assert_eq!(commands_ended_to(&capture, "mesh2.admin.1", 1).await, ["first"], "mesh2's primary is commanded once, under the reconstructed round");
     }
 
     /// CONTRACT (i146 R7; node-rpc-envelope.md, Fabric status rounds: "The round is scoped to the
@@ -1388,14 +1401,14 @@ mod tests {
         tokio::task::yield_now().await;
         let attempts: Vec<String> = capture.named("rdm.node_admin.fabric.update.via-round-opened").into_iter().filter_map(|s| s.attributes.get("attempt").cloned()).collect();
         assert_eq!(attempts, ["1", "2"], "a round per attempt");
-        assert_eq!(commands_to(&capture, "mesh2.admin.1"), ["first", "first"], "mesh2's primary is commanded again under attempt 2's round");
+        assert_eq!(commands_ended_to(&capture, "mesh2.admin.1", 2).await, ["first", "first"], "mesh2's primary is commanded again under attempt 2's round");
     }
 
     /// CONTROL (i146 e3, R8; node-rpc.md §43: "Retry stops on the ack, on the receiver's proven exit or
     /// accepted removal, or on explicit cancellation or retargeting by the owning workflow; never on a
     /// timer, never on absence from a view"): a round command is one Owed call the delivery layer
     /// resends until the commanded primary answers. mesh2's primary is planned and never answers (its
-    /// endpoint is unknown to the client); the one call is resent past any bounded call's deadline,
+    /// endpoint answers nothing); the one call is resent after the 10 s a bounded call ends on,
     /// the target reads unreachable and then reachable again in the view, and the round book sends
     /// nothing beside the call: one command hook, no `reachable-again`. Closing the round cancels the
     /// call. Must NOT happen: the call ending on its own deadline and the book commanding the
@@ -1413,16 +1426,21 @@ mod tests {
         let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         resolver.insert(rdm_transport::ResolvedNode { node_id: m2.node_id.clone(), name: m2.name.clone(), endpoint_id: iroh::SecretKey::generate().public(), transport_addr: silent.local_addr().unwrap(), incarnation: m2.incarnation_id.clone().unwrap() });
         let rounds = rounds_resolving(&fp, ready.clone(), builds, Arc::new(Records::default()), FabricId::mint(), Arc::new(NoScratchpad), resolver).await;
+        let commanded = tokio::time::Instant::now();
         rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view: &ready }).await;
         let resends = || rdm_transport::DeliveryStats::get(&rounds.env.client.delivery().stats().resends);
-        // Past the 10 s a bounded call would have ended on.
-        tokio::time::timeout(std::time::Duration::from_secs(40), async {
-            while resends() < 5 {
+        // A bounded call ends 10 s in (`CallOptions::default`). The Owed call is resent after that mark,
+        // whatever the cadence: one attempt is bounded by the staleness floor, and its backoff is capped there.
+        tokio::time::sleep_until(commanded + std::time::Duration::from_secs(10)).await;
+        let at_mark = resends();
+        let floor = rdm_core::cadence::staleness_floor();
+        tokio::time::timeout(floor * 2 + std::time::Duration::from_secs(10), async {
+            while resends() <= at_mark {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("the command to mesh2's primary is still out and resent: one call carries every resend ({} resends)", resends()));
+        .unwrap_or_else(|_| panic!("the command to mesh2's primary is still out past the 10 s a bounded call ends on, and resent ({} resends, {at_mark} at the mark)", resends()));
         for view in [&gone, &gone, &ready, &ready] {
             rounds.climb_step(ClimbInputs { is_fabric_primary: true, heard: Some("state-commit"), view }).await;
             tokio::task::yield_now().await;
@@ -1430,12 +1448,22 @@ mod tests {
         let hooks = || capture.named("rdm.node_admin.fabric.update.via-round-hook").into_iter().filter(|s| s.attributes.get("round").map(String::as_str) == Some("commit-state")).count();
         assert_eq!(hooks(), 1, "one command was sent to mesh2's primary: the returned route sends nothing beside the call");
         rounds.fabric_book_reset();
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-        }
-        let commands = capture.named("rdm.node_admin.fabric.update.via-round-command");
+        // The command's span ends when its task drops the call: awaited, never assumed after a fixed number of turns.
+        let commands = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let ended = capture.named("rdm.node_admin.fabric.update.via-round-command");
+                if !ended.is_empty() {
+                    break ended;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("closing the round ends the command's call"));
         assert_eq!(commands.len(), 1, "one command, ended by the round's close: {commands:?}");
         assert!(commands[0].attributes.get("outcome").is_some_and(|o| o.contains("cancelled")), "closing the round cancels the owed call: {commands:?}");
+        let calls: std::collections::BTreeSet<String> = capture.named("rdm.node_rpc.delivery.update.via-resend").into_iter().filter_map(|s| s.attributes.get("delivery_id").cloned()).collect();
+        assert_eq!(calls.len(), 1, "every resend is the one call's: {calls:?}");
     }
 
     /// The round actions this cell counts.
