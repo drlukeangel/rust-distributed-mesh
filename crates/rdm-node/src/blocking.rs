@@ -8,6 +8,12 @@
 /// adds what it took to that work's [`IoTime`]: the wait from its issue until a blocking thread began
 /// it, and its run on that thread, including while the call is still queued or running if the caller
 /// awaiting it is cancelled.
+///
+/// tokio cancels a blocking task only when its runtime shuts down, before the task begins, and
+/// nothing here aborts one: a cancelled call is a caller being dropped with its runtime. It is named
+/// (`rdm.node.disk_call.update.via-shutdown`, with how long ago it was issued) and never answers,
+/// so the runtime drops its caller with everything else; no caller ever sees a disk call that never
+/// ran.
 pub async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let slot = std::sync::Arc::new(std::sync::Mutex::new(CallTiming {
         issued: std::time::Instant::now(),
@@ -25,7 +31,15 @@ pub async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'stat
     match run.await {
         Ok(v) => v,
         Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-        Err(e) => panic!("a blocking disk call was cancelled: {e}"),
+        Err(_) => {
+            let (issue_age_ms, began) = {
+                let s = slot.lock().unwrap();
+                (s.issued.elapsed().as_millis() as u64, s.began.is_some())
+            };
+            tracing::info_span!("rdm.node.disk_call.update.via-shutdown", issue_age_ms, began)
+                .in_scope(|| tracing::info!("a blocking disk call was cancelled by its runtime's shutdown: it never answers, and its caller is dropped with the runtime"));
+            std::future::pending::<T>().await
+        }
     }
 }
 
