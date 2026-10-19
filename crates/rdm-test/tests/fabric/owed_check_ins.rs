@@ -185,9 +185,11 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
 /// primary is held in its own `round` action (the fault door's round-action cut), the fabric-primary
 /// suspended until every connection to it idles out and past the 10 s a call had (past the floor: it
 /// is cut off), the action released (mesh2's check-in owed upward to the suspended fabric-primary),
-/// then the fabric-primary continued. Its cut-off ended its tenure; healed, it re-opens the round,
-/// re-runs its own mesh's round (its own action from its record) and the fabric reaches
-/// ready-for-traffic under the resize. Every round action runs once per round key across the cut-off.
+/// then the fabric-primary continued. With another member in its mesh, its cut-off ended its tenure;
+/// healed, it re-opens the round, re-runs its own mesh's round (its own action from its record). Alone
+/// in its mesh it is never cut off and keeps its seat (gossip.md §6, "A cut-off view"); its round
+/// completes once it wakes. Either way the fabric reaches ready-for-traffic under the resize, and every
+/// round action runs once per round key.
 async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
     let mut estate = estate_with(test, "answer:0").await;
     estate.reconcile_shape("fabric1", &[("mesh1", mesh1.0, mesh1.1), ("mesh2", 2, 1)]).await;
@@ -225,12 +227,15 @@ async fn fabric_primary_cut_off(test: &str, mesh1: (u32, u32), round: &str) {
         v.sort_by_key(start);
         v
     };
-    // The cut-off ended the fabric-primary's tenure; healed, it ran its own mesh's round again, its own
-    // action from its record.
-    assert!(named(&spans, "rdm.node_admin.fabric.remove.via-tenure-ended").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s), "the cut-off ended {fp_s}'s tenure");
     let own = of_resize("rdm.node_admin.fabric.update.via-mesh-round", &fp_s, round);
-    assert!(own.len() >= 2, "{fp_s} ran its own mesh's {round} round again after the cut-off: {own:#?}");
-    assert!(own.iter().skip(1).all(|r| r["attributes"]["own_action"] == "from-record"), "its own action came from its record: {own:#?}");
+    // With another member in its mesh, the cut-off ended the fabric-primary's tenure; healed, it ran its
+    // own mesh's round again, its own action from its record. Alone in its mesh it is never cut off and
+    // keeps its seat (gossip.md §6): nothing ends its tenure.
+    if !members.is_empty() {
+        assert!(named(&spans, "rdm.node_admin.fabric.remove.via-tenure-ended").iter().any(|sp| s(&sp["attributes"]["node"]) == fp_s), "the cut-off ended {fp_s}'s tenure");
+        assert!(own.len() >= 2, "{fp_s} ran its own mesh's {round} round again after the cut-off: {own:#?}");
+        assert!(own.iter().skip(1).all(|r| r["attributes"]["own_action"] == "from-record"), "its own action came from its record: {own:#?}");
+    }
     // Every round action ran once per round key across the cut-off: the fabric-primary's, mesh2's
     // primary's and each member's.
     for r in ["commit-state", "open-traffic"] {
@@ -269,10 +274,10 @@ async fn a_fabric_primary_cut_off_during_open_traffic_re_runs_its_own_mesh_round
 
 /// CONTRACT (i146 e3 owner 3, Q45; node-rpc.md §43; fabric-state-commit.md step 3, "node →
 /// mesh-primary → fabric-primary"): a mesh primary's check-in is owed to the fabric-primary until it
-/// answers, however long it cannot be reached; and a fabric-primary that is its mesh's only node,
-/// cut off during state-commit and healed, re-runs its own mesh's round (no member: its own check-in
-/// from its record). The fabric reaches ready-for-traffic. Must NOT happen: the check-in ending
-/// unanswered, the fabric held in state-commit.
+/// answers, however long it cannot be reached; and a fabric-primary that is its mesh's only node keeps
+/// its seat while suspended (gossip.md §6: a view that holds no other member is not cut off), and its
+/// round completes once it wakes. The fabric reaches ready-for-traffic. Must NOT happen: the check-in
+/// ending unanswered, the fabric held in state-commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready() {
     fabric_primary_cut_off("a_mesh_primarys_check_in_owed_while_the_fabric_primary_is_suspended_is_delivered_and_the_fabric_reaches_ready", (1, 0), "commit-state").await;
