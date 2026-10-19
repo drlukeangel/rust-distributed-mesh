@@ -278,25 +278,29 @@ fn parse_cidr(cidr: &str) -> Option<(Ipv4Addr, u8)> {
     Some((ip.parse().ok()?, prefix.parse().ok()?))
 }
 
-/// Is UDP `addr` bound in the network namespace of `pid`? Reads
-/// `/proc/<pid>/net/udp`: `sl local_address ...`, address as the in-memory
-/// network-order word printed in hex, then `:port` in hex.
+/// Is UDP `addr` bound in the network namespace of `pid`? Reads `/proc/<pid>/net/udp`
+/// ([`udp_table_holds`]). The kernel answers that table a page per read and resumes each page by
+/// position, so `Ok(true)` proves the bind, and `Ok(false)` is no proof of absence in a table longer
+/// than a page that changes between its pages.
 pub fn netns_holds_udp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
-    netns_table_holds(pid, "udp", addr, None)
+    Ok(udp_table_holds(&udp_table(pid)?, addr))
 }
 
-/// Is TCP `addr` listened on in the network namespace of `pid`
-/// (`/proc/<pid>/net/tcp`, state `0A` = LISTEN)?
-#[cfg(test)]
-pub(crate) fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, String> {
-    netns_table_holds(pid, "tcp", addr, Some("0A"))
-}
-
-/// Every UDP socket bound in the network namespace of `pid`, as
-/// `/proc/<pid>/net/udp` lists them (IPv4 only; an unspecified bind is kept as such).
+/// Every UDP socket bound in the network namespace of `pid`, as `/proc/<pid>/net/udp` lists them
+/// ([`udp_sockets_in`]), read as [`netns_holds_udp`] reads it.
 pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
+    Ok(udp_sockets_in(&udp_table(pid)?))
+}
+
+fn udp_table(pid: u32) -> Result<String, String> {
     let path = format!("/proc/{pid}/net/udp");
-    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The local addresses a `/proc/<pid>/net/udp` table lists, sorted (IPv4 only; an unspecified bind is
+/// kept as such): `sl local_address ...`, the address as the in-memory network-order word printed in
+/// hex, then `:port` in hex.
+fn udp_sockets_in(table: &str) -> Vec<SocketAddr> {
     let mut out: Vec<SocketAddr> = table
         .lines()
         .skip(1)
@@ -308,24 +312,12 @@ pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
         })
         .collect();
     out.sort();
-    Ok(out)
+    out
 }
 
-fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
-    let path = format!("/proc/{pid}/net/{table}");
-    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
-    Ok(table.lines().skip(1).any(|line| {
-        if let Some(want) = state {
-            if line.split_whitespace().nth(3) != Some(want) {
-                return false;
-            }
-        }
-        let Some(local) = line.split_whitespace().nth(1) else { return false };
-        let Some((ip, port)) = local.split_once(':') else { return false };
-        let (Ok(ip), Ok(port)) = (u32::from_str_radix(ip, 16), u16::from_str_radix(port, 16)) else { return false };
-        let ip = IpAddr::from(ip.to_ne_bytes());
-        port == addr.port() && (ip == addr.ip() || ip.is_unspecified())
-    }))
+/// Whether a `/proc/<pid>/net/udp` table lists `addr` bound: at its address, or unspecified at its port.
+fn udp_table_holds(table: &str, addr: SocketAddr) -> bool {
+    udp_sockets_in(table).iter().any(|a| a.port() == addr.port() && (a.ip() == addr.ip() || a.ip().is_unspecified()))
 }
 
 /// `RDM_CONTAINER_SUBNET_POOL` (default `10.231.0.0/16`): the IPv4 block
@@ -760,18 +752,24 @@ mod tests {
         assert_eq!(n.node_range(), (Ipv4Addr::new(172, 18, 0, 2), Ipv4Addr::new(172, 18, 255, 254)));
     }
 
+    /// CONTRACT: a `/proc/<pid>/net/udp` line names its local address as the in-memory network-order
+    /// word printed in hex (the kernel's own text; on a little-endian host 127.0.0.1 is `0100007F`),
+    /// then `:port` in hex, and an unspecified bind holds its port at every address. The table is a
+    /// fixture: the host namespace's live table is answered a page per read and each page is resumed
+    /// by position, so a socket held throughout reads absent when an earlier line goes between two
+    /// pages. Only what a read promises is asserted live: a missing pid's table is an error naming it.
     #[test]
+    #[cfg(target_endian = "little")]
     fn the_socket_table_is_read_in_network_byte_order() {
-        // Both sides are read while the socket is held: the table is the whole network
-        // namespace, so a port freed by a drop can be taken at once by any other binder on the
-        // box. While 127.0.0.1:P is held, neither the wildcard nor 127.0.0.2:P can be bound.
-        let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        let addr = sock.local_addr().unwrap();
-        let other: SocketAddr = (Ipv4Addr::new(127, 0, 0, 2), addr.port()).into();
-        assert_eq!(netns_holds_udp(std::process::id(), addr), Ok(true));
-        assert_eq!(netns_holds_udp(std::process::id(), other), Ok(false));
-        assert!(netns_holds_udp(u32::MAX, addr).unwrap_err().contains("/proc/"));
-        drop(sock);
+        let table = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
+                     257: 0100007F:1F90 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 41823 2 0000000000000000 0\n\
+                     301: 00000000:1FBD 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 41901 2 0000000000000000 0\n";
+        let held = SocketAddr::from((Ipv4Addr::LOCALHOST, 8080));
+        assert!(udp_table_holds(table, held), "0100007F:1F90 is 127.0.0.1:8080");
+        assert!(!udp_table_holds(table, SocketAddr::from((Ipv4Addr::new(127, 0, 0, 2), 8080))), "127.0.0.2:8080 is not bound");
+        assert!(udp_table_holds(table, SocketAddr::from((Ipv4Addr::new(10, 0, 0, 7), 8125))), "the unspecified bind holds 8125 at every address");
+        assert_eq!(udp_sockets_in(table), vec![SocketAddr::from((Ipv4Addr::UNSPECIFIED, 8125)), held]);
+        assert!(netns_holds_udp(u32::MAX, held).unwrap_err().contains("/proc/"));
     }
 
     #[test]
@@ -785,21 +783,6 @@ mod tests {
         assert_eq!(candidate_subnets(pool, "fabric-a"), nets, "deterministic per fabric");
     }
 
-    /// The negative half probes a port this process still owns but does not listen on (a
-    /// connected stream's local end), never a port just handed back to the kernel: the table is
-    /// the whole network namespace, and a released port is anyone's to listen on next.
-    #[test]
-    fn a_tcp_listener_is_found_and_a_bare_socket_is_not() {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
-        assert_eq!(netns_listens_tcp(std::process::id(), addr), Ok(true));
-        let bare = std::net::TcpStream::connect(addr).unwrap();
-        let bare_addr = bare.local_addr().unwrap();
-        assert_ne!(bare_addr, addr);
-        assert_eq!(netns_listens_tcp(std::process::id(), bare_addr), Ok(false), "held, connected, not listening");
-        drop(bare);
-        drop(l);
-    }
 
     /// CONTRACT: `docker inspect` of a name no container has is "not found"; any other failure
     /// (a daemon that cannot be reached) is not, and is answered as the error it is.
