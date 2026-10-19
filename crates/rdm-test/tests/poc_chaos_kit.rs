@@ -57,9 +57,9 @@ async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
     assert_eq!(stopped.state_after, Some('T'), "a stopped runtime is in state T: {stopped:?}");
     let resumed = rt.apply(Fault::Continue).expect("continue applies");
     assert_ne!(resumed.state_after, Some('T'), "a continued runtime runs again: {resumed:?}");
-    let killed = rt.apply(Fault::Kill).expect("kill applies");
+    let killed = rt.apply(Fault::Kill(estate.fabric_ready())).expect("kill applies");
     assert!(killed.exited, "a kill is acknowledged by the exit: {killed:?}");
-    match rt.apply(Fault::Kill) {
+    match rt.apply(Fault::Kill(estate.fabric_ready())) {
         Err(Refusal::AlreadyExited { .. }) | Err(Refusal::NotThisRuntime { .. }) => {}
         other => panic!("a second kill of a gone runtime is refused: {other:?}"),
     }

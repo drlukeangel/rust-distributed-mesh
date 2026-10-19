@@ -126,7 +126,7 @@ async fn an_os_stopped_member_that_exits_gets_its_exit_proof_and_ordinary_recove
     rt.apply(Fault::Stop).expect("the exact runtime is suspended");
     node_where(&estate, &member, &format!("{member} lists os_stopped on node.get"), crate::node_recovery_due(), |n| n["os_stopped"]["since"].as_u64().unwrap_or(0) > 0).await;
     let killed_at = now_ns();
-    assert!(rt.apply(Fault::Kill).expect("the suspended runtime is killed").exited);
+    assert!(rt.apply(Fault::Kill(estate.fabric_ready())).expect("the suspended runtime is killed").exited);
     let recovery_due = std::time::Instant::now() + crate::node_recovery_due() * 2;
     let recovered = node_where(&estate, &member, &format!("{member} recovered as a new birth"), recovery_due.saturating_duration_since(std::time::Instant::now()), |n| n["status"] == "ready-for-traffic" && n["node_id"] != before["node_id"] && n["os_stopped"].is_null()).await;
     assert_ne!(recovered["node_id"], before["node_id"], "a new node.id at the path: {recovered}");

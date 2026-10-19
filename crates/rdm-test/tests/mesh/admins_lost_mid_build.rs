@@ -92,6 +92,7 @@ async fn a_mesh_whose_admins_are_lost_mid_build_gets_a_node_admin_on_the_carrier
     // mesh2's node-admins and every birth B's first attempt launched; the members born before B
     // (rpc.1..3) stay alive, so a member of mesh2 can say it cannot reach its own node-admin.
     let kept: BTreeSet<String> = (1..=3).map(|i| format!("mesh2.rpc.{i}")).collect();
+    estate.fabric_ready();
     for (dir, pid) in estate.live_runtimes() {
         let name = dir.file_name().unwrap().to_string_lossy().to_string();
         let path = name.split('-').next().unwrap_or_default().to_string();

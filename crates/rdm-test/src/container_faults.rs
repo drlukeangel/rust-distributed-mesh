@@ -417,11 +417,12 @@ pub fn labels_of(id: &str) -> Result<(String, String), String> {
 }
 
 /// What an exact-container fault does to the container.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
-    /// `docker kill`: SIGKILL to the container's init; nothing is flushed.
-    Kill,
+    /// `docker kill`: SIGKILL to the container's init; nothing is flushed. It takes the witness that the
+    /// fabric first reached ready-for-traffic: a death during fabric start is not tested (Q74,
+    /// [`crate::estate::FabricReady`]).
+    Kill(crate::estate::FabricReady),
     /// `docker pause`: the container's processes are frozen, alive and silent.
     Pause,
     /// `docker unpause`: the freeze is released.
@@ -432,10 +433,16 @@ impl Fault {
     /// Name.
     pub fn name(self) -> &'static str {
         match self {
-            Fault::Kill => "kill",
+            Fault::Kill(_) => "kill",
             Fault::Pause => "pause",
             Fault::Unpause => "unpause",
         }
+    }
+}
+
+impl Serialize for Fault {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.name())
     }
 }
 
@@ -616,18 +623,14 @@ impl ExactContainer {
         let before = self.check()?;
         // A pause of a paused container and an unpause of a running one are the daemon's refusals,
         // named as they come.
-        let verb = match fault {
-            Fault::Kill => "kill",
-            Fault::Pause => "pause",
-            Fault::Unpause => "unpause",
-        };
+        let verb = fault.name();
         let _ = before;
         docker(&[verb, &self.id]).map_err(|reason| Refusal::CommandFailed { id: self.id.clone(), fault, reason })?;
         let until = std::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
             let now = inspect(&self.id).map_err(|reason| Refusal::Unreadable { id: self.id.clone(), reason })?;
             let acked = match fault {
-                Fault::Kill => !now.running,
+                Fault::Kill(_) => !now.running,
                 Fault::Pause => now.status == "paused",
                 Fault::Unpause => now.status == "running",
             };

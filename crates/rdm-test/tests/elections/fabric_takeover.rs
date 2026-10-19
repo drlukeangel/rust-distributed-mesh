@@ -50,6 +50,9 @@ async fn lose_mesh1(estate: &Estate, nodes: &[Value], signal: &str) -> Vec<u64> 
         pids.push(estate.pid_of(&s(&n["name"])).await);
     }
     pids.extend(estate.bootstrap_pid().map(u64::from));
+    if signal == "-KILL" {
+        estate.fabric_ready();
+    }
     for pid in &pids {
         assert!(std::process::Command::new("kill").args([signal, &pid.to_string()]).status().unwrap().success(), "kill {signal} {pid}");
     }
@@ -68,6 +71,7 @@ async fn lose_mesh1_unproven(estate: &Estate, nodes: &[Value]) -> Vec<u64> {
     for n in nodes.iter().filter(|n| n["mesh"] != "mesh1" && n["kind"] == "node_admin") {
         Door::at(estate, &s(&n["name"])).await.arm("mesh1-unproven", json!({"kind": "provider-unproven", "pids": pids})).await;
     }
+    estate.fabric_ready();
     for pid in &pids {
         assert!(std::process::Command::new("kill").args(["-KILL", &pid.to_string()]).status().unwrap().success(), "kill -KILL {pid}");
     }

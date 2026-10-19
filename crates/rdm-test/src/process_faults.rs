@@ -37,11 +37,11 @@ pub struct ExactRuntime {
 }
 
 /// What a fault does to the runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
-    /// SIGKILL: the runtime flushes nothing.
-    Kill,
+    /// SIGKILL: the runtime flushes nothing. It takes the witness that the fabric first reached
+    /// ready-for-traffic: a death during fabric start is not tested (Q74, [`crate::estate::FabricReady`]).
+    Kill(crate::estate::FabricReady),
     /// SIGSTOP: the runtime is held, alive and silent.
     Stop,
     /// SIGCONT: the hold is released.
@@ -52,7 +52,7 @@ impl Fault {
     /// Name.
     pub fn name(self) -> &'static str {
         match self {
-            Fault::Kill => "kill",
+            Fault::Kill(_) => "kill",
             Fault::Stop => "stop",
             Fault::Continue => "continue",
         }
@@ -60,10 +60,16 @@ impl Fault {
 
     fn signal(self) -> i32 {
         match self {
-            Fault::Kill => 9,
+            Fault::Kill(_) => 9,
             Fault::Stop => 19,
             Fault::Continue => 18,
         }
+    }
+}
+
+impl Serialize for Fault {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.name())
     }
 }
 
@@ -206,7 +212,7 @@ impl ExactRuntime {
             let state = proc_state(self.pid);
             let exited = gone(self.pid);
             let acked = match fault {
-                Fault::Kill => exited,
+                Fault::Kill(_) => exited,
                 Fault::Stop => state == Some('T'),
                 Fault::Continue => state.is_some_and(|c| c != 'T'),
             };
@@ -384,10 +390,10 @@ pub struct BurstApplied {
 /// as its published runtime first (domain and start token), and a single refusal, or a target
 /// that is also in `protected`, signals nothing. The signals then leave back to back, and each
 /// is acknowledged by its exit. One span, `rdm.testkit.fault.update.via-process-burst`.
-pub fn burst_kill(targets: &[ExactRuntime], protected: &[ExactRuntime]) -> Result<BurstApplied, BurstRefusal> {
+pub fn burst_kill(targets: &[ExactRuntime], protected: &[ExactRuntime], ready: crate::estate::FabricReady) -> Result<BurstApplied, BurstRefusal> {
     let span = tracing::info_span!("rdm.testkit.fault.update.via-process-burst", fault = "kill", targets = targets.len(), pids = %targets.iter().map(|t| t.pid.to_string()).collect::<Vec<_>>().join(","), outcome = tracing::field::Empty);
     let _g = span.enter();
-    let out = burst_kill_inner(targets, protected);
+    let out = burst_kill_inner(targets, protected, ready);
     span.record("outcome", tracing::field::display(match &out {
         Ok(a) => json!({"applied": "kill", "exited": a.killed.iter().filter(|k| k.exited).count(), "signal_spread_ms": a.signal_spread_ms as u64}),
         Err(r) => serde_json::to_value(r).unwrap_or(Value::Null),
@@ -395,7 +401,7 @@ pub fn burst_kill(targets: &[ExactRuntime], protected: &[ExactRuntime]) -> Resul
     out
 }
 
-fn burst_kill_inner(targets: &[ExactRuntime], protected: &[ExactRuntime]) -> Result<BurstApplied, BurstRefusal> {
+fn burst_kill_inner(targets: &[ExactRuntime], protected: &[ExactRuntime], ready: crate::estate::FabricReady) -> Result<BurstApplied, BurstRefusal> {
     if targets.is_empty() {
         return Err(BurstRefusal::Empty);
     }
@@ -429,9 +435,9 @@ fn burst_kill_inner(targets: &[ExactRuntime], protected: &[ExactRuntime]) -> Res
             std::thread::sleep(Duration::from_millis(10));
         }
         if !gone(t.pid) {
-            return Err(BurstRefusal::Target { runtime: t.clone(), refusal: Refusal::NotAcknowledged { fault: Fault::Kill, pid: t.pid, state_after: proc_state(t.pid) } });
+            return Err(BurstRefusal::Target { runtime: t.clone(), refusal: Refusal::NotAcknowledged { fault: Fault::Kill(ready), pid: t.pid, state_after: proc_state(t.pid) } });
         }
-        killed.push(Applied { fault: Fault::Kill, runtime: t.clone(), state_after: None, exited: true });
+        killed.push(Applied { fault: Fault::Kill(ready), runtime: t.clone(), state_after: None, exited: true });
     }
     Ok(BurstApplied { killed, signal_spread_ms: spread })
 }
@@ -495,17 +501,17 @@ mod tests {
     fn a_forged_start_or_foreign_domain_signals_nothing_and_the_exact_runtime_is_stopped_continued_and_killed() {
         let (mut child, rt) = sleeper();
         let forged = rt.with_start(rt.start + 1);
-        assert!(matches!(forged.apply(Fault::Kill), Err(Refusal::NotThisRuntime { .. })));
+        assert!(matches!(forged.apply(Fault::Kill(crate::estate::FabricReady(()))), Err(Refusal::NotThisRuntime { .. })));
         let foreign = ExactRuntime { control_domain: "process:another-host:1".into(), ..rt.clone() };
-        assert!(matches!(foreign.apply(Fault::Kill), Err(Refusal::ForeignDomain { .. })));
+        assert!(matches!(foreign.apply(Fault::Kill(crate::estate::FabricReady(()))), Err(Refusal::ForeignDomain { .. })));
         assert!(!gone(rt.pid), "nothing was signalled");
         let stopped = rt.apply(Fault::Stop).unwrap();
         assert_eq!(stopped.state_after, Some('T'));
         assert_eq!(rt.apply(Fault::Continue).unwrap().exited, false);
-        let killed = rt.apply(Fault::Kill).unwrap();
+        let killed = rt.apply(Fault::Kill(crate::estate::FabricReady(()))).unwrap();
         assert!(killed.exited);
         let _ = child.wait();
-        assert!(matches!(rt.apply(Fault::Kill), Err(Refusal::AlreadyExited { .. })));
+        assert!(matches!(rt.apply(Fault::Kill(crate::estate::FabricReady(()))), Err(Refusal::AlreadyExited { .. })));
     }
 
     /// CONTRACT (deployment-provider.md §2.5 "What stays inference"): a hung runtime is one the
@@ -544,18 +550,18 @@ mod tests {
         let (mut a, ra) = sleeper();
         let (mut b, rb) = sleeper();
         let (mut keep, rk) = sleeper();
-        assert_eq!(burst_kill(&[], &[]), Err(BurstRefusal::Empty));
-        assert!(matches!(burst_kill(&[ra.clone(), ra.clone()], &[]), Err(BurstRefusal::Duplicate { pid }) if pid == ra.pid));
-        assert!(matches!(burst_kill(&[ra.clone(), rk.clone()], &[rk.clone()]), Err(BurstRefusal::Protected { runtime }) if runtime == rk));
+        assert_eq!(burst_kill(&[], &[], crate::estate::FabricReady(())), Err(BurstRefusal::Empty));
+        assert!(matches!(burst_kill(&[ra.clone(), ra.clone()], &[], crate::estate::FabricReady(())), Err(BurstRefusal::Duplicate { pid }) if pid == ra.pid));
+        assert!(matches!(burst_kill(&[ra.clone(), rk.clone()], &[rk.clone()], crate::estate::FabricReady(())), Err(BurstRefusal::Protected { runtime }) if runtime == rk));
         let forged = rb.with_start(rb.start + 1);
-        assert!(matches!(burst_kill(&[ra.clone(), forged], &[]), Err(BurstRefusal::Target { refusal: Refusal::NotThisRuntime { .. }, .. })));
+        assert!(matches!(burst_kill(&[ra.clone(), forged], &[], crate::estate::FabricReady(())), Err(BurstRefusal::Target { refusal: Refusal::NotThisRuntime { .. }, .. })));
         assert!(!gone(ra.pid) && !gone(rb.pid) && !gone(rk.pid), "a refused burst signalled nothing, not even its valid targets");
-        let done = burst_kill(&[ra.clone(), rb.clone()], &[rk.clone()]).unwrap();
+        let done = burst_kill(&[ra.clone(), rb.clone()], &[rk.clone()], crate::estate::FabricReady(())).unwrap();
         assert_eq!(done.killed.len(), 2);
         assert!(done.killed.iter().all(|k| k.exited));
         let _ = (a.wait(), b.wait());
         assert!(!gone(rk.pid), "the protected runtime was not touched");
-        assert!(matches!(burst_kill(&[ra], &[]), Err(BurstRefusal::Target { refusal: Refusal::AlreadyExited { .. } | Refusal::NotThisRuntime { .. }, .. })));
+        assert!(matches!(burst_kill(&[ra], &[], crate::estate::FabricReady(())), Err(BurstRefusal::Target { refusal: Refusal::AlreadyExited { .. } | Refusal::NotThisRuntime { .. }, .. })));
         let _ = keep.kill();
         let _ = keep.wait();
     }

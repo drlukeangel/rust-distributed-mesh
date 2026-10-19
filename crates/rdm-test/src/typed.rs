@@ -315,9 +315,13 @@ impl Estate {
 
     /// Wait until the fabric the admin holds is ready-for-traffic: the fabric climbs its states (sync, commit,
     /// open traffic) after the nodes of a Build are ready, and writes its record at the commit. No stream
-    /// announces it; `fabric.get` carries the state.
+    /// announces it; `fabric.get` carries the state. The wait is where the estate records that its fabric
+    /// has started: from then on a kill or terminate of one of its nodes is a test
+    /// ([`crate::estate::FabricReady`], Q74). A read that happens to see the state does not record it, so
+    /// whether a cell may kill never depends on when its last read landed.
     pub async fn until_fabric_ready(&self, within: std::time::Duration) {
-        crate::estate::wait_for("the fabric is ready-for-traffic", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(()) }).await
+        crate::estate::wait_for("the fabric is ready-for-traffic", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(()) }).await;
+        let _ = self.ready.set(crate::estate::FabricReady(()));
     }
 
     /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `node.get` per

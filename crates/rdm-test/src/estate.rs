@@ -572,6 +572,13 @@ impl Drop for EstateScope {
     }
 }
 
+/// The witness that the fabric an estate runs has first reached ready-for-traffic (states.md "The
+/// initial fabric before ready-for-traffic"), which every kill or terminate of one of its nodes takes. A
+/// death during fabric start is not tested, and no chaos exercises it (Luke 2026-10-19, Q74): only an
+/// estate that has waited for its fabric to reach ready-for-traffic hands one out ([`Estate::fabric_ready`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FabricReady(pub(crate) ());
+
 pub struct Estate {
     pub owner: Owner,
     pub root: PathBuf,
@@ -600,6 +607,8 @@ pub struct Estate {
     /// or a view the estate read lists it: the admins the estate reads views of, and the entry a probe is
     /// given ([`Self::entry_birth`]).
     pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rdm_client::PathName, MeshNode>>,
+    /// Set once the estate has waited for its fabric to reach ready-for-traffic ([`Self::until_fabric_ready`]).
+    pub(crate) ready: std::sync::OnceLock<FabricReady>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -684,7 +693,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), ready: std::sync::OnceLock::new(), _scope: scope };
         estate.hold_printed(birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
@@ -774,8 +783,21 @@ impl Estate {
         d["pid"].as_u64().unwrap_or_else(|| panic!("{node}: no pid in {d}"))
     }
 
-    /// SIGKILL `node`'s runtime (a fault: it flushes nothing).
+    /// The witness a kill or terminate of one of this fabric's nodes takes ([`FabricReady`]): refused by
+    /// name, a panic naming the cell, until the estate has waited for the fabric to reach ready-for-traffic.
+    pub fn fabric_ready(&self) -> FabricReady {
+        *self.ready.get().unwrap_or_else(|| {
+            panic!(
+                "{}: a kill or terminate of a node before the estate has waited for its fabric to reach ready-for-traffic is refused: a death during fabric start is not tested (Q74, Luke 2026-10-19); the cell waits for the fabric ready (until_fabric_ready) before it kills",
+                self.owner.test
+            )
+        })
+    }
+
+    /// SIGKILL `node`'s runtime (a fault: it flushes nothing), once the fabric has first been
+    /// ready-for-traffic ([`Self::fabric_ready`]).
     pub async fn kill_node(&self, node: &str) {
+        self.fabric_ready();
         let pid = self.pid_of(node).await;
         let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
         assert!(ok, "kill -9 {pid} ({node})");
@@ -955,8 +977,10 @@ impl Estate {
         births.get(&self.admin).cloned().unwrap_or_else(|| panic!("the entry {} has no birth this estate holds; births held: {:?}", self.admin, births.keys().collect::<Vec<_>>()))
     }
 
-    /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
+    /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone, once the fabric has first
+    /// been ready-for-traffic ([`Self::fabric_ready`]).
     pub fn kill_pid(&self, pid: u32) {
+        self.fabric_ready();
         let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
         assert!(ok, "kill -9 {pid}");
         // Gone only once every task of the thread group is: the leader reads as a zombie while its
@@ -974,8 +998,10 @@ impl Estate {
         }
     }
 
-    /// SIGKILL the bootstrap admin (a fault: it flushes nothing).
+    /// SIGKILL the bootstrap admin (a fault: it flushes nothing), once the fabric has first been
+    /// ready-for-traffic ([`Self::fabric_ready`]).
     pub fn kill_bootstrap(&mut self) {
+        self.fabric_ready();
         if let Some(mut c) = self.bootstrap.take() {
             // A containerised Day-0 admin: the kill reaches its container, not only the attached CLI.
             if self.owner.provider == "container" {

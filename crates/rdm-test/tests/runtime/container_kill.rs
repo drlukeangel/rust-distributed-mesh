@@ -63,6 +63,7 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
     let survivor = estate.container_of("mesh1.rpc.2").await.expect("the other rpc node's container");
 
     // The real kill: SIGKILL to the container's init, from outside every admin.
+    estate.fabric_ready();
     let out = Command::new("docker").args(["kill", &killed]).output().unwrap();
     assert!(out.status.success(), "docker kill: {}", String::from_utf8_lossy(&out.stderr));
 

@@ -1295,15 +1295,17 @@ impl Driver {
 
     /// The exact runtime of `node` ends: SIGKILL of the published process (process provider), the
     /// container's interface removed (container provider: its transport dies with it and the
-    /// runtime exits).
+    /// runtime exits). Only once the fabric has first been ready-for-traffic: the driver arms no
+    /// death during fabric start ([`crate::estate::Estate::fabric_ready`], Q74).
     async fn kill(&mut self, node: &str, entry: &mut Value) -> Result<(), Broken> {
+        let ready = self.estate.fabric_ready();
         if self.estate.owner.provider == "container" {
             let u = container_faults::unplug(&self.estate, node).await.map_err(|e| broken("fault-applies", e))?;
             entry["unplugged"] = json!(u.id);
             return Ok(());
         }
         let rt = self.published(node).await?;
-        let applied = rt.apply(Fault::Kill).map_err(|r| broken("fault-is-acknowledged", format!("kill {node}: {r:?}")))?;
+        let applied = rt.apply(Fault::Kill(ready)).map_err(|r| broken("fault-is-acknowledged", format!("kill {node}: {r:?}")))?;
         if !applied.exited {
             return Err(broken("fault-is-acknowledged", format!("kill {node}: the OS did not show the exit: {applied:?}")));
         }

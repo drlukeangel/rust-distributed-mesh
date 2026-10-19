@@ -111,9 +111,10 @@ fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
         };
         let (a, b, spared) = (published(&estate, "mesh1.rpc.1").await, published(&estate, "mesh1.rpc.2").await, published(&estate, "mesh1.rpc.3").await);
         let births: Vec<_> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().incarnation_id.clone()).collect();
+        let fabric_ready = estate.fabric_ready();
         let done = tokio::task::spawn_blocking({
             let (targets, protected) = (vec![a.clone(), b.clone()], vec![protected.clone()]);
-            move || burst_kill(&targets, &protected)
+            move || burst_kill(&targets, &protected, fabric_ready)
         })
         .await
         .unwrap()

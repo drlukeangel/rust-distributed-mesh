@@ -174,7 +174,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let forged = hold_rt.with_start(hold_rt.start + 1).apply(Fault::Stop);
     assert!(matches!(forged, Err(FaultRefusal::NotThisRuntime { .. })), "a recycled pid is refused: {forged:?}");
     assert_ne!(proc_state(hold_rt.pid), Some('T'), "the process was not stopped");
-    let foreign = ExactRuntime { control_domain: "process:another-host:1".into(), ..hold_rt.clone() }.apply(Fault::Kill);
+    let foreign = ExactRuntime { control_domain: "process:another-host:1".into(), ..hold_rt.clone() }.apply(Fault::Kill(estate.fabric_ready()));
     assert!(matches!(foreign, Err(FaultRefusal::ForeignDomain { .. })), "{foreign:?}");
     assert!(hold_rt.check().is_ok(), "the exact runtime is untouched");
 
@@ -238,9 +238,9 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     // ---- Kill: the exact runtime of another rpc node exits; the rectifier recovers the path.
     let kill_rt = published(&estate, &kill).await;
     let kill_dir = estate.data_dir(&kill).await;
-    let killed = kill_rt.apply(Fault::Kill).expect("the exact runtime is killed");
+    let killed = kill_rt.apply(Fault::Kill(estate.fabric_ready())).expect("the exact runtime is killed");
     assert!(killed.exited, "the OS observed the exit: {killed:?}");
-    assert!(matches!(kill_rt.apply(Fault::Kill), Err(FaultRefusal::AlreadyExited { .. })), "a second kill finds nothing");
+    assert!(matches!(kill_rt.apply(Fault::Kill(estate.fabric_ready())), Err(FaultRefusal::AlreadyExited { .. })), "a second kill finds nothing");
     let replacement = estate
         .until_node(&kill, "a new logical node holds the path", Duration::from_secs(120), |n| {
             let n = serde_json::to_value(n?).expect("a view serializes");
@@ -265,7 +265,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let admin = s(&admin_n["name"]);
     let admin_rt = published(&estate, &admin).await;
     let admin_dir = estate.data_dir(&admin).await;
-    let admin_killed = admin_rt.apply(Fault::Kill).expect("the admin's exact runtime is killed");
+    let admin_killed = admin_rt.apply(Fault::Kill(estate.fabric_ready())).expect("the admin's exact runtime is killed");
     assert!(admin_killed.exited);
     let admin_new = estate
         .until_node(&admin, "a new logical node holds the admin's path", Duration::from_secs(120), |n| {

@@ -154,7 +154,7 @@ async fn a_members_check_in_owed_to_a_primary_that_dies_is_owed_to_the_new_holde
     door.release("round-action").await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     let killed_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-    signal(pid, "-KILL");
+    estate.kill_pid(pid as u32);
     estate.follow(resize).await;
     until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(resize_id.as_str()), Duration::from_secs(120)).await;
 

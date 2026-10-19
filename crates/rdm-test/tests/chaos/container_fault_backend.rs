@@ -691,6 +691,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let fault_at = now_nanos();
 
     // THE FAULT: both admins at once; each kill is the exact container.
+    estate.fabric_ready();
     let mut killed = Vec::new();
     for n in &lost_admins {
         if estate.bootstrap_pid().is_some() && *n == format!("{}.admin.1", "mesh1") {
@@ -1126,11 +1127,11 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let hold_c = ExactContainer::of(&estate, &hold).await.expect("the held node's container");
     let restarted = hold_c.with_started_at("2001-01-01T00:00:00Z").apply(Fault::Pause);
     assert!(matches!(restarted, Err(Refusal::NotThisContainer { .. })), "a container under another start time is refused: {restarted:?}");
-    let other_node = hold_c.with_node(&kill).apply(Fault::Kill);
+    let other_node = hold_c.with_node(&kill).apply(Fault::Kill(estate.fabric_ready()));
     assert!(matches!(other_node, Err(Refusal::WrongNode { .. })), "{other_node:?}");
-    let other_fabric = hold_c.with_fabric("another-fabric").apply(Fault::Kill);
+    let other_fabric = hold_c.with_fabric("another-fabric").apply(Fault::Kill(estate.fabric_ready()));
     assert!(matches!(other_fabric, Err(Refusal::WrongFabric { .. })), "{other_fabric:?}");
-    let gone = ExactContainer { id: "0".repeat(64), ..hold_c.clone() }.apply(Fault::Kill);
+    let gone = ExactContainer { id: "0".repeat(64), ..hold_c.clone() }.apply(Fault::Kill(estate.fabric_ready()));
     assert!(matches!(gone, Err(Refusal::NoSuchContainer { .. })), "{gone:?}");
     assert_eq!(container_faults::inspect(&hold_c.id).unwrap().status, "running", "nothing was sent: the container still runs");
     assert!(hold_c.check().is_ok(), "the exact container is untouched");
@@ -1192,9 +1193,9 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
 
     // ---- Kill: the exact container of another rpc node exits; the rectifier recovers the path.
     let kill_c = ExactContainer::of(&estate, &kill).await.expect("the killed node's container");
-    let killed = kill_c.apply(Fault::Kill).expect("the exact container is killed");
+    let killed = kill_c.apply(Fault::Kill(estate.fabric_ready())).expect("the exact container is killed");
     assert!(killed.exited && killed.exit_code == 137, "the daemon observed the SIGKILL exit: {killed:?}");
-    assert!(matches!(kill_c.apply(Fault::Kill), Err(Refusal::AlreadyExited { .. }) | Err(Refusal::NoSuchContainer { .. })), "a second kill finds nothing running");
+    assert!(matches!(kill_c.apply(Fault::Kill(estate.fabric_ready())), Err(Refusal::AlreadyExited { .. }) | Err(Refusal::NoSuchContainer { .. })), "a second kill finds nothing running");
     let replacement = wait_for("a new logical node holds the path", Duration::from_secs(180), || async {
         let n = estate.node_value_opt(&kill).await?;
         (n["status"] == "ready-for-traffic" && n["node_id"] != kill_n["node_id"]).then_some(n)
@@ -1213,7 +1214,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let admin_n = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == false && n["is_fabric_primary"] == false && n["name"] != "mesh1.admin.1").cloned().unwrap_or_else(|| panic!("a non-primary node-admin: {nodes:?}"));
     let admin = s(&admin_n["name"]);
     let admin_c = ExactContainer::of(&estate, &admin).await.expect("the admin's container");
-    let admin_killed = admin_c.apply(Fault::Kill).expect("the admin's exact container is killed");
+    let admin_killed = admin_c.apply(Fault::Kill(estate.fabric_ready())).expect("the admin's exact container is killed");
     assert!(admin_killed.exited);
     let admin_new = wait_for("a new logical node holds the admin's path", Duration::from_secs(180), || async {
         let n = estate.node_value_opt(&admin).await?;

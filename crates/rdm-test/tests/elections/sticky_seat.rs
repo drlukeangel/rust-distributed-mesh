@@ -10,7 +10,6 @@ use rdm_test::faults::{binding_set, candidate_sha, Door};
 use rdm_test::netfault::{udp_ports, Partition};
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::process::Command;
 use std::time::Duration;
 
 fn owner(test: &str) -> Owner {
@@ -200,8 +199,7 @@ async fn kill(estate: &mut Estate, name: &str) {
     if name == "mesh1.admin.1" {
         estate.kill_bootstrap();
     } else {
-        let pid = estate.pid_of(name).await;
-        assert!(Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success(), "kill -9 {pid}");
+        estate.kill_node(name).await;
     }
 }
 

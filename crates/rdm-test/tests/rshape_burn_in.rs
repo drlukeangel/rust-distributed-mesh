@@ -3162,7 +3162,7 @@ async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
     let dir_old = f.estate.data_dir(node).await;
     let rt_old = exact_runtime(f, node).await;
     let t0 = now_ns();
-    let kill = kill_exact_runtime(node, &rt_old);
+    let kill = kill_exact_runtime(node, &rt_old, f.estate.fabric_ready());
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.kill-runtime", "node": node, "node_id": old_id, "incarnation_id": old_inc, "ack": kill}));
     progress(&format!("{scenario}: {node} ({old_id}) exact runtime killed; its mesh-primary recovers it"));
     let started = Instant::now();
@@ -3814,14 +3814,14 @@ fn at<'a>(st: &'a Stable, name: &str) -> &'a Value {
     st.nodes.iter().find(|n| n["name"] == name).unwrap_or_else(|| panic!("{name} is not in the settled view"))
 }
 
-/// Exact-runtime kill of `node`'s runtime as the provider backends offer it, acknowledged by the
-/// provider: a process by the OS (`process_faults`: control domain, pid and start token checked,
+/// Exact-runtime kill of `node`'s runtime as the provider backends offer it, once the fabric has first
+/// been ready-for-traffic (`ready`, Q74), acknowledged by the provider: a process by the OS (`process_faults`: control domain, pid and start token checked,
 /// then SIGKILL, the exit observed), a container by the daemon (`docker kill` of the immutable id,
 /// then not running).
-fn kill_exact_runtime(node: &str, rt: &Rt) -> Value {
+fn kill_exact_runtime(node: &str, rt: &Rt, ready: rdm_test::estate::FabricReady) -> Value {
     match rt {
         Rt::Process(r) => {
-            let applied = r.apply(SigFault::Kill).unwrap_or_else(|e| panic!("{node}: the exact-runtime kill was refused: {e:?}"));
+            let applied = r.apply(SigFault::Kill(ready)).unwrap_or_else(|e| panic!("{node}: the exact-runtime kill was refused: {e:?}"));
             assert!(applied.exited, "{node}: the OS did not show the runtime gone: {applied:?}");
             json!({"backend": "process_faults", "fault": "kill", "runtime": rt.record(), "acknowledged_by": "OS: every thread of the pid exited", "state_after": applied.state_after.map(String::from)})
         }
@@ -4089,7 +4089,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let drift_mesh = victim2.split('.').next().unwrap().to_string();
     let lane_before = build_before["lanes"][drift_mesh.as_str()]["attempt"].as_u64().unwrap_or(0);
     point_entry_away(&mut f, &st_new, &victim2).await;
-    let kill = kill_exact_runtime(&victim2, &rt2);
+    let kill = kill_exact_runtime(&victim2, &rt2, f.estate.fabric_ready());
     let kill_ns = now_ns();
     progress(&format!("{victim2} exact runtime killed: {kill}"));
     a.lane_waits.insert(drift_build.clone(), (drift_mesh.clone(), lane_before + 1));
@@ -6112,7 +6112,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             assert!(near_builds > attempt0, "the restart is the fabric lane's next attempt of the formation Build ({attempt0} -> {near_builds})");
         }
         NearFault::HardKill => {
-            let ack = kill_exact_runtime(&victim, rt.as_ref().unwrap());
+            let ack = kill_exact_runtime(&victim, rt.as_ref().unwrap(), f.estate.fabric_ready());
             f.actions.push(json!({"t_ms": now_ms(), "action": "fault.kill-runtime", "node": victim, "ack": ack}));
             // Node recovery is the next attempt of the current Build in its mesh's lane (node-recovery.md, R-BI7):
             // the near mesh's lane of the formation Build moves on by one; the fabric lane gains no attempt.
@@ -6175,7 +6175,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
         let b_h = build_attempt(&f.estate, &st2, &formation).await;
         let attempt_h = b_h["attempt"].as_u64().unwrap();
         let far_lane_h = b_h["lanes"][far_mesh.as_str()]["attempt"].as_u64().unwrap_or(0);
-        far_kill = kill_exact_runtime(&far_victim, &rt_far);
+        far_kill = kill_exact_runtime(&far_victim, &rt_far, f.estate.fabric_ready());
         // Node recovery is the next attempt of the current Build in the far mesh's own lane (node-recovery.md,
         // R-BI7); the fabric lane gains no attempt.
         let born = wait_for(&format!("{far_mesh}'s mesh-primary recovers {far_victim} after the heal"), Duration::from_secs(120), || async {

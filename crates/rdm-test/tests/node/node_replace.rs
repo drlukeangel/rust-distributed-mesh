@@ -1487,7 +1487,7 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
     let fp = Estate::path(&s(&primary["name"]));
     let before = estate.node_value(&node).await;
     let mesh = s(&before["mesh"]);
-    let killed = exact_runtime(&estate, &node).await.apply(Fault::Kill).expect("the exact runtime is killed");
+    let killed = exact_runtime(&estate, &node).await.apply(Fault::Kill(estate.fabric_ready())).expect("the exact runtime is killed");
     assert!(killed.exited, "the OS observed the exit: {killed:?}");
 
     let after = until_node_where(&estate, &node, &format!("{node} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
@@ -1559,7 +1559,7 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     let mut deleting = estate.submit_change(Change::DeleteConnections { node: Estate::path(&node) }).await;
     assert_eq!(deleting.build_id().as_str(), birth_build, "no Build is minted");
     let delete_attempt = u64::from(deleting.attempt());
-    let killed = rt.apply(Fault::Kill).expect("the held runtime is killed");
+    let killed = rt.apply(Fault::Kill(estate.fabric_ready())).expect("the held runtime is killed");
     assert!(killed.exited, "{killed:?}");
     // The call's own stream ends at the failed step: the held, then exited, birth never answered.
     let ended = loop {
@@ -2595,7 +2595,7 @@ async fn a_birth_that_exits_after_a_refused_terminate_gets_its_exit_proof_and_or
     // The refusal is lifted and the runtime exits.
     door.release("refuse-terminate").await;
     drop(held);
-    let killed = rt.apply(Fault::Kill);
+    let killed = rt.apply(Fault::Kill(estate.fabric_ready()));
     let after = until_new_birth(&estate, &node, &before, SETTLE).await;
     let spans = estate.spans();
     let proof = named(&spans, "rdm.node_admin.node.delete.via-exit-proof")

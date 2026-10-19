@@ -38,7 +38,6 @@ use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, N
 use rdm_test::elections::{advertised_fabric_primaries, seats_as_expected};
 use rdm_test::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
-use std::process::Command;
 use std::time::Duration;
 
 fn owner() -> Owner {
@@ -54,10 +53,6 @@ fn owner() -> Owner {
 
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
-}
-
-fn kill(pid: u64) {
-    assert!(Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success(), "kill -9 {pid}");
 }
 
 /// CONTRACT (R-A2; R-D1: loss of peer-mesh control-plane visibility fences lifecycle mutation for
@@ -107,7 +102,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
         pids.push(estate.pid_of(&s(&n["name"])).await);
     }
     for pid in pids {
-        kill(pid);
+        estate.kill_pid(pid as u32);
     }
     if lost == "mesh1" {
         estate.kill_bootstrap();
@@ -320,7 +315,7 @@ async fn a_member_whose_runtime_exited_is_replaced() {
     .await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
     let gone = estate.until_node("mesh1.rpc.2", "this admin hears mesh1.rpc.2", Duration::from_secs(30), |n| n.cloned()).await;
-    kill(estate.pid_of("mesh1.rpc.2").await);
+    estate.kill_node("mesh1.rpc.2").await;
     estate
         .until_view("a new birth restores two ready rpc nodes", rdm_transport::membership::staleness_floor() + Duration::from_secs(60), |views| {
             let ready: Vec<_> = views.iter().filter(|n| n.kind == NodeKind::RpcNode && n.status == NodeStatus::ReadyForTraffic).collect();

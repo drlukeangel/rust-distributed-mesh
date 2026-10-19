@@ -123,8 +123,7 @@ async fn role_nodes_owe_their_state_again_to_the_mesh_primary_that_took_the_seat
     if old == "mesh1.admin.1" {
         estate.kill_bootstrap();
     } else {
-        let pid = estate.pid_of(&old).await;
-        assert!(std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success(), "kill -9 {pid}");
+        estate.kill_node(&old).await;
     }
     let roles: Vec<String> = ["broker.1", "gateway.1", "compute.1"].iter().map(|n| format!("{lost_mesh}.{n}")).collect();
     // A role node's re-declaration to the seat's new holder is a call it makes: no object reports it, and the
