@@ -1104,7 +1104,7 @@ impl NodeSelf {
         let deleted = self
             .delete_connections_asked(&ConnectionScope::All, u64::from(op.is_some()), || {
                 if op.is_none() {
-                    *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting);
+                    *deleting.lock().unwrap() = self.owe(NodeState::ConnectionsDeleting, None);
                 }
                 async {}
             })
@@ -1174,29 +1174,27 @@ impl NodeSelf {
         // The cut's span ends with the cut: what follows is the declaration, not the cut.
         cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
         drop(cut);
-        // 6. This birth declares `Stopped` to its mesh-primary (i146 Q29, Q36, Q55; node-stop.md step 4).
-        // A command's names its stop: the owed twin of the reply's `stopped`, from which the
-        // mesh-primary publishes NodeStopped when the reply does not reach it, sent before the reply so
-        // the mesh-primary never holds the reply, and never begins this birth's next cycle, ahead of it.
-        // A signal's names no operation and is owed, never waited on.
-        match op {
-            Some(op) => {
-                if let Some(declare) = &self.declare {
-                    declare(NodeState::Stopped, Some(declared(op))).await;
-                }
-            }
-            None => owed.extend(self.owe(NodeState::Stopped)),
-        }
+        // 6. This birth declares `Stopped` to its mesh-primary (i146 Q29, Q36, Q55; node-stop.md step 4): an
+        // owed message whose delivery is the runtime's (node-rpc.md §43), never waited on, so the stop's
+        // receipt and reply never wait for the mesh-primary's answer. A command's names its stop: the owed
+        // twin of the reply's `stopped`; whichever of the two reaches the mesh-primary first is applied and
+        // the other answers AlreadyApplied (node-stop.md step 5, Q49). A signal's names no operation.
+        owed.extend(self.owe(NodeState::Stopped, op.map(declared)));
         (receipt, owed)
     }
 
-    /// Owe `state` to the mesh-primary without waiting for its answer (a signal's stop, i146 Q55): one
-    /// owed call, handed back for the process's exit to drop (node-rpc.md §34).
-    fn owe(&self, state: NodeState) -> Option<tokio::task::JoinHandle<()>> {
+    /// Owe `state` to the mesh-primary without waiting for its answer (node-rpc.md §43: an owed message's
+    /// delivery is the runtime's): one owed call, handed back for the process's exit to drop (node-rpc.md
+    /// §34). A command's stop names its operation; a signal's names none (i146 Q55).
+    fn owe(&self, state: NodeState, operation: Option<rdm_core::status::DeclaredOperation>) -> Option<tokio::task::JoinHandle<()>> {
         let declare = self.declare.clone()?;
-        tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.held_name(), state = ?state)
-            .in_scope(|| tracing::info!("the state is owed to the mesh-primary; the stop does not wait for its answer"));
-        Some(tokio::spawn(declare(state, None)))
+        match &operation {
+            Some(op) => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-stop", node = %self.held_name(), state = ?state, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt)
+                .in_scope(|| tracing::info!("the state is owed to the mesh-primary, naming the stop; the stop does not wait for its answer")),
+            None => tracing::info_span!("rdm.node_rpc.status.update.via-owed-on-signal", node = %self.held_name(), state = ?state)
+                .in_scope(|| tracing::info!("the state is owed to the mesh-primary; the stop does not wait for its answer")),
+        }
+        Some(tokio::spawn(declare(state, operation)))
     }
 
     /// The stop this process's own signal runs: node.stop's steps with the node its own subject
