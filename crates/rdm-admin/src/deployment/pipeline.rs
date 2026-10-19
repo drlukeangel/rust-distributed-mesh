@@ -1223,6 +1223,7 @@ impl DeploymentPipeline<'_> {
             code = tracing::field::Empty,
             detail = tracing::field::Empty,
             stage = tracing::field::Empty,
+            reason = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
             io_calls = tracing::field::Empty,
             io_queued_ms = tracing::field::Empty,
@@ -1279,7 +1280,7 @@ impl DeploymentPipeline<'_> {
                 (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null()))
             },
             Err(f) => {
-                span.record("code", f.code.name()).record("detail", "failed");
+                span.record("code", f.code.name()).record("detail", "failed").record("reason", f.reason.as_str());
                 if let Some(stage) = &f.stage {
                     span.record("stage", stage.name());
                 }
@@ -2774,6 +2775,8 @@ mod tests {
             assert!(stage.stops_resubmission(), "{stage:?} stops a hold's resubmission");
             let stepped = capture.named("rdm.node_admin.deployment.update.via-step").into_iter().find(|c| c.attributes.get("step").map(String::as_str) == Some("TerminateRuntime")).expect("the step's span");
             assert_eq!(stepped.attributes.get("stage").map(String::as_str), Some(stage.name()), "the step's span names the stage: {stepped:?}");
+            let named = if refuse.is_some() { "the daemon refused" } else { "still runs after the stop ladder" };
+            assert!(stepped.attributes.get("reason").is_some_and(|r| r.contains(named)), "the step's span names why it failed ({named}): {stepped:?}");
         }
         assert!(!TerminateStage::Inspection { verdict: InspectionVerdict::OsStopped }.stops_resubmission() && !TerminateStage::Inspection { verdict: InspectionVerdict::Unknown }.stops_resubmission(), "a failure at the step's own inspection voids the hold, never stops it");
     }
