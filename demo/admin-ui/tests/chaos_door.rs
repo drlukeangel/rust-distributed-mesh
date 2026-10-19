@@ -7,9 +7,9 @@ use serde_json::json;
 use rdm_test::process_faults::{local_control_domain, proc_state, start_token};
 use std::process::{Command, Stdio};
 
-/// The witness a ready-for-traffic fabric read mints.
-fn ready() -> Option<rdm_test::estate::FabricReady> {
-    rdm_test::estate::FabricReady::read(rdm_client::ScopeStatus::ReadyForTraffic)
+/// The status a ready-for-traffic fabric read answers.
+fn ready() -> Option<rdm_client::ScopeStatus> {
+    Some(rdm_client::ScopeStatus::ReadyForTraffic)
 }
 
 /// A sleeper with a published runtime record in a fresh data dir.

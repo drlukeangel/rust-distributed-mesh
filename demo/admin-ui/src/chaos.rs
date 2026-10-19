@@ -103,10 +103,11 @@ impl Chaos {
 
     /// Apply `action` (`kill`, `stop` or `continue`) to the exact runtime of `target`. The record
     /// is `refused` when the node is the fabric-primary, unknown, or the kit refuses, and a kill is
-    /// refused `fabric-not-ready` without `ready`: a death during fabric start is not exercised (Q74).
-    pub async fn fault(&self, nodes: &[NodeFacts], target: &str, action: &str, ready: Option<FabricReady>) -> FaultRecord {
+    /// refused `fabric-not-ready` unless `fabric` (the status `fabric.get` answered) is ready-for-traffic:
+    /// a death during fabric start is not exercised (Q74).
+    pub async fn fault(&self, nodes: &[NodeFacts], target: &str, action: &str, fabric: Option<rdm_client::ScopeStatus>) -> FaultRecord {
         let fault = match action {
-            "kill" => match ready {
+            "kill" => match fabric.and_then(FabricReady::read) {
                 Some(r) => Fault::Kill(r),
                 None => return self.record(target, action, "refused", json!({"refusal": "fabric-not-ready", "reason": "the fabric has not been read ready-for-traffic: a death during fabric start is not exercised"})),
             },
