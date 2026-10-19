@@ -425,6 +425,7 @@ seat each. Independent of i146 and i147.
   stale; two mesh-primaries noticing together: one row, repeats `AlreadyApplied`; a lost mesh
   whose domain can be inspected: exit proof, inherited dir reused; only Pending admins surviving:
   the seat waits; the fence unavailable: the takeover held and surfaced on `fabric.get`.
+  (Record of 2026-10-19: "only Pending admins surviving: the seat waits" is proven by the unit cell `election.rs:703`, recorded as enough by the lead. A live form needs a same-mesh admin held Pending past the fabric-primary's death, whose join's own authority is that dead admin (admin_faults.rs:249), so no existing estate shows it without new machinery; `sticky_seat:222` covers the Ready-survivor arm.)
 - **Order.** After R24 and e5; one seat; the packet first.
 - **State.** Q28 A (2026-10-16): the store provides the fence. Q35 x (2026-10-17): the layout, one fabric-wide sequence of seat moves (`seat-moves/<T>`, `seat-move/1`) serializing every seat move, each seat keeping its own revision; lanes `rev-<R>/<seq>`, the seal `lane-seal/1`, `in-flight` naming its claim's lane key, and the cells (rulings `i144-rulings-2026-10-16-fabric-seat.md`). Page text (node-primary-update.md's row location, build.md §5.3's journal) exact old → new to Luke with the e6.1 landing. Not started.
 - **e6.1 (the store layout, Q28 A + Q35 x).** **LANDED `8c090b74`** (built on `i144-e6-1-seat-moves-and-lanes`, lane e1s8). `durable format moved`.
