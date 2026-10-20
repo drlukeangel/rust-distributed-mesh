@@ -1,6 +1,6 @@
 # Proposal: a joining node's gossip neighbour drops 2-4 ms after it forms
 
-**Status:** experiment proposal, for Arch's feedback before any change. Q84 (Luke, 2026-10-19): fix it in
+**Status:** X2 ruled and run (§4c; Q84, delegated; ruled by the lead, 2026-10-19). Q84 (Luke, 2026-10-19): fix it in
 RDM's own gossip code, no iroh change. Nothing below has landed: E1-E3 are reverted (main is `7ae3aa83`;
 `fb4017de` exists only on lane e4s8's local branch `e4s8-join-holds-no-dial`). The iroh debug layer may be
 kept as test tooling (Luke). Author: the lead, 2026-10-19.
@@ -176,6 +176,87 @@ joiner of its own mesh at its join.
   (§6: a held member is dialled only once its coverage has gone stale for the repair window).
 Proof run: 1 run, a cohort of 4, then 30, each with the X1 spans and the iroh layer. Success: no double
 dial, no neighbour-down within 50 ms of its neighbour-up, the cell green.
+
+## 4c. X2 results (2026-10-19; branch `e4s8-x2-joiner-dials`, on X1's `e6f8b190`)
+
+**Why a double dial drops the pair only sometimes (now proven, from iroh-gossip's source and X1's logs).**
+iroh-gossip keeps one send connection per peer: when a second connection to a peer it already holds
+arrives, the newer one becomes the send connection and the older one's send half is dropped, which ends
+that connection (`net.rs` `accept_conn`, `connection_loop`); a peer whose *send* connection closes is
+marked disconnected on every topic (`handle_connection_task_finished`). With one dial that is exact. With
+two dials at once each side registers a Dial and an Accept, and which one is "newer" is the order they
+reached that side's actor. In X1's four green runs the orders agreed (the admin Dial then Accept, the broker
+Accept then Dial: both kept the broker's dial); in the red, x1-4, the broker's own Dial registered before
+its Accept (`01:11:48.838690` then `.839102`) while the admin's order was Dial then Accept, so the admin kept
+the broker's dial and the broker kept the admin's: each closed the one the other kept, and both logged
+"active send connection closed, mark peer as disconnected" 0.3 ms apart. Q77's mechanism; iroh-gossip's
+rule is sound for one dial, and RDM made two.
+
+**The change, conformance to gossip.md §5, §6, §8 (the three callers X1 named):**
+- `admin/boot.rs:1447`, the join door's types hook: `Membership::hold_app_types_from` (new, beside
+  `learn_app_types_from`): the joiner's types are held (joined) before the join is answered, and the
+  joiner is handed to no channel as a peer. The joiner joins each channel with its admin, already
+  joined, as its first neighbour (§8).
+- `admin/boot.rs:~1600`, the app-types loop's own-mesh row branch: the same. The node-admin branch
+  (`:1589`, another admin's `node.get`) is unchanged: not in X1's data.
+- `admin/boot.rs:2551`: the round dials no member of its own mesh (its `mine` list goes with it);
+  `builds.join_admins` and `backbone.join_admins` stay. §6's held-member repair (`RepairSchedule`,
+  `membership.repair`) is the admin's only dial to a member.
+- node-admin still subscribes and holds every type channel before it answers the join (§8, "node-admin
+  holds every channel, as the app"); a node's entry pull is a call. Nothing in iroh or iroh-gossip.
+
+**Proof, the same harness as X1** (the consumer workspace on lane e4s8's crates, `RDM_DEBUG_GOSSIP=1`,
+each run read by `read_run.py`: iroh's dials per pair and their origin order, any peer drop within
+50 ms of a connection forming, and from the evidence JSONL any neighbour-down within 50 ms of its up):
+
+| runs | red | gossip dials | double dial | early drop | neighbour-down < 50 ms after its up |
+|---|---|---|---|---|---|
+| 1, read in full | 0 | 1: the broker's `membership.subscribe` to its seed, the admin; the admin dials nothing | 0 | 0 | 0 |
+| cohort of 4 | 0 | 1 per run, the broker's | 0 | 0 | 0 |
+| cohort to 31 (runs 6-31; stopped for the fast gate, Luke) | 4, all `:313` (below) | 1 per run, the broker's | 0 | 0 | 0 |
+
+**The flame (one run exported to Jaeger on .99, 2026-10-20 02:07 UTC; the same Jaeger as X1's red):**
+- the broker's boot-and-join trace, 66 spans, with **no dial span in it**
+  ([f312b485](http://192.168.68.99:16687/trace/f312b4853864a01dac394bd5f369f1e6); X1's red counterpart
+  741cf0ac had the admin's `apps.subscribe` and `apps.learn` dials inside its serving of the join);
+- the run's only gossip dials, the broker's: `membership.subscribe` on `mesh:mesh1` to its seed, the admin
+  ([438054db](http://192.168.68.99:16687/trace/438054dbb6ea44ccc9b42a9e1247bd50)), and `apps.subscribe` on
+  `demo.records` ([acf957d8](http://192.168.68.99:16687/trace/acf957d81281a38fd4c0744cd69ad800)) and
+  `demo.large-records` ([0e677dba](http://192.168.68.99:16687/trace/0e677dbafebbdf7df5e4e68b32a7314b));
+  iroh's log: one `start to dial`, the admin's side `origin=Accept` only;
+- neighbour-up on `mesh:mesh1` and `via-neighbour` on both app channels, both sides, at `02:07:06.865-.866`
+  ([20438078](http://192.168.68.99:16687/trace/20438078072e3b490a523787e58891c5),
+  [e5dfac55](http://192.168.68.99:16687/trace/e5dfac5587936ee7e9ad16508a3dc67c)); the one neighbour-down
+  of the run is the stop, 30.3 s later;
+- the first `demo.records` event: `via-publish sequence=1 neighbours=1 outcome=handed-to-gossip` at
+  `02:07:06.889` ([0d3702b3](http://192.168.68.99:16687/trace/0d3702b3c858d7aadc18479b31373d3c)) and the
+  admin's `rdm.mesh.membership.update.via-frame type=demo.records sequence=1` 1.1 ms later
+  ([6dde7301](http://192.168.68.99:16687/trace/6dde73011522629b288e9d9eb28419ba)); in X1's red the publish
+  had `neighbours=0` and no frame followed. (The cell publishes outside a span, so the envelope carries no
+  traceparent and the frame is its own trace, gossip.md §8.)
+- ClickHouse (`.99:18123`, `otel.otel_traces`), the run's window: `via-join-peers` by caller
+  `membership.subscribe` 1, `apps.subscribe` 2, nothing else; X1's red traces: the same plus `apps.learn` 4.
+  The fast gate's window on this commit (`ed00b4ab`, 73 ok, 0 FAIL, 248 s; 510,685 spans, 143 services):
+  4,482 dial spans, `admin.round` 0, `apps.learn` 0; every caller a joiner's, an admin-to-admin one, or §6's
+  `membership.repair`/`refeed`/`reopen`.
+
+Baseline (§4a, no RDM change): red about 1 in 9, a double dial in most runs. Over the 31 runs the join
+shape (`:49`/`:65`, a double dial, an early drop) never occurred; in the old scratchpad's 190 runs before
+X2 it was 24 of 47 reds.
+
+**The other red, `:313` (runs 9, 11, 15, 29; 14 of the 47 old reds), read from run 9's spans and
+iroh's log: not the join drop, and not X2's.** The cell's own burst (4,096 `demo.records` events in 244 ms)
+leaves about 2,000 pushes dropped at the publisher's per-peer gossip send queue (`SEND_QUEUE_CAP` 64,
+"send queue full, dropping message" 1,951 times on the broker, `01:44:40.699` to `.935`, green runs the
+same count). The large record (3 chunks) was published at `.934544/.934673/.934794`, each chunk's
+`SendMessage` was dropped at that queue 0.1 ms later (`.934664/.934785/.934866`), the admin received none,
+and in the following 32 s no IHave or Graft went out on the topic: a dropped push to an *eager* peer is
+announced to no one (plumtree queues IHave for lazy peers only, `plumtree.rs` `lazy_push`), and on this
+one-edge topic there is no other peer to carry it; gossip.md §7's repair is through the mesh, §8's pull is
+the recovery. Whether the three chunks land before or after the queue drains is the race; the cell's
+premise at `:313` ("the loss is assembly expiry, not queue overflow") holds only on a quiet edge. The fix
+is the cell's, not RDM's: the incomplete-assembly shape runs before the burst (order keys renumbered:
+`3:` the incomplete case, `4:` the burst's heal). Separate commit, its own runs.
 
 ## 5. Asked of Arch (answered 2026-10-19)
 

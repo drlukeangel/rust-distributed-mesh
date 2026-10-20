@@ -1444,7 +1444,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let (membership, records) = (membership.clone(), records.clone());
                                             Box::pin(async move {
                                                 records.declare_app_types_or_hold(&d, types.clone()).await?;
-                                                membership.learn_app_types_from(&d, types.clone(), types).await.map_err(|e| e.to_string())
+                                                // The joiner's types are held before the join is answered; the joiner is handed to no
+                                                // channel as a peer: it dials this admin, its first neighbour (gossip.md §8, Q84).
+                                                membership.hold_app_types_from(&d, types.clone(), types).await.map_err(|e| e.to_string())
                                             })
                                         }
                                     }),
@@ -1597,7 +1599,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 } else if let Ok(Some(row)) = rows.node_row_at(&d.node.name).await {
                                                     if row.node_id == birth.0 {
                                                         if let Some(t) = row.app_types.filter(|t| t.incarnation == birth.1) {
-                                                            if membership.learn_app_types_from(&d, t.types.clone(), t.types).await.is_ok() { return Some((birth, d.held_hash)); }
+                                                            // A member of this admin's own mesh: its types are held, it is dialled by no one but §6's repair (Q84).
+                                                            if membership.hold_app_types_from(&d, t.types.clone(), t.types).await.is_ok() { return Some((birth, d.held_hash)); }
                                                         }
                                                     }
                                                 }
@@ -2504,7 +2507,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     roles_moved.notify_one();
                                                 }
                                                 let heard = membership.book.current(membership.book.staleness_floor());
-                                                let mine: Vec<MeshDigest> = backbone.own_members(&membership);
                                                 let status_of = |s: crate::model::ScopeStatus| serde_json::to_value(s).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
                                                 // A status is sent when it changed, never per round (gossip.md §3.2).
                                                 let mesh_status = t.meshes.iter().find(|m| m.name == mesh).map(|m| status_of(m.status)).unwrap_or_default();
@@ -2548,7 +2550,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                                                 builds.join_admins(admins.clone()).await;
                                                 backbone.join_admins(admins).await;
-                                                let _ = membership.join_peers_as("admin.round", mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
+                                                // The round dials no member of its own mesh: a member joins through this admin, and a
+                                                // held member gone stale is dialled by §6's repair alone (gossip.md §6, §8; Q84).
                                                 drop(turn);
                                                 // The next round is due after one gossip interval, or at once when a checklist the
                                                 // fabric-primary waits on, or the application's answer, moved, or when the view changes

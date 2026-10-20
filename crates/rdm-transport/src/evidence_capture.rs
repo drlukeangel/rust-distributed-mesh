@@ -189,7 +189,14 @@ impl EvidenceCapture {
             None
         };
         let provider = builder.build();
-        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(span_export_layer(&provider, service)));
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(span_export_layer(&provider, service)).with(
+            // Test tooling (Luke, 2026-10-19): with RDM_DEBUG_GOSSIP set, iroh-gossip's own DEBUG lines (the dial,
+            // accept and close of every gossip connection) go to stderr on one clock with RDM's spans.
+            std::env::var("RDM_DEBUG_GOSSIP").ok().map(|_| {
+                use tracing_subscriber::Layer;
+                tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_ansi(false).with_filter(tracing_subscriber::filter::filter_fn(|m| m.target().starts_with("iroh_gossip") && *m.level() <= tracing::Level::DEBUG))
+            }),
+        ));
         let default = tracing::dispatcher::set_default(&dispatch);
         Ok(Self { provider, evidence, loss, path, dispatch, held, _default: default })
     }

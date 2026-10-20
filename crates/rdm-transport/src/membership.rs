@@ -2902,6 +2902,19 @@ impl Membership {
         self.book.set_own_held_hash(self.apps.hash());
         Ok(())
     }
+    /// [`Self::learn_app_types_from`] for a member of this node's own mesh at its join: the types are
+    /// held (joined) and the member is handed to no channel as a peer, so this node dials nothing. The
+    /// joiner joins each channel with its mesh's node-admin, already joined, as its first neighbour
+    /// (gossip.md §8); the node-admin dials a member only under §6's held-member repair. Two dials of one
+    /// pair at once leave each side holding the other's superseded connection, and the pair drops on
+    /// every channel (Q84).
+    pub async fn hold_app_types_from(&self, d: &MeshDigest, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
+        anyhow::ensure!(d.fabric_id == self.fabric, "app declaration belongs to another fabric");
+        self.mesh.register(d);
+        self.apps.learn(d.node.node_id.clone(), d.node.incarnation.clone(), types, held, None).await?;
+        self.book.set_own_held_hash(self.apps.hash());
+        Ok(())
+    }
     /// Learn metadata from an exact birth already held in the membership book.
     pub async fn learn_app_types(&self, node: rdm_core::NodeId, incarnation: rdm_core::IncarnationId, types: std::collections::BTreeSet<String>, held: std::collections::BTreeSet<String>) -> anyhow::Result<()> {
         let d = self.book.get(node.as_str()).map(|(d, _)| d).filter(|d| d.node.incarnation == incarnation);
