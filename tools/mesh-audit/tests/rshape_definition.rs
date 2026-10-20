@@ -448,8 +448,17 @@ fn check_matrix(m: &Value, reg: &Value) -> Vec<String> {
             }
         }
     }
+    // The soaks: S1-S5 the epic's, and every story added after them (S6 the floors story), each
+    // named in the matrix's `soaks` and proven on both providers.
+    let mut soak_ids: Vec<String> = m["soaks"].as_object().into_iter().flat_map(|o| o.keys().cloned()).collect();
     for n in 1..=5 {
         let id = format!("S{n}");
+        if !soak_ids.contains(&id) {
+            soak_ids.push(id);
+        }
+    }
+    soak_ids.sort_by_key(|id| id.trim_start_matches('S').parse::<u32>().unwrap_or(u32::MAX));
+    for id in soak_ids {
         let so = &m["soaks"][&id];
         let t = s(so, "test");
         if t.is_empty() || so["seconds"] != 1800 {
