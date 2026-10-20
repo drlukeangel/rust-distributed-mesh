@@ -149,7 +149,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         wake: Default::default(),
         rounds: Default::default(),
         configs: Default::default(),
-        configure: Default::default(),
+        republish: Default::default(), configure: Default::default(),
         before_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),

@@ -194,7 +194,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         wake: Default::default(),
         rounds: Default::default(),
         configs: Default::default(),
-        configure: Default::default(),
+        republish: Default::default(), configure: Default::default(),
         before_ready: Default::default(),
         rename: Default::default(),
         row_moved: Default::default(),

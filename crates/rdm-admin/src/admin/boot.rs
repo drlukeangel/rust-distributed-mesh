@@ -1060,6 +1060,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                             // Where this admin's own `before_ready` stands: written by its start (and a rejoin's),
                             // read by the Ready check and by a probe naming this admin.
                             let before_ready_cell: crate::status_rpc::BeforeReadyCell = Arc::default();
+                            // This admin's re-publish of its presence, for a probe naming it (the round's down op): filled once its
+                            // digest exists, below.
+                            let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
                             // This admin holding the config it is told (`ApplyNodeConfig`): filled with the republish, below.
                             let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
                             // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
@@ -1099,6 +1102,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     wake: records.wake.clone(),
                                     rounds: rounds_slot.clone(),
                                     configs: configs_slot.clone(),
+                                    republish: republish.clone(),
                                     configure: configure.clone(),
                                     before_ready: before_ready_cell.clone(),
                                     rename: rename.clone(),
@@ -1853,6 +1857,16 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     {
                                         // The config is held on this admin's own digest and by its membership, so every publish and
                                         // every read of its own digest carries it.
+                                        let (membership, digest) = (membership.clone(), digest.clone());
+                                        let _ = republish.set(Arc::new(move || {
+                                            let (membership, digest) = (membership.clone(), digest.clone());
+                                            Box::pin(async move {
+                                                let d = digest.lock().unwrap().clone();
+                                                let _ = membership.publish(&d).await;
+                                            })
+                                        }));
+                                    }
+                                    {
                                         let (membership, digest) = (membership.clone(), digest.clone());
                                         let _ = configure.set(Arc::new(move |config: BTreeMap<String, String>| {
                                             let (membership, digest) = (membership.clone(), digest.clone());

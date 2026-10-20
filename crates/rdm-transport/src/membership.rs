@@ -1585,6 +1585,7 @@ impl Channel {
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
+        let held_members = targets.clone();
         me.refeed(channel.to_string(), neighbors.clone(), targets);
         let (shared, known, gossip, fabric, channel, book) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), me.book.clone());
         let (parked, left) = (me.parked.clone(), me.left.clone());
@@ -1712,6 +1713,16 @@ impl Channel {
                     tracing::info_span!("rdm.mesh.connection.delete.via-channel-stopped", node = %book.observer_name(), channel = %channel)
                         .in_scope(|| tracing::info!("the topic is left: the channel is parked"));
                     let _ = parked_rx.wait_for(|p| !*p).await;
+                }
+                // Back on its topic, a node dials the members of its mesh it holds (gossip.md §6's
+                // held members, their addresses known), with the peers it was seeded or repaired
+                // through: a node-admin's seed is the admin that launched it, which for a mesh's first
+                // admin is the fabric-primary, on the backbone and not on this topic (Q88, Luke
+                // 2026-10-20: a node-admin on a mesh with another node-admin is never without a
+                // neighbour on its mesh channel).
+                for t in held_members().targets {
+                    book.fill(&t.addr);
+                    known.lock().unwrap().insert(t.addr.id);
                 }
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
                 let span = tracing::info_span!("rdm.mesh.membership.update.via-resubscribe", fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
@@ -1863,6 +1874,11 @@ impl Channel {
                     continue;
                 }
                 backoff = refeed_backoff(backoff);
+                // No neighbour: every held member of the mesh (Q88) and every known peer is handed to the channel again.
+                for t in targets().targets {
+                    me.book.fill(&t.addr);
+                    me.peers.lock().unwrap().insert(t.addr.id);
+                }
                 let peers: Vec<iroh::EndpointId> = me.peers.lock().unwrap().iter().copied().collect();
                 if peers.is_empty() {
                     continue;
@@ -3179,7 +3195,8 @@ impl Membership {
         self.mesh.unpark().await;
         // Back on the topic, this node heard nothing while it was off it: every member's silence is
         // measured from now, never from before the park (node-recovery.md step 1: the window already
-        // running is the durable silence rows', which the tick reads).
+        // running is the durable silence rows', which the tick reads). On the topic again it hears its
+        // members at once: the reopen dialled them (Q88).
         self.book.restart_silence();
         if let Err(error) = self.apps.resume().await {
             tracing::info_span!("rdm.mesh.channel.reject.via-subscribe", error = %error).in_scope(|| tracing::warn!("application channels could not rejoin"));

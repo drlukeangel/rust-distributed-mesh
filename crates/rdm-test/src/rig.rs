@@ -119,7 +119,7 @@ impl NodeObserver for LiveMesh {
                 nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()), mesh_ids: Arc::new(Default::default), durable: Default::default(),
                 commands: self.commands.clone(), own: Default::default(), mesh_deleter: Default::default(),
                 hold_next_reply: Default::default(), wake: Default::default(), rounds: Default::default(), configs: Default::default(),
-                configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
+                republish: Default::default(), configure: Default::default(), before_ready: Default::default(), rename: Default::default(), row_moved: Default::default(), loads: None,
                 book: Some(self.membership.book.clone()), first_ready: Default::default(), builds: Arc::new(rdm_admin::build_state::MemoryBuildStateAdapter::new()),
             };
             assert!(authority.configs.set(Arc::new(rdm_admin::node_config::NodeConfigs::new(Arc::new(self.client.clone()), Default::default(), Default::default()))).is_ok());

@@ -363,6 +363,10 @@ pub struct StatusAuthority {
     /// This admin's `node.config.update` door, served while it holds a mesh's primary seat (the writer
     /// of that mesh's rows); filled once the admin's node-RPC client exists.
     pub configs: crate::node_config::NodeConfigsSlot,
+    /// This admin's re-publish of its presence on the channel it is on (its digest published, no
+    /// re-join), filled once its digest exists: the check-in a probed birth owes (states.md "The
+    /// round checklist"), what the round's down op reads.
+    pub republish: Republish,
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
     pub configure: Configure,
@@ -790,7 +794,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.configure, &self.rename, &self.before_ready, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.before_ready, &self.wake).await {
                 return reply;
             }
         }
@@ -1417,6 +1421,8 @@ impl StatusAuthority {
 /// Where a node's own `before_ready` stands: `None` until its start registered a hook.
 pub type BeforeReadyCell = Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>;
 
+/// A node's re-publish of its presence (its digest published on the channel it is on), filled once it has joined its mesh.
+pub type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 /// This node holding the config it is told and publishing its digest carrying it (`ApplyNodeConfig`).
 pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
@@ -1449,7 +1455,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// `before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connections.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, configure: &Configure, rename: &Rename, before_ready: &BeforeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, before_ready: &BeforeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
         StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
@@ -1488,9 +1494,16 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                     .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                 return Some(reply);
             }
+            // The check-in a probed birth owes (states.md "The round checklist": a new primary re-sends
+            // the round and members already done check in again): its presence re-published on the
+            // channel it is on, its state answered; no transition, no re-join. A birth its authority
+            // holds off its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87).
+            if let Some(republish) = republish.get() {
+                republish().await;
+            }
             let state = node_state_of(me.status);
             tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = ?state, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("probed by a node-admin: current state answered, nothing re-published"));
+                .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
         StatusRequest::ApplyNodeState { state, .. } => {
@@ -1808,7 +1821,7 @@ mod tests {
             rounds: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -1874,7 +1887,7 @@ mod tests {
             rounds: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -1950,7 +1963,7 @@ mod tests {
             rounds: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -2191,7 +2204,7 @@ mod tests {
             rounds: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -2224,11 +2237,11 @@ mod tests {
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, None, &probe, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &Republish::default(), &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
-        let answered = self_subject(&admin, Some(&carrier), None, &apply, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &Republish::default(), &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 
@@ -2258,7 +2271,7 @@ mod tests {
             wake: Default::default(),
             rounds: Default::default(),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -2621,7 +2634,7 @@ mod tests {
             rounds: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
@@ -2720,7 +2733,7 @@ mod tests {
             rounds: Default::default(),
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             configs: Default::default(),
-            configure: Default::default(),
+            republish: Default::default(), configure: Default::default(),
             before_ready: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
