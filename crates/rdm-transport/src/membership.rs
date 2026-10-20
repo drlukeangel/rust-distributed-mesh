@@ -3173,16 +3173,14 @@ impl Membership {
         self.mesh.park().await;
     }
 
-    /// Whether this mesh's topic is left, as it changes: `true` from [`Self::park`] until
-    /// [`Self::unpark`] re-subscribed the topic (a commanded `node.mesh.join` answers on the latter).
-    pub fn left_changes(&self) -> tokio::sync::watch::Receiver<bool> {
-        self.mesh.parked.subscribe()
-    }
-
     /// Join this mesh's gossip topic again through the peers it knows. Resolves once the topic is
     /// re-subscribed.
     pub async fn unpark(&self) {
         self.mesh.unpark().await;
+        // Back on the topic, this node heard nothing while it was off it: every member's silence is
+        // measured from now, never from before the park (node-recovery.md step 1: the window already
+        // running is the durable silence rows', which the tick reads).
+        self.book.restart_silence();
         if let Err(error) = self.apps.resume().await {
             tracing::info_span!("rdm.mesh.channel.reject.via-subscribe", error = %error).in_scope(|| tracing::warn!("application channels could not rejoin"));
         }
@@ -5762,6 +5760,18 @@ impl DigestBook {
         let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(_, at, heard)| *heard == Heard::Direct && *at >= since).map(|(d, _, _)| d.clone()).collect();
         self.hand_out(ds.iter_mut());
         ds
+    }
+
+    /// The silence clock of every member held, restarted at `now`: a node back on its topic after a
+    /// park heard nothing while it was off it, so no member's silence is measured from before.
+    pub fn restart_silence(&self) {
+        let now = Instant::now();
+        for (_, at, _) in self.inner.lock().unwrap().values_mut() {
+            *at = now;
+        }
+        for (_, at) in self.projected.lock().unwrap().values_mut() {
+            *at = now;
+        }
     }
 
     /// The member's latest digest and how long it has been silent.

@@ -265,6 +265,11 @@ pub trait StartNode: super::node_mesh_join::MeshJoin {
     /// Whom the join goes to; called inside the join step. A start after a stop answers
     /// [`JoinTo::Commander`], whatever the node kind.
     async fn resolve_authority(&mut self) -> Result<JoinTo, StartFailed>;
+    /// The operation the start's join runs for, when the start was commanded with one (a start after
+    /// a stop: its `node.start`; a commanded `node.mesh.join`: that command's); `None` names the kind's.
+    fn operation(&self) -> Option<String> {
+        None
+    }
 
     /// node.joined: the node is on its channel. The kind takes what the join answered of its control
     /// state (a node-admin records the Build floor here, at every start), brings up what it serves
@@ -294,10 +299,10 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             let step = tracing::info_span!(parent: &root, "rdm.mesh.node.update.via-join-admitted", node = %name, launcher = %label, served_by = tracing::field::Empty, endpoint = tracing::field::Empty, installed = tracing::field::Empty);
             let to = node.resolve_authority().await?;
             let mesh_id = node.join_digest().mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
-            let operation = match kind {
+            let operation = node.operation().unwrap_or_else(|| match kind {
                 StartKind::FirstStart => format!("node.create:{name}"),
                 StartKind::AfterStop => format!("node.start:{name}"),
-            };
+            });
             let report_parent = matches!(kind, StartKind::FirstStart).then(|| step.clone());
             let call = super::node_mesh_join::JoinCall { name: name.clone(), node_id: &node_id, mesh: &path.mesh, mesh_id: &mesh_id, client: &client, rafka_time: &rafka_time, to: &to, authority: &label, operation: &operation, report_parent, reported: step, channel_parent: Some(root.clone()) };
             let joined = super::node_mesh_join::node_mesh_join(node, call).await?;

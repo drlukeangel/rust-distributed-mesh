@@ -159,7 +159,9 @@ pub trait Session: Send + Sync {
     /// birth's connections rows: the session drops it once it holds the name its join answer handed,
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
     /// `operation` is the start's own: the ReadyForTraffic the rejoin declares names it (i146 Q36).
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>) -> Result<(), StartFailed>;
+    /// `held_again` is sent once the start holds its mesh again (node-mesh-join.md step 9: back on its
+    /// topic with a neighbour, its Pending presence published): what a commanded `node.mesh.join` answers on.
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), StartFailed>;
     /// Leave the channels this birth is on (its mesh; the backbone too, a node-admin), its hook task
     /// ended and its hook gate closed, its connections kept: what a live birth does before its start
     /// sequence runs again on a commanded `node.mesh.join` (node-mesh-join.md step 10, Q87). A stop's
@@ -1043,12 +1045,6 @@ impl NodeSelf {
         let Some(session) = self.session.lock().unwrap().clone() else {
             return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.held_name()));
         };
-        // A birth whose connections are being deleted, or that is leaving, is in its stop
-        // (node-connections-delete.md, node-stop.md): the stop decides its next cycle, not this command.
-        let status = (self.status)();
-        if matches!(status, MemberStatus::ConnectionsDeleting | MemberStatus::Leaving) {
-            return rdm_core::reply::status::not_ready(format!("{}: {status:?}: a stop is under way; node.mesh.join is refused", self.held_name()));
-        }
         let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
         let (commander_tx, commander_rx) = tokio::sync::watch::channel(key);
         {
@@ -1070,14 +1066,13 @@ impl NodeSelf {
             Some(r) => r.renew(),
             None => rdm_transport::CancelToken::new(),
         };
-        // The command's completion is the mesh held again (node-mesh-join.md step 9): the topic left
-        // above is re-subscribed by the start's channel step. No progress stream: the start owes its
-        // ReadyForTraffic declaration to its authority as a start after a stop does.
-        let mut left = self.membership.left_changes();
-        left.borrow_and_update();
+        // The command's completion is the mesh held again (node-mesh-join.md step 9): the start's
+        // channel step re-subscribes the topic left above and says so once. No progress stream: the
+        // start owes its ReadyForTraffic declaration to its authority as a start after a stop does.
+        let (held_tx, held_again) = tokio::sync::oneshot::channel();
         let me = self.clone();
         tokio::spawn(async move {
-            let result = session.rejoin(retire, commander_rx, None, operation, None).await;
+            let result = session.rejoin(retire, commander_rx, None, operation, None, Some(held_tx)).await;
             let reply = match result {
                 Ok(()) => StatusReply::Started,
                 Err(failed) => {
@@ -1096,13 +1091,12 @@ impl NodeSelf {
         let joined = if self.backbone.is_some() { vec![WhichMesh::Own, WhichMesh::Backbone] } else { vec![WhichMesh::Own] };
         let mesh_joined = || StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined: joined.clone() };
         let mut outcome = outcome_rx;
-        let mut left_closed = false;
+        let mut held_again = Some(held_again);
         loop {
             tokio::select! {
-                changed = left.changed(), if !left_closed => match changed {
-                    Ok(()) if !*left.borrow() => return mesh_joined(),
-                    Ok(()) => {}
-                    Err(_) => left_closed = true,
+                held = async { held_again.as_mut().unwrap().await }, if held_again.is_some() => match held {
+                    Ok(()) => return mesh_joined(),
+                    Err(_) => held_again = None,
                 },
                 changed = outcome.changed() => {
                     if changed.is_err() {
@@ -1390,7 +1384,7 @@ impl NodeSelf {
             // The admin that commanded the start answers its join, reached back over its own call:
             // the call's endpoint key and path (node-start.md step 2).
             let joined = match commanded {
-                Some(commander) => session.rejoin(retire, commander, rows, declared(&op), progress).await,
+                Some(commander) => session.rejoin(retire, commander, rows, declared(&op), progress, None).await,
                 None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
             };
             let reply = match joined {

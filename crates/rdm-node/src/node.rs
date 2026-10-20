@@ -866,7 +866,7 @@ impl crate::node_self::Session for NodeSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         // The stopped cycle's declaration ends with it: the start begins the next cycle, whose states
@@ -875,7 +875,7 @@ impl crate::node_self::Session for NodeSession {
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation, progress };
+        let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
     }
 
@@ -926,6 +926,8 @@ struct AfterStop<'a> {
     /// The start's operation: the ReadyForTraffic this birth declares at the start's end names it.
     operation: rdm_core::status::DeclaredOperation,
     progress: Option<crate::node_self::CommandProgress>,
+    /// Sent once this birth holds its mesh again: a commanded `node.mesh.join` answers on it.
+    held_again: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[async_trait::async_trait]
@@ -959,6 +961,10 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
+    fn operation(&self) -> Option<String> {
+        Some(self.operation.operation.clone())
+    }
+
     async fn joined(
         &mut self,
         membership: &Membership,
@@ -977,6 +983,9 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
         let mut pending = s.digest.clone();
         pending.status = MemberStatus::Pending;
         let _ = membership.publish(&pending).await;
+        if let Some(held) = self.held_again.take() {
+            let _ = held.send(());
+        }
         *s.publisher.lock().unwrap() = Some(spawn_publisher(membership, &s.digest, &s.status, &s.server));
         let becoming = Becoming {
             boot: self.root.clone(),
@@ -1334,7 +1343,8 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 /// `node.connections.get` of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
-/// answers its current state; no transition, nothing re-published: a birth its authority holds off
+/// re-publishes its presence on the channel it is on (the check-in it owes, states.md "The round
+/// checklist") and answers its current state; no transition, no re-entry: a birth its authority holds off
 /// its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87). While its `before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
 /// `crate::node_self`, which refuses them by name: node commands ride op 0x22. A stale incarnation is refused with the one held. Nothing
@@ -1420,14 +1430,22 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                         return Ok(reply);
                     }
+                    // The check-in a probed birth owes (states.md "The round checklist": a new primary
+                    // re-sends the round and members already done check in again): its presence
+                    // re-published on the channel it is on, its current state answered; no transition,
+                    // no re-entry. A birth its authority holds off its mesh is commanded back through
+                    // `node.mesh.join` (node-tickle.md, Q87), never re-entered by a probe.
                     let status = *me.status.lock().unwrap();
+                    let mut d = me.digest.clone();
+                    d.status = status;
+                    let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
                         node = %me.membership.held_name(&me.digest.node.name),
                         sender = %sender_name,
                         state = ?node_state_of(status),
                     )
-                    .in_scope(|| tracing::info!("probed by a node-admin: current state answered, nothing re-published"));
+                    .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
                     Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
                 }
                 StatusRequest::ApplyNodeState { state, .. } => {

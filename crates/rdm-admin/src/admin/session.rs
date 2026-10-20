@@ -347,12 +347,12 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<crate::node_self::CommandProgress>, held_again: Option<tokio::sync::oneshot::Sender<()>>) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
-        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation, progress };
+        let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows, operation, progress, held_again };
         crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
     }
 
@@ -422,6 +422,8 @@ pub(crate) struct AdminAfterStop<'a> {
     /// The start's operation: the node.started this cycle reports names it (node-status.md "Status report").
     pub(crate) operation: rdm_core::status::DeclaredOperation,
     progress: Option<crate::node_self::CommandProgress>,
+    /// Sent once this admin holds its mesh again: a commanded `node.mesh.join` answers on it.
+    held_again: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 #[async_trait::async_trait]
@@ -456,6 +458,10 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
+    fn operation(&self) -> Option<String> {
+        Some(self.operation.operation.clone())
+    }
+
     async fn joined(&mut self, membership: &Membership, through: Option<&crate::workflows::node_start::JoinThrough>, joined: Option<&crate::wire::JoinAnswer>) -> Result<crate::workflows::node_start::HookParts, crate::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
@@ -480,6 +486,9 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         membership.wait_for_neighbour().await;
         let pending = s.digest.lock().unwrap().clone();
         let _ = membership.publish(&pending).await;
+        if let Some(held) = self.held_again.take() {
+            let _ = held.send(());
+        }
         // Its tasks run again, from where they were held.
         s.gate.resume();
         // The control entry this start repeats when nothing names the Build it is missing: the join it
