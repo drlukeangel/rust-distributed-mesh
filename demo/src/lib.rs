@@ -8,6 +8,7 @@
 use anyhow::{anyhow, Result};
 use rdm_core::connections::CarrierPolicy;
 use rdm_core::NodeKind;
+use rdm_transport::connections::Alpn;
 use rdm_node::{launch_for, Role};
 use rdm_test::{compose, node, originate, Oracles};
 use tracing::Instrument;
@@ -15,6 +16,13 @@ use tracing::Instrument;
 /// The carrier policy of this shape: an originated call may travel over a Proxy whose carrier is a
 /// gateway (connections.md section 6).
 pub const CARRIER_POLICY: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::Gateway };
+
+/// The shape's one data-plane protocol (connections.md §5), an `Alpn` value handed to the start seam
+/// (never an ALPN constant of its own): every role registers it, forwardable through a gateway, and
+/// answers each stream with `echo <its path.name>: <the bytes it read>`.
+pub fn data_alpn() -> Alpn {
+    Alpn { name: b"demo/echo".to_vec(), forwardable: true, carriers: vec![NodeKind::Gateway] }
+}
 
 /// Whether `role` serves the originate door (0x73): the roles work enters through. A compute node
 /// originates opaque calls; a gateway accepts them and routes by the supplied RDM mechanisms. A
@@ -41,7 +49,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     }
     let oracles = Oracles::open(&launch)?;
     let originates = serves_originate(role);
-    let running = node::start_with_seams(&launch, |b, seams| {
+    let (running, mut acceptor) = node::start_with_seams_and_alpn(&launch, data_alpn(), |b, seams| {
         let client = seams.client.clone();
         let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
         if originates {
@@ -57,6 +65,25 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
         e
     })?;
     let _ = oracles.declare_client.set(running.node_rpc.clone());
+    // The data plane's answering side: every admitted connection's streams are echoed, named.
+    let own = launch.name.to_string();
+    tokio::spawn(async move {
+        while let Some(conn) = acceptor.accept().await {
+            let own = own.clone();
+            tokio::spawn(async move {
+                while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                    let Ok(bytes) = recv.read_to_end(1 << 20).await else { break };
+                    let answer = format!("echo {own}: {}", String::from_utf8_lossy(&bytes));
+                    // The connection itself is RDM's record (`rdm.node.connections.create.via-admitted`,
+                    // `update.via-presented`); the role's answer is its own log line, no span of the app's.
+                    tracing::info!(target: "rshape", node = %own, peer = %conn.peer().name, kind = ?conn.kind(), bytes = bytes.len(), "a data-plane stream answered");
+                    if send.write_all(answer.as_bytes()).await.is_err() || send.finish().is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
     let served = running.server.catalog().entries().count();
     boot.in_scope(|| tracing::info!(served, kind = role.name(), originates, "role process serving on the imported substrate"));
     drop(boot);

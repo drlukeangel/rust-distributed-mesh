@@ -97,11 +97,11 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--since" => since = Some(take("--since")?),
             "--carrier" => carrier = Some(take("--carrier")?),
             "--failed-attempts" => failed_attempts = take("--failed-attempts")?.parse().map_err(|e| format!("--failed-attempts: {e}"))?,
-            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport" | "topology" | "nodes" if op.is_none() => op = Some(a),
+            "get" | "put" | "delete" | "cas" | "resolve" | "declare" | "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "stop-transport" | "topology" | "nodes" if op.is_none() => op = Some(a),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    let is_declare = matches!(op.as_deref(), Some("declare" | "topology" | "nodes"));
+    let is_declare = matches!(op.as_deref(), Some("declare" | "topology" | "nodes" | "stream"));
     let admin_birth = admin_birth.ok_or("--admin-birth is required")?;
     let admin_birth: MeshNode = serde_json::from_str(&admin_birth).map_err(|e| format!("--admin-birth {admin_birth:?} is not a node-admin's birth: {e}"))?;
     Ok(Args {
@@ -306,7 +306,7 @@ async fn run(a: Args) -> Result<(Value, Option<iroh::Endpoint>), String> {
     if a.op == "topology" {
         return run_topology(&a, &target).await.map(|value| (value, None));
     }
-    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stop-transport") {
+    if matches!(a.op.as_str(), "originate" | "fault" | "snapshot" | "record-proxy" | "dial" | "stream" | "stop-transport") {
         return run_originate(&a, &target).await.map(|value| (value, None));
     }
     let req = request(&a)?;
@@ -467,6 +467,10 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             OriginateRequest::Call { destination, op }
         }
         "dial" => OriginateRequest::Dial { destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("dial needs --destination path:<path.name>")? },
+        "stream" => OriginateRequest::Stream {
+            destination: a.destination.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or("stream needs --destination path:<path.name>")?,
+            payload: a.value.clone().unwrap_or_default().into_bytes(),
+        },
         "record-proxy" => {
             let path = |what: &str, v: &Option<String>| -> Result<String, String> {
                 v.as_deref().and_then(|d| d.strip_prefix("path:")).map(str::to_string).ok_or(format!("record-proxy needs {what} path:<path.name>"))
@@ -498,6 +502,11 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             }),
             OriginateReply::TransportStopMarked { by, reason } => json!({"outcome": "Reply", "by": by.node, "transport_stop_marked": reason}),
             OriginateReply::Dialed { by, destination_node_id, outcome } => json!({"outcome": "Reply", "by": by.node, "dialed": outcome, "destination_node_id": destination_node_id}),
+            OriginateReply::Streamed { by, peer, kind, connection_id, answered } => json!({
+                "outcome": "Reply", "by": by.node, "streamed": true, "kind": kind, "connection_id": connection_id, "peer": peer.node, "peer_node_id": peer.node_id,
+                "peer_incarnation": peer.incarnation_id, "answered": String::from_utf8_lossy(answered),
+            }),
+            OriginateReply::StreamFailed { by, reason } => json!({"outcome": "Reply", "by": by.node, "streamed": false, "reason": reason}),
             OriginateReply::ProxyRecorded { by, destination_node_id, destination_incarnation, carrier_node_id, carrier_incarnation, failed_attempts } => json!({
                 "outcome": "Reply", "by": by.node, "proxy_recorded": true, "destination_node_id": destination_node_id, "destination_incarnation": destination_incarnation,
                 "carrier_node_id": carrier_node_id, "carrier_incarnation": carrier_incarnation, "failed_attempts": failed_attempts,

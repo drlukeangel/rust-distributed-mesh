@@ -90,6 +90,15 @@ pub enum OriginateRequest {
         /// The `path.name` to ping.
         destination: String,
     },
+    /// Open a data-plane stream (connections.md §5: `Connections::open`, `open_bi`) to the current
+    /// birth of `destination` on this node's one registered ALPN, write `payload`, finish, and read
+    /// what the far role answers. The reply names the connection's kind (Direct or Proxy) and peer.
+    Stream {
+        /// The `path.name` to stream to.
+        destination: String,
+        /// The bytes written.
+        payload: Vec<u8>,
+    },
     /// Mark this process's mesh transport stopped, exactly as iroh-gossip refusing a subscription
     /// does (`membership::mark_transport_stopped`): the node exits through the one transport-stopped
     /// exit, recording its reason in its data dir. The reply is sent before the mark.
@@ -224,6 +233,26 @@ pub enum OriginateReply {
         /// The Ping's outcome name.
         outcome: String,
     },
+    /// The stream was opened, written and answered.
+    Streamed {
+        /// Who opened it.
+        by: AnsweredBy,
+        /// The far peer the connection reached (its exact birth).
+        peer: AnsweredBy,
+        /// `direct` or `proxy`.
+        kind: String,
+        /// The connection row's id.
+        connection_id: String,
+        /// What the far role answered on the stream.
+        answered: Vec<u8>,
+    },
+    /// The stream could not be opened, written or read.
+    StreamFailed {
+        /// Who tried.
+        by: AnsweredBy,
+        /// Why, by name.
+        reason: String,
+    },
     /// The transport stop is marked; the process is exiting.
     TransportStopMarked {
         /// Who marked the stop.
@@ -239,8 +268,8 @@ impl NodeProtocol for Originate {
     const MAX_REQUEST_FRAME_BYTES: usize = 4096;
     const MAX_REPLY_FRAME_BYTES: usize = 65536;
     const FORWARDABLE: bool = false;
-    const REQUEST_VARIANTS: u32 = 7;
-    const REPLY_VARIANTS: u32 = 14;
+    const REQUEST_VARIANTS: u32 = 8;
+    const REPLY_VARIANTS: u32 = 16;
     type Request = OriginateRequest;
     type Reply = OriginateReply;
 
@@ -259,6 +288,8 @@ impl NodeProtocol for Originate {
             OriginateReply::Unauthorized { .. } => "unauthorized",
             OriginateReply::ProxyRecorded { .. } => "proxy-recorded",
             OriginateReply::Dialed { .. } => "dialed",
+            OriginateReply::Streamed { .. } => "streamed",
+            OriginateReply::StreamFailed { .. } => "stream-failed",
             OriginateReply::TransportStopMarked { .. } => "transport-stop-marked",
         }
     }
@@ -277,6 +308,8 @@ impl NodeProtocol for Originate {
             OriginateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
             OriginateReply::ProxyRecorded { .. } => ReplyKind::Success,
             OriginateReply::Dialed { .. } => ReplyKind::Success,
+            OriginateReply::Streamed { .. } => ReplyKind::Success,
+            OriginateReply::StreamFailed { .. } => ReplyKind::Success,
             OriginateReply::TransportStopMarked { .. } => ReplyKind::Success,
         }
     }
@@ -314,6 +347,9 @@ pub struct Seams {
     pub fault: Arc<StorageFault>,
     /// The name this birth holds now: every door names the node by it, per call.
     pub name: crate::held_name::HeldName,
+    /// The dial half of this node's one data-plane ALPN, set once the node runs
+    /// (`node::start_with_seams_and_alpn`); unset, `Stream` is refused by name.
+    pub data_plane: Arc<std::sync::OnceLock<rdm_transport::connections::Dialer>>,
 }
 
 /// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
@@ -342,6 +378,7 @@ pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy
                 OriginateRequest::ReleaseFault => OriginateReply::FaultReleased { by, refused: seams.fault.release() },
                 OriginateRequest::RecordProxy { destination, carrier, failed_attempts } => record_proxy(&by, &seams, &destination, &carrier, failed_attempts).await,
                 OriginateRequest::Dial { destination } => dial(&by, &seams, &destination).await,
+                OriginateRequest::Stream { destination, payload } => stream(&by, &seams, &destination, payload).await,
                 OriginateRequest::StopTransport { reason } => {
                     // The mark runs after this reply is on its way: the exit it causes is the real one.
                     let marked = reason.clone();
@@ -431,6 +468,50 @@ async fn dial(by: &AnsweredBy, seams: &Seams, destination: &str) -> OriginateRep
     };
     let (out, _) = seams.client.call::<Ping>(&NodeTarget::ExactNode(target.node_id.clone()), &PingRequest::Ping { payload: b"dial".to_vec() }, &CallOptions::default()).await;
     OriginateReply::Dialed { by: by.clone(), destination_node_id: target.node_id.to_string(), outcome: out.name().to_string() }
+}
+
+/// One data-plane round trip to `destination`'s current birth: open on the node's ALPN, one
+/// bidirectional stream, the payload written and finished, the far role's answer read whole.
+async fn stream(by: &AnsweredBy, seams: &Seams, destination: &str, payload: Vec<u8>) -> OriginateReply {
+    let failed = |reason: String| OriginateReply::StreamFailed { by: by.clone(), reason };
+    let path: PathName = match destination.parse() {
+        Ok(p) => p,
+        Err(e) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination:?}: {e}") },
+    };
+    let target = match seams.resolver.resolve(&NodeTarget::CurrentPath(path.clone())) {
+        Ok(n) => n,
+        Err(f) => return OriginateReply::BadDestination { by: by.clone(), reason: format!("{destination} does not resolve on this node: {f:?}") },
+    };
+    let Some(dialer) = seams.data_plane.get() else {
+        return failed("no-data-plane-alpn: this node registered no data-plane ALPN".into());
+    };
+    let birth = rdm_transport::connections::Birth { name: target.name.clone(), node_id: target.node_id.clone(), incarnation: target.incarnation.clone() };
+    let conn = match dialer.open(&birth).await {
+        Ok(c) => c,
+        Err(e) => return failed(format!("open: {e:?}")),
+    };
+    let (mut send, mut recv) = match conn.open_bi().await {
+        Ok(s) => s,
+        Err(e) => return failed(format!("open_bi: {e:?}")),
+    };
+    if let Err(e) = send.write_all(&payload).await {
+        return failed(format!("write: {e:?}"));
+    }
+    if let Err(e) = send.finish() {
+        return failed(format!("finish: {e:?}"));
+    }
+    let answered = match recv.read_to_end(1 << 20).await {
+        Ok(b) => b,
+        Err(e) => return failed(format!("read: {e:?}")),
+    };
+    let peer = conn.peer();
+    OriginateReply::Streamed {
+        by: by.clone(),
+        peer: AnsweredBy { node_id: peer.node_id.to_string(), node: peer.name.to_string(), incarnation_id: peer.incarnation.to_string() },
+        kind: match conn.kind() { rdm_transport::connections::ConnectionKind::Direct => "direct".into(), rdm_transport::connections::ConnectionKind::Proxy { via } => format!("proxy via {}", via.name) },
+        connection_id: conn.id().to_string(),
+        answered,
+    }
 }
 
 async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier: &str, failed_attempts: u32) -> OriginateReply {

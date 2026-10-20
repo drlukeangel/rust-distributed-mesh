@@ -75,11 +75,38 @@ fn node_backend() -> Arc<dyn rdm_node::storage_backend::NodeStorageBackend> {
     return Arc::new(rdm_node::storage_backend::MemoryNodeBackend);
 }
 
+/// [`start_with_seams`], also registering one data-plane `alpn` (connections.md §5): its dial half is
+/// handed to the originate door (`OriginateRequest::Stream`), its accept half returned for the role to
+/// answer on.
+pub async fn start_with_seams_and_alpn(
+    launch: &Launch,
+    alpn: rdm_transport::connections::Alpn,
+    register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
+) -> Result<(RunningNode, rdm_transport::connections::Acceptor)> {
+    let name = alpn.name.clone();
+    let dialer = Arc::new(std::sync::OnceLock::new());
+    let running = start_with_rafka_time_before_ready_alpns(launch, rdm_transport::clock::RafkaTime::unadopted(), rdm_node::before_ready::BeforeReadyHook::none(), register, &[alpn], dialer.clone()).await?;
+    let (d, acceptor) = running.connections(&name).map_err(|e| anyhow::anyhow!("taking the {:?} handle: {e:?}", String::from_utf8_lossy(&name)))?.split();
+    let _ = dialer.set(d);
+    Ok((running, acceptor))
+}
+
 async fn start_with_rafka_time_before_ready(
     launch: &Launch,
     rafka_time: rdm_transport::clock::RafkaTime,
     before_ready: rdm_node::before_ready::BeforeReadyHook,
     register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
+) -> Result<RunningNode> {
+    start_with_rafka_time_before_ready_alpns(launch, rafka_time, before_ready, register, &[], Arc::new(std::sync::OnceLock::new())).await
+}
+
+async fn start_with_rafka_time_before_ready_alpns(
+    launch: &Launch,
+    rafka_time: rdm_transport::clock::RafkaTime,
+    before_ready: rdm_node::before_ready::BeforeReadyHook,
+    register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder,
+    alpns: &[rdm_transport::connections::Alpn],
+    data_plane: Arc<std::sync::OnceLock<rdm_transport::connections::Dialer>>,
 ) -> Result<RunningNode> {
     let fault = Arc::new(crate::faults::StorageFault::default());
     let fault_for_storage = fault.clone();
@@ -98,11 +125,12 @@ async fn start_with_rafka_time_before_ready(
                 connections: ns.connections,
                 fault,
                 name: ns.name,
+                data_plane,
             };
             register(b, seams).carry::<crate::proof_store::ProofStore>()
         },
         &[],
-        &[],
+        alpns,
     )
     .await
 }
