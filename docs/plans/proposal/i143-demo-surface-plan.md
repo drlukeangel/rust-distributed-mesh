@@ -74,7 +74,7 @@ in the soak model where it is a fault. The fabric-primary guard becomes a profil
 complete. Nothing here changes RDM product code unless a cell is red; a red is a product defect fixed RED-first, or a
 page gap asked as a ruling.
 
-1. **B1 + C1 + D1** (one landing): the consumer executables carry the chain; every existing soak then proves the pull, the cert and the time under chaos through readiness. `demo/tests/projections.rs` gains the rafka-shaped cell (an admin declaring nothing, certs on).
+1. **B1 + C1** (one landing; D1 is Q87, landed first): the consumer executables carry the chain; every existing soak then proves the pull, the cert and the time under chaos through readiness, the wedge and cut stories now through the heard-again re-entry. `demo/tests/projections.rs` gains the rafka-shaped cell (an admin declaring nothing, certs on).
 2. **A1 + E1 + A2**: a role binds one app listener slot, is ready only once it answers, and reads its `config`.
 3. **G1**: app work at state-commit and lifecycle hooks at mesh-create and node-delete, with chaos on them.
 4. **X1** authority loss as C stories, then the S6 profile; **X2** long holds as C stories, then in S6.
@@ -86,7 +86,7 @@ page gap asked as a ruling.
 
 ## 5. Decisions asked of Luke (one at a time, recommendation first, when each comes up)
 
-- **D1** rafka-time in the soak's post-run read: from evidence only (the hook's log line), no new op. Recommended.
+- **D1** resolved (Luke, 2026-10-20, Q87): the invariant is stronger than a time reading: every entry to ready-for-traffic from any other state has that birth's hook attempt (`rdm.mesh.node.update.via-before-ready-attempt`) before it, where the node takes its cert, its time and its cache from the admin that accepted it; read from RDM's own evidence, no new op. A birth heard again after a hold or a cut is commanded back through node.mesh.join and runs the sequence again (`node/node_heard_again.rs`).
 - **D2** one endpoint and one pooled connection per peer birth in RDM, against Rafka's striped endpoints and slots: accept, or rafka-v2 e9's load proof first. Recommended: accept; e9 reads the pool.
 - **D3** a member's span level at runtime: gone with its surface. Recommended.
 - **D4** an executable update: a page line, or Rafka's rolling restart over node.restart. Recommended: Rafka's own, over node.restart, no page.
