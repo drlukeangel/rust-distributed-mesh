@@ -1728,6 +1728,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             (records.clone(), authority.clone(), cfg.mesh.clone(), cfg.fabric.clone(), policy.provider, backbone.clone());
                                         let park = park_gate.clone();
                                         let election_storage = fabric_storage.clone();
+                                        let election_cut_off = cut_off_writes.clone();
                                         tasks.push(tokio::spawn(async move {
                                             let mut reported = None;
                                             loop {
@@ -1791,8 +1792,23 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // Each seat taken is written as the fabric's next seat move before it is said (Q48).
                                                     let said = seat_announcements(&t, live, &mesh_name, (&node_id, &incarnation), &decided);
                                                     let me_birth = rdm_core::handover::HandoverBirth { mesh: mesh_name.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() };
+                                                    let mut seated_again = (false, false);
                                                     for (seat, holder) in crate::fabric_handover::elect(&*election_storage, membership.seats(), &me_birth, &decided, said).await {
+                                                        if holder.node_id == node_id {
+                                                            match seat {
+                                                                rdm_core::Seat::MeshPrimary => seated_again.0 = true,
+                                                                rdm_core::Seat::FabricPrimary => seated_again.1 = true,
+                                                                rdm_core::Seat::Cohort(_) => {}
+                                                            }
+                                                        }
                                                         backbone_ready.announce_seat(seat, holder).await;
+                                                    }
+                                                    // A seat its own earlier transfer moved away left that seat's stores cut off; the election
+                                                    // row seating it again makes it that seat's row writer from the row's revision
+                                                    // (node-primary-update.md: "A holder the rule seats again ... restores only those seats'
+                                                    // writes under the new revision"). A store standing open is left as it is.
+                                                    if seated_again.0 || seated_again.1 {
+                                                        (election_cut_off)(crate::fabric_handover::WriteCutOff::Restore { reason: format!("{me}: its election row seated it again"), mesh_seat: seated_again.0, fabric_seat: seated_again.1 }).await;
                                                     }
                                                     // The current Build the not-ready check above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
@@ -2393,6 +2409,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (view_fabric, view_fabric_id, view_provider, view_book) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone());
                                         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
                                         let seat_storage = fabric_storage.clone();
+                                        let seat_cut_off = cut_off_writes.clone();
                                         let adapter = runner.builds.clone();
                                         let (records, rpc_client) = (records.clone(), node_rpc.client.clone());
                                         let fabric_rounds = rounds_slot.get().cloned().expect("the rounds are built before the hierarchy runs");
@@ -2499,8 +2516,26 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // Each seat taken is written as the fabric's next seat move before it is said (Q48).
                                                 let said = seat_announcements(&t, live, &mesh, (&seat_node_id, &seat_incarnation), &decided);
                                                 let me_birth = rdm_core::handover::HandoverBirth { mesh: mesh.clone(), node_id: seat_node_id.clone(), incarnation: seat_incarnation.clone() };
+                                                let mut seated_again = (false, false);
                                                 for (seat, holder) in crate::fabric_handover::elect(&*seat_storage, membership.seats(), &me_birth, &decided, said).await {
+                                                    if holder.node_id == seat_node_id {
+                                                        match seat {
+                                                            rdm_core::Seat::MeshPrimary => seated_again.0 = true,
+                                                            rdm_core::Seat::FabricPrimary => seated_again.1 = true,
+                                                            rdm_core::Seat::Cohort(_) => {}
+                                                        }
+                                                    }
                                                     backbone.announce_seat(seat, holder).await;
+                                                }
+                                                // A seat its own earlier transfer moved away left that seat's stores cut off
+                                                // (`WriteCutOff::Committed`); the election row seating it again, after the
+                                                // successor's process was proven gone, makes it that seat's row writer from the
+                                                // row's revision (node-primary-update.md: "A holder the rule seats again writes
+                                                // its seat record at the next revision first and announces it second ... and
+                                                // restores only those seats' writes under the new revision"). A store standing
+                                                // open is left as it is.
+                                                if seated_again.0 || seated_again.1 {
+                                                    (seat_cut_off)(crate::fabric_handover::WriteCutOff::Restore { reason: format!("{me}: its election row seated it again"), mesh_seat: seated_again.0, fabric_seat: seated_again.1 }).await;
                                                 }
                                                 if let Some(announced) = announcing {
                                                     drop(announced);

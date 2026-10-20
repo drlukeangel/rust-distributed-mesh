@@ -131,7 +131,9 @@ pub enum WriteCutOff {
     /// rows, never one for the other: after the row, the successor proven exited, the ordinary rule
     /// seated it again under the leadership revision installed from that proof (ruling R-PU2 recovery
     /// order 3); or a later seat row names it the successor of seats its own earlier transfer moved,
-    /// and from that row's revision it is their row writer (node-primary-update.md step 6). Only a
+    /// its own election row included (`crate::admin::boot`'s rounds, after the successor's process
+    /// was proven gone past the completed update), and from that row's revision it is their row
+    /// writer (node-primary-update.md step 6). Only a
     /// store that earlier transfer cut off is restored: every row it held under the old revision
     /// stays cut, dropped and never written. A store standing open is left as it is.
     Restore {
