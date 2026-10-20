@@ -6893,6 +6893,7 @@ const S1: Story = Story { id: "S1", profile: SoakProfile::Routing, cycle_kinds: 
 const S2: Story = Story { id: "S2", profile: SoakProfile::Authority, cycle_kinds: &["restart", "kill", "wedge", "hand-off"], needs_cut: false };
 const S3: Story = Story { id: "S3", profile: SoakProfile::Partition, cycle_kinds: &["heal"], needs_cut: true };
 const S4: Story = Story { id: "S4", profile: SoakProfile::Lifecycle, cycle_kinds: &["restart", "shrink", "replace", "grow-rpc"], needs_cut: false };
+const S6: Story = Story { id: "S6", profile: SoakProfile::Floors, cycle_kinds: &["wedge", "heal"], needs_cut: true };
 const S5: Story = Story { id: "S5", profile: SoakProfile::All, cycle_kinds: &["restart", "kill", "wedge", "hand-off", "shrink", "replace", "grow-rpc", "grow-admin", "heal"], needs_cut: false };
 
 fn soak_seconds() -> u64 {
@@ -6961,7 +6962,12 @@ async fn soak_run(cell: &str, story: Story) {
     let Born { dir, candidate, set, bound, estate, provider_before, started_ms } = birth(cell, shape).await;
     let day0 = estate.node_values().await;
     let per_mesh = [(NodeClass::NodeAdmin, shape.node_admin), (NodeClass::Compute, shape.compute), (NodeClass::Gateway, shape.gateway), (NodeClass::Broker, shape.broker)];
-    let cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_round());
+    let mut cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rdm_transport::membership::staleness_floor(), rdm_transport::membership::backbone_gossip_interval(), tickle_round());
+    if story.profile == SoakProfile::Floors {
+        // Past the hung-hold floors (`RDM_HUNG_HOLD_FLOORS` staleness floors, node-recovery.md R-FM1) by two.
+        let floors: u32 = std::env::var("RDM_HUNG_HOLD_FLOORS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        cfg.hold = Some(cfg.floor * (floors + 2));
+    }
     let (floor, backbone) = (cfg.floor, cfg.backbone);
     eprintln!("SOAK {} cell={cell} seed={seed} secs={secs} profile={:?} provider={} network_faults={can_cut}", story.id, story.profile, provider());
     let driver = SoakDriver::new(estate, cfg, crate::build_log::build_read).await;
@@ -7198,6 +7204,23 @@ async fn mock_soak_partition_preserves_continuous_invariants() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_soak_lifecycle_preserves_continuous_invariants() {
     soak_run("mock_soak_lifecycle_preserves_continuous_invariants", S4).await;
+}
+
+/// CONTRACT (S6, floors, #2949; the demo surface plan §3 X2): the same estate, traffic and ledger,
+/// with the seeded draw limited to holds and cuts kept past the floors: a role node or a non-primary
+/// node-admin held (SIGSTOP, `docker pause`) and a mesh cut from the other, each kept for
+/// `RDM_HUNG_HOLD_FLOORS + 2` staleness floors after the view marked it, with proof-store traffic
+/// on both sides meanwhile, then released or healed. While held, the provider reads the runtime
+/// `OsStopped`, which opens no R-FM1 hold (deployment-provider.md §2.5): the view keeps the one
+/// birth at the path unheard, nothing terminates it and nothing is born there; released, the same
+/// birth comes back and serves the value stored before the hold. While cut, each admin holds its own
+/// mesh ready; healed, every birth that was ready at the cut is ready again as itself on both sides.
+/// A host that cannot drop UDP fails the cell by name. What must NOT happen: a terminate or a new
+/// birth at a held path, a birth lost across a cut, a death during a cut, a new Build for an
+/// unchanged topology, or an operation without an outcome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mock_soak_floors_preserves_continuous_invariants() {
+    soak_run("mock_soak_floors_preserves_continuous_invariants", S6).await;
 }
 
 /// CONTRACT (S5, randomized, #2949): the same estate, traffic and ledger, with the seeded draw over

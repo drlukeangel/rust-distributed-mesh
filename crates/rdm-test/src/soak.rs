@@ -115,6 +115,14 @@ pub struct Config {
     /// once, each one call of the default budget
     /// (`rdm_admin::offline::tickle_round_at_default_budget`).
     pub tickle_round: Duration,
+    /// How long a fault is held past the view's mark before it is lifted (the floors story, S6):
+    /// a held runtime stays held, and a cut stays cut with traffic on both sides, for this long
+    /// after the staleness floor marked it; `None` lifts a hold at the mark and heals a cut on the
+    /// next row. Set past the hung-hold floors (`RDM_HUNG_HOLD_FLOORS` staleness floors) it proves
+    /// what node-recovery.md promises of a held runtime the provider reads `OsStopped`
+    /// (deployment-provider.md §2.5: it opens no R-FM1 hold) and of a cut mesh: silence is not
+    /// death, the same births come back.
+    pub hold: Option<Duration>,
 }
 
 impl Config {
@@ -131,6 +139,7 @@ impl Config {
             floor,
             backbone,
             tickle_round,
+            hold: None,
         }
     }
 
@@ -143,7 +152,7 @@ impl Config {
         for (class, n) in per_mesh {
             bounds.insert(class, if class == NodeClass::NodeAdmin { ClassBounds { min: n, max: n + 1 } } else { ClassBounds { min: n - 1, max: n + 1 } });
         }
-        Self { seed, secs, shape: vec![("mesh1", per_mesh.to_vec()), ("mesh2", per_mesh.to_vec())], bounds, profile, network_faults, floor, backbone, tickle_round }
+        Self { seed, secs, shape: vec![("mesh1", per_mesh.to_vec()), ("mesh2", per_mesh.to_vec())], bounds, profile, network_faults, floor, backbone, tickle_round, hold: None }
     }
 
     /// How long a silenced node takes to be marked unheard in the view of the observer that judges
@@ -185,6 +194,10 @@ pub enum Profile {
     Partition,
     /// Restart, retire (delete), replacement and capacity re-add of role nodes under traffic.
     Lifecycle,
+    /// Holds past the floors (S6): a runtime held and a mesh cut, each kept past the staleness and
+    /// the hung-hold floors (`Config::hold`) with traffic on, then released or healed; the same
+    /// births come back. Role nodes and non-primary node-admins alike.
+    Floors,
 }
 
 fn is_admin_path(p: &str) -> bool {
@@ -208,6 +221,7 @@ impl Profile {
                 Action::Shrink { .. } | Action::Restart { .. } | Action::Replace { .. } => node.is_some_and(|p| !is_admin_path(p)),
                 _ => false,
             },
+            Profile::Floors => matches!(a, Action::Wedge { .. } | Action::Unheard { .. } | Action::Heal { .. }),
         }
     }
 }
@@ -889,6 +903,10 @@ pub struct Driver {
     skipped: BTreeMap<String, usize>,
     rounds_log: Vec<Value>,
     silenced: BTreeMap<String, Cut>,
+    /// When each silenced mesh was cut, and the births every ready node held then: a cut held past
+    /// the floors (`Config::hold`) is healed only after, and the same births must be back after it.
+    cut_at: BTreeMap<String, Instant>,
+    cut_births: BTreeMap<String, BTreeMap<String, (String, String)>>,
     started: Instant,
     /// The fabric-primary's investigation rows (`rdm.node_admin.mesh.update.via-unheard`,
     /// `via-probe-verdict`), read as they are written: [`Self::held_unheard`].
@@ -928,6 +946,8 @@ impl Driver {
             skipped: BTreeMap::new(),
             rounds_log: Vec::new(),
             silenced: BTreeMap::new(),
+            cut_at: BTreeMap::new(),
+            cut_births: BTreeMap::new(),
             started: Instant::now(),
             ladder,
         }
@@ -1066,6 +1086,17 @@ impl Driver {
         // A silence is held for its observation and healed by the next row: a fabric that lives
         // silenced is not the fabric the invariants describe.
         if let Some((mesh, _)) = self.model.meshes.iter().find(|(_, m)| m.unheard) {
+            // The floors story holds the cut: until the hold has elapsed since the cut, the rows are
+            // proof-store traffic on both sides, and the Heal row comes after.
+            if let (Some(hold), Some(at)) = (self.cfg.hold, self.cut_at.get(mesh).copied()) {
+                if at.elapsed() < hold {
+                    let seed = self.rng.next();
+                    if let Some(a) = generate_among(seed, &self.model, 1, |a| matches!(a, Action::Proof(_))).into_iter().next() {
+                        self.sched.record("hold-cut", &format!("{mesh}: {} ms of {} ms held; traffic row", at.elapsed().as_millis(), hold.as_millis()));
+                        return Some(a);
+                    }
+                }
+            }
             let a = Action::Heal { mesh: mesh.clone() };
             self.sched.record("heal-after-silence", &a.to_string());
             return Some(a);
@@ -1292,7 +1323,28 @@ impl Driver {
                 let sil = self.silenced.remove(mesh).ok_or_else(|| broken("model-matches-estate", format!("{mesh} holds no silence to lift")))?;
                 let healed_at_ns = now_ns();
                 sil.lift().map_err(|e| broken("silence-lifts", e))?;
-                entry["healed"] = json!({"mesh": mesh, "healed_at_ns": healed_at_ns});
+                let held_ms = self.cut_at.remove(mesh).map(|at| at.elapsed().as_millis() as u64);
+                entry["healed"] = json!({"mesh": mesh, "healed_at_ns": healed_at_ns, "held_ms": held_ms});
+                // A cut held past the floors (S6): every birth that was ready at the cut is ready again
+                // as itself (node-recovery.md: silence is not death), on both sides.
+                if let (Some(_), Some(births)) = (self.cfg.hold, self.cut_births.remove(mesh)) {
+                    let floor = self.cfg.floor;
+                    let est = &self.estate;
+                    let same = wait_for_opt(&format!("{mesh} healed: the same births back on both sides"), floor * 4 + Duration::from_secs(90), || async {
+                        let nodes = est.node_values().await;
+                        let missing: Vec<String> = births
+                            .iter()
+                            .filter(|(name, (id, inc))| !nodes.iter().any(|n| n["name"] == name.as_str() && n["node_id"] == id.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic"))
+                            .map(|(name, _)| name.clone())
+                            .collect();
+                        missing.is_empty().then_some(nodes.len())
+                    })
+                    .await;
+                    match same {
+                        Some(n) => entry["healed"]["same_births"] = json!({"births": births.len(), "nodes": n}),
+                        None => return Err(broken("silence-is-not-death", format!("{mesh} healed after {held_ms:?} ms: not every birth ready at the cut is ready again as itself"))),
+                    }
+                }
             }
             Action::Proof(op) => {
                 let (target, key) = match op {
@@ -1539,6 +1591,9 @@ impl Driver {
         // The hold: SIGSTOP of the exact runtime, or `docker pause` of the exact container.
         let release: Box<dyn Fn() -> Result<Value, String> + Send>;
         let mut hold_rt: Option<ExactRuntime> = None;
+        let held_from = Instant::now();
+        // A terminate of the held birth during the hold would be death from silence: read as it is written.
+        let mut terminates = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.node_admin.deployment.delete.via-fence" && sp["attributes"]["outcome"] == "terminated");
         if container {
             let id = self.estate.container_of(&path).await.ok_or_else(|| broken("fault-names-an-exact-runtime", format!("{path}: no running container")))?;
             container_faults::pause(&id).map_err(|e| broken("fault-applies", e))?;
@@ -1593,6 +1648,34 @@ impl Driver {
             for _ in 0..2 {
                 reads.push(json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "cpu_ticks": hold_rt.as_ref().map(|r| cpu_ticks(r.pid))}).to_string());
             }
+        }
+        // The floors story (S6): the runtime stays held past the staleness and hung-hold floors. The
+        // provider reads it `OsStopped` (deployment-provider.md §2.5), which opens no R-FM1 hold: the
+        // view keeps the same birth unheard, nothing terminates it and nothing is born at its path.
+        if let (Some(hold), Ok(_)) = (self.cfg.hold, &marked) {
+            let mut checks = Vec::new();
+            while held_from.elapsed() < hold {
+                tokio::time::sleep(floor.min(hold.saturating_sub(held_from.elapsed())).max(Duration::from_millis(200))).await;
+                let now_nodes = self.estate.node_values().await;
+                let at_path: Vec<&Value> = now_nodes.iter().filter(|x| x["name"] == path.as_str()).collect();
+                let same = at_path.iter().all(|x| x["node_id"] == n["node_id"]);
+                let fenced: Vec<Value> = terminates.poll().iter().filter(|sp| sp["attributes"]["node"] == path.as_str()).cloned().collect();
+                checks.push(json!({
+                    "held_ms": held_from.elapsed().as_millis() as u64,
+                    "proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from),
+                    "view_status": at_path.first().map(|x| x["status"].clone()),
+                    "births_at_path": at_path.len(),
+                }));
+                if !same || at_path.len() != 1 {
+                    entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
+                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: the path holds {} birth(s), {}", held_from.elapsed().as_millis(), at_path.len(), if same { "the same" } else { "another" })));
+                }
+                if !fenced.is_empty() {
+                    entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
+                    return Err(broken("silence-is-not-death", format!("{path} held {} ms: its runtime was terminated while held and reading OsStopped: {}", held_from.elapsed().as_millis(), fenced[0])));
+                }
+            }
+            entry["held_past_floors"] = json!({"hold_ms": hold.as_millis() as u64, "checks": checks});
         }
         let held_at_last_read = hold_rt.as_ref().map(|r| proc_state(r.pid) == Some('T')).unwrap_or(true);
         let nodes_during = self.estate.node_values().await;
@@ -1653,6 +1736,8 @@ impl Driver {
 
     /// Silence a mesh against the rest of the estate (container provider) until its Heal row.
     async fn unheard(&mut self, mesh: &str, nodes: &[Value], entry: &mut Value) -> Result<(), Broken> {
+        self.cut_at.insert(mesh.to_string(), Instant::now());
+        self.cut_births.insert(mesh.to_string(), nodes.iter().filter(|n| n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), (s(&n["node_id"]), s(&n["incarnation_id"])))).collect());
         let members: Vec<String> = nodes.iter().filter(|n| n["mesh"] == mesh && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
         let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).unwrap_or_default();
         if self.estate.owner.provider != "container" {
