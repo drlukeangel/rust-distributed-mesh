@@ -1072,7 +1072,7 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
             .filter_map(rdm_transport::membership::gossip_addr)
             .collect();
-        let _ = membership.join_peers(mesh_peers).await;
+        let _ = membership.join_peers_as("node.mesh_join", mesh_peers).await;
     }
 
     async fn report(self: Box<Self>) {
@@ -1459,7 +1459,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         return Ok(reply);
                     }
                     let peers: Vec<EndpointAddr> = me.membership.book.all().iter().filter_map(rdm_transport::membership::gossip_addr).collect();
-                    let _ = me.membership.join_peers(peers).await;
+                    let _ = me.membership.join_peers_as("node.rejoin", peers).await;
                     let status = *me.status.lock().unwrap();
                     let mut d = me.digest.clone();
                     d.status = status;

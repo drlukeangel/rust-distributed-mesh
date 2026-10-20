@@ -1475,6 +1475,9 @@ pub fn rejoin(joined: &Mutex<BTreeSet<iroh::EndpointId>>, live: &[iroh::Endpoint
 /// otherwise never dialed again. Nothing is sent.
 #[derive(Clone)]
 struct Channel {
+    /// The channel's label (`mesh:<name>`, `backbone`) and topic, for the dial spans.
+    label: String,
+    topic: TopicId,
     /// The topic's sender; `None` while the channel is parked (the topic is left).
     sender: Arc<tokio::sync::RwLock<Option<GossipSender>>>,
     /// `true` while the channel is parked: the topic is left and nothing is sent or heard on it.
@@ -1572,12 +1575,13 @@ impl Channel {
             book.fill(s);
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
+        crate::gossip::dial_span("membership.subscribe", &book.observer_name(), channel, &topic, &peers.iter().copied().collect::<Vec<_>>());
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
         tracing::info_span!("rdm.mesh.membership.update.via-subscribe", node = %book.observer_name(), channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
-        let me = Self { sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, book, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default(), author, clock };
+        let me = Self { label: channel.to_string(), topic, sender: Arc::new(tokio::sync::RwLock::new(Some(sender))), parked: Arc::new(tokio::sync::watch::Sender::new(false)), left: Arc::new(tokio::sync::watch::Sender::new(0)), peers: Arc::new(Mutex::new(peers)), joined, book, endpoint: endpoint.clone(), neighbors: Arc::default(), neighbors_changed: Arc::new(tokio::sync::watch::Sender::new(0)), frames_sent: Arc::default(), frames_received: Arc::default(), author, clock };
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
@@ -1712,6 +1716,7 @@ impl Channel {
                 let peers: Vec<iroh::EndpointId> = known.lock().unwrap().iter().copied().collect();
                 let span = tracing::info_span!("rdm.mesh.membership.update.via-resubscribe", fabric = %fabric, channel = %channel, reason = %reason, peers = peers.len());
                 // A refused subscribe means the gossip actor itself has stopped.
+                crate::gossip::dial_span("membership.reopen", &book.observer_name(), &channel, &topic, &peers);
                 let reopened = match gossip.subscribe(topic, peers).await {
                     Ok(t) => t,
                     Err(e) => {
@@ -1777,7 +1782,7 @@ impl Channel {
 
     /// Join the peers of the live list `peers` not asked while live: a peer
     /// that left the list and returns is asked again.
-    async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
+    async fn join_peers(&self, caller: &'static str, peers: Vec<EndpointAddr>) -> Result<usize> {
         for p in &peers {
             self.learn(p);
         }
@@ -1785,6 +1790,7 @@ impl Channel {
         let fresh = rejoin(&self.joined, &live);
         if !fresh.is_empty() {
             let Some(sender) = self.sender.read().await.clone() else { return Ok(0) };
+            crate::gossip::dial_span(caller, &self.book.observer_name(), &self.label, &self.topic, &fresh);
             sender.join_peers(fresh.clone()).await?;
         }
         Ok(fresh.len())
@@ -1827,7 +1833,10 @@ impl Channel {
                     me.peers.lock().unwrap().insert(t.addr.id);
                     let sender = me.sender.read().await.clone();
                     let joined = match sender {
-                        Some(sender) => sender.join_peers(vec![t.addr.id]).await.is_ok(),
+                        Some(sender) => {
+                            crate::gossip::dial_span("membership.repair", &node, &channel, &me.topic, &[t.addr.id]);
+                            sender.join_peers(vec![t.addr.id]).await.is_ok()
+                        }
                         None => false,
                     };
                     tracing::info_span!(
@@ -1860,7 +1869,10 @@ impl Channel {
                 }
                 let sender = me.sender.read().await.clone();
                 let joined = match sender {
-                    Some(sender) => sender.join_peers(peers.clone()).await.is_ok(),
+                    Some(sender) => {
+                        crate::gossip::dial_span("membership.refeed", &node, &channel, &me.topic, &peers);
+                        sender.join_peers(peers.clone()).await.is_ok()
+                    }
                     None => continue,
                 };
                 tracing::info_span!("rdm.mesh.connection.update.via-refeed", node = %node, channel = %channel, reason = "no-neighbours-fallback", peers = peers.len(), joined)
@@ -3394,7 +3406,12 @@ impl Membership {
 
     /// Join this mesh channel through more peers (its members, once known).
     pub async fn join_peers(&self, peers: Vec<EndpointAddr>) -> Result<usize> {
-        self.mesh.join_peers(peers).await
+        self.mesh.join_peers("membership.join_peers", peers).await
+    }
+
+    /// [`Self::join_peers`], its dials named by `caller` (X1 telemetry).
+    pub async fn join_peers_as(&self, caller: &'static str, peers: Vec<EndpointAddr>) -> Result<usize> {
+        self.mesh.join_peers(caller, peers).await
     }
 }
 
@@ -4069,7 +4086,7 @@ impl Backbone {
 
     /// Join the backbone through every node-admin known, once each.
     pub async fn join_admins(&self, admins: Vec<EndpointAddr>) {
-        if let Ok(n) = self.channel.join_peers(admins).await {
+        if let Ok(n) = self.channel.join_peers("backbone.join_admins", admins).await {
             if n > 0 {
                 tracing::info_span!("rdm.mesh.connection.update.via-backbone-peers-joined", node = %self.current_name(), peers = n)
                     .in_scope(|| tracing::info!("backbone peers joined"));

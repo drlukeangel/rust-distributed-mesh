@@ -1836,7 +1836,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             let (membership, digest) = (membership.clone(), digest.clone());
                                             Box::pin(async move {
                                                 let peers: Vec<EndpointAddr> = membership.book.all().iter().filter(|d| d.node.name.mesh == membership.mesh_name()).filter_map(rdm_transport::membership::gossip_addr).collect();
-                                                let _ = membership.join_peers(peers).await;
+                                                let _ = membership.join_peers_as("admin.republish", peers).await;
                                                 let d = digest.lock().unwrap().clone();
                                                 let _ = membership.publish(&d).await;
                                             })
@@ -2548,7 +2548,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 let admins: Vec<_> = heard.iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(addr).collect();
                                                 builds.join_admins(admins.clone()).await;
                                                 backbone.join_admins(admins).await;
-                                                let _ = membership.join_peers(mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
+                                                let _ = membership.join_peers_as("admin.round", mine.iter().filter(|d| d.node.name != me).filter_map(addr).collect()).await;
                                                 drop(turn);
                                                 // The next round is due after one gossip interval, or at once when a checklist the
                                                 // fabric-primary waits on, or the application's answer, moved, or when the view changes

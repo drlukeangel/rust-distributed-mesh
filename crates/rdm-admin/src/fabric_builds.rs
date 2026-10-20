@@ -160,6 +160,7 @@ fn refeed(
                 continue;
             }
             let s = sender.read().await.clone();
+            rdm_transport::gossip::dial_span("builds.refeed", "", "builds", &TopicId::from_bytes([0; 32]), &peers);
             let joined = s.join_peers(peers.clone()).await.is_ok();
             tracing::info_span!("rdm.mesh.connection.update.via-refeed", channel = "builds", fabric = %fabric, peers = peers.len(), joined)
                 .in_scope(|| tracing::info!("no neighbour: every known peer handed to the Build topic again"));
@@ -316,6 +317,8 @@ impl FabricBuildStateAdapter {
         // point where it can take part in recovery. Subscribe locally; the seeds are dialled as the
         // topic's first peers and every admin heard later is joined through `join_admins`/refeed.
         let ids = peers.iter().map(|p| p.id).collect();
+        let ids: Vec<iroh::EndpointId> = ids;
+        rdm_transport::gossip::dial_span("builds.subscribe", &node, "builds", &build_topic(fabric), &ids);
         let topic = gossip.subscribe(build_topic(fabric), ids).await.map_err(|e| io(e.to_string()))?;
         let (sender, mut receiver) = topic.split();
         let sender = Arc::new(tokio::sync::RwLock::new(sender));
@@ -418,6 +421,7 @@ impl FabricBuildStateAdapter {
                 };
                 let span = tracing::info_span!("rdm.node_admin.build.update.via-resubscribe", fabric = %fabric_name, reason = %reason, peers = known.len());
                 // A refused subscribe means the gossip actor itself has stopped.
+                rdm_transport::gossip::dial_span("builds.reopen", "", "builds", &topic_id, &known);
                 let reopened = match gossip.subscribe(topic_id, known.clone()).await {
                     Ok(t) => t,
                     Err(e) => {
@@ -449,6 +453,7 @@ impl FabricBuildStateAdapter {
         }
         self.known.lock().unwrap().extend(fresh.iter().copied());
         let sender = self.sender.read().await.clone();
+        rdm_transport::gossip::dial_span("builds.join_admins", "", "builds", &TopicId::from_bytes([0; 32]), &fresh);
         match sender.join_peers(fresh.clone()).await {
             Ok(()) => fresh.len(),
             Err(_) => 0,

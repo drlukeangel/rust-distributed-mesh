@@ -572,7 +572,7 @@ impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
             .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
             .filter_map(rdm_transport::membership::gossip_addr)
             .collect();
-        let _ = membership.join_peers(mesh_peers).await;
+        let _ = membership.join_peers_as("admin.session.mesh", mesh_peers).await;
     }
 
     async fn floor(&mut self, step: &tracing::Span) {
@@ -701,7 +701,7 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
                 }
             }
         }
-        let _ = membership.join_peers(mesh_peers).await;
+        let _ = membership.join_peers_as("admin.session.rejoin", mesh_peers).await;
         self.backbone.join_admins(admins).await;
         // The maker's topology: when the own mesh already has nodes, this admin is entering an existing
         // mesh (recovery); a mesh's first birth finds none. A maker that holds no snapshot of this mesh

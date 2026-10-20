@@ -25,6 +25,19 @@ const PARTS: usize = 16;
 const MAX: usize = crate::membership::MAX_FRAME;
 const CHUNK: &str = crate::envelope::CHUNK_TYPE;
 
+/// X1 of docs/plans/proposal/gossip-neighbour-drop-at-join.md: RDM hands `peers` to iroh-gossip on
+/// `topic` at `caller`, a dial when no connection to a peer exists yet. One span per site, so a join's
+/// dials are named by the RDM code that asked for them.
+pub fn dial_span(caller: &'static str, node: &str, channel: &str, topic: &TopicId, peers: &[iroh::EndpointId]) {
+    if peers.is_empty() {
+        return;
+    }
+    let topic: String = topic.as_bytes()[..4].iter().map(|b| format!("{b:02x}")).collect();
+    let peers = peers.iter().map(|p| p.fmt_short().to_string()).collect::<Vec<_>>().join(",");
+    tracing::info_span!("rdm.mesh.connection.update.via-join-peers", caller, node, channel, topic = %topic, peers = %peers)
+        .in_scope(|| tracing::info!("peers handed to iroh-gossip"));
+}
+
 /// The fabric-scoped channel identity of one declared application type.
 pub fn channel_id(fabric: &rdm_core::FabricId, kind: &str) -> TopicId {
     let bytes = postcard::to_allocvec(&("rdm.app", fabric, kind)).expect("strings encode");
@@ -459,6 +472,9 @@ impl Hub {
     pub(crate) fn types(&self) -> BTreeSet<String> {
         self.own.clone()
     }
+    fn node_name(&self) -> String {
+        self.author.lock().unwrap().as_ref().map(|b| b.node.to_string()).unwrap_or_default()
+    }
     pub(crate) fn held(&self) -> BTreeSet<String> {
         self.held.borrow().clone()
     }
@@ -511,6 +527,7 @@ impl Hub {
                 let entry = self.ensure(kind).await?;
                 let sender = entry.state.sender.lock().unwrap().clone();
                 if let Some(sender) = sender {
+                    dial_span("apps.learn", &self.node_name(), kind, &channel_id(&self.fabric, kind), &[peer]);
                     sender.join_peers(vec![peer]).await?;
                 }
             }
@@ -573,6 +590,7 @@ impl Hub {
         }
         peers.sort_unstable();
         peers.dedup();
+        dial_span("apps.subscribe", &self.node_name(), kind, &channel_id(&self.fabric, kind), &peers);
         let channel = self
             .gossip
             .subscribe(channel_id(&self.fabric, kind), peers)
