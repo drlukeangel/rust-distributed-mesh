@@ -3,7 +3,9 @@ import { api, type ManagedKind } from "./api";
 
 /// What node-admin manages. Each button submits one Build to node-admin; the
 /// UI never starts or stops a runtime itself.
-const KINDS: ManagedKind[] = ["rpc_node", "node_admin"];
+const KINDS: ManagedKind[] = ["rpc_node", "node_admin", "gateway", "compute", "broker"];
+/// The R-shape estate (i143 e11.s1): two meshes of 2 node-admins, 2 computes, 3 gateways and 3 brokers.
+const R_SHAPE = (name: string) => ({ name, node_admin: 2, compute: 2, gateway: 3, broker: 3 });
 const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function SpawnBar() {
@@ -36,18 +38,26 @@ export function SpawnBar() {
           + {k}
         </button>
       ))}
-      <button disabled={busy === "mesh"} onClick={() => run("mesh", `create ${mesh} (2 node-admins, 3 rpc nodes)`, () => api.createMesh(mesh, 2, 3))}
+      <button disabled={busy === "mesh"} onClick={() => run("mesh", `create ${mesh} (2 node-admins, 3 rpc nodes)`, () => api.createMesh({ name: mesh, node_admin: 2, rpc_node: 3 }))}
         title="Create this mesh: 2 node-admins and 3 rpc nodes, one Build">
         + mesh
+      </button>
+      <button disabled={busy === "rmesh"} onClick={() => run("rmesh", `create ${mesh} (2 node-admins, 2 computes, 3 gateways, 3 brokers)`, () => api.createMesh(R_SHAPE(mesh)))}
+        title="Create this mesh in the R shape: 2 node-admins, 2 computes, 3 gateways, 3 brokers, one Build">
+        + R mesh
       </button>
       <button className="danger" disabled={busy === "rm-mesh"} onClick={() => run("rm-mesh", `remove ${mesh}`, () => api.removeMesh(mesh))}
         title="Retire this whole mesh: members first, its node-admins last">
         remove mesh
       </button>
       <span style={{ flex: 1 }} />
-      <button className="primary" disabled={busy === "bootstrap"} onClick={() => run("bootstrap", "bootstrap", api.bootstrap)}
+      <button className="primary" disabled={busy === "bootstrap"} onClick={() => run("bootstrap", "bootstrap", () => api.bootstrap())}
         title="Reconcile the fabric to mesh1 with 2 node-admins and 3 rpc nodes">
         bootstrap 2+3
+      </button>
+      <button className="primary" disabled={busy === "rshape"} onClick={() => run("rshape", "bootstrap R shape", () => api.bootstrap([R_SHAPE("mesh1"), R_SHAPE("mesh2")]))}
+        title="Reconcile the fabric to the R shape: mesh1 and mesh2, each 2 node-admins, 2 computes, 3 gateways, 3 brokers; one Build">
+        bootstrap R 2/2/3/3 ×2
       </button>
       {msg && <span className="muted mono">{msg}</span>}
     </div>

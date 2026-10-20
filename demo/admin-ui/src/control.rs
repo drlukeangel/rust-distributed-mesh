@@ -8,8 +8,9 @@
 //! POST   /api/nodes/spawn          {mesh, kind}  -> AddNode
 //! POST   /api/nodes/{name}/restart               -> RestartNode
 //! DELETE /api/nodes/{name}                       -> RemoveNode
-//! POST   /api/bootstrap                          -> reconcile to the MN shape
-//! POST   /api/meshes      {name, node_admin, rpc_node} -> CreateMesh
+//! POST   /api/bootstrap   [{meshes: [{name, node_admin, rpc_node?, gateway?, compute?, broker?}]}] -> one Build to that
+//!                                                   shape (no body: the MN shape)
+//! POST   /api/meshes      {name, node_admin, rpc_node?, gateway?, compute?, broker?} -> CreateMesh
 //! DELETE /api/meshes/{name}                      -> RemoveMesh
 //! ```
 
@@ -42,6 +43,27 @@ struct MeshRequest {
     node_admin: u32,
     #[serde(default)]
     rpc_node: u32,
+    #[serde(default)]
+    gateway: u32,
+    #[serde(default)]
+    compute: u32,
+    #[serde(default)]
+    broker: u32,
+}
+
+impl MeshRequest {
+    fn desired(&self) -> MeshDesired {
+        MeshDesired::of(
+            &self.name,
+            [(NodeKind::NodeAdmin, self.node_admin), (NodeKind::RpcNode, self.rpc_node), (NodeKind::Gateway, self.gateway), (NodeKind::Compute, self.compute), (NodeKind::Broker, self.broker)],
+        )
+    }
+}
+
+/// The shape a bootstrap reconciles the fabric to; absent, the MN shape (PRD §1.13).
+#[derive(Deserialize)]
+struct BootstrapRequest {
+    meshes: Vec<MeshRequest>,
 }
 
 #[derive(Deserialize)]
@@ -122,9 +144,9 @@ async fn remove(State(c): State<Control>, Path(name): Path<String>) -> Response 
     answer(&c, "remove node", r, Some(&name), Some(&node.mesh))
 }
 
-/// The MN proof shape (PRD §1.13): `mesh1` with 2 node-admins and 3 rpc
-/// nodes. One Build; node-admin computes what is missing.
-async fn bootstrap(State(c): State<Control>) -> Response {
+/// One Build to the shape the body names; with no body, the MN proof shape (PRD §1.13): `mesh1`
+/// with 2 node-admins and 3 rpc nodes. node-admin computes what is missing.
+async fn bootstrap(State(c): State<Control>, body: Option<Json<BootstrapRequest>>) -> Response {
     let admin = match client(&c) {
         Ok(a) => a,
         Err(r) => return r,
@@ -133,20 +155,24 @@ async fn bootstrap(State(c): State<Control>) -> Response {
         Ok(f) => f.name,
         Err(e) => return answer(&c, "bootstrap", Err(e), None, None),
     };
-    let desired = FabricDesired { fabric, meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)])] };
+    let meshes = match &body {
+        Some(Json(b)) if !b.meshes.is_empty() => b.meshes.iter().map(MeshRequest::desired).collect(),
+        _ => vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])],
+    };
+    let first = meshes.first().map(|m| m.name.clone()).unwrap_or_default();
+    let desired = FabricDesired { fabric, meshes };
     let r = admin.build_fabric(desired).await;
-    answer(&c, "bootstrap", r, None, Some("mesh1"))
+    answer(&c, "bootstrap", r, None, Some(&first))
 }
 
-/// A new mesh of `node_admin` node-admins and `rpc_node` rpc nodes: one Build; node-admin births
-/// its first node-admin and the mesh fills itself.
+/// A new mesh of the counts the body names (node-admins, rpc nodes, gateways, computes, brokers):
+/// one Build; node-admin births its first node-admin and the mesh fills itself.
 async fn create_mesh(State(c): State<Control>, Json(body): Json<MeshRequest>) -> Response {
     let admin = match client(&c) {
         Ok(a) => a,
         Err(r) => return r,
     };
-    let desired = MeshDesired::of(&body.name, [(NodeKind::NodeAdmin, body.node_admin), (NodeKind::RpcNode, body.rpc_node)]);
-    let r = admin.create_mesh(desired).await;
+    let r = admin.create_mesh(body.desired()).await;
     answer(&c, "create mesh", r, None, Some(&body.name))
 }
 

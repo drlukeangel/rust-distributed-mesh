@@ -85,8 +85,9 @@ fn brief(v: &Value) -> Value {
     json!({ "build_id": v["build_id"], "state": v["phase"], "attempt": v["attempt"], "reason": v["reason"], "executor": v["executor"] })
 }
 
-/// The nodes with their seat labels, and every connection fact a node-admin answers for its own
-/// exact birth (node.connections.get).
+/// The nodes with their seat labels, and every connection fact each node answers for its own exact
+/// birth (node.connections.get, served by every node): the data plane's Direct and Proxy rows live on
+/// the role nodes that hold them, not only on the node-admins.
 pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
     let views = admin.nodes().await?;
     let view: Vec<Value> = views
@@ -104,7 +105,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
         .collect();
     let mut edges: Vec<Value> = Vec::new();
     let mut errors = Vec::new();
-    for n in views.iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin) {
+    for n in views.iter() {
         match admin.connections(n).await {
             Some(Ok(c)) => {
                 let by = n.name.to_string();

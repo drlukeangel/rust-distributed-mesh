@@ -184,11 +184,33 @@ struct BootQuery {
     service: String,
 }
 
-/// The node's boot trace, from Jaeger.
+/// The node's boot trace, from Jaeger: by the trace id of the node's own boot span in the estate's
+/// evidence (any consumer's service names; Jaeger's by-id read, which its v1 and v2 query APIs both
+/// serve), else, with no evidence folder, by Jaeger's v1 search under the built-in service names.
 async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Response {
-    let service = if q.service.contains(".admin.") { "rafka-node-admin" } else { "rafka-rpc-node" };
-    let tags = serde_json::to_string(&json!({"node": q.service})).unwrap_or_default();
-    let url = format!("{}/api/traces?service={service}&operation=rdm.mesh.node.update.via-ready&limit=1&lookback=2h&tags={}", s.jaeger_url, urlencoding::encode(&tags));
+    let from_evidence = match s.evidence_dir.clone() {
+        Some(dir) => {
+            let evidence = s.evidence.clone();
+            let node = q.service.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut e = evidence.lock().unwrap();
+                let _ = e.refresh(&dir);
+                e.boot_trace_of(&node)
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+        None => None,
+    };
+    let url = match from_evidence {
+        Some(trace) => format!("{}/api/traces/{trace}", s.jaeger_url),
+        None => {
+            let service = if q.service.contains(".admin.") { "rafka-node-admin" } else { "rafka-rpc-node" };
+            let tags = serde_json::to_string(&json!({"node": q.service})).unwrap_or_default();
+            format!("{}/api/traces?service={service}&operation=rdm.mesh.node.update.via-ready&limit=1&lookback=2h&tags={}", s.jaeger_url, urlencoding::encode(&tags))
+        }
+    };
     match s.http.get(&url).send().await {
         Ok(r) => match r.json::<Value>().await {
             Ok(body) => match body["data"].as_array().and_then(|a| a.first()) {

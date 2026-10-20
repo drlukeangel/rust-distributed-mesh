@@ -29,6 +29,9 @@ pub struct Event {
     pub source: &'static str,
 }
 
+/// The span every node opens as it boots (`demo/src/lib.rs`, `rdm_admin::entry`): its trace is the boot waterfall.
+pub const BOOT_SPAN: &str = "rdm.mesh.node.create.via-deployment";
+
 /// Span-name prefixes that are the story by default; everything else is high-volume.
 const MEANINGFUL: &[&str] = &[
     "rdm.node_rpc.request.",
@@ -83,6 +86,9 @@ pub struct Evidence {
     meaningful: Vec<Event>,
     high_volume: Vec<Event>,
     high_volume_seen: usize,
+    /// Each node's boot trace (`rdm.mesh.node.create.via-deployment`), by `path.name`: the trace the
+    /// boot waterfall asks Jaeger for by id, so the UI never guesses a node's service name.
+    boot_traces: HashMap<String, String>,
 }
 
 /// Events kept per class; the oldest go first.
@@ -118,6 +124,11 @@ impl Evidence {
             }
             let label = self.owners.get(&path).cloned().unwrap_or(stem);
             for v in parsed {
+                if v["name"].as_str() == Some(BOOT_SPAN) {
+                    if let (Some(node), Some(trace)) = (v["attributes"]["node"].as_str().filter(|n| !n.is_empty()), v["trace_id"].as_str()) {
+                        self.boot_traces.insert(node.to_string(), trace.to_string());
+                    }
+                }
                 let Some(ev) = event_of(&v, &label) else { continue };
                 if ev.high_volume {
                     self.high_volume_seen += 1;
@@ -134,6 +145,11 @@ impl Evidence {
     }
 
     /// The newest `limit` events, newest first, across every node and the UI's own `ui` events.
+    /// The trace id of `node`'s boot span, once its process has written it.
+    pub fn boot_trace_of(&self, node: &str) -> Option<String> {
+        self.boot_traces.get(node).cloned()
+    }
+
     pub fn newest(&self, ui: &[Event], all: bool, limit: usize) -> (Vec<Event>, usize) {
         let mut out: Vec<Event> = self.meaningful.iter().chain(ui.iter()).cloned().collect();
         if all {

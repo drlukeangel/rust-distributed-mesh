@@ -1,4 +1,6 @@
-export type ManagedKind = "rpc_node" | "node_admin";
+export type ManagedKind = "rpc_node" | "node_admin" | "gateway" | "compute" | "broker";
+/// A mesh's desired counts, as node-admin's Build takes them.
+export type MeshShape = { name: string; node_admin: number; rpc_node?: number; gateway?: number; compute?: number; broker?: number };
 
 export interface BuildAccepted {
   build_id: string;
@@ -164,15 +166,14 @@ export const api = {
   timeline: (all: boolean) => call<Timeline>(`/api/timeline?all=${all ? 1 : 0}&limit=400`),
   bootWaterfall: (node: string) =>
     call<BootWaterfallResponse>(`/api/boot-trace?service=${encodeURIComponent(node)}`),
-  bootstrap: () => call<BuildAccepted>("/api/bootstrap", { method: "POST" }),
+  bootstrap: (meshes?: MeshShape[]) => call<BuildAccepted>("/api/bootstrap", meshes ? post({ meshes }) : { method: "POST" }),
   spawn: (kind: ManagedKind, mesh: string) =>
     call<BuildAccepted>("/api/nodes/spawn", post({ mesh, kind })),
   restart: (name: string) =>
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}/restart`, { method: "POST" }),
   remove: (name: string) =>
     call<BuildAccepted>(`/api/nodes/${encodeURIComponent(name)}`, { method: "DELETE" }),
-  createMesh: (name: string, node_admin: number, rpc_node: number) =>
-    call<BuildAccepted>("/api/meshes", post({ name, node_admin, rpc_node })),
+  createMesh: (shape: MeshShape) => call<BuildAccepted>("/api/meshes", post(shape)),
   removeMesh: (name: string) =>
     call<BuildAccepted>(`/api/meshes/${encodeURIComponent(name)}`, { method: "DELETE" }),
 };

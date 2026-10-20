@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import ReactFlow, { Background, Controls, MarkerType, type Edge as FlowEdge, type Node as FlowNode } from "reactflow";
 import { api, type Edge, type Topology as Topo, type TopologyNode } from "../api";
 
-const KIND_COLOR: Record<string, string> = { node_admin: "#e3b341", rpc_node: "#8b949e" };
+const KIND_COLOR: Record<string, string> = { node_admin: "#e3b341", rpc_node: "#8b949e", gateway: "#58a6ff", compute: "#3fb950", broker: "#d2a8ff" };
 const MESH_COLORS = ["#58a6ff", "#bc8cff", "#f0883e", "#56d4dd", "#ff7b72"];
 
 const meshColor = (names: string[], m: string) => MESH_COLORS[names.indexOf(m) % MESH_COLORS.length];
