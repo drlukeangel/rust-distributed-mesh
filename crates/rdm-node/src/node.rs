@@ -1344,8 +1344,8 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// re-publishes its presence on the channel it is on (the check-in it owes, states.md "The round
-/// checklist") and answers its current state; no transition, no re-entry: a birth its authority holds off
-/// its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87). While its `before_ready` hook is Blocked it answers `Blocked` with
+/// checklist") and answers its current state; no transition: a birth its authority holds off
+/// its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87), never by a probe. While its `before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
 /// `crate::node_self`, which refuses them by name: node commands ride op 0x22. A stale incarnation is refused with the one held. Nothing
 /// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
@@ -1432,9 +1432,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     }
                     // The check-in a probed birth owes (states.md "The round checklist": a new primary
                     // re-sends the round and members already done check in again): its presence
-                    // re-published on the channel it is on, its current state answered; no transition,
-                    // no re-entry. A birth its authority holds off its mesh is commanded back through
-                    // `node.mesh.join` (node-tickle.md, Q87), never re-entered by a probe.
+                    // re-published on the channel it is on, its current state answered; no transition.
+                    // A birth its authority holds off its mesh is commanded back through
+                    // `node.mesh.join` (node-tickle.md, Q87), never by a probe.
                     let status = *me.status.lock().unwrap();
                     let mut d = me.digest.clone();
                     d.status = status;
