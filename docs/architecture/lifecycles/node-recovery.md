@@ -53,12 +53,15 @@ timer of its own:
    `(node.id, incarnation)`; a failure, a deadline included, never
    proves anything, and the provider check below stays mandatory. A node-admin watching a
    silent seat holder (seat watch) runs this same ladder. An answer is
-   `reachable-silent`: recorded, and a birth that answered `Current` is commanded back through
-   [node.mesh.join](node-mesh-join.md) by the authority above it (its mesh-primary; the fabric-primary
-   for a seat holder: every admin looks, one commands) and runs its start sequence again before it is
-   ready-for-traffic (Q87): once per silence (not again within a staleness floor, nor until it is
-   heard ready-for-traffic), never a fabric seat holder, which has no authority above it, and never a
-   birth with a lifecycle command of its authority in flight, which is that command's. No path opens a hold-down; no path again at
+   `reachable-silent`: recorded, and a held birth that answered `Current`, or that is heard again by
+   its digest, is commanded back through [node.mesh.join](node-mesh-join.md) by the authority above
+   it (its mesh-primary; the fabric-primary for a seat holder: every admin looks, one commands) and
+   runs its start sequence again before it is ready-for-traffic (Q87). The command goes only to a
+   birth the view holds off ready-for-traffic (a watcher's own fresh book is not the birth's state),
+   once per silence (not again within a staleness floor, nor until it is heard ready-for-traffic or
+   unheard again), never to a fabric seat holder, which has no authority above it, and never to a
+   birth with a command of its authority open or in flight, which is that command's. A commanded
+   start that stops at a step leaves the birth off its channels, Pending, for the next command. No path opens a hold-down; no path again at
    least one floor later is TRUE OFFLINE, written as status Dead on the node's row.
    Dead is observer-inferred and is never itself a reason to act.
 3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment
