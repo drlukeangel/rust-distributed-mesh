@@ -753,6 +753,9 @@ Required behavior:
 - relearning the current birth also restores its RuntimeFact + required current runtime metadata through ordinary membership convergence;
 - when canonical exact-runtime/lifecycle evidence retires/tombstones the birth, it stops being a refeed target;
 - zero-neighbour refeed may remain an edge fallback;
+- a channel reopened after a park, and the zero-neighbour refeed, dial the held members of the
+  mesh with the peers the channel was seeded or repaired through (Q88): a node back on its topic
+  has a neighbour at once while another node of its mesh is on it;
 - reconnecting transport plus held-member repair must merge the views of node-admins that could not hear each other even when each still has neighbours.
 
 Evidence names at least:
