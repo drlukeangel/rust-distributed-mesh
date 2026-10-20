@@ -54,7 +54,8 @@ timer of its own:
    proves anything, and the provider check below stays mandatory. A node-admin watching a
    silent seat holder (seat watch) runs this same ladder. An answer is
    `reachable-silent`: recorded, and a birth that answered `Current` is commanded back through
-   [node.mesh.join](node-mesh-join.md) and runs its start sequence again before it is
+   [node.mesh.join](node-mesh-join.md) by the authority above it (its mesh-primary; the fabric-primary
+   for a seat holder: every admin looks, one commands) and runs its start sequence again before it is
    ready-for-traffic (Q87): once per silence (not again within a staleness floor, nor until it is
    heard ready-for-traffic), never a fabric seat holder, which has no authority above it, and never a
    birth with a lifecycle command of its authority in flight, which is that command's. No path opens a hold-down; no path again at
