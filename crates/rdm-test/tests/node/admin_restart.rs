@@ -11,13 +11,17 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 fn owner() -> Owner {
+    owner_of("a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reaches_the_other_mesh_through_the_aggregate")
+}
+
+fn owner_of(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "node-lifecycle".into(),
         subfeature: "admin-restart".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reaches_the_other_mesh_through_the_aggregate".into(),
+        test: test.into(),
     }
 }
 
@@ -195,4 +199,95 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && after(x)).collect();
     assert!(!forwarded.is_empty(), "{home_primary} forwards {away}'s delta at a version after {version} onto {home}'s channel");
     eprintln!("RESTART-CONVERGED installed v{} trace {} forwarded v{} trace {} withheld {}", s(&converged[0]["attributes"]["topology_version"]), s(&converged[0]["trace_id"]), s(&forwarded[0]["attributes"]["topology_version"]), s(&forwarded[0]["trace_id"]), withheld.len());
+}
+
+/// CONTRACT (node-primary-update.md "The new holder's process is gone after the row": "The ordinary
+/// rule then seats whoever it seats, the holder included. A holder the rule seats again writes its seat
+/// record at the next revision first and announces it second (`Seated`), for each seat the rule gives
+/// back and no other, and restores only those seats' writes under the new revision"; R-PU2 recovery
+/// order 3; `WriteCutOff::Restore`): a mesh-primary node-admin restarted through `node.restart` first
+/// hands its mesh seat to its mesh's other admin by node.primary.update, and its own stores' mesh-seat
+/// writes stay cut off from that row (`WriteCutOff::Committed`). When that successor's process is then
+/// gone, provider-confirmed, the ordinary rule seats the restarted admin again by its own election row:
+/// from that row's revision it is its mesh's row writer, so its mesh-seat writes are restored and the
+/// successor's recovery completes under it: the exit-proof row is put, and a new node stands ready at
+/// the successor's path.name.
+///
+/// What must NOT happen (the twelve soaks at 768dfaee, `mock_soak_authority_preserves_continuous_invariants`
+/// round 17, mesh2.admin.2-n88v5zcrvdkd): the re-seated primary's every mesh-row write refused by its own
+/// earlier transfer's cut-off (`this store's writes are cut off: the mesh-primary seat(s) of ... are
+/// updating to ... by node.primary.update:...:node.restart:...`), 338 refused exit-proof puts, and no
+/// re-birth in 150 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_its_mesh_rows() {
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner_of("a_restarted_mesh_primary_seated_again_after_its_successor_dies_writes_its_mesh_rows"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
+        .await
+        .expect("the faulted-admin binding set is accepted");
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
+    let names: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| [format!("{m}.admin.1"), format!("{m}.admin.2"), format!("{m}.rpc.1"), format!("{m}.rpc.2")]).collect();
+    let before = Estate::values(&estate.settles_to_named(&names, Duration::from_secs(60)).await);
+    // The initial fabric refuses a restart until it has first reached ready-for-traffic; a kill before
+    // that is refused by the estate (Q74).
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    // The target mesh is the one that does not hold the fabric seat: its primary (the holder) and its
+    // other admin (the successor the holder's restart hands the seat to).
+    let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
+    let away = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" };
+    let holder = before.iter().find(|n| n["mesh"] == away && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("a mesh primary");
+    let successor = before.iter().find(|n| n["mesh"] == away && n["kind"] == "node_admin" && s(&n["name"]) != holder).map(|n| s(&n["name"])).expect("the other admin");
+    let successor_birth = before.iter().find(|n| s(&n["name"]) == successor).map(|n| (s(&n["node_id"]), s(&n["incarnation_id"]))).expect("the successor's birth");
+    let holder_birth = before.iter().find(|n| s(&n["name"]) == holder).map(|n| (s(&n["node_id"]), s(&n["incarnation_id"]))).expect("the holder's birth");
+
+    // 1. The holder's restart: its seat goes to the successor by node.primary.update, then the same
+    //    birth starts again.
+    let mut restart = estate.nodes_obj().await.restart(&holder.parse().unwrap_or_else(|e| panic!("{holder} is not a path.name: {e:?}"))).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {holder}: {e}"));
+    Estate::complete(&mut restart).await;
+    wait_for(&format!("{successor} holds {away}'s mesh seat and {holder} is back as the same birth, not the primary"), Duration::from_secs(60), || async {
+        let nodes = estate.node_values().await;
+        let s_ok = nodes.iter().any(|n| s(&n["name"]) == successor && n["is_primary"] == true && n["status"] == "ready-for-traffic");
+        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == false && n["status"] == "ready-for-traffic" && (s(&n["node_id"]), s(&n["incarnation_id"])) == holder_birth);
+        (s_ok && h_ok).then_some(())
+    })
+    .await;
+    let holder_pid = estate.pid_of(&holder).await;
+    let cut_off = wait_for(&format!("{holder}'s evidence records its mesh-seat writes cut off at its restart's seat row"), Duration::from_secs(10), || {
+        let spans = spans_of(&estate, holder_pid);
+        let found = named(&spans, "rdm.node_admin.seat.update.via-writes-cut-off").into_iter().find(|x| s(&x["attributes"]["operation"]).ends_with(&format!("node.restart:{holder}"))).cloned();
+        async move { found }
+    })
+    .await;
+
+    // 2. The successor's process is gone: SIGKILL of its exact runtime, provider-confirmed on the next
+    //    inspection.
+    let successor_pid = estate.pid_of(&successor).await;
+    estate.kill_pid(successor_pid as u32);
+    let killed_at = std::time::Instant::now();
+
+    // 3. The ordinary rule seats the holder again, and the successor's recovery completes under it: a
+    //    new node ready at the successor's path.name (a new node.id). The bound is the ladder's (a floor
+    //    to mark it silent, the tickle, a floor to the second no-path, the provider's proof, the create).
+    let recovered = wait_for(&format!("{holder} is {away}'s mesh primary again and a new node stands ready at {successor}"), Duration::from_secs(120), || async {
+        let nodes = estate.node_values().await;
+        let h_ok = nodes.iter().any(|n| s(&n["name"]) == holder && n["is_primary"] == true && n["status"] == "ready-for-traffic");
+        let reborn = nodes.iter().find(|n| s(&n["name"]) == successor && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != successor_birth.0).cloned();
+        if h_ok { reborn } else { None }
+    })
+    .await;
+    let recovered_ms = killed_at.elapsed().as_millis();
+    estate.stop().await;
+
+    // The holder's own record: its election row seated it again, its mesh-seat writes were restored
+    // after that row, and no mesh-row write of the recovery was refused by the cut-off.
+    let spans = spans_of(&estate, holder_pid);
+    let start = |x: &Value| x["start_unix_nano"].as_u64().unwrap_or_default();
+    let election = named(&spans, "rdm.node_admin.seat.update.via-election-row").into_iter().filter(|x| start(x) > start(&cut_off) && s(&x["attributes"]["seats"]).starts_with("mesh-primary")).cloned().collect::<Vec<_>>();
+    assert!(!election.is_empty(), "{holder} wrote its own election row for {away}'s mesh seat after its restart's seat row: {}", serde_json::to_string(&named(&spans, "rdm.node_admin.seat.update.via-election-row")).unwrap_or_default());
+    let restored = named(&spans, "rdm.node_admin.seat.update.via-writes-restored").into_iter().filter(|x| start(x) > start(&election[0]) && x["attributes"]["mesh_seat"] == "true").cloned().collect::<Vec<_>>();
+    assert!(!restored.is_empty(), "{holder}'s mesh-seat writes are restored after its election row seated it again (node-primary-update.md): restored={}", serde_json::to_string(&named(&spans, "rdm.node_admin.seat.update.via-writes-restored")).unwrap_or_default());
+    let refused: Vec<&Value> = spans.iter().filter(|x| start(x) > start(&election[0]) && serde_json::to_string(&x["attributes"]).unwrap_or_default().contains("writes are cut off")).collect();
+    assert!(refused.is_empty(), "no write of {holder}'s after its election row was refused by its earlier transfer's cut-off: {}", serde_json::to_string(&refused).unwrap_or_default());
+    let trace_id = s(&restored[0]["trace_id"]);
+    estate.record_trace_url(&trace_id);
+    eprintln!("SEATED-AGAIN-TRACE {trace_id} holder={holder} successor={successor} reborn={} recovered_ms={recovered_ms}", s(&recovered["node_id"]));
 }
