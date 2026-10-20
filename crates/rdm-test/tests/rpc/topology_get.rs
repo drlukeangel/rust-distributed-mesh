@@ -188,7 +188,11 @@ async fn born_node_joins_its_maker_then_reads_the_makers_topology_and_installs_i
         let maker = attr(joined, "served_by");
         let join_served: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().filter(|sp| attr(sp, "node") == node && attr(sp, "served_by") == maker).collect();
         let join_span = join_served.iter().find(|sp| attr(sp, "outcome") == "installed").unwrap_or_else(|| panic!("{maker} installed no join of {node}: {join_served:?}"));
-        let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node).collect();
+        // The birth's own read: its installs are in the birth's trace. A later read of the node
+        // (the delta-gap top-up when a peer mesh's delta arrives past what it holds,
+        // `topology_read::top_up_fetch`) is a read of its own, in its own trace, with its own serve:
+        // at `5a220a6a` mesh1.rpc.1 took mesh2 that way 1 s after its birth, before the cell's stop.
+        let installs: Vec<&Value> = named(&spans, "rdm.mesh.topology.update.via-read-install").into_iter().filter(|sp| attr(sp, "node") == node && sp["trace_id"] == joined["trace_id"]).collect();
         let serve = named(&spans, "rdm.mesh.topology.serve.via-read")
             .into_iter()
             .filter(|sp| attr(sp, "node") == maker && at(sp) >= at(join_span))

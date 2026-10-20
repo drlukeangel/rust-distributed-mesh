@@ -361,8 +361,18 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
     let spans = estate.spans();
     assert!(spans_of(&spans, "rdm.mesh.membership.update.via-gap", MEMBER, cut_at).is_empty(), "the full the primary replays on a heal repaired the member: no gap");
     let member_peer = nodes.iter().find(|n| n.name.to_string() == MEMBER).and_then(|n| n.endpoint_id.clone()).unwrap();
-    let replays: Vec<&Value> = spans_of(&spans, "rdm.mesh.membership.update.via-neighbour-replay", "mesh1.admin.1", healed_at).into_iter().filter(|sp| attr(sp, "channel") == "mesh:mesh1" && member_peer.starts_with(&attr(sp, "peer"))).collect();
-    assert!(replays.iter().any(|sp| num(sp, "full_chunks") >= 1), "mesh1's primary replayed its forwarded fulls to the member when it came back as a neighbour: {replays:?}");
+    // The primary's replay row is in the primary's evidence file, appended by its export thread:
+    // it lands after the member's install row that the wait above read, not with it (at `5a220a6a`
+    // the replay, 2 ms before the install, was read once and was not there yet). Waited for, as
+    // every row of another process is.
+    let replays: Vec<Value> = vec![wait_for("mesh1's primary replayed its forwarded fulls to the member when it came back as a neighbour", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        spans_of(&spans, "rdm.mesh.membership.update.via-neighbour-replay", "mesh1.admin.1", healed_at)
+            .into_iter()
+            .find(|sp| attr(sp, "channel") == "mesh:mesh1" && member_peer.starts_with(&attr(sp, "peer")) && num(sp, "full_chunks") >= 1)
+            .cloned()
+    })
+    .await];
     hold.signal("-CONT", false);
 
     let t_stop = now_ns();

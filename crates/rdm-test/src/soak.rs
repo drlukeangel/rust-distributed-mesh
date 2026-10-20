@@ -540,9 +540,11 @@ fn serves_proof(n: &Value) -> bool {
 }
 
 /// The fabric has converged when every live admin's view holds the same births: the expected
-/// counts, every one ready for traffic, the same (path, incarnation) set everywhere. Returns the
-/// live admins that agree.
-async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Option<Vec<Admin>> {
+/// counts, every one ready for traffic, the same (path, incarnation) set everywhere; a node-admin
+/// that is not the fabric-primary may instead hold a peer mesh unheard whole (every node of it
+/// `pending-reconnect`, its pruner's mark) and agree on the rest. Returns the live admins that
+/// agree and, per admin, the peer meshes it holds unheard.
+async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Option<(Vec<Admin>, BTreeMap<String, BTreeSet<String>>)> {
     let nodes = estate.node_values().await;
     let shape_ok = |nodes: &[Value]| {
         expected.iter().all(|(m, counts)| {
@@ -557,14 +559,47 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
     }
     let want = births(&nodes);
     let mut agreeing = Vec::new();
+    let mut unheard_at: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for admin in admins_of(&nodes) {
         let theirs = views_at(estate, &admin).await?;
-        if !shape_ok(&theirs) || births(&theirs) != want {
+        if shape_ok(&theirs) && births(&theirs) == want {
+            agreeing.push(admin);
+            continue;
+        }
+        // What the pages promise of an admin's view: the fabric-primary's holds every mesh it hears
+        // (mesh-investigation.md), a node-admin's holds its own mesh (node-recovery.md). A peer mesh
+        // a node-admin has not heard on the backbone past the staleness floor is marked
+        // `pending-reconnect` by its own pruner, every node of it, and re-fed; nothing else is
+        // promised of that copy until the mesh is heard again (gossip.md §6; Q86, Luke 2026-10-20:
+        // "the gossip isn't repaired, you get evicted after 30 s"). Such an admin agrees on
+        // everything but the meshes it holds unheard whole.
+        let is_fp = nodes.iter().any(|n| n["name"] == admin.name.as_str() && n["is_fabric_primary"] == true);
+        let own_mesh = nodes.iter().find(|n| n["name"] == admin.name.as_str()).map(|n| s(&n["mesh"])).unwrap_or_default();
+        let unheard: BTreeSet<String> = expected
+            .keys()
+            .filter(|m| **m != own_mesh && !theirs.iter().any(|n| n["mesh"] == m.as_str() && n["status"] != "pending-reconnect"))
+            .cloned()
+            .collect();
+        if is_fp || unheard.is_empty() {
             return None;
         }
+        let heard = |ns: &[Value]| -> Vec<Value> { ns.iter().filter(|n| !unheard.contains(&s(&n["mesh"]))).cloned().collect() };
+        let (mine, theirs_heard) = (heard(&nodes), heard(&theirs));
+        let heard_expected: BTreeMap<String, BTreeMap<&'static str, u32>> = expected.iter().filter(|(m, _)| !unheard.contains(*m)).map(|(m, c)| (m.clone(), c.clone())).collect();
+        let shape_heard = |ns: &[Value]| {
+            heard_expected.iter().all(|(m, counts)| {
+                let ready = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
+                let all = |k: &str| ns.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && !matches!(n["status"].as_str(), Some("dead"))).count() as u32;
+                counts.iter().all(|(kind, n)| ready(kind) == *n && all(kind) == *n)
+            })
+        };
+        if !shape_heard(&theirs_heard) || births(&theirs_heard) != births(&mine) {
+            return None;
+        }
+        unheard_at.insert(admin.name.clone(), unheard);
         agreeing.push(admin);
     }
-    Some(agreeing)
+    Some((agreeing, unheard_at))
 }
 
 /// How the driver reads Build `id` as the fabric-primary's Build log holds it, as the JSON the Build projection
@@ -1327,7 +1362,10 @@ impl Driver {
                     (None, _, None) => true,
                 };
                 if sequence_done {
-                    if let Some(agreeing) = converged_everywhere(&self.estate, &expected).await {
+                    if let Some((agreeing, unheard_at)) = converged_everywhere(&self.estate, &expected).await {
+                        if !unheard_at.is_empty() {
+                            entry["peer_mesh_unheard_at"] = json!(unheard_at);
+                        }
                         // Converged views are not the whole fabric: the fabric-primary's investigation
                         // ladder may still hold a peer mesh unheard (a held mesh-primary just released,
                         // a healed cut), and every action on that mesh is refused until it is heard.
