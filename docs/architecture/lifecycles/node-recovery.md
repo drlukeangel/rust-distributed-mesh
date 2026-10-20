@@ -55,8 +55,9 @@ timer of its own:
    silent seat holder (seat watch) runs this same ladder. An answer is
    `reachable-silent`: recorded, and a birth that answered `Current` is commanded back through
    [node.mesh.join](node-mesh-join.md) and runs its start sequence again before it is
-   ready-for-traffic (Q87): once per silence (not again until it is heard ready-for-traffic), and
-   never a fabric seat holder, which has no authority above it. No path opens a hold-down; no path again at
+   ready-for-traffic (Q87): once per silence (not again within a staleness floor, nor until it is
+   heard ready-for-traffic), never a fabric seat holder, which has no authority above it, and never a
+   birth with a lifecycle command of its authority in flight, which is that command's. No path opens a hold-down; no path again at
    least one floor later is TRUE OFFLINE, written as status Dead on the node's row.
    Dead is observer-inferred and is never itself a reason to act.
 3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment
