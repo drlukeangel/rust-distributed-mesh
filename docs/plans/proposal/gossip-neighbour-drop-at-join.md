@@ -118,6 +118,65 @@ exact change goes to Luke with X1's flame through Arch, as one ruling, before it
 **Out of scope:** any change in iroh or iroh-gossip; an app-channel re-feed or redelivery machinery
 (gossip is best-effort, the start read is the truth).
 
+## 4a. X1 results (2026-10-19; telemetry only, branch `e4s8-x1-dial-spans`, `8d14b584`, not landed)
+
+Process followed: 1 run read in full (green), then a cohort of 4 (run 4 red), then the cohort repeated
+with OTLP export until a red (run 1 red). The demo consumer workspace was built against lane e4s8's
+crates; the iroh debug layer was on.
+
+**The red, exported to Jaeger.** Times are from the first neighbour-down:
+
+| t | span | caller | side | channel | peers | trace |
+|---|---|---|---|---|---|---|
+| −14.8 ms | via-join-peers | `apps.subscribe` | admin | demo.large-records | the broker | [741cf0ac](http://192.168.68.99:16687/trace/741cf0acc0ad2f69c34c3cae5c387d02) |
+| −14.6 ms | via-join-peers | `apps.subscribe` | admin | demo.records | the broker | 741cf0ac |
+| −14.5/−14.4 ms | via-join-peers | `apps.learn` | admin | both | the broker | 741cf0ac |
+| −13.3/−13.2 ms | via-join-peers | `apps.learn` | admin | both | the broker | [bbeb08f2](http://192.168.68.99:16687/trace/bbeb08f25fd0d9fab3187a990fc6a304) |
+| −9.8 ms | via-join-peers | `membership.subscribe` | broker | mesh:mesh1 | its seed, the admin | [cf172d3f](http://192.168.68.99:16687/trace/cf172d3f1dcacc9d7f124a92272744d7) |
+| −9.6/−9.5 ms | via-join-peers | `apps.subscribe` | broker | both | the admin | |
+| 0 ms | via-neighbour-down | | admin | demo.records, then demo.large-records | | [beb7d942](http://192.168.68.99:16687/trace/beb7d942d4f5b03cace5f8dcb003a728) |
+
+Trace 741cf0ac is the broker's own boot-and-join trace (71 spans): the admin's first dial runs inside
+its serving of the broker's join. Trace bbeb08f2 is the admin's app-types loop (`via-types-read`).
+
+**The same red, without export (cohort run 4), with iroh's log on one clock:** the admin's
+`apps.subscribe` and `apps.learn` at −14.1 ms, iroh on the admin "start to dial" the broker at −13.8 ms;
+`apps.learn` again at −13.1 ms; `admin.round` on mesh:mesh1 at −12.5 ms; the broker's
+`membership.subscribe` and `apps.subscribe` at −9.4 ms, iroh on the broker "start to dial" the admin
+at −9.0 ms; each side then holds a Dial and an Accept connection; one closes at −1.1 ms; "active send
+connection closed, mark peer as disconnected" on both sides at 0.0 and 0.3 ms; neighbour-down on all
+three topics on both sides at 0.4-0.5 ms.
+
+**A green run (run 1)** has the same admin dials at 0 ms and the broker's at 3.5 ms; there the second
+connection's close does not drop the peer. `admin.round` came at 99 ms, over the connection that already
+existed.
+
+**The callers named.** Three admin-side callers dial a fresh joiner at its join, all before the
+joiner's own seed dial:
+1. the join door's app-types hook, `admin/boot.rs:1447` (`learn_app_types_from` with the joiner's
+   gossip address, so `Hub::learn` records it as a joined peer, `Hub::ensure` subscribes with it as a
+   bootstrap peer, and `join_peers` asks it): `apps.subscribe`, `apps.learn`;
+2. the app-types loop's row branch, `admin/boot.rs:~1600` (`learn_app_types_from` for a member of the
+   admin's own mesh): `apps.learn`;
+3. the admin round, `admin/boot.rs:2551` (`join_peers(mine)`, every member of its mesh not yet asked):
+   `admin.round`.
+The first to run makes the dial; the others reuse it. That is why E1 (1 removed) and E3 (1 and 2 removed)
+changed nothing: the next caller made the same dial before the joiner's.
+
+## 4b. X2 as it now stands (for the ruling; not run, not landed)
+
+One rule, conformance to the pages at the three callers X1 named: the admin does not dial a fresh
+joiner of its own mesh at its join.
+- `admin/boot.rs:1447`: hold the joiner's types and subscribe them with no joiner as a peer (§8
+  :871-882: the admin joins the types before it answers the join; the joiner, answered, joins its
+  channels, its first neighbour the admin, already joined).
+- `admin/boot.rs:~1600`, row branch: the same, for a member of the admin's own mesh (§8).
+- `admin/boot.rs:2551`: the round dials no member; §6's stale-coverage repair (`membership.rs`
+  `RepairSchedule`, one attempt per member per repair window) is the admin's only dial to its members
+  (§6: a held member is dialled only once its coverage has gone stale for the repair window).
+Proof run: 1 run, a cohort of 4, then 30, each with the X1 spans and the iroh layer. Success: no double
+dial, no neighbour-down within 50 ms of its neighbour-up, the cell green.
+
 ## 5. Asked of Arch (answered 2026-10-19)
 
 Arch: §2 is right in substance (citations corrected above); X1 approved with the full site list; X2 matches
