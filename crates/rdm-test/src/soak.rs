@@ -756,6 +756,75 @@ fn now_ns() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
 }
 
+/// The node-admins' spans as they are written: each poll reads the new bytes of every node-admin
+/// evidence file since the last poll and keeps the spans `keep` selects, in start order. A wait that
+/// polls every few hundred milliseconds reads this, never `Estate::spans` (the whole tree: at
+/// `4aa58cf0` the partition soak's tree reached 1.5 GB and every poll of the cut's re-feed wait
+/// parsed it, 4-5 s each, through which the driver's own reads of the fabric-primary starved: 84 gaps
+/// of 3.5-5 s between its requests, the cut waits growing from 10 s to 72 s, and round 41's
+/// `node.get` unanswered within its 2 s).
+struct SpanTail {
+    dir: std::path::PathBuf,
+    offsets: BTreeMap<std::path::PathBuf, u64>,
+    kept: Vec<Value>,
+    keep: fn(&Value) -> bool,
+}
+
+impl SpanTail {
+    /// A tail that begins at the files' current ends: what is written from now on is read.
+    fn from_now(dir: std::path::PathBuf, keep: fn(&Value) -> bool) -> Self {
+        let mut tail = Self { dir, offsets: BTreeMap::new(), kept: Vec::new(), keep };
+        for path in tail.files() {
+            let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            tail.offsets.insert(path, len);
+        }
+        tail
+    }
+
+    fn files(&self) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.contains("node-admin") && n.ends_with(".spans.jsonl")))
+            .collect()
+    }
+
+    /// Every kept span so far, the new bytes of each file read first.
+    fn poll(&mut self) -> &[Value] {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut grew = false;
+        for path in self.files() {
+            let off = self.offsets.get(&path).copied().unwrap_or(0);
+            let Ok(mut f) = std::fs::File::open(&path) else { continue };
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            if len <= off {
+                continue;
+            }
+            let mut buf = Vec::with_capacity((len - off) as usize);
+            if f.seek(SeekFrom::Start(off)).is_err() || f.read_to_end(&mut buf).is_err() {
+                continue;
+            }
+            // Only whole lines: a line still being written is read by the next poll.
+            let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { continue };
+            for line in buf[..=end].split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+                if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                    if (self.keep)(&v) {
+                        self.kept.push(v);
+                        grew = true;
+                    }
+                }
+            }
+            self.offsets.insert(path, off + end as u64 + 1);
+        }
+        if grew {
+            self.kept.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+        }
+        &self.kept
+    }
+}
+
 /// A fault or an execution step that broke a rule.
 struct Broken {
     rule: &'static str,
@@ -786,6 +855,9 @@ pub struct Driver {
     rounds_log: Vec<Value>,
     silenced: BTreeMap<String, Cut>,
     started: Instant,
+    /// The fabric-primary's investigation rows (`rdm.node_admin.mesh.update.via-unheard`,
+    /// `via-probe-verdict`), read as they are written: [`Self::held_unheard`].
+    ladder: SpanTail,
 }
 
 impl Driver {
@@ -803,6 +875,7 @@ impl Driver {
         let known = admins_of(&estate.node_values().await);
         let progress = Arc::new(Mutex::new(Progress { executed: Vec::new(), initial: Some(initial.clone()) }));
         let shared = Arc::new(Shared { book: Mutex::new(OpBook::default()), view: Mutex::new(View::default()), stop: AtomicBool::new(false) });
+        let ladder = SpanTail::from_now(estate.evidence.clone(), |sp| matches!(sp["name"].as_str(), Some("rdm.node_admin.mesh.update.via-unheard" | "rdm.node_admin.mesh.update.via-probe-verdict")));
         Self {
             estate,
             rng: Rng(cfg.seed),
@@ -821,7 +894,54 @@ impl Driver {
             rounds_log: Vec::new(),
             silenced: BTreeMap::new(),
             started: Instant::now(),
+            ladder,
         }
+    }
+
+    /// The peer mesh the fabric-primary holds unheard now, if any, with why: the mesh its
+    /// investigation ladder tracks, marked silent, or decided, until its `heard-again` verdict
+    /// (mesh-investigation.md; the Build door refuses every action on a node of such a mesh,
+    /// `unheard-mesh`, control_plane.rs). A tracked mesh with no later row past the mark rung was
+    /// heard again before its first probe: the ladder says nothing of that, so the wait is the floor.
+    /// The driver acts on a peer mesh only when this is `None`: at `4aa58cf0` the authority soak
+    /// restarted `mesh2.admin.2` 6 s after its mesh-primary was released from a hold, 2.6 s into the
+    /// fabric-primary's silence of mesh2 (its frames resumed 3.3 s after the release), and the
+    /// restart was refused `unheard-mesh` although every view had converged.
+    fn held_unheard(&mut self, nodes: &[Value]) -> Option<String> {
+        let fp = nodes.iter().find(|n| n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic")?;
+        let (fp_name, fp_mesh) = (s(&fp["name"]), s(&fp["mesh"]));
+        let floor = self.cfg.floor;
+        let now = now_ns();
+        let mut last: BTreeMap<String, &Value> = BTreeMap::new();
+        for sp in self.ladder.poll().iter().filter(|sp| sp["attributes"]["node"] == fp_name.as_str()) {
+            last.insert(s(&sp["attributes"]["mesh"]), sp);
+        }
+        for (mesh, sp) in last {
+            if mesh == fp_mesh {
+                continue;
+            }
+            let a = &sp["attributes"];
+            let age = Duration::from_nanos(now.saturating_sub(sp["start_unix_nano"].as_u64().unwrap_or(0)));
+            let unheard_ms = a["unheard_ms"].as_str().map(str::to_string).unwrap_or_else(|| a["unheard_ms"].to_string());
+            match sp["name"].as_str() {
+                Some("rdm.node_admin.mesh.update.via-unheard") => {
+                    let marked = a["mark"] == true || a["mark"] == "true";
+                    if marked {
+                        return Some(format!("{fp_name} holds {mesh} unheard: marked silent at {unheard_ms} ms, no heard-again verdict yet"));
+                    }
+                    if age < floor + Duration::from_secs(2) {
+                        return Some(format!("{fp_name} holds {mesh} unheard: tracked at {unheard_ms} ms {} ms ago, the mark rung not yet passed", age.as_millis()));
+                    }
+                }
+                Some("rdm.node_admin.mesh.update.via-probe-verdict") => {
+                    if a["outcome"] != "heard-again" {
+                        return Some(format!("{fp_name} holds {mesh} unheard: the investigation's verdict is {} at {unheard_ms} ms, no heard-again verdict yet", a["outcome"]));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// What a panicking run has done so far; read it after a join error.
@@ -1163,6 +1283,7 @@ impl Driver {
         // path; every live admin holds exactly that birth ready and the replaced one nowhere; every
         // live admin holds the same births.
         let until = Instant::now() + CONVERGE;
+        let mut held_wait: Option<Instant> = None;
         loop {
             if relocate_control(&mut self.estate, &self.known).await.is_some() {
                 let view = self.estate.node_values().await;
@@ -1207,8 +1328,23 @@ impl Driver {
                 };
                 if sequence_done {
                     if let Some(agreeing) = converged_everywhere(&self.estate, &expected).await {
-                        self.known = agreeing;
-                        break;
+                        // Converged views are not the whole fabric: the fabric-primary's investigation
+                        // ladder may still hold a peer mesh unheard (a held mesh-primary just released,
+                        // a healed cut), and every action on that mesh is refused until it is heard.
+                        match self.held_unheard(&view) {
+                            None => {
+                                if let Some(since) = held_wait {
+                                    entry["held_unheard_ms"] = json!(since.elapsed().as_millis() as u64);
+                                    entry.as_object_mut().map(|o| o.remove("waiting_on"));
+                                }
+                                self.known = agreeing;
+                                break;
+                            }
+                            Some(why) => {
+                                entry["waiting_on"] = json!(why);
+                                held_wait.get_or_insert_with(Instant::now);
+                            }
+                        }
                     }
                 }
             }
@@ -1514,17 +1650,15 @@ impl Driver {
             return Err(broken("fault-names-an-exact-runtime", format!("{mesh}: {} of {} members and {} of {} others publish a transport socket", pa.len(), members.len(), pb.len(), others.len())));
         }
         let partition = Partition::start(&pa, &pb).map_err(|why| broken("fault-applies", format!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {mesh} and the other meshes: {why}")))?;
+        // The re-feeds are read from the node-admins' evidence as it is written, from the cut on.
+        let mut refeeds = SpanTail::from_now(self.estate.evidence.clone(), |sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member");
         let cut_at_ns = now_ns();
         self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
         let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
         let window = self.cfg.floor;
         let until = Instant::now() + window * 6 + Duration::from_secs(40);
         let held_at = loop {
-            let spans = self.estate.spans();
-            let att: Vec<&Value> = spans
-                .iter()
-                .filter(|sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_at_ns)
-                .collect();
+            let att: Vec<&Value> = refeeds.poll().iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_at_ns).collect();
             let all = admins.iter().all(|(obs, om)| admins.iter().filter(|(_, pm)| pm != om).all(|(peer, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
             if all {
                 break now_ns();
