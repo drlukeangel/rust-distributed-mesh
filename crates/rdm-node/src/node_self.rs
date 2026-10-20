@@ -1072,11 +1072,19 @@ impl NodeSelf {
         let me = self.clone();
         tokio::spawn(async move {
             let result = session.rejoin(retire, commander_rx, None, operation, None).await;
-            *me.cycle.lock().unwrap() = Cycle::Live(None);
             let reply = match result {
                 Ok(()) => StatusReply::Started,
-                Err(failed) => rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason),
+                Err(failed) => {
+                    // The sequence stopped at a step: the birth stays Pending and leaves its channels
+                    // again, so its authority holds it unheard and commands it back once more
+                    // (node-recovery.md step 2); nothing here retries by hand.
+                    tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %me.held_name(), step = failed.step, reason = %failed.reason)
+                        .in_scope(|| tracing::info!("the commanded start stopped at its step: the birth leaves its channels for its authority's next command"));
+                    session.leave_channels().await;
+                    rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason)
+                }
             };
+            *me.cycle.lock().unwrap() = Cycle::Live(None);
             let _ = outcome_tx.send(Some(reply));
         });
         let joined = if self.backbone.is_some() { vec![WhichMesh::Own, WhichMesh::Backbone] } else { vec![WhichMesh::Own] };

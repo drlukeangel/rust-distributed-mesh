@@ -73,6 +73,12 @@ async fn command_mesh_join(
     if node.is_fabric_primary {
         return "fabric-primary: no authority above it".to_string();
     }
+    // Only a birth the view holds off ready-for-traffic re-enters (Luke: "coming from a state that is
+    // not ready-for-traffic"). A watcher's own fresh book (an admin just started holds every member
+    // from the projection, unheard until their digests reach it) is not the birth's state; the view is.
+    if node.status == crate::model::NodeStatus::ReadyForTraffic {
+        return "ready-in-view: on its mesh".to_string();
+    }
     // A birth with a lifecycle command of its authority in flight (a stop, a start, a restart) is that
     // command's: the start it runs is the command's own (node-start.md), never this one.
     if let Some(op) = book.in_flight().into_iter().find(|op| op.node_id == node.node_id && op.incarnation == *incarnation) {
@@ -89,12 +95,15 @@ async fn command_mesh_join(
         let heard_ready_since = book
             .get(node.node_id.as_str())
             .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::ReadyForTraffic && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
-        if heard_ready_since {
-            commanded().lock().unwrap().remove(&key);
-        } else {
+        // Heard ready-for-traffic since, or unheard again (a re-entry that stopped at a step left the
+        // birth off its channels): a new silence, commanded again; else the one command stands.
+        let unheard_again = !book.get(node.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && unheard < book.staleness_floor());
+        if !heard_ready_since && !unheard_again {
             return "commanded-already".to_string();
         }
     }
+    // Reserved now, before the command goes out: concurrent looks at one birth command it once.
+    commanded().lock().unwrap().insert(key.clone(), Instant::now());
     let (build_id, attempt) = match builds.current().await {
         Ok(Some(b)) => (b.build_id.to_string(), b.attempt),
         _ => (String::new(), 0),
@@ -113,6 +122,12 @@ async fn command_mesh_join(
         let Some(authority) = authority.get() else {
             return "no-authority".to_string();
         };
+        // A command of this authority to the birth is open (its node.start after a stop, its stop):
+        // the birth's lifecycle is that command's until its completion (node-start.md, node-stop.md).
+        if authority.commands.open_for(&node.node_id, incarnation) {
+            commanded().lock().unwrap().remove(&key);
+            return "command-open: a start or stop of this authority is under way".to_string();
+        }
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
         // stop registers a parked one, from its runtime handle and its admitted digest.
@@ -137,8 +152,8 @@ async fn command_mesh_join(
         }
     };
     let outcome = tracing::Instrument::instrument(outcome, span.clone()).await;
-    if !outcome.starts_with("no-authority") && !outcome.starts_with("join-not-registered") {
-        commanded().lock().unwrap().insert(key, Instant::now());
+    if outcome.starts_with("no-authority") || outcome.starts_with("join-not-registered") {
+        commanded().lock().unwrap().remove(&key);
     }
     span.record("outcome", outcome.as_str());
     span.in_scope(|| tracing::info!(node = %node.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));

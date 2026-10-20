@@ -2261,6 +2261,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     records.unreachable.lock().unwrap().retain(|nid, _| nid.as_str() != id);
                                                 }
                                                 for id in &report.returned {
+                                                    // A held birth heard again by its digest is commanded back through node.mesh.join
+                                                    // too (Q87: the view returns on the bare digest, its cert, time and cache do not):
+                                                    // by the mesh-primary, on its own task.
+                                                    answered_current.lock().unwrap().remove(id);
+                                                    if holds_seat {
+                                                        if let (Some(heard_again), Some(n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
+                                                            if let Some(incarnation) = n.incarnation_id.clone() {
+                                                                tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
+                                                            }
+                                                        }
+                                                    }
                                                     // The mark goes before the rows are cleared: a follower in flight reads the
                                                     // mark after its own write and removes what it wrote (`RecoverySubmitter::offline`).
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);

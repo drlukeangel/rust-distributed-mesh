@@ -146,6 +146,12 @@ impl CommandBook {
         self.open.lock().unwrap().contains_key(key)
     }
 
+    /// Whether any command (a stop, a start) is open for this exact birth: its lifecycle is that
+    /// command's until the completion.
+    pub fn open_for(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
+        self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation)
+    }
+
     /// Whether any stop command is open for this exact birth.
     pub fn stop_open_for(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
         self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation && k.operation.starts_with("node.stop:"))

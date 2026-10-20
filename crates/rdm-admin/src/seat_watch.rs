@@ -392,10 +392,20 @@ pub async fn run(w: Watch) {
         // The mesh the fabric seat's record names: the takeover's hold is kept on its node-admins.
         let fabric_mesh = w.membership.seats().fabric().map(|h| h.mesh.clone());
         // Any node-admin in the view whose digest has returned (`ReadyForTraffic`) ends its hold (R-FM1).
+        let commands = view.own(&w.me_id).is_some_and(|me| me.is_fabric_primary);
         for n in view.members().filter(|n| n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic) {
             w.records.clear_held_running(n).await;
             if let Some(b) = birth(n) {
-                said.unreachable.remove(&b);
+                // A seat holder this watch said unreachable, heard again by its digest, is commanded
+                // back through node.mesh.join by the fabric-primary (Q87), on its own task.
+                if said.unreachable.remove(&b).is_some() && commands {
+                    if let (Some(heard_again), Some(incarnation)) = (w.looker.heard_again.get().cloned(), n.incarnation_id.clone()) {
+                        // The holder this watch said unreachable: held off ready-for-traffic in its eyes
+                        // until this digest, as `watch_marked` holds a marked birth.
+                        let n = Node { status: NodeStatus::PendingReconnect, ..n.clone() };
+                        tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
+                    }
+                }
             }
         }
         let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
