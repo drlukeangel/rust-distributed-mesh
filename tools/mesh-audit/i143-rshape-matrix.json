@@ -227,6 +227,12 @@
       "seconds": 1800,
       "test": "mock_soak_randomized_preserves_continuous_invariants",
       "replay_test": "mock_soak_replay_reproduces_qualified_invariants"
+    },
+    "S6": {
+      "owner_issue": 2949,
+      "seconds": 1800,
+      "test": "mock_soak_floors_preserves_continuous_invariants",
+      "replay_test": "mock_soak_replay_reproduces_qualified_invariants"
     }
   },
   "cells": [
@@ -561,6 +567,16 @@
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
+      "test": "mock_soak_floors_preserves_continuous_invariants",
+      "issue": 2949,
+      "provider": "process",
+      "tier": "canonical",
+      "job": "i143-rshape-soak-floors-process",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-floors-process/mock_soak_floors_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_floors_preserves_continuous_invariants -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-soak-floors-process/mock_soak_floors_preserves_continuous_invariants",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
       "test": "mock_soak_lifecycle_preserves_continuous_invariants",
       "issue": 2949,
       "provider": "process",
@@ -608,6 +624,16 @@
       "job": "i143-rshape-soak-partition-container",
       "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_partition_preserves_continuous_invariants -- --exact",
       "dir": "target/i143-rshape/i143-rshape-soak-partition-container/mock_soak_partition_preserves_continuous_invariants",
+      "source": "crates/rdm-test/tests/rshape_burn_in.rs"
+    },
+    {
+      "test": "mock_soak_floors_preserves_continuous_invariants",
+      "issue": 2949,
+      "provider": "container",
+      "tier": "canonical",
+      "job": "i143-rshape-soak-floors-container",
+      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-soak-floors-container/mock_soak_floors_preserves_continuous_invariants/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 RDM_RSHAPE_SOAK_SECONDS=1800 cargo test -p rdm-test --test main rshape_burn_in::mock_soak_floors_preserves_continuous_invariants -- --exact",
+      "dir": "target/i143-rshape/i143-rshape-soak-floors-container/mock_soak_floors_preserves_continuous_invariants",
       "source": "crates/rdm-test/tests/rshape_burn_in.rs"
     },
     {
