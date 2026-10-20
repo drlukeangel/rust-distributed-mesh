@@ -257,41 +257,12 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_ro
         }
         apply(&mut reversed, live);
         assert_eq!(reversed, held);
-        let mut lost = receiver.lost();
-        let before = *lost.borrow();
-        for version in 2..4098 {
-            sender
-                .publish(event(&Row {
-                    version,
-                    value: "2:burst".into(),
-                }))
-                .await
-                .unwrap();
-        }
-        tokio::time::timeout(BOUND, lost.wait_for(|n| *n > before))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(receiver.dropped() > 0);
-        let healed = Row {
-            version: 1,
-            value: "3:after-overflow".into(),
-        };
-        *snapshot.lock().unwrap() = vec![healed.clone()];
-        tokio::time::timeout(BOUND, async {
-            loop {
-                let generation = *lost.borrow_and_update();
-                for row in pull(&node.node_rpc.client, &root_id).await {
-                    apply(&mut held, row);
-                }
-                if generation == *lost.borrow() {
-                    break;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(held, Some(healed));
+        // The incomplete-assembly shape runs on a quiet edge, before the burst: the burst leaves about
+        // two thousand pushes in the publisher's per-peer gossip send queue (SEND_QUEUE_CAP 64), a
+        // push into that full queue is dropped at the publisher, and on this one-edge topic no other
+        // peer can IHave it back (gossip.md §7 repairs through the mesh, §8's pull is the recovery):
+        // a record published into the draining queue would be lost for a reason the shape does not
+        // measure (the :313 reds of 2026-10-19, read in i143-prd.md).
         // The testkit drops one incoming part; publishing, assembly expiry and recovery stay public.
         rdm_test::gossip_faults::drop_chunk_once(&root.membership, LARGE, 1)
             .await
@@ -319,7 +290,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_ro
         );
         let repaired = Row {
             version: 1,
-            value: "4:after-incomplete".into(),
+            value: "3:after-incomplete".into(),
         };
         *snapshot.lock().unwrap() = vec![repaired.clone()];
         for row in pull(&node.node_rpc.client, &root_id).await {
@@ -328,7 +299,7 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_ro
         assert_eq!(held, Some(repaired));
         let complete = Row {
             version: 2,
-            value: format!("4:{}", "y".repeat(9000)),
+            value: format!("3:{}", "y".repeat(9000)),
         };
         large_sender.publish(event(&complete)).await.unwrap();
         assert_eq!(
@@ -336,6 +307,41 @@ fn a_pinned_consumer_reconciles_live_and_pull_heals_both_loss_shapes_and_uses_ro
             complete,
             "the one-shot cut removed itself"
         );
+        let mut lost = receiver.lost();
+        let before = *lost.borrow();
+        for version in 2..4098 {
+            sender
+                .publish(event(&Row {
+                    version,
+                    value: "2:burst".into(),
+                }))
+                .await
+                .unwrap();
+        }
+        tokio::time::timeout(BOUND, lost.wait_for(|n| *n > before))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(receiver.dropped() > 0);
+        let healed = Row {
+            version: 1,
+            value: "4:after-overflow".into(),
+        };
+        *snapshot.lock().unwrap() = vec![healed.clone()];
+        tokio::time::timeout(BOUND, async {
+            loop {
+                let generation = *lost.borrow_and_update();
+                for row in pull(&node.node_rpc.client, &root_id).await {
+                    apply(&mut held, row);
+                }
+                if generation == *lost.borrow() {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(held, Some(healed));
         // The ordinary broker's existing RoundActions seam runs before its directed check-in.
         let actions = Arc::new(Actions {
             commits: AtomicU32::new(0),

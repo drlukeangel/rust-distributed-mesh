@@ -118,7 +118,7 @@ exact change goes to Luke with X1's flame through Arch, as one ruling, before it
 **Out of scope:** any change in iroh or iroh-gossip; an app-channel re-feed or redelivery machinery
 (gossip is best-effort, the start read is the truth).
 
-## 4a. X1 results (2026-10-19; telemetry only, branch `e4s8-x1-dial-spans`, `8d14b584`, not landed)
+## 4a. X1 results (2026-10-19; telemetry only, branch `e4s8-x1-dial-spans`, `8d14b584`; lands with X2)
 
 Process followed: 1 run read in full (green), then a cohort of 4 (run 4 red), then the cohort repeated
 with OTLP export until a red (run 1 red). The demo consumer workspace was built against lane e4s8's
@@ -163,7 +163,7 @@ joiner's own seed dial:
 The first to run makes the dial; the others reuse it. That is why E1 (1 removed) and E3 (1 and 2 removed)
 changed nothing: the next caller made the same dial before the joiner's.
 
-## 4b. X2 as it now stands (for the ruling; not run, not landed)
+## 4b. X2 as ruled (Q84; run and landed: §4c)
 
 One rule, conformance to the pages at the three callers X1 named: the admin does not dial a fresh
 joiner of its own mesh at its join.
