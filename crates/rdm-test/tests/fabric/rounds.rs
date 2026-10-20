@@ -159,9 +159,34 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     until_fabric(&estate, ScopeStatus::ReadyForTraffic, Some(two_meshes.as_str()), Duration::from_secs(60)).await;
     let nodes = estate.node_values().await;
     estate.artifact("nodes.json", &json!(nodes));
+    let primaries: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
+    // The gossip hooks of the last round are read after the stop, and the last of them is still in
+    // flight when the fabric turns ready: a member's `traffic-opened` goes to its primary on the mesh
+    // channel, onto the backbone by that primary, and onto the peer mesh's channel by the peer's
+    // primary, while the fabric-primary completes the round on the member's declaration, not on
+    // the hook (at `ce9224ae` mesh2.broker.1's hook reached its primary 71 ms after the fabric was
+    // ready and the stop came 55 ms after that, before mesh1's admins heard the backbone hop). The
+    // estate is stopped once every member's check-in has made its last hop, bounded; a hook that has
+    // not landed by then fails the assertions below by name.
+    {
+        let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
+        let landed_by = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let spans = estate.spans();
+            let frames = named(&spans, "rdm.mesh.membership.update.via-round-frame");
+            let landed = want.iter().filter(|n| !n.contains(".admin.")).all(|subject| {
+                let other = if subject.starts_with("mesh1.") { "mesh2." } else { "mesh1." };
+                let peer_primary = primaries.iter().find(|p| p.starts_with(other)).cloned().unwrap_or_default();
+                frames.iter().any(|f| f["attributes"]["kind"] == "traffic-opened" && f["attributes"]["via"] == "mesh-channel" && s(&f["attributes"]["subject_id"]) == id_of[subject] && s(&f["attributes"]["forwarded_by"]) == peer_primary)
+            });
+            if landed || std::time::Instant::now() >= landed_by {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
     estate.stop().await;
     let spans = estate.spans();
-    let primaries: std::collections::BTreeSet<String> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
     assert_eq!(primaries.len(), 2, "one primary per mesh: {primaries:?}");
     let (root, climb) = climb_of(&spans, &two_meshes);
     let fp = s(&root["attributes"]["node"]);
