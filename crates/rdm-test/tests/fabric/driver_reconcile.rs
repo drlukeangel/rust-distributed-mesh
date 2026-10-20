@@ -224,8 +224,10 @@ async fn soak_driver_reconciles_fixed_seed_thirty_minute_process_run() {
     soak_cell(PROCESS_CELL, "process", "soak-process").await;
 }
 
-/// CONTRACT (#2787): the same driver, seed and schedule on the container provider: kills are an
-/// interface removal of the exact container, holds are `docker pause`, and a mesh is made unheard
+/// CONTRACT (#2787): the same driver, seed and schedule on the container provider: kills are
+/// `docker kill` of the exact container (SIGKILL to its init, acknowledged by the daemon; an
+/// interface removal is no death: the runtime keeps running and is held under R-FM1), holds are
+/// `docker pause`, and a mesh is made unheard
 /// by a packet filter in the namespaces of its containers until its heal row. The fabric-primary's
 /// container is in no silenced set. Every container of the estate is gone when the estate stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

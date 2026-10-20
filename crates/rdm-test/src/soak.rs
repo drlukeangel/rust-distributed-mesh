@@ -859,6 +859,17 @@ impl Driver {
             }
             None
         };
+        // The restart or delete (a replace's first step) of a node that holds its cohort's seat is
+        // refused by name, `no-secondary`, while no other node of its type in its mesh is
+        // ready-for-traffic to take the seat (node-primary-update.md "No-successor cases"; a
+        // desired-state shrink of a cohort's only node skips the update, so a shrink is not guarded).
+        let no_secondary = |n: &Value, what: &str| -> Option<String> {
+            if n["kind"] == "node_admin" || n["is_primary"] != true {
+                return None;
+            }
+            let secondary = nodes.iter().any(|o| o["mesh"] == n["mesh"] && o["kind"] == n["kind"] && o["name"] != n["name"] && o["status"] == "ready-for-traffic");
+            (!secondary).then(|| format!("{what}: {} holds its cohort's seat and no other {} of {} is ready-for-traffic: node.primary.update has no secondary", s(&n["name"]), s(&n["kind"]), s(&n["mesh"])))
+        };
         // A replacement is a delete then a spawn, and a spawn lands at the lowest free ordinal of
         // its class: it replaces the node at the same path.name only when no lower ordinal is free.
         let lands_on_same_path = |p: &str| -> Option<String> {
@@ -871,9 +882,14 @@ impl Driver {
         };
         match a {
             Action::Kill { node: p } | Action::Wedge { node: p } => guarded(p, kind(a)),
-            Action::Replace { node: p } => guarded(p, kind(a)).or_else(|| lands_on_same_path(p)),
+            Action::Replace { node: p } => guarded(p, kind(a)).or_else(|| node(p).and_then(|n| no_secondary(n, "replace"))).or_else(|| lands_on_same_path(p)),
             Action::Shrink { node: p } => guarded(p, kind(a)),
-            Action::Restart { node: p } => node(p).filter(|n| n["is_fabric_primary"] == true).map(|_| format!("restart: {p} is the fabric-primary; it leaves only by a hand-off Build")),
+            Action::Restart { node: p } => node(p).and_then(|n| {
+                if n["is_fabric_primary"] == true {
+                    return Some(format!("restart: {p} is the fabric-primary; it leaves only by a hand-off Build"));
+                }
+                no_secondary(n, "restart")
+            }),
             Action::HandOff { mesh } => {
                 let primary = nodes.iter().find(|n| n["mesh"] == mesh.as_str() && n["kind"] == "node_admin" && n["is_primary"] == true && n["status"] == "ready-for-traffic");
                 match primary {
@@ -1293,15 +1309,23 @@ impl Driver {
         ExactRuntime::published(std::path::Path::new(&dir)).map_err(|r| broken("fault-names-an-exact-runtime", format!("{node}: no exact runtime published in {dir}: {r:?}")))
     }
 
-    /// The exact runtime of `node` ends: SIGKILL of the published process (process provider), the
-    /// container's interface removed (container provider: its transport dies with it and the
-    /// runtime exits). Only once the fabric has first been ready-for-traffic: the driver arms no
-    /// death during fabric start ([`crate::estate::Estate::fabric_ready`], Q74).
+    /// The exact runtime of `node` ends: SIGKILL of the published process (process provider), or
+    /// `docker kill` of the exact container (container provider: SIGKILL to its init, acknowledged by
+    /// the daemon as not running). A container whose interface is removed is not a death: its
+    /// runtime keeps running, silent, and the provider reports it `Running`, so its mesh-primary holds
+    /// it under R-FM1 (`held-running`, RDM_HUNG_HOLD_FLOORS floors) instead of re-birthing it
+    /// (node-recovery.md steps 3-4; the soaks at 768dfaee). Only once the fabric has first been
+    /// ready-for-traffic: the driver arms no death during fabric start
+    /// ([`crate::estate::Estate::fabric_ready`], Q74).
     async fn kill(&mut self, node: &str, entry: &mut Value) -> Result<(), Broken> {
         let ready = self.estate.fabric_ready();
         if self.estate.owner.provider == "container" {
-            let u = container_faults::unplug(&self.estate, node).await.map_err(|e| broken("fault-applies", e))?;
-            entry["unplugged"] = json!(u.id);
+            let c = container_faults::ExactContainer::of(&self.estate, node).await.map_err(|r| broken("fault-names-an-exact-runtime", format!("kill {node}: {r:?}")))?;
+            let applied = c.apply(container_faults::Fault::Kill(ready)).map_err(|r| broken("fault-is-acknowledged", format!("kill {node}: {r:?}")))?;
+            if !applied.exited {
+                return Err(broken("fault-is-acknowledged", format!("kill {node}: the daemon did not show the container exited: {applied:?}")));
+            }
+            entry["killed"] = json!({"container": c.id, "status_after": applied.status_after, "exit_code": applied.exit_code});
             return Ok(());
         }
         let rt = self.published(node).await?;
@@ -1460,6 +1484,7 @@ impl Driver {
         if self.estate.owner.provider != "container" {
             return self.cut_udp(mesh, nodes, members, entry).await;
         }
+        let cut_at_ns = now_ns();
         let sil = container_faults::silence(&self.estate, &members, &fp).await.map_err(|e| broken("fault-applies", e))?;
         if !sil.active().map_err(|e| broken("fault-is-observed", e))? {
             return Err(broken("fault-is-observed", format!("{mesh}: the silence chain is not installed on every member")));
@@ -1471,7 +1496,9 @@ impl Driver {
         let within = Duration::from_secs(90);
         self.silenced.insert(mesh.to_string(), Cut::Container(sil));
         let after = until_unheard(&mut self.estate, &others, &members, false, false, within).await.map_err(|e| broken("fault-is-observed", format!("{mesh} silenced: {e}")))?;
-        entry["silenced"] = json!({"mesh": mesh, "members": members, "unheard_after_ms": after.as_millis() as u64});
+        // The cut window the cell reads (`cut_at_ns` to its Heal row's `healed_at_ns`), as the process
+        // provider's udp-drop row records it: a run's cuts are counted and judged from these rows.
+        entry["silenced"] = json!({"mesh": mesh, "members": members, "fault": "silence", "cut_at_ns": cut_at_ns, "unheard_after_ms": after.as_millis() as u64});
         Ok(())
     }
 
