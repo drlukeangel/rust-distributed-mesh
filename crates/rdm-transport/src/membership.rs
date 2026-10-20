@@ -1575,7 +1575,7 @@ impl Channel {
             book.fill(s);
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
-        crate::gossip::dial_span("membership.subscribe", &book.observer_name(), channel, &topic, &peers.iter().copied().collect::<Vec<_>>());
+        crate::gossip::dial_span("membership.subscribe", &format!("{}@{}", book.observer_name(), endpoint.id().fmt_short()), channel, &topic, &peers.iter().copied().collect::<Vec<_>>());
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
         tracing::info_span!("rdm.mesh.membership.update.via-subscribe", node = %book.observer_name(), channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
@@ -1790,7 +1790,7 @@ impl Channel {
         let fresh = rejoin(&self.joined, &live);
         if !fresh.is_empty() {
             let Some(sender) = self.sender.read().await.clone() else { return Ok(0) };
-            crate::gossip::dial_span(caller, &self.book.observer_name(), &self.label, &self.topic, &fresh);
+            crate::gossip::dial_span(caller, &format!("{}@{}", self.book.observer_name(), self.endpoint.id().fmt_short()), &self.label, &self.topic, &fresh);
             sender.join_peers(fresh.clone()).await?;
         }
         Ok(fresh.len())
@@ -1834,7 +1834,7 @@ impl Channel {
                     let sender = me.sender.read().await.clone();
                     let joined = match sender {
                         Some(sender) => {
-                            crate::gossip::dial_span("membership.repair", &node, &channel, &me.topic, &[t.addr.id]);
+                            crate::gossip::dial_span("membership.repair", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.topic, &[t.addr.id]);
                             sender.join_peers(vec![t.addr.id]).await.is_ok()
                         }
                         None => false,
@@ -1870,7 +1870,7 @@ impl Channel {
                 let sender = me.sender.read().await.clone();
                 let joined = match sender {
                     Some(sender) => {
-                        crate::gossip::dial_span("membership.refeed", &node, &channel, &me.topic, &peers);
+                        crate::gossip::dial_span("membership.refeed", &format!("{node}@{}", me.endpoint.id().fmt_short()), &channel, &me.topic, &peers);
                         sender.join_peers(peers.clone()).await.is_ok()
                     }
                     None => continue,
