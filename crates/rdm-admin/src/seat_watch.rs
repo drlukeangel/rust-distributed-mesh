@@ -227,9 +227,11 @@ impl Looker {
             }
             let birth = rdm_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone() };
             // A seat holder this admin holds off its mesh that answers Current is commanded back
-            // through node.mesh.join (node-tickle.md "What follows", Q87).
+            // through node.mesh.join (node-tickle.md "What follows", Q87) by the fabric-primary, the
+            // authority above a mesh-primary: every admin looks, one commands (commands go down).
+            let commands = view.own(&self.me_id).is_some_and(|me| me.is_fabric_primary);
             if let Ok(reply) = rdm_client::NodeRpc::new(&self.client).get(&birth, &once).await {
-                if let (true, Some(heard_again)) = (matches!(reply, rdm_core::status::StatusReply::Current { .. }), self.heard_again.get()) {
+                if let (true, true, Some(heard_again)) = (commands, matches!(reply, rdm_core::status::StatusReply::Current { .. }), self.heard_again.get()) {
                     heard_again.command(n, &incarnation).await;
                 }
             }

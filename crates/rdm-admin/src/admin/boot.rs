@@ -2279,7 +2279,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 for id in &report.reachable_silent {
                                                     // A held birth that answered its kick `Current` is commanded back through
                                                     // node.mesh.join (Q87): its re-entry runs on its own task, after the ladder's fold.
-                                                    if answered_current.lock().unwrap().remove(id) {
+                                                    // Only the mesh-primary commands its members (commands go down); every admin
+                                                    // keeps the bookkeeping.
+                                                    if answered_current.lock().unwrap().remove(id) && holds_seat {
                                                         if let (Some(heard_again), Some(n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
                                                             if let Some(incarnation) = n.incarnation_id.clone() {
                                                                 tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
