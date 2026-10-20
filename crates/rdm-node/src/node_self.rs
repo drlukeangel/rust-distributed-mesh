@@ -1070,11 +1070,11 @@ impl NodeSelf {
             Some(r) => r.renew(),
             None => rdm_transport::CancelToken::new(),
         };
-        // The command's completion is the mesh held again (node-mesh-join.md step 9): the topic parked
+        // The command's completion is the mesh held again (node-mesh-join.md step 9): the topic left
         // above is re-subscribed by the start's channel step. No progress stream: the start owes its
         // ReadyForTraffic declaration to its authority as a start after a stop does.
-        let mut parked = self.membership.parked_changes();
-        parked.borrow_and_update();
+        let mut left = self.membership.left_changes();
+        left.borrow_and_update();
         let me = self.clone();
         tokio::spawn(async move {
             let result = session.rejoin(retire, commander_rx, None, operation, None).await;
@@ -1096,13 +1096,13 @@ impl NodeSelf {
         let joined = if self.backbone.is_some() { vec![WhichMesh::Own, WhichMesh::Backbone] } else { vec![WhichMesh::Own] };
         let mesh_joined = || StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined: joined.clone() };
         let mut outcome = outcome_rx;
-        let mut parked_closed = false;
+        let mut left_closed = false;
         loop {
             tokio::select! {
-                changed = parked.changed(), if !parked_closed => match changed {
-                    Ok(()) if !*parked.borrow() => return mesh_joined(),
+                changed = left.changed(), if !left_closed => match changed {
+                    Ok(()) if !*left.borrow() => return mesh_joined(),
                     Ok(()) => {}
-                    Err(_) => parked_closed = true,
+                    Err(_) => left_closed = true,
                 },
                 changed = outcome.changed() => {
                     if changed.is_err() {

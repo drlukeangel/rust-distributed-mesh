@@ -3173,9 +3173,9 @@ impl Membership {
         self.mesh.park().await;
     }
 
-    /// Whether this mesh's topic is parked, as it changes: `true` from [`Self::park`] until
+    /// Whether this mesh's topic is left, as it changes: `true` from [`Self::park`] until
     /// [`Self::unpark`] re-subscribed the topic (a commanded `node.mesh.join` answers on the latter).
-    pub fn parked_changes(&self) -> tokio::sync::watch::Receiver<bool> {
+    pub fn left_changes(&self) -> tokio::sync::watch::Receiver<bool> {
         self.mesh.parked.subscribe()
     }
 
