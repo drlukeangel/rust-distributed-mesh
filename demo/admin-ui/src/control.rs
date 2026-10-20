@@ -146,17 +146,27 @@ async fn remove(State(c): State<Control>, Path(name): Path<String>) -> Response 
 
 /// One Build to the shape the body names; with no body, the MN proof shape (PRD §1.13): `mesh1`
 /// with 2 node-admins and 3 rpc nodes. node-admin computes what is missing.
-async fn bootstrap(State(c): State<Control>, body: Option<Json<BootstrapRequest>>) -> Response {
+async fn bootstrap(State(c): State<Control>, body: axum::body::Bytes) -> Response {
     let admin = match client(&c) {
         Ok(a) => a,
         Err(r) => return r,
+    };
+    // An empty body is the MN shape (a JSON content-type with no body is how the UI and its cell send it);
+    // a body that is not a shape is refused by name.
+    let body: Option<BootstrapRequest> = if body.iter().all(u8::is_ascii_whitespace) {
+        None
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(b) => Some(b),
+            Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid-request", "detail": e.to_string() }))).into_response(),
+        }
     };
     let fabric = match admin.fabric().await {
         Ok(f) => f.name,
         Err(e) => return answer(&c, "bootstrap", Err(e), None, None),
     };
     let meshes = match &body {
-        Some(Json(b)) if !b.meshes.is_empty() => b.meshes.iter().map(MeshRequest::desired).collect(),
+        Some(b) if !b.meshes.is_empty() => b.meshes.iter().map(MeshRequest::desired).collect(),
         _ => vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])],
     };
     let first = meshes.first().map(|m| m.name.clone()).unwrap_or_default();
