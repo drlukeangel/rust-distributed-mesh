@@ -1101,10 +1101,13 @@ impl Driver {
             self.sched.record("heal-after-silence", &a.to_string());
             return Some(a);
         }
+        // The floors story holds and cuts in turn: a hold, then a cut, so a run of any length proves
+        // both cycles; the draw still picks which node or mesh.
+        let cut_next = self.cfg.profile == Profile::Floors && self.actions.get("wedge").copied().unwrap_or(0) > self.actions.get("unheard").copied().unwrap_or(0);
         for _ in 0..64 {
             let seed = self.rng.next();
             let profile = self.cfg.profile;
-            let drawn = generate_among(seed, &self.model, 1, |a| profile.allows(a));
+            let drawn = generate_among(seed, &self.model, 1, |a| profile.allows(a) && (profile != Profile::Floors || matches!(a, Action::Unheard { .. }) == cut_next));
             let a = drawn.into_iter().next()?;
             self.sched.record("draw", &format!("{seed:#x}:{}", kind(&a)));
             match self.live_refusal(&a, nodes) {
