@@ -53,9 +53,13 @@ Valid, from the telemetry above:
 2. When iroh-gossip closes one, it marks the peer disconnected and drops it from every topic, though the
    other connection stays up. A broadcast in that gap is lost. The app channels have no re-feed to
    recover.
-3. The page (gossip.md §5): after the accepted join the birth joins its channels, "its first neighbour is
-   its own mesh's node-admin, already joined"; the node-admin "joins every type it does not already hold
-   before it answers the join". Nothing on the page has the admin dial the joiner.
+3. The pages: gossip.md §5, "after the accepted join the birth joins its mesh channel"; §8 (:871-882), the
+   node-admin "joins every type it does not already hold before it answers the join", and a joining node's
+   "first neighbour is its own mesh's node-admin, already joined"; §6, the admin dials a held member only as
+   repair, once its coverage has gone stale for the repair window. Nothing on the pages has the admin dial a
+   fresh joiner at its join. The guarantee broken is §8 (:905-909): "Live frames and pulled rows share one
+   apply rule, so nothing gossiped during the pull is lost"; a broadcast into the zero-neighbour gap has no
+   Plumtree neighbour to push to (§7), so the gap itself is the defect (Arch).
 
 Not yet proven:
 1. **Which RDM call sites dial at a join.** RDM records no span on a gossip dial. Two admin-side dials are
@@ -83,19 +87,29 @@ there is at least one effect that isn't understood yet.
 
 ## 4. Proposed experiments
 
-**X1, telemetry only (no behaviour change).** On main's code (E1 reverted too), add one span on every
-gossip dial RDM asks for: `rdm.mesh.connection.update.via-join-peers` (node, channel or topic, peers,
-caller). The callers are: the channel `join_peers` (`membership.rs:1780`), the app hub's `learn`
-(`gossip.rs:514`), and a subscribe with bootstrap peers (`gossip.rs:578`, the mesh and backbone
-subscribes). Keep the iroh debug layer.
+**X1, telemetry only (no behaviour change; approved by Arch).** On main's code (E1 reverted too), one span
+on every site where RDM hands peers to iroh-gossip: `rdm.mesh.connection.update.via-join-peers` (node,
+topic, peers, side, caller), the caller a `&'static str` set at the call site. The sites (Arch, git grep
+at `c7102594`):
+- rdm-transport: `gossip.rs:514` (the app hub's learn), `gossip.rs:578` (the app-channel subscribe with
+  peers), `membership.rs:1575` and `:1715` (the mesh and backbone subscribe and reopen with peers),
+  `membership.rs:1788` (the channel `join_peers`), `membership.rs:1830` and `:1863` (the repair and refeed
+  paths' direct `join_peers`).
+- rdm-admin: `fabric_builds.rs:163`, `:319`, `:421`, `:452` (the Build topic, straight on iroh-gossip).
+- through `Membership::join_peers`, named by their caller: `admin/boot.rs:1839`, `:2551`;
+  `admin/session.rs:575`, `:704`; `reenter.rs:161`; rdm-node `node.rs:1075` (the joiner's mesh join),
+  `:1462`.
+The iroh debug layer is kept.
 - To prove: for every dial at a join, which RDM caller made it, on which side, for which topic, and its
   time relative to the joiner's seed dial. Also, in the red run, which connection iroh closed, and why.
 - Run: 1 run, read it in full; then a cohort of 4 runs, until one is red, read.
 
-**X2, the change, chosen from X1's data (expected, not decided).** If X1 shows the admin's dials at a
-join come from a caller the page does not give the admin (§5: the joiner dials; the admin is already
-joined), that caller stops dialing a joiner of the admin's own mesh. This is one change, at the caller
-X1 names. Repair stays as §6 has it.
+**X2, the change, chosen from X1's data (expected, not decided).** Conformance, not a new rule: the caller
+X1 shows dialing the joiner at its join conforms to §8/§5/§6. Suspects, the same for Arch and the lead:
+`admin/boot.rs:1839`'s app-types learn with the joiner as a bootstrap peer (conformance: subscribe without
+the joiner as a peer) and `admin/boot.rs:2551`'s round dialing every member (conformance: dial a member only
+under §6's stale-coverage rule). Written at the caller's file:line with the page lines it conforms to; the
+exact change goes to Luke with X1's flame through Arch, as one ruling, before it lands.
 - To prove: no double dial, no neighbour-down within 50 ms of its neighbour-up, and the cell green.
 - Run: 1 run; then a cohort of 4; then, only if both are clean, 30.
 - Success: double dial 0/30, early drop 0/30, red 0/30, against the baseline above (red about 1 in 9,
@@ -104,7 +118,12 @@ X1 names. Repair stays as §6 has it.
 **Out of scope:** any change in iroh or iroh-gossip; an app-channel re-feed or redelivery machinery
 (gossip is best-effort, the start read is the truth).
 
-## 5. Asked of Arch
+## 5. Asked of Arch (answered 2026-10-19)
+
+Arch: §2 is right in substance (citations corrected above); X1 approved with the full site list; X2 matches
+the pages, stated as conformance, and goes to Luke with X1's flame before it lands.
+
+The questions were:
 
 1. Is the reading in §2 right, and is X1's instrumentation enough to name the dialing callers?
 2. Does X2's rule, that the joiner dials and the admin of its own mesh does not dial it at the join, match
