@@ -42,9 +42,10 @@ There is one integration point, not a callback list.
 accepted join supplies the cert and rafka-time and the mesh channel is joined; topology is
 installed only after the hook returns Ok. The hook subscribes the app's kind topics through that
 channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so does a birth its mesh-primary held
-`PendingReconnect` when it is heard again: it answers the tickle `Blocked` while the hook runs
-with the cert and rafka-time the probe's authority supplies, and is published ready-for-traffic
-only once the hook passes. Every entry to ready-for-traffic, from any other state, runs the hook;
+`PendingReconnect` when it is heard again: commanded back through node.mesh.join, it answers the
+tickle `Current { pending }` while its start runs (`Blocked` only while its hook reports a blocker),
+with the cert its accepting authority issues at the join and rafka-time refreshed last, and is
+published ready-for-traffic only once the hook passes. Every entry to ready-for-traffic, from any other state, runs the hook;
 the process's data-dir inheritance is an independent fact supplied by its spec.
 
 ### What the context carries
