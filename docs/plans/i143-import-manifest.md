@@ -1,19 +1,21 @@
 # i143 import manifest
 
-**Export SHA:** at export (RDM `main`), the revision rafka-v2 `Cargo.toml` pins. **Parity-through:** rafka-v2 at export.
+**Export SHA:** `abc1ec1570c983f419fcb3b43e6adbe8b5712ce8` (RDM `main`, 2026-10-20), the revision rafka-v2 `Cargo.toml` pins once (i141). **Parity-through:** rafka-v2 `2a02378db468247fd2785af32605de5876294f0a` (base `87045580`, ledger `sha256:48b134a2…`, 0 MIRROR pending).
 The six imported packages, at the export revision in rafka-v2 `Cargo.toml` and `Cargo.lock`:
 `rdm-core`, `rdm-transport`, `rdm-node`, `rdm-admin`, `rdm-client`, `rdm-test`.
-Forks: `iroh` / `iroh-base` at `drlukeangel/iroh` `23ab5a84`, `iroh-gossip` at `drlukeangel/iroh-gossip` `dce7b706` (RDM `Cargo.toml:51-53`); each fork's divergence and its removal condition are stated beside its pin (`Cargo.toml:33-50`).
+Forks: `iroh` / `iroh-base` at `drlukeangel/iroh` `23ab5a84`, `iroh-gossip` at `drlukeangel/iroh-gossip` `508fb795` (RDM `Cargo.toml:51-53`; the back-out of the read-only diag lines Luke permitted, Q75/Q77; `dce7b706` is its ancestor); each fork's divergence and its removal condition are stated beside its pin (`Cargo.toml:33-50`).
 
 ## Gate record at the export SHA
 
+`export-manifest --candidate abc1ec1570c983f419fcb3b43e6adbe8b5712ce8 --repo /home/admin/rafka-v2` (2026-10-20), `eligible=true`: 77 owners, 77 receipts certified, 2 gate logs, 81 §14 cells proven, 0 refusals; the manifest it wrote is committed as [i143-export-manifest.json](i143-export-manifest.json) (each receipt and gate log with its sha256).
+
 | gate | result | evidence |
 |---|---|---|
-| parity scan (`parity-scan --through <parity-through>`) | at export | at export |
-| fast gate (test cadence: staleness 3 s, gossip 500 ms) | at export | at export |
-| release gate (the release-only jobs, each stem at its own cadence) | at export | at export |
-| 30-minute seeded soak, all eight process faults incl. fabric-primary loss and admin wedge | at export | at export |
-| container proof (PRD §12.2 cells, Docker domain: `crates/rdm-admin/tests/container_proof.rs`, `T/runtime/container_kill.rs`) | at export | at export |
+| parity scan (`parity-scan --through <parity-through>`) | eligible through `2a02378db4`, 0 MIRROR pending | `i143-export-manifest.json` (`parity_ledger_digest`, `mirror_pending`) |
+| fast gate (test cadence: staleness 3 s, gossip 500 ms) | green, 73 jobs ok, 0 FAIL, DONE 185 s | `/home/admin/rust-distributed-mesh-deploy/gates-e4s8-abc1ec15.log` (`[gate] head=abc1ec15… dirty=0`) |
+| release gate (the release-only jobs, each stem at its own cadence) | green, 110 jobs ok, 0 FAIL, DONE 499 s | `/home/admin/rust-distributed-mesh-deploy/gates-e4s8-abc1ec15release.log` (`[gate] head=abc1ec15… dirty=0`) |
+| 30-minute seeded soak, all eight process faults incl. fabric-primary loss and admin wedge | 12 of 12 ok (`i143-2787-soak-{process,container}`, `i143-rshape-soak-{authority,lifecycle,partition,randomized,routing}-{process,container}`), 5,847 s in three batches; the ten story soaks each wrote `violations: []` with every invariant holding (`invariant-results.json`: 30 to 350 rounds a story) | the receipts `target/i143-rshape/jobs/<job>.json`, each hashed in `i143-export-manifest.json`; PRD e11.s12 |
+| container proof (PRD §12.2 cells, Docker domain: `crates/rdm-admin/tests/container_proof.rs`, `T/runtime/container_kill.rs`) | green: the release's `container-proof` job (29 s) and the 16 container receipts of the export run | `gates-e4s8-abc1ec15release.log`; `target/i143-acceptance/jobs/*-container.json`, `target/i143-rshape/jobs/*-container.json` |
 
 ## §14 export gate: every bullet and the cell that proves it
 
@@ -126,14 +128,14 @@ All are RDM-owned (`crates/rdm-core/src/catalog.rs:82-87`: `0x1B` status, `0x1C`
 | R-F2 Forward carries the remaining budget; the carrier answers within its reserve | `crates/rdm-transport/src/forward.rs:93` | `crates/rdm-transport/tests/forward.rs::the_forward_frame_carries_the_budget_that_remains_never_the_default`; `crates/rdm-transport/tests/forward_spans.rs::a_budget_spent_to_the_reply_reserve_is_refused_by_name_with_no_inner_call` |
 | R-C1 the carrier names `CarrierEdgeLost` | `crates/rdm-transport/src/forward.rs` | `crates/rdm-transport/tests/forward.rs::a_carrier_whose_own_edge_to_the_target_is_not_active_refuses_carrier_edge_lost`; `…::a_carried_call_answering_carrier_edge_lost_hands_the_proxy_back_for_retirement` |
 | R-S2 / R-S3 event-driven declarations; a new primary adopts the existing status | `A/src/status_declare.rs` | `crates/rdm-transport/tests/ready_gate.rs::a_closed_ready_gate_refuses_ping_typed_and_an_open_gate_serves_it`; `A/tests/status_declarations.rs::a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_first` |
-| R-G4 / R-G5 iroh-gossip pending-neighbor | fork commits `61a8cbb`, `4b6f558`, both in the pinned `dce7b706` | RED-then-GREEN cells in the fork (`2f75b32`, `b551ead`, both in `dce7b706`) |
+| R-G4 / R-G5 iroh-gossip pending-neighbor | fork commits `61a8cbb`, `4b6f558`, both in the pinned `508fb795` (through its ancestor `dce7b706`) | RED-then-GREEN cells in the fork (`2f75b32`, `b551ead`, both in `508fb795`) |
 
 ## Red, with owner
 
 | item | why it is red | owner |
 |---|---|---|
-| the gates at the export SHA (fast, release, container proof, 30-minute seeded soak) | not run until the export SHA is chosen | e10.s2, the export |
-| `export_manifest_rejects_pending_or_unclassified_parity` and `export_manifest_certifies_one_candidate_with_all_owner_receipts`, job `i143-2790-export` | built and green as cells (`tools/mesh-audit/tests/export_certifier.rs`; the certifier `tools/mesh-audit/src/export.rs`, binary `export-manifest`); the job's receipt, like every owner's, is not taken until the export SHA. `export-manifest --candidate <sha> --repo <rafka-v2>` certifies that SHA only when the parity scan is eligible, every owner's receipt (each job of the registry's `jobs` and `rshape_jobs`, 77 today) is `ok` there, written with no uncommitted path, with its artifacts still hashing, and the fast and release gate logs at that SHA prove every cell of §14 above | e10.s2 (#2790) |
-| the Rafka-shaped qualification `i143-rshape-export-qualification` and its 20-node C1-C20 / S1-S5 matrix | not run at an export SHA | #2943, #2949 |
+| the gates at the export SHA (fast, release, container proof, 30-minute seeded soak) | **closed 2026-10-20:** green at `abc1ec15` (the gate record above) | e10.s2, the export |
+| `export_manifest_rejects_pending_or_unclassified_parity` and `export_manifest_certifies_one_candidate_with_all_owner_receipts`, job `i143-2790-export` | **closed 2026-10-20:** the job's receipt `ok` at `abc1ec15` with the other 76 owners'; `export-manifest --candidate abc1ec15… --repo /home/admin/rafka-v2` certified it (`eligible=true`, 0 refusals): the parity scan eligible, every owner's receipt `ok` there with no uncommitted path and its artifacts hashing, the fast and release gate logs at that SHA proving every cell of §14 above (81). The manifest it wrote is [i143-export-manifest.json](i143-export-manifest.json) | e10.s2 (#2790) |
+| the Rafka-shaped qualification `i143-rshape-export-qualification` and its 20-node C1-C20 / S1-S5 matrix | **closed 2026-10-20:** run at `abc1ec15` as the export run's `rshape_jobs`, 34 receipts `ok`: the definition and consumer-import checks and the consumer build, the nine adversarial stories, then fast, composition, the four chaos stories and the five soak stories, each in both providers | #2943, #2949 |
 | `docs/architecture/node-identity-and-state.md` legacy-section reconciliation and the other import-doc bullets of the issue | not audited in this pass | e10.s2 (#2790) |
 | multi-host provider eligibility | not claimed (see the Runtime section above) | no owner; the claim is withheld |

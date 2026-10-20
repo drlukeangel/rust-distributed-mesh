@@ -105,4 +105,4 @@ rafka-v2 e9. None blocks the export; each is named so i141 does not discover it 
 
 Two corrections for the import manifest at export: its fork line names iroh-gossip `dce7b706`, the pin is
 `508fb795` (`Cargo.toml:53`, the back-out Luke permitted, Q75/Q77); and the "Rafka-shaped qualification … not
-run at an export SHA" red row closes with this export run and the soaks at `1feb0925`.
+run at an export SHA" red row closes with this export run and the soaks at the export SHA, `abc1ec15` (2026-10-20: 65 of 65, 12 of 12, `eligible=true`). Both corrections are applied in the manifest.
