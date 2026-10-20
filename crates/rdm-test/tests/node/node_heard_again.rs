@@ -141,6 +141,20 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         assert_eq!(names, first_names, "{node}: the heard-again start runs the start steps its first start ran, in their order (node-start.md); got {names:?}");
         let overlaps: Vec<String> = steps.windows(2).filter(|w| w[1].1 < w[0].2).map(|w| format!("{} began before {} closed", w[1].0, w[0].0)).collect();
         assert!(overlaps.is_empty(), "{node}: each start step begins only after the one before it closed: {overlaps:?}");
+        // The authority: the birth's next cycle begins at its join, never before the command reached it
+        // (node-start.md step 2: no state is written before the command is accepted), and the birth is
+        // published Pending at that join and ready-for-traffic only once its hook has passed
+        // (node-mesh-join.md step 10): its peers hold it off ready-for-traffic while its gate is closed.
+        let joins = after(&spans, "rdm.node_admin.node.update.via-join", node, since);
+        let joined_at = joins.iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed").map(at).min().unwrap_or_else(|| panic!("{node}: the heard-again join is served (via-join installed) after the release: {joins:?}"));
+        let begun_at = begun.iter().map(at).min().unwrap();
+        assert!(begun_at >= joined_at, "{node}: the next cycle begins at the join the command made ({joined_at}), not before it ({begun_at}): no state is written before the command is accepted (node-start.md step 2)");
+        let admitted = after(&spans, "rdm.node_admin.status.update.via-mesh-join-admitted", node, since);
+        let pending_at = admitted.iter().filter(|sp| matches!(s(&sp["attributes"]["outcome"]).as_str(), "applied" | "already-applied")).map(at).min();
+        assert!(pending_at.is_some_and(|p| p >= joined_at), "{node}: the authority publishes the heard-again birth Pending at its join (node-mesh-join.md step 10; via-mesh-join-admitted applied, at or after the join {joined_at}): {admitted:?}");
+        // The authority's record of the birth's own ready-for-traffic declaration (its `sender`).
+        let ready_at = named(&spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| s(&sp["attributes"]["sender"]) == node && s(&sp["attributes"]["state"]) == "ReadyForTraffic" && s(&sp["attributes"]["outcome"]) == "applied" && at(sp) >= since).map(at).min();
+        assert!(ready_at.is_some_and(|r| r > pending_at.unwrap()), "{node}: ready-for-traffic is declared only after the Pending publish: pending {pending_at:?}, ready {ready_at:?}");
         // The cert: issued again for the same birth at the heard-again join.
         let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
         assert!(!certs.is_empty(), "{node}: the accepting authority issues a fresh member cert at the heard-again join");
@@ -150,4 +164,40 @@ async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_seque
         let created = after(&spans, "rdm.node_admin.node.create.via-build", node, since);
         assert!(created.is_empty(), "{node}: no new birth at the path: {created:?}");
     }
+}
+
+/// CONTRACT (node-recovery.md step 2, "never to a birth with a command of its authority open or in
+/// flight"): a command is open from its send to its completion, not for the life of the admin. An rpc
+/// node restarted by a Build (node.restart, the same node.id and incarnation) and, once ready again,
+/// held past the staleness floor and released, is commanded back through node.mesh.join like any
+/// other heard-again birth: the restart's stop and start completed long before. What must NOT happen:
+/// the command refused `command-open` for a completed restart, or the birth left on its channels with
+/// its hook never run again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_birth_restarted_by_a_build_and_held_later_is_still_commanded_back() {
+    let mut estate = Estate::bootstrap(owner_restarted(), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settled_views(&[("mesh1", 2, 2)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let floor = rdm_transport::membership::staleness_floor();
+    let node = "mesh1.rpc.2";
+    let before = estate.node_view(node).await;
+    let mut stream = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
+    let _ = Estate::complete(&mut stream).await;
+    let restarted = estate
+        .until_node(node, &format!("{node} is ready-for-traffic again after its restart"), Duration::from_secs(120), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned())
+        .await;
+    assert_eq!((&restarted.node_id, &restarted.incarnation_id), (&before.node_id, &before.incarnation_id), "a restart keeps the node.id and the incarnation");
+    tokio::time::sleep(floor).await;
+    let released_at = hold_past_the_floor_then_release(&estate, node, floor).await;
+    estate.stop().await;
+    let spans = estate.spans();
+    let commanded = after(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded", node, released_at);
+    let outcomes: Vec<String> = commanded.iter().map(|sp| s(&sp["attributes"]["outcome"])).collect();
+    assert!(outcomes.iter().any(|o| o == "mesh-joined"), "{node}: commanded back after its restart completed and it was heard again; outcomes {outcomes:?}");
+    assert!(!outcomes.iter().any(|o| o.starts_with("command-open")), "{node}: the restart's commands completed long before: none is open (node-recovery.md step 2); outcomes {outcomes:?}");
+}
+
+fn owner_restarted() -> Owner {
+    Owner { test: "a_birth_restarted_by_a_build_and_held_later_is_still_commanded_back".into(), ..owner() }
 }

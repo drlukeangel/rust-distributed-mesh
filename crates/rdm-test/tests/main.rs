@@ -110,6 +110,8 @@ mod proxy_hydration_cutback;
 mod restarted_member_rejoin;
 #[path = "node/node_heard_again.rs"]
 mod node_heard_again;
+#[path = "build/node_create_after_delete.rs"]
+mod node_create_after_delete;
 #[path = "mesh/stopped_last_admin.rs"]
 mod stopped_last_admin;
 #[path = "gossip/peer_mesh_topology.rs"]

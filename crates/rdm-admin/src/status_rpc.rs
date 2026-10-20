@@ -946,6 +946,16 @@ impl StatusAuthority {
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
+    /// A commanded `node.mesh.join` admitted at this admin's join door (node-mesh-join.md step 10,
+    /// Q87): the birth's next cycle begins now, at its join and never before the command reached it
+    /// (node-start.md step 2), and it is published Pending once, as the Build path does on
+    /// `NodeJoined`; it is published ready-for-traffic only when its hook has passed and it declares so.
+    pub async fn commanded_join_admitted(&self, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
+        self.begin_cycle(node, birth).await;
+        let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: birth.clone(), name: node.name.clone(), state: NodeState::Pending };
+        self.persist_then_commit(Effect::Node(row, NodeState::Pending, None)).await
+    }
+
     /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
     /// book holds a later incarnation of the node (a restart), holds the node departed
     /// (node.deleted), or holds the birth's path.name under another node_id (a recovery's new node,
@@ -1106,6 +1116,11 @@ impl StatusAuthority {
         }
         A::Indeterminate { code: Code::Unknown, reason: format!("{} ended without its terminal frame", request_name(start)) }
         }.await;
+        // The command is over with its carry, admitted or not: its step receipt is the record
+        // (node-recovery.md step 2 reads "open" as from the send to the completion).
+        if let Some(incarnation) = node.incarnation_id.clone() {
+            self.commands.close(&crate::node_commands::CommandKey { node_id: node.node_id.clone(), incarnation, build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone() });
+        }
         (admission, unreachable)
     }
 

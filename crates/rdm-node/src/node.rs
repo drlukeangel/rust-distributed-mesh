@@ -774,6 +774,7 @@ async fn start_booted(
                                     // A step that fails ends the node by name from its start, as an unaccepted join does.
                                     ends: Some(out.clone()),
                                     knob: knob_fn.and_then(|f| f(&launch, &rafka_time, &boot)),
+                                    leave: None,
                                 }),
                             };
                             *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, before_ready: before_ready_cell, before_ready_task: before_ready_task_cell, publisher, node_rpc_feed, held: connections.held(), declare_loop, data_connections });
@@ -1012,7 +1013,15 @@ impl crate::workflows::node_start::StartNode for AfterStop<'_> {
             cancel: self.retire.take().expect("the hook's token is handed once"),
             state: s.before_ready_cell.clone(),
             runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.before_ready_task.clone() },
-            after: Box::new(RpcAfterHook { fabric_id: s.fabric_id.clone(), node_id: s.node_id.clone(), name: me, becoming, ends: None, knob: None }),
+            after: Box::new(RpcAfterHook {
+                fabric_id: s.fabric_id.clone(),
+                node_id: s.node_id.clone(),
+                name: me.clone(),
+                becoming,
+                ends: None,
+                knob: None,
+                leave: self.operation.operation.starts_with("node.mesh.join:").then(|| Leave { membership: membership.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), publisher: s.publisher.clone(), name: me.to_string() }),
+            }),
         })
     }
 }
@@ -1031,6 +1040,35 @@ struct RpcAfterHook {
     ends: Option<Arc<Mutex<Option<RunningNode>>>>,
     /// A scenario's rafka-time knob, applied once rafka-time is refreshed, before the report.
     knob: Option<Box<dyn FnOnce() + Send>>,
+    /// A commanded `node.mesh.join` (Q87): a step that fails after the hook leaves the birth off its
+    /// channels, Pending, for its authority's next command (node-recovery.md step 2), as a failure
+    /// inside the start's own task does; a Build's start after a stop leaves nothing (its process stays parked).
+    leave: Option<Leave>,
+}
+
+/// What a birth does to leave its channels from a task that is not the session's: the parts
+/// `Session::leave_channels` uses, cloned.
+struct Leave {
+    membership: Membership,
+    before_ready: crate::before_ready::BeforeReadyHook,
+    before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    name: String,
+}
+
+impl Leave {
+    async fn run(self, step: &str, reason: &str) {
+        if let Some(p) = self.publisher.lock().unwrap().take() {
+            p.abort();
+        }
+        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
+            h.abort();
+        }
+        self.before_ready.gate().close();
+        self.membership.park().await;
+        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
+            .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the birth leaves its channels for its authority's next command"));
+    }
 }
 
 #[async_trait::async_trait]
@@ -1054,10 +1092,13 @@ impl crate::workflows::node_start::AfterHook for RpcAfterHook {
         becoming.go().await;
     }
 
-    async fn start_failed(self: Box<Self>, _: &crate::node_self::StartFailed, _: bool) {
+    async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {
         let running = self.ends.and_then(|out| out.lock().unwrap().take());
         if let Some(running) = running {
             running.close().await;
+        }
+        if let Some(leave) = self.leave {
+            leave.run(failed.step, &failed.reason).await;
         }
     }
 }

@@ -512,6 +512,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 fetch_build: crate::fetch_build::FetchBuild::new(me.clone(), s.client.clone(), s.local.clone(), s.responders.clone(), entry),
                 progress: None,
             },
+            leave: self.operation.operation.starts_with("node.mesh.join:").then(|| AdminLeave { membership: s.membership.clone(), backbone: s.backbone.clone(), before_ready: s.before_ready.clone(), before_ready_task: s.before_ready_task.clone(), name: me.clone() }),
         };
         Ok(crate::workflows::node_start::HookParts {
             birth: crate::before_ready::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: NodeKind::NodeAdmin },
@@ -522,6 +523,31 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             runs: crate::workflows::node_start::HookRuns::Inline { blocked: s.before_ready_task.clone() },
             after: Box::new(after),
         })
+    }
+}
+
+/// What a node-admin does to leave its channels from a task that is not the session's: the parts
+/// `Session::leave_channels` uses, cloned. A commanded `node.mesh.join` (Q87) whose start fails at a
+/// step after its hook leaves the birth off its channels, Pending, for its authority's next command
+/// (node-recovery.md step 2), as a failure inside the start's own task does.
+pub(crate) struct AdminLeave {
+    membership: Membership,
+    backbone: Backbone,
+    before_ready: crate::before_ready::BeforeReadyHook,
+    before_ready_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    name: PathName,
+}
+
+impl AdminLeave {
+    async fn run(self, step: &str, reason: &str) {
+        if let Some(h) = self.before_ready_task.lock().unwrap().take() {
+            h.abort();
+        }
+        self.before_ready.gate().close();
+        self.membership.park().await;
+        self.backbone.park().await;
+        tracing::info_span!("rdm.mesh.node.reject.via-mesh-join-start-failed", node = %self.name, step, reason)
+            .in_scope(|| tracing::info!("the commanded start stopped at a step after its hook: the admin leaves its channels for its authority's next command"));
     }
 }
 
@@ -536,10 +562,18 @@ pub(crate) struct AdminAfterStopTail {
     pub(crate) wake: Arc<Records>,
     pub(crate) root: tracing::Span,
     pub(crate) floor: AdminFloor,
+    /// Set for a commanded `node.mesh.join`: a Build's start after a stop leaves nothing (its process stays parked).
+    pub(crate) leave: Option<AdminLeave>,
 }
 
 #[async_trait::async_trait]
 impl crate::workflows::node_start::AfterHook for AdminAfterStopTail {
+    async fn start_failed(self: Box<Self>, failed: &crate::node_self::StartFailed, _: bool) {
+        if let Some(leave) = self.leave {
+            leave.run(failed.step, &failed.reason).await;
+        }
+    }
+
     async fn topology_installed(&mut self, membership: &Membership, read: &crate::topology_read::TopologyRead) {
         let mesh_peers: Vec<EndpointAddr> = read
             .installed

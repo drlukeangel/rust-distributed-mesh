@@ -130,13 +130,31 @@ async fn command_mesh_join(
         // The join the command makes the birth report is verified against the deployment this admin
         // holds of it (node-mesh-join.md step 4): the live birth is registered as a start after a
         // stop registers a parked one, from its runtime handle and its admitted digest.
-        match runner.stopped_birth_or_live("node.mesh.join", &node.name).await {
-            Ok((_, _, deployed)) => {
-                let _ = runner.joins.expect(deployed);
-            }
+        // Its report, when the door admits it, is where the birth's next cycle begins and it is
+        // published Pending (node-mesh-join.md step 10): nothing is written before the command
+        // reached it (node-start.md step 2).
+        let mut reported = match runner.stopped_birth_or_live("node.mesh.join", &node.name).await {
+            Ok((_, _, deployed)) => runner.joins.expect(deployed),
             Err(why) => return format!("join-not-registered: {why}"),
+        };
+        {
+            let (authority, node, incarnation, floor) = (authority.clone(), node.clone(), incarnation.clone(), book.staleness_floor());
+            let admitted = async move {
+                loop {
+                    let hit = reported.borrow_and_update().as_ref().is_some_and(|d| d.node.node_id == node.node_id && d.node.incarnation == incarnation);
+                    if hit {
+                        let outcome = authority.commanded_join_admitted(&node, &incarnation).await;
+                        tracing::info_span!("rdm.node_admin.status.update.via-mesh-join-admitted", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), outcome = outcome.name(), "otel.kind" = "internal")
+                            .in_scope(|| tracing::info!("the commanded join was admitted: the birth's next cycle begins and it is published Pending"));
+                        return;
+                    }
+                    if reported.changed().await.is_err() {
+                        return;
+                    }
+                }
+            };
+            tokio::spawn(tracing::Instrument::instrument(async move { let _ = tokio::time::timeout(floor * 2 + std::time::Duration::from_secs(20), admitted).await; }, tracing::Span::current()));
         }
-        authority.begin_cycle(node, incarnation).await;
         let req = StatusRequest::JoinMesh {
             node_id: node.node_id.clone(),
             incarnation: incarnation.clone(),

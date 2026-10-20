@@ -206,7 +206,8 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBoo
         Ok(build_id) => build_id,
         Err(e) => return (CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) , code: rdm_core::outcome::Code::FailedPrecondition }, None),
     };
-    let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
+    let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    let _ = commands.open(key.clone());
     let (node_id, attempt) = (node.node_id.clone(), ctx.attempt);
     let mut unreachable = None;
     let admission = match cmd {
@@ -242,6 +243,8 @@ pub async fn send_command_reaching(client: &NodeRpcClient, commands: &CommandBoo
         }
         let _ = commands.complete(&CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("checked above") });
     }
+    // The command is over with its reply, admitted or not: its step receipt is the record.
+    commands.close(&key);
     // A command not admitted names why on its span (the reply, or why no reply came), as its step's
     // receipt does: the refusal is read where it happened.
     let detail = match &admission {
