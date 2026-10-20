@@ -1064,11 +1064,14 @@ impl NodeSelf {
             Some(r) => r.renew(),
             None => rdm_transport::CancelToken::new(),
         };
-        let (joined_tx, mut joined_rx) = tokio::sync::watch::channel(false);
-        let progress: CommandProgress = Arc::new(tokio::sync::Mutex::new(Box::new(JoinedSignal(joined_tx))));
+        // The command's completion is the mesh held again (node-mesh-join.md step 9): the topic parked
+        // above is re-subscribed by the start's channel step. No progress stream: the start owes its
+        // ReadyForTraffic declaration to its authority as a start after a stop does.
+        let mut parked = self.membership.parked_changes();
+        parked.borrow_and_update();
         let me = self.clone();
         tokio::spawn(async move {
-            let result = session.rejoin(retire, commander_rx, None, operation, Some(progress)).await;
+            let result = session.rejoin(retire, commander_rx, None, operation, None).await;
             *me.cycle.lock().unwrap() = Cycle::Live(None);
             let reply = match result {
                 Ok(()) => StatusReply::Started,
@@ -1079,13 +1082,13 @@ impl NodeSelf {
         let joined = if self.backbone.is_some() { vec![WhichMesh::Own, WhichMesh::Backbone] } else { vec![WhichMesh::Own] };
         let mesh_joined = || StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined: joined.clone() };
         let mut outcome = outcome_rx;
-        let mut joined_closed = false;
+        let mut parked_closed = false;
         loop {
             tokio::select! {
-                changed = joined_rx.changed(), if !joined_closed => match changed {
-                    Ok(()) if *joined_rx.borrow() => return mesh_joined(),
+                changed = parked.changed(), if !parked_closed => match changed {
+                    Ok(()) if !*parked.borrow() => return mesh_joined(),
                     Ok(()) => {}
-                    Err(_) => joined_closed = true,
+                    Err(_) => parked_closed = true,
                 },
                 changed = outcome.changed() => {
                     if changed.is_err() {
@@ -1557,23 +1560,6 @@ pub trait CommandFrames: Send {
 
 /// The admitted command's progress, shared with its lifecycle steps.
 pub type CommandProgress = Arc<tokio::sync::Mutex<Box<dyn CommandFrames>>>;
-
-/// The frames of a commanded `node.mesh.join`'s start: its `NodeJoined` is the command's completion
-/// (node-mesh-join.md: the primitive completes once the report is accepted and the mesh holds).
-struct JoinedSignal(tokio::sync::watch::Sender<bool>);
-
-#[async_trait::async_trait]
-impl CommandFrames for JoinedSignal {
-    async fn accepted(&mut self, _: NodeCommandReply) -> Result<(), String> {
-        Ok(())
-    }
-    async fn progress(&mut self, frame: NodeCommandReply) -> Result<(), String> {
-        if matches!(frame, NodeCommandReply::NodeJoined) {
-            let _ = self.0.send(true);
-        }
-        Ok(())
-    }
-}
 
 /// A node command's frames on its ordered reply stream (op 0x22).
 pub struct StreamFrames {

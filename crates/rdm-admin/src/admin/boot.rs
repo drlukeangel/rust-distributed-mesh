@@ -554,6 +554,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let joins = Arc::new(crate::join::Joins::default());
     // The runner, once built: the seat watch registers a seat holder heard again through it (Q87).
     let runner_slot: Arc<std::sync::OnceLock<Arc<AdminRunner>>> = Arc::default();
+    let heard_again_slot: crate::heard_again::HeardAgainSlot = Arc::default();
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
@@ -1214,7 +1215,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 builds: builds_dyn.clone(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: cut_off_writes.clone(),
-                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), authority: authority.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone() },
+                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone() },
                                 held_takeover: held_takeover.clone(),
                             });
                             let _ = handover_slot.set(handover.clone());
@@ -1256,6 +1257,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 issuer: issuer.clone(),
                             });
                             let _ = runner_slot.set(runner.clone());
+                            let _ = heard_again_slot.set(Arc::new(crate::heard_again::HeardAgain { client: node_rpc.client.clone(), authority: authority.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone(), book: membership.book.clone() }));
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
                             // that no view and no durable runtime row holds a birth of (mesh-investigation.md step 5).
                             records.set_path_probe(runner.clone());
@@ -2053,15 +2055,18 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
                                         let park = park_gate.clone();
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
-                                        // A birth heard again is commanded back through node.mesh.join (Q87): its next cycle
-                                        // begins at this admin's status authority, the command names the current Build.
-                                        let (ladder_authority, ladder_builds) = (authority.clone(), builds_dyn.clone());
+                                        // A birth heard again is commanded back through node.mesh.join (Q87).
+                                        let ladder_heard_again = heard_again_slot.clone();
                                         tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight, and the last verdict
                                             // named per birth. The tick never waits on either.
                                             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
                                             let verdicts: Arc<Mutex<HashMap<(NodeId, IncarnationId), Inspected>>> = Arc::default();
                                             let mut tickle = crate::offline::OfflineTickle::observed_by(me.to_string(), park.clone());
+                                            // The births whose kick answered `Current`: a round ends in a later tick than the
+                                            // one that began it, so the set outlives the tick; an entry is taken when its
+                                            // birth is folded as reached (node-recovery.md step 2; Q87).
+                                            let answered_current: Arc<Mutex<HashSet<String>>> = Arc::default();
                                             let floor = rdm_transport::membership::staleness_floor();
                                             let mut written: WrittenSilence = HashMap::new();
                                             let mut heard_changes = recovery.book.heard_changes();
@@ -2135,7 +2140,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         floor.as_millis() as u64,
                                                         |id| {
                                                             let (client, node) = (client.clone(), watched.get(&id).cloned());
-                                                            let (authority, builds, runner) = (ladder_authority.clone(), ladder_builds.clone(), runner.clone());
+                                                            let answered_current = answered_current.clone();
                                                             async move {
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
@@ -2158,7 +2163,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                     Ok(reply) => {
                                                                         let name = reply.name();
                                                                         if matches!(reply, rdm_core::status::StatusReply::Current { .. }) {
-                                                                            crate::heard_again::command_mesh_join(&client, &authority, &builds, &runner, &node, &birth.incarnation).await;
+                                                                            answered_current.lock().unwrap().insert(node.node_id.to_string());
                                                                         }
                                                                         name
                                                                     }
@@ -2170,6 +2175,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         },
                                                         |id| {
                                                             let (client, node) = (client.clone(), watched.get(&id).cloned());
+                                                            let answered_current = answered_current.clone();
                                                             // Carriers from the topology: every ready member of the target's mesh
                                                             // other than the target and this admin, whatever its kind (every node
                                                             // serves the core Forward op).
@@ -2191,9 +2197,14 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                     .iter()
                                                                     .map(|c| {
                                                                         let route = rdm_transport::RouteChoice::ViaPeer { carrier: c.node_id.clone(), path: c.name.clone() };
+                                                                        let answered_current = answered_current.clone();
                                                                         let probe = async move {
                                                                             let (out, _, _) = client.call_routed::<rdm_core::status::Status>(&node.node_id, &route, kick, &rdm_transport::CallOptions::default()).await;
-                                                                            out.reply().map(|r| r.value().clone())
+                                                                            let reply = out.reply().map(|r| r.value().clone());
+                                                                            if matches!(reply, Some(rdm_core::status::StatusReply::Current { .. })) {
+                                                                                answered_current.lock().unwrap().insert(node.node_id.to_string());
+                                                                            }
+                                                                            reply
                                                                         };
                                                                         (c.name.to_string(), probe)
                                                                     })
@@ -2266,6 +2277,15 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                 }
                                                 for id in &report.reachable_silent {
+                                                    // A held birth that answered its kick `Current` is commanded back through
+                                                    // node.mesh.join (Q87): its re-entry runs on its own task, after the ladder's fold.
+                                                    if answered_current.lock().unwrap().remove(id) {
+                                                        if let (Some(heard_again), Some(n)) = (ladder_heard_again.get().cloned(), watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)).cloned()) {
+                                                            if let Some(incarnation) = n.incarnation_id.clone() {
+                                                                tokio::spawn(async move { heard_again.command(&n, &incarnation).await; });
+                                                            }
+                                                        }
+                                                    }
                                                     verdicts.lock().unwrap().retain(|(nid, _), _| nid.as_str() != id);
                                                     if let Some(n) = watched.get(id).or_else(|| view.births().find(|n| n.node_id.as_str() == id)) {
                                                         records.clear_held_running(n).await;
@@ -2365,7 +2385,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             membership: membership.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
-                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), authority: authority.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone() },
+                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), heard_again: heard_again_slot.clone() },
                                             builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
                                             handover: handover_slot.clone(),
@@ -2565,7 +2585,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // An unreadable builds store steps no round: the adopted status waits, named above.
                                                     if let Some(current) = &current {
                                                         let planned = current.as_ref().map(|b| crate::round::planned(&b.topology, &mesh));
-                                                        let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records }).await;
+                                                        let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records, heard_again: heard_again_slot.get() }).await;
                                                         if done.mesh || done.fabric {
                                                             announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
                                                         }

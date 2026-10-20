@@ -202,12 +202,8 @@ pub struct Looker {
     pub provider: Arc<dyn crate::deployment::provider::DeploymentProvider>,
     /// Its nodes.storage: the runtime row of each birth recorded at launch or handed at its create.
     pub nodes: Option<Arc<dyn crate::storage::NodesStorage>>,
-    /// Its status authority: a seat holder heard again begins its next cycle there (Q87).
-    pub authority: crate::status_rpc::AuthoritySlot,
-    /// Its Build state: the current Build the commanded `node.mesh.join` names.
-    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
-    /// Its runner, once built: registers the seat holder's join before the command.
-    pub runner: Arc<std::sync::OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
+    /// A seat holder heard again is commanded back through this (Q87), once the admin holds it.
+    pub heard_again: crate::heard_again::HeardAgainSlot,
 }
 
 impl Looker {
@@ -233,8 +229,8 @@ impl Looker {
             // A seat holder this admin holds off its mesh that answers Current is commanded back
             // through node.mesh.join (node-tickle.md "What follows", Q87).
             if let Ok(reply) = rdm_client::NodeRpc::new(&self.client).get(&birth, &once).await {
-                if let (true, Some(runner)) = (matches!(reply, rdm_core::status::StatusReply::Current { .. }), self.runner.get()) {
-                    crate::heard_again::command_mesh_join(&self.client, &self.authority, &self.builds, runner, n, &incarnation).await;
+                if let (true, Some(heard_again)) = (matches!(reply, rdm_core::status::StatusReply::Current { .. }), self.heard_again.get()) {
+                    heard_again.command(n, &incarnation).await;
                 }
             }
             true

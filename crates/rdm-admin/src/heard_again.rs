@@ -12,20 +12,89 @@
 use crate::model::{IncarnationId, Node};
 use crate::status_rpc::AuthoritySlot;
 use rdm_core::status::{Status, StatusRequest};
+use rdm_transport::membership::DigestBook;
 use rdm_transport::{CallOptions, NodeRpcClient, NodeTarget};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
+
+/// The births this process commanded back and has not heard ready-for-traffic since: one command
+/// per silence. A watcher looks at a silent birth every pass; the re-entry it commanded takes the
+/// birth off its channels for the length of its start, and a second command inside that would
+/// start it over.
+fn commanded() -> &'static Mutex<HashMap<(String, String), Instant>> {
+    static COMMANDED: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
+    COMMANDED.get_or_init(Default::default)
+}
+
+/// What a watcher needs to command a birth back: this admin's client, status authority, Build state,
+/// runner (once built) and digest book. One handle, held by the offline ladder, the seat watch and
+/// the round driver's down op.
+pub struct HeardAgain {
+    /// This admin's Node RPC client: the command goes out on it.
+    pub client: Arc<NodeRpcClient>,
+    /// This admin's status authority: the birth's next cycle begins there.
+    pub authority: AuthoritySlot,
+    /// This admin's Build state: the current Build the command names.
+    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
+    /// This admin's runner, once built: it registers the birth's join before the command.
+    pub runner: Arc<OnceLock<Arc<crate::admin::runner::AdminRunner>>>,
+    /// This admin's digest book: whether the birth has been heard ready-for-traffic since.
+    pub book: DigestBook,
+}
+
+/// The handle, once this admin's runner is built.
+pub type HeardAgainSlot = Arc<OnceLock<Arc<HeardAgain>>>;
+
+impl HeardAgain {
+    /// Command `node`'s exact birth back through `node.mesh.join` ([`command_mesh_join`]).
+    pub async fn command(&self, node: &Node, incarnation: &IncarnationId) -> String {
+        let Some(runner) = self.runner.get() else {
+            return "no-runner".to_string();
+        };
+        command_mesh_join(&self.client, &self.authority, &self.builds, runner, &self.book, node, incarnation).await
+    }
+}
 
 /// Begin `node`'s next cycle (its declared state is measured from Pending again) and command
 /// `node.mesh.join` to its exact birth, naming the authority's current Build; the reply's name.
 /// One span, `rdm.node_admin.node.update.via-mesh-join-commanded`, with the outcome.
-pub(crate) async fn command_mesh_join(
+async fn command_mesh_join(
     client: &Arc<NodeRpcClient>,
     authority: &AuthoritySlot,
     builds: &Arc<dyn crate::build_state::BuildStateAdapter>,
     runner: &crate::admin::runner::AdminRunner,
+    book: &DigestBook,
     node: &Node,
     incarnation: &IncarnationId,
 ) -> String {
+    // The Day-0 fabric-primary, and any fabric seat holder: no node above it to connect to (Luke,
+    // Q87); it is never commanded back.
+    if node.is_fabric_primary {
+        return "fabric-primary: no authority above it".to_string();
+    }
+    // A birth with a lifecycle command of its authority in flight (a stop, a start, a restart) is that
+    // command's: the start it runs is the command's own (node-start.md), never this one.
+    if let Some(op) = book.in_flight().into_iter().find(|op| op.node_id == node.node_id && op.incarnation == *incarnation) {
+        return format!("in-flight: {}", op.operation);
+    }
+    // Once per silence: a birth commanded back is commanded again only after a staleness floor, and
+    // only once this process has heard it ready-for-traffic since (the watcher looks at it every pass
+    // while its view still holds it silent).
+    let key = (node.node_id.to_string(), incarnation.as_str().to_string());
+    if let Some(at) = commanded().lock().unwrap().get(&key).copied() {
+        if at.elapsed() < book.staleness_floor() {
+            return "commanded-already".to_string();
+        }
+        let heard_ready_since = book
+            .get(node.node_id.as_str())
+            .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::ReadyForTraffic && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
+        if heard_ready_since {
+            commanded().lock().unwrap().remove(&key);
+        } else {
+            return "commanded-already".to_string();
+        }
+    }
     let (build_id, attempt) = match builds.current().await {
         Ok(Some(b)) => (b.build_id.to_string(), b.attempt),
         _ => (String::new(), 0),
@@ -68,6 +137,9 @@ pub(crate) async fn command_mesh_join(
         }
     };
     let outcome = tracing::Instrument::instrument(outcome, span.clone()).await;
+    if !outcome.starts_with("no-authority") && !outcome.starts_with("join-not-registered") {
+        commanded().lock().unwrap().insert(key, Instant::now());
+    }
     span.record("outcome", outcome.as_str());
     span.in_scope(|| tracing::info!(node = %node.name, outcome = %outcome, "a birth heard again is commanded back through node.mesh.join"));
     outcome
