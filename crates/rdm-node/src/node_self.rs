@@ -1043,6 +1043,12 @@ impl NodeSelf {
         let Some(session) = self.session.lock().unwrap().clone() else {
             return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.held_name()));
         };
+        // A birth whose connections are being deleted, or that is leaving, is in its stop
+        // (node-connections-delete.md, node-stop.md): the stop decides its next cycle, not this command.
+        let status = (self.status)();
+        if matches!(status, MemberStatus::ConnectionsDeleting | MemberStatus::Leaving) {
+            return rdm_core::reply::status::not_ready(format!("{}: {status:?}: a stop is under way; node.mesh.join is refused", self.held_name()));
+        }
         let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
         let (commander_tx, commander_rx) = tokio::sync::watch::channel(key);
         {

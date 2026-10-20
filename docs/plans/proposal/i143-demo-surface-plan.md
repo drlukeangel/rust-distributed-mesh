@@ -74,7 +74,7 @@ in the soak model where it is a fault. The fabric-primary guard becomes a profil
 complete. Nothing here changes RDM product code unless a cell is red; a red is a product defect fixed RED-first, or a
 page gap asked as a ruling.
 
-1. **B1 + C1** (one landing; D1 is Q87, landed first): the consumer executables carry the chain; every existing soak then proves the pull, the cert and the time under chaos through readiness, the wedge and cut stories now through the heard-again re-entry. `demo/tests/projections.rs` gains the rafka-shaped cell (an admin declaring nothing, certs on).
+1. **B1 + C1** (one landing; D1 is Q87, landed first): the consumer executables carry the chain; every existing soak then proves the pull, the cert and the time under chaos through readiness, the wedge and cut stories now through the heard-again commanded start. `demo/tests/projections.rs` gains the rafka-shaped cell (an admin declaring nothing, certs on).
 2. **A1 + E1 + A2**: a role binds one app listener slot, is ready only once it answers, and reads its `config`.
 3. **G1**: app work at state-commit and lifecycle hooks at mesh-create and node-delete, with chaos on them.
 4. **X1** authority loss as C stories, then the S6 profile; **X2** long holds as C stories, then in S6.

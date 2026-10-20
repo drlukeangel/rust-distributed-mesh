@@ -136,9 +136,6 @@ pub struct Inputs<'a> {
     pub client: Option<&'a Arc<NodeRpcClient>>,
     /// The records this admin holds.
     pub records: &'a Records,
-    /// Commands a planned birth back through `node.mesh.join` when the round's down op finds it
-    /// answering but off its mesh (Q87); `None` in a cell without one.
-    pub heard_again: Option<&'a Arc<crate::heard_again::HeardAgain>>,
 }
 
 /// Which rounds are complete now.
@@ -202,7 +199,7 @@ impl RoundDriver {
         let targets = self.changed_mesh_primaries(view, is_fabric_primary);
         if !targets.is_empty() {
             let me = self.held_name(view);
-            send_down(&me, "fabric", &view.fabric.name, targets, client, None);
+            send_down(&me, "fabric", &view.fabric.name, targets, client);
         }
     }
 
@@ -246,16 +243,7 @@ impl RoundDriver {
             let round = self.mesh.get_or_insert_with(|| Round { began: Instant::now(), held: None });
             if first {
                 let targets: Vec<(String, Option<crate::model::Node>)> = i.planned.iter().flatten().filter(|p| **p != me).map(|p| (p.to_string(), i.view.members().find(|n| &n.name == p).cloned())).collect();
-                // The targets this admin holds off its mesh: no digest of the birth, or one unheard past
-                // the floor. A healthy target answers its probe as a read (node-status.md), never a re-entry.
-                let floor = i.book.staleness_floor();
-                let off_mesh: std::collections::HashSet<String> = targets
-                    .iter()
-                    .filter_map(|(_, n)| n.as_ref())
-                    .filter(|n| !i.book.get(n.node_id.as_str()).is_some_and(|(d, unheard)| Some(&d.node.incarnation) == n.incarnation_id.as_ref() && unheard < floor))
-                    .map(|n| n.node_id.to_string())
-                    .collect();
-                send_down(&me, "mesh", &mesh_name, targets, i.client, i.heard_again.cloned().map(|h| (h, off_mesh)));
+                send_down(&me, "mesh", &mesh_name, targets, i.client);
             }
             let missing = match &i.planned {
                 None => vec![Missing { who: mesh_name.clone(), why: "accepted-build-unreadable" }],
@@ -300,7 +288,7 @@ impl RoundDriver {
                         self.addressed.insert(mesh.clone(), Addressed::of(p, m));
                     }
                 }
-                send_down(&me, "fabric", &i.view.fabric.name, targets, i.client, None);
+                send_down(&me, "fabric", &i.view.fabric.name, targets, i.client);
             }
             let my_mesh_done = !awaiting.mesh_awaiting_round || out.mesh;
             let reports = reports_of(&i.records.declared.lock().unwrap(), i.view, meshes.iter().map(|(m, _, _)| m.as_str()));
@@ -325,12 +313,12 @@ impl RoundDriver {
 }
 
 /// The round's down op to each target, once, on its own task: the answer is named in a span and
-/// nothing is retried. A target the view holds no birth of is named too. A planned birth of this
-/// admin's mesh that answers `Current` is off its mesh (it is a round target because it has not
-/// checked in): it is commanded back through `node.mesh.join` (Q87, node-tickle.md "What follows").
-fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String, Option<crate::model::Node>)>, client: Option<&Arc<NodeRpcClient>>, heard_again: Option<(Arc<crate::heard_again::HeardAgain>, std::collections::HashSet<String>)>) {
+/// nothing is retried. A target the view holds no birth of is named too. The op is a read
+/// (node-status.md: `node.get` manufactures no transition); a member off its mesh is the tickle
+/// ladder's to command back (node-recovery.md step 2, Q87), never this op's.
+fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String, Option<crate::model::Node>)>, client: Option<&Arc<NodeRpcClient>>) {
     for (who, node) in targets {
-        let (me, of, client, heard_again) = (me.clone(), of.to_string(), client.cloned(), heard_again.clone());
+        let (me, of, client) = (me.clone(), of.to_string(), client.cloned());
         // The span opens before the call, so the call and the target's serve chain are its children.
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-round-down", node = %me, mesh = %of, scope, target = %who, outcome = tracing::field::Empty);
         tokio::spawn(
@@ -344,16 +332,7 @@ fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String,
                             // `node.get` of the exact birth: it reasserts itself and answers its state.
                             let birth = rdm_client::ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
                             match rdm_client::NodeRpc::new(client).get(&birth, &CallOptions::default()).await {
-                                Ok(reply) => {
-                                    let name = reply.name().to_string();
-                                    match &heard_again {
-                                        Some((heard_again, off_mesh)) if matches!(reply, rdm_core::status::StatusReply::Current { .. }) && off_mesh.contains(n.node_id.as_str()) => {
-                                            let commanded = heard_again.command(n, &birth.incarnation).await;
-                                            format!("{name}; node.mesh.join commanded: {commanded}")
-                                        }
-                                        _ => name,
-                                    }
-                                }
+                                Ok(reply) => reply.name().to_string(),
                                 Err(end) => end.rpc_name().to_string(),
                             }
                         }
@@ -535,7 +514,7 @@ mod tests {
         let book = DigestBook::default();
         let mut driver = RoundDriver::new(me.name.clone(), me.node_id.clone());
         let awaiting = Announced { mesh_awaiting_round: false, fabric_awaiting_round: true };
-        let inputs = || Inputs { view: &v, planned: None, book: &book, client: None, records: &records, heard_again: None };
+        let inputs = || Inputs { view: &v, planned: None, book: &book, client: None, records: &records };
         // A ready primary of a newer birth is in the view; nobody has reported to this holder.
         let done = driver.step(awaiting, inputs()).await;
         assert!(!done.fabric && records.adopted_degraded(), "the topology reading alone does not clear degraded");
@@ -559,7 +538,7 @@ mod tests {
         let mut driver = RoundDriver::new(me.name.clone(), me.node_id.clone());
         let awaiting = Announced { mesh_awaiting_round: true, fabric_awaiting_round: false };
         let planned = vec![me.name.clone(), rpc.name.clone()];
-        let inputs = || Inputs { view: &v, planned: Some(planned.clone()), book: &book, client: None, records: &records, heard_again: None };
+        let inputs = || Inputs { view: &v, planned: Some(planned.clone()), book: &book, client: None, records: &records };
         // The member was heard before the round began (it is held, but it has not checked in).
         let before = digest(&rpc.name, MemberStatus::ReadyForTraffic);
         assert!(book.record(before.clone()));
@@ -573,7 +552,7 @@ mod tests {
         assert!(done.mesh, "every planned birth checked in after the round began");
         // An unreadable accepted Build holds the round by name.
         let mut unreadable = RoundDriver::new(me.name.clone(), me.node_id.clone());
-        let done = unreadable.step(awaiting, Inputs { view: &v, planned: None, book: &book, client: None, records: &records, heard_again: None }).await;
+        let done = unreadable.step(awaiting, Inputs { view: &v, planned: None, book: &book, client: None, records: &records }).await;
         assert!(!done.mesh);
     }
 }

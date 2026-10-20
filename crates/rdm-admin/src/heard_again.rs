@@ -19,17 +19,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 /// The births this process commanded back and has not heard ready-for-traffic since: one command
-/// per silence. A watcher looks at a silent birth every pass; the re-entry it commanded takes the
-/// birth off its channels for the length of its start, and a second command inside that would
-/// start it over.
+/// per silence. An admin looks at a silent birth every pass; the start it commanded takes the
+/// birth off its mesh for the length of that start, and a second command inside it would start
+/// it over.
 fn commanded() -> &'static Mutex<HashMap<(String, String), Instant>> {
     static COMMANDED: OnceLock<Mutex<HashMap<(String, String), Instant>>> = OnceLock::new();
     COMMANDED.get_or_init(Default::default)
 }
 
-/// What a watcher needs to command a birth back: this admin's client, status authority, Build state,
-/// runner (once built) and digest book. One handle, held by the offline ladder, the seat watch and
-/// the round driver's down op.
+/// What an admin needs to command a birth back: this admin's client, status authority, Build state,
+/// runner (once built) and digest book: one function, run by the offline ladder and the seat watch.
 pub struct HeardAgain {
     /// This admin's Node RPC client: the command goes out on it.
     pub client: Arc<NodeRpcClient>,
@@ -74,8 +73,8 @@ async fn command_mesh_join(
         return "fabric-primary: no authority above it".to_string();
     }
     // Only a birth the view holds off ready-for-traffic re-enters (Luke: "coming from a state that is
-    // not ready-for-traffic"). A watcher's own fresh book (an admin just started holds every member
-    // from the projection, unheard until their digests reach it) is not the birth's state; the view is.
+    // not ready-for-traffic"). What an admin just started has heard is not the birth's state (it holds every
+    // member from the projection, unheard until their digests reach it); the topology is.
     if node.status == crate::model::NodeStatus::ReadyForTraffic {
         return "ready-in-view: on its mesh".to_string();
     }
@@ -85,7 +84,7 @@ async fn command_mesh_join(
         return format!("in-flight: {}", op.operation);
     }
     // Once per silence: a birth commanded back is commanded again only after a staleness floor, and
-    // only once this process has heard it ready-for-traffic since (the watcher looks at it every pass
+    // only once this process has heard it ready-for-traffic since (the admin looks at it every pass
     // while its view still holds it silent).
     let key = (node.node_id.to_string(), incarnation.as_str().to_string());
     if let Some(at) = commanded().lock().unwrap().get(&key).copied() {
@@ -95,8 +94,8 @@ async fn command_mesh_join(
         let heard_ready_since = book
             .get(node.node_id.as_str())
             .is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && d.status == rdm_core::MemberStatus::ReadyForTraffic && Instant::now().checked_sub(unheard).is_some_and(|heard_at| heard_at > at));
-        // Heard ready-for-traffic since, or unheard again (a re-entry that stopped at a step left the
-        // birth off its channels): a new silence, commanded again; else the one command stands.
+        // Heard ready-for-traffic since, or unheard again (a commanded start that stopped at a step left the
+        // birth off its mesh): a new silence, commanded again; else the one command stands.
         let unheard_again = !book.get(node.node_id.as_str()).is_some_and(|(d, unheard)| d.node.incarnation == *incarnation && unheard < book.staleness_floor());
         if !heard_ready_since && !unheard_again {
             return "commanded-already".to_string();

@@ -36,7 +36,8 @@ pub(crate) struct SilentNode {
 /// `floor`, the instant its silence passed the floor (node-recovery.md "Detection and proof" step 1:
 /// "Each node's pruner marks a member `PendingReconnect` once it is unheard past the staleness
 /// floor"). A birth the book holds only from its mesh-primary's projection is unheard since the book
-/// first held it. A birth the book holds nothing of, a receipt of another incarnation, or one heard
+/// first held it, and is tickled only once the view holds it off ready-for-traffic (its caller's
+/// filter: the topology, not what this admin has heard, decides who is tickled; Q87). A birth the book holds nothing of, a receipt of another incarnation, or one heard
 /// within the floor carries no mark.
 pub(crate) fn silent_set<'a>(watched: impl IntoIterator<Item = &'a crate::model::Node>, book: &rdm_transport::membership::DigestBook, now: std::time::Instant, now_ms: u64, floor: std::time::Duration) -> Vec<SilentNode> {
     watched

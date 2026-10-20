@@ -455,7 +455,7 @@ pub async fn run(w: Watch) {
                         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
                         // The fabric-primary's hold of a hung mesh-primary submits its terminate, gated by the
                         // birth's failed terminates (node-recovery.md step 4's end); a hung fabric-primary's
-                        // watchers only record.
+                        // admins only record.
                         let submitter = w.recovery.as_ref().filter(|_| !node.is_fabric_primary && view.holds_fabric_seat(&me_birth.0));
                         let gate = match submitter {
                             Some(recovery) => {
@@ -482,7 +482,7 @@ pub async fn run(w: Watch) {
                     w.records.clear_held_running(&node).await;
                 }
                 // A seat holder the operating system holds suspended is neither hung nor gone: a hold
-                // this watcher opened while it read Running is cancelled (deployment-provider.md §2.5).
+                // this admin opened while it read Running is cancelled (deployment-provider.md §2.5).
                 Finding::OsStopped => {
                     w.records.clear_held_running(&node).await;
                 }

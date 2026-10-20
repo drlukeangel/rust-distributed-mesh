@@ -2101,8 +2101,12 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 // PendingReconnect from that instant, so its ladder runs now.
                                                 let marks = crate::offline::held_marks(&records.unreachable, &view, &mesh, &recovery.book, now);
                                                 crate::offline::watch_marked(&mut watched, &marks, &view, &me_id);
+                                                // The topology decides who is tickled (Luke, Q87): a mesh-primary's view comes from the
+                                                // fabric-primary and is current, so a member it holds ready-for-traffic there is not
+                                                // tickled on this admin's own fresh book; only a member the view holds off
+                                                // ready-for-traffic (its mark, or a command never sent) is.
                                                 let silent: Vec<crate::offline::SilentNode> = crate::offline::silent_set(
-                                                    watched.values().filter(|n| {
+                                                    watched.values().filter(|n| n.status != NodeStatus::ReadyForTraffic).filter(|n| {
                                                         marks.contains_key(&n.node_id)
                                                             || !recovery
                                                                 .book
@@ -2289,7 +2293,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 }
                                                 for id in &report.reachable_silent {
                                                     // A held birth that answered its kick `Current` is commanded back through
-                                                    // node.mesh.join (Q87): its re-entry runs on its own task, after the ladder's fold.
+                                                    // node.mesh.join (Q87): its commanded start runs on its own task, after the ladder's fold.
                                                     // Only the mesh-primary commands its members (commands go down); every admin
                                                     // keeps the bookkeeping.
                                                     if answered_current.lock().unwrap().remove(id) && holds_seat {
@@ -2598,7 +2602,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     // An unreadable builds store steps no round: the adopted status waits, named above.
                                                     if let Some(current) = &current {
                                                         let planned = current.as_ref().map(|b| crate::round::planned(&b.topology, &mesh));
-                                                        let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records, heard_again: heard_again_slot.get() }).await;
+                                                        let done = rounds.step(announced, crate::round::Inputs { view: &t, planned, book: &membership.book, client: Some(&rpc_client), records: &records }).await;
                                                         if done.mesh || done.fabric {
                                                             announced = backbone.announce_statuses(&mesh_status, &fabric_status(&records), done.mesh, done.fabric).await;
                                                         }
