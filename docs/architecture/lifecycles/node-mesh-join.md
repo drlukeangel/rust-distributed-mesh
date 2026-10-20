@@ -65,14 +65,17 @@ Those pages link here and restate nothing.
    by this first listener.
 9. `node.mesh.joined`. The node's first `Digest` heartbeat follows, status `pending`.
 10. The mesh-primary, hearing the node as a neighbour, publishes it once as Pending so every node
-    that held it stopped or restarting hears the rejoin. What follows inside a start, the hook,
-    the topology read, the Build floor and rafka-time refreshed last, is
-    [node.start](node-start.md#end-to-end-sequence) steps 3 to 5; standalone, the primitive ends
-    at step 9 and the node is back on its mesh.
+    that held it stopped or restarting hears the rejoin. What follows, the hook, the topology
+    read, the Build floor and rafka-time refreshed last, is
+    [node.start](node-start.md#end-to-end-sequence) steps 3 to 5, inside a start and on the
+    standalone command alike: a birth commanded back leaves its channels, runs the whole sequence
+    again on the commanding call and is published ready-for-traffic only once its hook has passed
+    (Q87). The command is answered `MeshJoined` at this step, while the rest of the start runs on.
 
 The report is only a report: it re-reads no topology for a held member, completes no start and
-bypasses no hook. Only an accepted full report completes the deployment's waits; a launched
-process, a listening socket, a digest on gossip, a timeout or an unanswered call never does.
+bypasses no hook; the start it is step 2 of does those, on the standalone command as inside a
+start. Only an accepted full report completes the deployment's waits; a launched process, a
+listening socket, a digest on gossip, a timeout or an unanswered call never does.
 
 ## Command, completion and gossip messages
 

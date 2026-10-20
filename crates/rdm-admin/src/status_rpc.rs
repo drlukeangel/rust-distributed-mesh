@@ -340,9 +340,6 @@ pub struct StatusAuthority {
     /// refreshed every tick (`Records::durable`): a declaration for one is decided as for a birth the
     /// view holds (Q11).
     pub durable: Arc<Mutex<Vec<crate::model::Node>>>,
-    /// This node's re-publish of its presence (its peers handed to its mesh channel again, its
-    /// digest published), filled once it has joined: what a node-admin's status kick asks of it.
-    pub republish: Republish,
     /// The commands this admin sent (as an owning mesh-admin) and awaits a completion call for.
     pub commands: Arc<crate::node_commands::CommandBook>,
     /// This admin as the subject of `node.connections.delete` / `stop-node` from its own mesh-admin; filled once
@@ -793,7 +790,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.before_ready, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.configure, &self.rename, &self.before_ready, &self.wake).await {
                 return reply;
             }
         }
@@ -1416,8 +1413,6 @@ impl StatusAuthority {
 
 /// Serve `Status` on this admin. `authority` is filled once the admin holds a view; until then a
 /// declaration is `NotReady` by name.
-/// A node's re-publish of its presence, filled once it has joined its mesh.
-pub(crate) type Republish = Arc<OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// Where a node's own `before_ready` stands: `None` until its start registered a hook.
 pub type BeforeReadyCell = Arc<Mutex<Option<crate::before_ready::BeforeReadyHandle>>>;
@@ -1454,7 +1449,7 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// `before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a node's connections are deleted by `node.connections.delete` and a stop is `stop-node`.
 #[allow(clippy::too_many_arguments)]
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, before_ready: &BeforeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, configure: &Configure, rename: &Rename, before_ready: &BeforeReadyCell, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
         StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
@@ -1493,12 +1488,9 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
                     .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                 return Some(reply);
             }
-            if let Some(republish) = republish.get() {
-                republish().await;
-            }
             let state = node_state_of(me.status);
             tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = ?state, "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
+                .in_scope(|| tracing::info!("probed by a node-admin: current state answered, nothing re-published"));
             Some(StatusReply::Current { node_id: me.node_id.clone(), incarnation: held.clone(), state })
         }
         StatusRequest::ApplyNodeState { state, .. } => {
@@ -1808,7 +1800,6 @@ mod tests {
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
@@ -1875,7 +1866,6 @@ mod tests {
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
@@ -1952,7 +1942,6 @@ mod tests {
             status_storage: status,
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
@@ -2194,7 +2183,6 @@ mod tests {
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
@@ -2234,14 +2222,13 @@ mod tests {
         let admin = node("mesh2.admin.1");
         let carrier = node("mesh2.rpc.1");
         let (node_id, incarnation) = (admin.node_id.clone(), admin.incarnation_id.clone().unwrap());
-        let republish = Republish::default();
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::ConnectionsDeleting };
-        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &Configure::default(), &Rename::default(), &BeforeReadyCell::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 
@@ -2264,7 +2251,6 @@ mod tests {
             status_storage: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Default::default(),
             commands: Default::default(),
             own: Default::default(),
             mesh_deleter: Default::default(),
@@ -2627,7 +2613,6 @@ mod tests {
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),
@@ -2727,7 +2712,6 @@ mod tests {
             status_storage: status.clone(),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
             mesh_deleter: Arc::new(OnceLock::new()),

@@ -837,16 +837,15 @@ struct NodeSession {
 
 #[async_trait::async_trait]
 impl crate::node_self::Session for NodeSession {
-    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
+    async fn leave_channels(&self) {
         if let Some(p) = self.publisher.lock().unwrap().take() {
             p.abort();
         }
         if let Some(h) = self.before_ready_task.lock().unwrap().take() {
             h.abort();
         }
-        // A parked node serves no app op until a start's hook has passed again.
+        // A birth off its channels serves no app op until a start's hook has passed again.
         self.before_ready.gate().close();
-        let neighbours = self.membership.neighbours();
         self.membership.park().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-left",
@@ -857,6 +856,11 @@ impl crate::node_self::Session for NodeSession {
             which = rdm_core::status::WhichMesh::Own.name(),
         )
         .in_scope(|| tracing::info!("left the mesh channel"));
+    }
+
+    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
+        let neighbours = self.membership.neighbours();
+        self.leave_channels().await;
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
@@ -875,28 +879,6 @@ impl crate::node_self::Session for NodeSession {
         crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
     }
 
-    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
-        use rdm_core::status::WhichMesh;
-        // node.mesh.join (node-mesh-join.md), the one primitive: reported to the admin whose call
-        // commanded it, reached back over that call.
-        let name = self.membership.with_config(&self.digest).node.name.to_string();
-        let Some(key) = spare else {
-            return Err(format!("{name}: commander-uncalled: JoinMesh came on no Node RPC call"));
-        };
-        let to = crate::workflows::node_start::JoinTo::Commander(tokio::sync::watch::channel(key).1);
-        let (mesh, mesh_id, authority) = (self.membership.mesh_name(), self.mesh_id.to_string(), key.fmt_short().to_string());
-        let call = crate::workflows::node_mesh_join::JoinCall { name, node_id: &self.node_id, mesh: &mesh, mesh_id: &mesh_id, client: &self.client, rafka_time: &self.rafka_time, to: &to, authority: &authority, operation, report_parent: None, reported: tracing::Span::none(), channel_parent: None };
-        crate::workflows::node_mesh_join::node_mesh_join(&mut StandaloneJoin { session: self }, call).await.map_err(|f| f.reason)?;
-        self.membership.wait_for_neighbour().await;
-        let mut pending = self.digest.clone();
-        pending.status = MemberStatus::Pending;
-        let _ = self.membership.publish(&pending).await;
-        let mut pub_slot = self.publisher.lock().unwrap();
-        if pub_slot.is_none() {
-            *pub_slot = Some(spawn_publisher(&self.membership, &self.digest, &self.status, &self.server));
-        }
-        Ok(vec![WhichMesh::Own])
-    }
 }
 
 impl NodeSession {
@@ -922,26 +904,6 @@ impl NodeSession {
         .in_scope(|| tracing::info!("joined the mesh channel"));
         drop(step);
         self.membership.clone()
-    }
-}
-
-/// An rpc node's standalone `JoinMesh`, as it plugs into `node.mesh.join`.
-struct StandaloneJoin<'a> {
-    session: &'a NodeSession,
-}
-
-#[async_trait::async_trait]
-impl crate::workflows::node_mesh_join::MeshJoin for StandaloneJoin<'_> {
-    type Error = crate::node_self::StartFailed;
-
-    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
-
-    fn join_digest(&self) -> MeshDigest {
-        self.session.membership.with_config(&self.session.digest)
-    }
-
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
-        Ok(self.session.enter_mesh(step, joined, None).await)
     }
 }
 
@@ -1372,8 +1334,8 @@ fn serve_node_command(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
 /// `node.connections.get` of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
-/// hands its peers to its mesh channel again, publishes its digest, and answers its current
-/// state; no transition. While its `before_ready` hook is Blocked it answers `Blocked` with
+/// answers its current state; no transition, nothing re-published: a birth its authority holds off
+/// its mesh is commanded back through `node.mesh.join` (node-tickle.md, Q87). While its `before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. The reserved Status positions (`Reserved6`, `Reserved7`, `StopNode`, `StartNode`) go to
 /// `crate::node_self`, which refuses them by name: node commands ride op 0x22. A stale incarnation is refused with the one held. Nothing
 /// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
@@ -1458,19 +1420,14 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                             .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                         return Ok(reply);
                     }
-                    let peers: Vec<EndpointAddr> = me.membership.book.all().iter().filter_map(rdm_transport::membership::gossip_addr).collect();
-                    let _ = me.membership.join_peers_as("node.rejoin", peers).await;
                     let status = *me.status.lock().unwrap();
-                    let mut d = me.digest.clone();
-                    d.status = status;
-                    let _ = me.membership.publish(&d).await;
                     tracing::info_span!(
                         "rdm.node_admin.status.update.via-probe",
                         node = %me.membership.held_name(&me.digest.node.name),
                         sender = %sender_name,
                         state = ?node_state_of(status),
                     )
-                    .in_scope(|| tracing::info!("probed by a node-admin: presence re-published, current state answered"));
+                    .in_scope(|| tracing::info!("probed by a node-admin: current state answered, nothing re-published"));
                     Ok(StatusReply::Current { node_id: me.digest.node.node_id.clone(), incarnation: me.digest.node.incarnation.clone(), state: node_state_of(status) })
                 }
                 StatusRequest::ApplyNodeState { state, .. } => {

@@ -41,13 +41,17 @@ There is one integration point, not a callback list.
 [Node start](lifecycles/node-start.md#end-to-end-sequence) step 3 calls the hook after the
 accepted join supplies the cert and rafka-time and the mesh channel is joined; topology is
 installed only after the hook returns Ok. The hook subscribes the app's kind topics through that
-channel and needs no topology snapshot. FirstStart and AfterStop run the same hook; the process's
-data-dir inheritance is an independent fact supplied by its spec.
+channel and needs no topology snapshot. FirstStart and AfterStop run the same hook, and so does a birth its mesh-primary held
+`PendingReconnect` when it is heard again: it answers the tickle `Blocked` while the hook runs
+with the cert and rafka-time the probe's authority supplies, and is published ready-for-traffic
+only once the hook passes. Every entry to ready-for-traffic, from any other state, runs the hook;
+the process's data-dir inheritance is an independent fact supplied by its spec.
 
 ### What the context carries
 
 - the exact birth: node id, incarnation and path.name;
-- `start_kind`: FirstStart for create, AfterStop for a stopped process rejoining;
+- `start_kind`: FirstStart for create, AfterStop for a process rejoining, after a stop or when it
+  is heard again after its mesh-primary held it `PendingReconnect`;
 - whether the spec supplies an inherited data dir; start_kind alone does not decide it;
 - the accepting authority, i.e. the admin that accepted the JoinNode. It is `None`, with the
   reason, for the Day-0 root and for a fabric-primary recovered from its durable map. Those

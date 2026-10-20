@@ -552,6 +552,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
     let claim_slot: crate::build_claim::ClaimSlot = Arc::new(std::sync::OnceLock::new());
     // The births this admin deployed and awaits a `JoinNode` from, and the door that answers it.
     let joins = Arc::new(crate::join::Joins::default());
+    // The runner, once built: the seat watch registers a seat holder heard again through it (Q87).
+    let runner_slot: Arc<std::sync::OnceLock<Arc<AdminRunner>>> = Arc::default();
     let join_slot: crate::join::JoinSlot = Arc::new(std::sync::OnceLock::new());
     let topology_slot: crate::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     let build_facts_slot: crate::build_facts_read::BuildFactsSlot = Arc::new(std::sync::OnceLock::new());
@@ -1054,9 +1056,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 let book = book.clone();
                                 let _ = control.loads.set(Arc::new(move || book.current(book.staleness_floor()).into_iter().filter(|d| d.load.is_some() || d.gossip.is_some()).map(|d| (d.node.node_id.to_string(), (d.load, d.gossip))).collect()));
                             }
-                            // This admin's re-publish of its presence, for a node-admin's status kick: filled once its
-                            // digest exists, below.
-                            let republish: crate::status_rpc::Republish = Arc::new(std::sync::OnceLock::new());
                             // Where this admin's own `before_ready` stands: written by its start (and a rejoin's),
                             // read by the Ready check and by a probe naming this admin.
                             let before_ready_cell: crate::status_rpc::BeforeReadyCell = Arc::default();
@@ -1091,7 +1090,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     declared: records.declared.clone(),
                                     mesh_ids: Arc::new(move || records_for_ids.meshes.lock().unwrap().clone()),
                                     durable: records.durable.clone(),
-                                    republish: republish.clone(),
                                     commands: commands.clone(),
                                     own: own_commands.clone(),
                                     certs: Some(issuer.clone()),
@@ -1216,7 +1214,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 builds: builds_dyn.clone(),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: cut_off_writes.clone(),
-                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()) },
+                                looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: provider_dyn.clone(), nodes: Some(nodes_storage.clone()), authority: authority.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone() },
                                 held_takeover: held_takeover.clone(),
                             });
                             let _ = handover_slot.set(handover.clone());
@@ -1257,6 +1255,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                 handover: handover.clone(),
                                 issuer: issuer.clone(),
                             });
+                            let _ = runner_slot.set(runner.clone());
                             // What the provider holds recorded at a path: the proof of a node the accepted topology names
                             // that no view and no durable runtime row holds a birth of (mesh-investigation.md step 5).
                             records.set_path_probe(runner.clone());
@@ -1850,18 +1849,6 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         }));
                                     }
                                     {
-                                        let (membership, digest) = (membership.clone(), digest.clone());
-                                        let _ = republish.set(Arc::new(move || {
-                                            let (membership, digest) = (membership.clone(), digest.clone());
-                                            Box::pin(async move {
-                                                let peers: Vec<EndpointAddr> = membership.book.all().iter().filter(|d| d.node.name.mesh == membership.mesh_name()).filter_map(rdm_transport::membership::gossip_addr).collect();
-                                                let _ = membership.join_peers_as("admin.republish", peers).await;
-                                                let d = digest.lock().unwrap().clone();
-                                                let _ = membership.publish(&d).await;
-                                            })
-                                        }));
-                                    }
-                                    {
                                         // The config is held on this admin's own digest and by its membership, so every publish and
                                         // every read of its own digest carries it.
                                         let (membership, digest) = (membership.clone(), digest.clone());
@@ -2066,6 +2053,9 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                         let (topology, records, status_storage, runner, me, me_id, mesh, recovery) = (control.topology.clone(), records.clone(), status_storage.clone(), runner.clone(), name.clone(), node_id.clone(), cfg.mesh.clone(), recovery.clone());
                                         let park = park_gate.clone();
                                         let mut cadence = crate::offline::Cadence::every(gossip_interval())?;
+                                        // A birth heard again is commanded back through node.mesh.join (Q87): its next cycle
+                                        // begins at this admin's status authority, the command names the current Build.
+                                        let (ladder_authority, ladder_builds) = (authority.clone(), builds_dyn.clone());
                                         tasks.push(tokio::spawn(async move {
                                             // The births whose inspection or submitted recovery is in flight, and the last verdict
                                             // named per birth. The tick never waits on either.
@@ -2145,6 +2135,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                         floor.as_millis() as u64,
                                                         |id| {
                                                             let (client, node) = (client.clone(), watched.get(&id).cloned());
+                                                            let (authority, builds, runner) = (ladder_authority.clone(), ladder_builds.clone(), runner.clone());
                                                             async move {
                                                                 let Some(node) = node else { return Err(format!("{id} is not in the topology")) };
                                                                 let Some(client) = client else { return Err("this admin has no Node RPC client".to_string()) };
@@ -2157,12 +2148,20 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                                 if out.reply().is_none() {
                                                                     return Err(format!("{} did not answer the ping: {}", node.name, out.name()));
                                                                 }
-                                                                // The ping answered: the status kick. The node re-publishes its presence
-                                                                // and answers its status.
+                                                                // The ping answered: the status kick. The node answers its status, and a
+                                                                // birth this admin holds off its mesh (the ladder tickles no other) that
+                                                                // answers Current is commanded back through node.mesh.join (node-tickle.md
+                                                                // "What follows", node-recovery.md step 2, Q87).
                                                                 let Some(incarnation) = node.incarnation_id.clone() else { return Err(format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id)) };
                                                                 let birth = rdm_client::ExactBirth { target: target.clone(), node_id: node.node_id.clone(), incarnation };
                                                                 let kick = match rdm_client::NodeRpc::new(&client).get(&birth, &once).await {
-                                                                    Ok(reply) => reply.name(),
+                                                                    Ok(reply) => {
+                                                                        let name = reply.name();
+                                                                        if matches!(reply, rdm_core::status::StatusReply::Current { .. }) {
+                                                                            crate::heard_again::command_mesh_join(&client, &authority, &builds, &runner, &node, &birth.incarnation).await;
+                                                                        }
+                                                                        name
+                                                                    }
                                                                     Err(end) => end.rpc_name(),
                                                                 };
                                                                 tracing::info!(node = %node.name, kick, "status kick after an answered ping");
@@ -2366,7 +2365,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                             membership: membership.clone(),
                                             topology: control.topology.clone(),
                                             records: records.clone(),
-                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()) },
+                                            looker: crate::seat_watch::Looker { me: name.clone(), me_id: node_id.clone(), membership: membership.clone(), client: node_rpc.client.clone(), provider: runner.provider.clone(), nodes: Some(nodes_storage.clone()), authority: authority.clone(), builds: builds_dyn.clone(), runner: runner_slot.clone() },
                                             builds: builds.clone(),
                                             recovery: Some(recovery.clone()),
                                             handover: handover_slot.clone(),

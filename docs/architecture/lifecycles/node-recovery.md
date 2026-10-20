@@ -41,7 +41,9 @@ timer of its own:
    timed out or failed; the endpoint unresolved). The mark is an observer mark: it never replaces a
    lifecycle state the node reported and the mesh-primary recorded (`connections-deleting`,
    `stopping`, `stopped`), and it ends when a digest of the exact birth arrives after it, when the
-   birth answers its tickle, or when the view no longer holds that birth.
+   birth answers its tickle, or when the view no longer holds that birth. A birth heard again
+   runs its `before_ready` hook again before it is ready-for-traffic
+   ([fabric-node-hooks.md](../fabric-node-hooks.md#where-it-runs)).
 2. **Tickle.** Only the mesh-primary acts. Half a floor after the mark it makes one QUIC
    connect, direct; if that fails, the same kick through up to two eligible live peers of
    the birth's mesh, sent at once (`rafka-node-admin-core/src/offline.rs`, module doc).
@@ -51,7 +53,9 @@ timer of its own:
    `(node.id, incarnation)`; a failure, a deadline included, never
    proves anything, and the provider check below stays mandatory. A node-admin watching a
    silent seat holder (seat watch) runs this same ladder. An answer is
-   `reachable-silent`: recorded, no action. No path opens a hold-down; no path again at
+   `reachable-silent`: recorded, and a birth that answered `Current` is commanded back through
+   [node.mesh.join](node-mesh-join.md) and runs its start sequence again before it is
+   ready-for-traffic (Q87). No path opens a hold-down; no path again at
    least one floor later is TRUE OFFLINE, written as status Dead on the node's row.
    Dead is observer-inferred and is never itself a reason to act.
 3. **Provider proof.** On TRUE OFFLINE the mesh-primary asks the provider (the deployment

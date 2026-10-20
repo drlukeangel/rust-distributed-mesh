@@ -1,0 +1,153 @@
+//! Q87 (Luke, 2026-10-20): every node coming to ready-for-traffic from any other state connects to
+//! its node-admin for its cert, its time and its cache, and a ready node may do the same; the
+//! `before_ready` hook is where it does that; the one exception is the Day-0 fabric-primary, with no
+//! other node to connect to. The pages: node-recovery.md step 1 ("A birth heard again runs its
+//! `before_ready` hook again before it is ready-for-traffic"), node-tickle.md ("on `reached` for a node
+//! that is off its channel it commands node.mesh.join"), node-mesh-join.md step 10 (the commanded join
+//! continues into node.start steps 3 to 5), fabric-node-hooks.md "Where it runs".
+//!
+//! CONTRACT: in a one-mesh estate (two node-admins, two rpc nodes) an rpc node and the node-admin that
+//! is not the mesh-primary each have their exact runtime held (SIGSTOP, acknowledged by the provider)
+//! past the staleness floor and released. While held, the view marks the birth `PendingReconnect` (or
+//! `Dead`, the ladder's TRUE OFFLINE); nothing re-births it or terminates it (silence is not death).
+//! Once released, the mesh-primary's tickle reaches it, the mesh-primary begins the birth's next
+//! cycle (`via-cycle-begun`) and commands `node.mesh.join` (`via-mesh-join-commanded`, answered
+//! `mesh-joined`); the node runs the start steps of node-start.md under one
+//! `rdm.mesh.node.update.via-start` root, the same steps as its own first start ran under its boot
+//! span and in the same order (a birth whose kind registered no hook has no hook attempt at either
+//! start), each step after the one before it closed; the accepting
+//! authority issues it a fresh member cert at that join (`cert.create.via-join` after the release);
+//! the view holds the birth Pending and then ReadyForTraffic again, the same NodeId and incarnation.
+//! What must NOT happen: a new birth at the path, a terminate (`via-fence outcome=terminated`), a
+//! `node.create` for it, a start step missing, outside its root or out of order, or a ready-for-traffic
+//! with no hook attempt before it.
+use rdm_client::NodeStatus;
+use rdm_test::estate::{named, Estate, Owner};
+use rdm_test::process_faults::{ExactRuntime, Fault};
+use serde_json::Value;
+use std::path::Path;
+use std::time::Duration;
+
+/// The start steps, in the order every start path runs them (node-start.md steps 2-5).
+const STEPS: [&str; 7] = [
+    "rdm.mesh.node.update.via-join-admitted",
+    "rdm.mesh.node.update.via-membership-joined",
+    "rdm.mesh.node.update.via-before-ready-attempt",
+    "rdm.mesh.node.update.via-topology-taken",
+    "rdm.mesh.node.update.via-build-floor",
+    "rdm.mesh.node.update.via-rafka-time-refreshed",
+    "rdm.mesh.node.update.via-ready",
+];
+const START_ROOT: &str = "rdm.mesh.node.update.via-start";
+const FIRST_ROOT: &str = "rdm.mesh.node.create.via-boot";
+
+fn owner() -> Owner {
+    Owner {
+        product: "mesh".into(),
+        feature: "node-recovery".into(),
+        subfeature: "heard-again".into(),
+        rung: "MN".into(),
+        provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
+        test: "a_held_node_heard_again_is_commanded_back_through_the_whole_start_sequence".into(),
+    }
+}
+
+fn s(v: &Value) -> String {
+    v.as_str().unwrap_or_default().to_string()
+}
+fn at(sp: &Value) -> u64 {
+    sp["start_unix_nano"].as_u64().unwrap_or(0)
+}
+fn end(sp: &Value) -> u64 {
+    sp["end_unix_nano"].as_u64().unwrap_or(u64::MAX)
+}
+fn now_nano() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0)
+}
+
+/// Hold `node`'s exact runtime past the floor, then release it; the instant of the release.
+async fn hold_past_the_floor_then_release(estate: &Estate, node: &str, floor: Duration) -> u64 {
+    let before = estate.node_view(node).await;
+    assert_eq!(before.status, NodeStatus::ReadyForTraffic, "{node} is ready before the hold: {before:?}");
+    let rt = ExactRuntime::published(Path::new(&estate.data_dir(node).await)).expect("the node's published runtime");
+    rt.apply(Fault::Stop).expect("the hold is acknowledged by the provider");
+    estate
+        .until_node(node, &format!("{node} is marked unheard in the view"), floor * 3 + Duration::from_secs(30), |n| {
+            n.filter(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)).cloned()
+        })
+        .await;
+    tokio::time::sleep(floor).await;
+    let during = estate.node_view(node).await;
+    assert_eq!((&during.node_id, &during.incarnation_id), (&before.node_id, &before.incarnation_id), "{node} is the same birth while held: silence is not death");
+    let release_at = now_nano();
+    rt.apply(Fault::Continue).expect("the release is acknowledged by the provider");
+    let back = estate
+        .until_node(node, &format!("{node} is ready-for-traffic again as the same birth"), floor * 8 + Duration::from_secs(60), |n| {
+            n.filter(|n| n.status == NodeStatus::ReadyForTraffic && n.node_id == before.node_id && n.incarnation_id == before.incarnation_id).cloned()
+        })
+        .await;
+    assert_eq!(back.incarnation_id, before.incarnation_id, "{node} came back as itself");
+    release_at
+}
+
+/// The start steps under `node`'s start roots named `root` that began after `since`, in start order,
+/// with each step's (name, start, end).
+fn start_steps_after<'a>(spans: &'a [Value], root: &str, node: &str, since: u64) -> (Vec<&'a Value>, Vec<(String, u64, u64)>) {
+    let roots: Vec<&Value> = named(spans, root).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && at(sp) >= since).collect();
+    let mut steps: Vec<(String, u64, u64)> = roots
+        .iter()
+        .flat_map(|root| spans.iter().filter(move |sp| sp["parent_span_id"] == root["span_id"] && STEPS.contains(&s(&sp["name"]).as_str())).map(|sp| (s(&sp["name"]), at(sp), end(sp))))
+        .collect();
+    steps.sort_by_key(|(_, start, _)| *start);
+    (roots, steps)
+}
+
+fn after(spans: &[Value], name: &str, node: &str, since: u64) -> Vec<Value> {
+    named(spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && at(sp) >= since).cloned().collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_held_node_heard_again_is_commanded_back_through_the_whole_start_sequence() {
+    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settled_views(&[("mesh1", 2, 2)]).await;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let floor = rdm_transport::membership::staleness_floor();
+
+    // An rpc node, then the node-admin that is not the mesh-primary: every node follows the path.
+    let rpc_released_at = hold_past_the_floor_then_release(&estate, "mesh1.rpc.2", floor).await;
+    let admin_released_at = hold_past_the_floor_then_release(&estate, "mesh1.admin.2", floor).await;
+
+    estate.stop().await;
+    let spans = estate.spans();
+    for (node, since) in [("mesh1.rpc.2", rpc_released_at), ("mesh1.admin.2", admin_released_at)] {
+        // The mesh-primary: the tickle answered, the next cycle begun, node.mesh.join commanded and answered.
+        let begun = after(&spans, "rdm.node_admin.status.update.via-cycle-begun", node, since);
+        assert!(!begun.is_empty(), "{node}: the mesh-primary begins the heard-again birth's next cycle (via-cycle-begun) after the release");
+        let commanded = after(&spans, "rdm.node_admin.node.update.via-mesh-join-commanded", node, since);
+        assert!(
+            commanded.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "mesh-joined"),
+            "{node}: the mesh-primary commands node.mesh.join to the heard-again birth and it answers mesh-joined (node-tickle.md); commanded: {commanded:?}"
+        );
+        // The node: the whole start sequence under one start root, the steps its first start ran, in
+        // order, each step after the last closed.
+        let (first_roots, first) = start_steps_after(&spans, FIRST_ROOT, node, 0);
+        assert_eq!(first_roots.len(), 1, "{node}: one first start ({FIRST_ROOT})");
+        let first_names: Vec<&str> = first.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert!(first_names.len() >= 6 && first_names.iter().all(|n| STEPS.contains(n)), "{node}: the first start ran the start steps: {first_names:?}");
+        let (roots, steps) = start_steps_after(&spans, START_ROOT, node, since);
+        assert_eq!(roots.len(), 1, "{node}: one start root ({START_ROOT}) after the release: {}", roots.len());
+        let names: Vec<&str> = steps.iter().map(|(n, _, _)| n.as_str()).collect();
+        assert_eq!(names, first_names, "{node}: the heard-again start runs the start steps its first start ran, in their order (node-start.md); got {names:?}");
+        let overlaps: Vec<String> = steps.windows(2).filter(|w| w[1].1 < w[0].2).map(|w| format!("{} began before {} closed", w[1].0, w[0].0)).collect();
+        assert!(overlaps.is_empty(), "{node}: each start step begins only after the one before it closed: {overlaps:?}");
+        // The cert: issued again for the same birth at the heard-again join.
+        let certs = after(&spans, "rdm.node_admin.cert.create.via-join", node, since);
+        assert!(!certs.is_empty(), "{node}: the accepting authority issues a fresh member cert at the heard-again join");
+        // Must NOT: a terminate, a new birth, a create.
+        let terminated = named(&spans, "rdm.node_admin.deployment.delete.via-fence").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == node && s(&sp["attributes"]["outcome"]) == "terminated").count();
+        assert_eq!(terminated, 0, "{node}: a held runtime is never terminated");
+        let created = after(&spans, "rdm.node_admin.node.create.via-build", node, since);
+        assert!(created.is_empty(), "{node}: no new birth at the path: {created:?}");
+    }
+}

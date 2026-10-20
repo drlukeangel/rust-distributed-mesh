@@ -55,7 +55,7 @@ mod reconcile;
 mod records;
 mod recovery;
 mod rows_writer;
-mod runner;
+pub(crate) mod runner;
 mod session;
 
 pub use boot::*;
@@ -3136,7 +3136,6 @@ mod tests {
             nodes_storage: Arc::new(crate::storage::MemoryNodesStorage::default()),
             mesh_ids: Arc::new(BTreeMap::new),
             durable: Default::default(),
-            republish: Arc::new(std::sync::OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(std::sync::OnceLock::new()),
             mesh_deleter: Arc::new(std::sync::OnceLock::new()),

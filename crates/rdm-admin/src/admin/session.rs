@@ -309,15 +309,11 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
     }
 
-    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
-        // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
-        // the connections cut below.
-        let turns_in_progress = self.gate.state().borrow().in_progress();
+    async fn leave_channels(&self) {
         if let Some(h) = self.before_ready_task.lock().unwrap().take() {
             h.abort();
         }
         self.before_ready.gate().close();
-        let neighbours = self.membership.neighbours();
         self.membership.park().await;
         tracing::info_span!(
             "rdm.node.mesh.update.via-left",
@@ -338,6 +334,14 @@ impl crate::node_self::Session for AdminSession {
             which = rdm_core::status::WhichMesh::Backbone.name(),
         )
         .in_scope(|| tracing::info!("left the backbone channel"));
+    }
+
+    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
+        // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
+        // the connections cut below.
+        let turns_in_progress = self.gate.state().borrow().in_progress();
+        let neighbours = self.membership.neighbours();
+        self.leave_channels().await;
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
@@ -352,23 +356,6 @@ impl crate::node_self::Session for AdminSession {
         crate::workflows::node_start::node_start(&mut start, crate::before_ready::StartKind::AfterStop).await
     }
 
-    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rdm_core::status::WhichMesh>, String> {
-        use rdm_core::status::WhichMesh;
-        // node.mesh.join (node-mesh-join.md), the one primitive: reported to the admin whose call
-        // commanded it, reached back over that call.
-        let name = self.digest.lock().unwrap().node.name.to_string();
-        let Some(key) = spare else {
-            return Err(format!("{name}: commander-uncalled: JoinMesh came on no Node RPC call"));
-        };
-        let to = crate::workflows::node_start::JoinTo::Commander(tokio::sync::watch::channel(key).1);
-        let (mesh, mesh_id, authority) = (self.membership.mesh_name(), self.mesh_id.to_string(), key.fmt_short().to_string());
-        let call = crate::workflows::node_mesh_join::JoinCall { name, node_id: &self.node_id, mesh: &mesh, mesh_id: &mesh_id, client: &self.client, rafka_time: &self.rafka_time, to: &to, authority: &authority, operation, report_parent: None, reported: tracing::Span::none(), channel_parent: None };
-        crate::workflows::node_mesh_join::node_mesh_join(&mut StandaloneJoin { session: self }, call).await.map_err(|f| f.reason)?;
-        self.membership.wait_for_neighbour().await;
-        let pending = self.digest.lock().unwrap().clone();
-        let _ = self.membership.publish(&pending).await;
-        Ok(vec![WhichMesh::Own, WhichMesh::Backbone])
-    }
 }
 
 impl AdminSession {
@@ -416,26 +403,6 @@ impl AdminSession {
         .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
         s.membership.clone()
-    }
-}
-
-/// A node-admin's standalone `JoinMesh`, as it plugs into `node.mesh.join`.
-struct StandaloneJoin<'a> {
-    session: &'a AdminSession,
-}
-
-#[async_trait::async_trait]
-impl crate::workflows::node_mesh_join::MeshJoin for StandaloneJoin<'_> {
-    type Error = crate::node_self::StartFailed;
-
-    fn join_types(&self) -> Vec<String> { self.session.membership.app_types().into_iter().collect() }
-
-    fn join_digest(&self) -> MeshDigest {
-        self.session.digest.lock().unwrap().clone()
-    }
-
-    async fn enter_channel(&mut self, step: tracing::Span, joined: Option<&crate::wire::JoinAnswer>) -> Result<Membership, crate::node_self::StartFailed> {
-        Ok(self.session.enter_mesh(step, joined, &mut None).await)
     }
 }
 

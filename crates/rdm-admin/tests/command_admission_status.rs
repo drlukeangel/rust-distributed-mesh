@@ -142,7 +142,6 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
         mesh_ids: Arc::new(std::collections::BTreeMap::new),
         durable: Default::default(),
-        republish: Arc::new(std::sync::OnceLock::new()),
         commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
         own: Arc::new(std::sync::OnceLock::new()),
         mesh_deleter: Arc::new(std::sync::OnceLock::new()),

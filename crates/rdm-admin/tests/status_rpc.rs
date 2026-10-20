@@ -187,7 +187,6 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         nodes_storage: Arc::new(rdm_admin::storage::MemoryNodesStorage::default()),
         mesh_ids: Arc::new(move || mesh_ids.clone()),
         durable: Default::default(),
-        republish: Arc::new(OnceLock::new()),
         commands: Arc::new(rdm_admin::node_commands::CommandBook::default()),
         own: Arc::new(OnceLock::new()),
         mesh_deleter: Arc::new(OnceLock::new()),

@@ -160,12 +160,11 @@ pub trait Session: Send + Sync {
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
     /// `operation` is the start's own: the ReadyForTraffic the rejoin declares names it (i146 Q36).
     async fn rejoin(&self, retire: rdm_transport::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>, operation: rdm_core::status::DeclaredOperation, progress: Option<CommandProgress>) -> Result<(), StartFailed>;
-    /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B): report `JoinNode` to the authority reached
-    /// back over `spare` and re-enter the mesh channel (and backbone, for a node-admin).
-    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<WhichMesh>, String> {
-        let _ = (spare, operation);
-        Err("this session does not support standalone node.mesh.join".into())
-    }
+    /// Leave the channels this birth is on (its mesh; the backbone too, a node-admin), its hook task
+    /// ended and its hook gate closed, its connections kept: what a live birth does before its start
+    /// sequence runs again on a commanded `node.mesh.join` (node-mesh-join.md step 10, Q87). A stop's
+    /// cut does this and then cuts the connections.
+    async fn leave_channels(&self);
 }
 
 /// Declares a state this birth entered to its authority, with the operation that produced it when
@@ -894,11 +893,12 @@ impl NodeSelf {
             }
             return Some(self.serve_leave_mesh(spare, operation).await);
         }
-        if let StatusRequest::JoinMesh { incarnation, operation, .. } = req {
+        if let StatusRequest::JoinMesh { incarnation, build_id, attempt, operation, .. } = req {
             if *incarnation != self.incarnation {
                 return Some(rdm_core::reply::stale(self.incarnation.clone()));
             }
-            return Some(self.serve_join_mesh(spare, operation).await);
+            let declared = rdm_core::status::DeclaredOperation { build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
+            return Some(self.serve_join_mesh(spare, declared).await);
         }
         None
     }
@@ -1028,18 +1028,77 @@ impl NodeSelf {
         .await
     }
 
-    /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B; node-mesh-join.md): reports `JoinNode` to
-    /// the authority reached back over `spare` (`rdm.node.mesh.update.via-joining`), re-enters the
-    /// mesh channel (`rdm.node.mesh.update.via-joined`), and answers `MeshJoined`.
-    async fn serve_join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> StatusReply {
+    /// `node.mesh.join` commanded on this live birth (`JoinMesh` on 0x1B; node-mesh-join.md step 10,
+    /// node-tickle.md "What follows"; Q87): the whole start sequence runs again on it, from the join
+    /// back over the commanding call to its hook, its topology, its Build floor and rafka-time
+    /// refreshed last (node-start.md steps 2 to 5), the way a start after a stop does. The birth leaves
+    /// its channels first and says Pending; the command is answered `MeshJoined` once the join is
+    /// accepted and the channel entered (node.mesh.joined), while the rest of the start runs on, and a
+    /// start that ends before that answers how it ended. A parked birth is started by `node.start`,
+    /// never by this.
+    async fn serve_join_mesh(self: &Arc<Self>, spare: Option<iroh::PublicKey>, operation: rdm_core::status::DeclaredOperation) -> StatusReply {
+        let Some(key) = spare else {
+            return rdm_core::reply::status::not_ready(format!("{}: commander-uncalled: JoinMesh came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()));
+        };
         let Some(session) = self.session.lock().unwrap().clone() else {
             return rdm_core::reply::status::not_ready(format!("{}: this process holds no session to join its mesh with", self.held_name()));
         };
+        let (outcome_tx, outcome_rx) = tokio::sync::watch::channel(None);
+        let (commander_tx, commander_rx) = tokio::sync::watch::channel(key);
+        {
+            let mut cycle = self.cycle.lock().unwrap();
+            match &*cycle {
+                Cycle::Live(_) => {}
+                Cycle::Starting { .. } => return rdm_core::reply::status::not_ready(format!("{}: a start is under way; node.mesh.join is decided on the cycle it ends in", self.held_name())),
+                Cycle::Stopping(_) | Cycle::Stopped(_) => return rdm_core::reply::status::not_ready(format!("{}: a parked birth is started by node.start, not by node.mesh.join", self.held_name())),
+            }
+            *cycle = Cycle::Starting { outcome: outcome_rx.clone(), commander: Some(commander_tx), calls: vec![key] };
+        }
+        // The birth leaves the channels it is on and says Pending: its hook gates its app ops again,
+        // and it is published ReadyForTraffic only once the hook has passed.
+        session.leave_channels().await;
+        let _ = (self.set_status)(MemberStatus::Pending);
         self.server.resume();
         self.admit_new_connections();
-        match session.join_mesh(spare, operation).await {
-            Ok(joined) => StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined },
-            Err(reason) => rdm_core::reply::status::not_ready(reason),
+        let retire = match &self.retire {
+            Some(r) => r.renew(),
+            None => rdm_transport::CancelToken::new(),
+        };
+        let (joined_tx, mut joined_rx) = tokio::sync::watch::channel(false);
+        let progress: CommandProgress = Arc::new(tokio::sync::Mutex::new(Box::new(JoinedSignal(joined_tx))));
+        let me = self.clone();
+        tokio::spawn(async move {
+            let result = session.rejoin(retire, commander_rx, None, operation, Some(progress)).await;
+            *me.cycle.lock().unwrap() = Cycle::Live(None);
+            let reply = match result {
+                Ok(()) => StatusReply::Started,
+                Err(failed) => rdm_core::reply::status::start_failed(failed.step.to_string(), failed.reason),
+            };
+            let _ = outcome_tx.send(Some(reply));
+        });
+        let joined = if self.backbone.is_some() { vec![WhichMesh::Own, WhichMesh::Backbone] } else { vec![WhichMesh::Own] };
+        let mesh_joined = || StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined: joined.clone() };
+        let mut outcome = outcome_rx;
+        let mut joined_closed = false;
+        loop {
+            tokio::select! {
+                changed = joined_rx.changed(), if !joined_closed => match changed {
+                    Ok(()) if *joined_rx.borrow() => return mesh_joined(),
+                    Ok(()) => {}
+                    Err(_) => joined_closed = true,
+                },
+                changed = outcome.changed() => {
+                    if changed.is_err() {
+                        return rdm_core::reply::status::not_ready(format!("{}: the start that was under way ended without an outcome", self.held_name()));
+                    }
+                    if let Some(reply) = outcome.borrow().clone() {
+                        return match reply {
+                            StatusReply::Started => mesh_joined(),
+                            other => other,
+                        };
+                    }
+                }
+            }
         }
     }
 
@@ -1498,6 +1557,23 @@ pub trait CommandFrames: Send {
 
 /// The admitted command's progress, shared with its lifecycle steps.
 pub type CommandProgress = Arc<tokio::sync::Mutex<Box<dyn CommandFrames>>>;
+
+/// The frames of a commanded `node.mesh.join`'s start: its `NodeJoined` is the command's completion
+/// (node-mesh-join.md: the primitive completes once the report is accepted and the mesh holds).
+struct JoinedSignal(tokio::sync::watch::Sender<bool>);
+
+#[async_trait::async_trait]
+impl CommandFrames for JoinedSignal {
+    async fn accepted(&mut self, _: NodeCommandReply) -> Result<(), String> {
+        Ok(())
+    }
+    async fn progress(&mut self, frame: NodeCommandReply) -> Result<(), String> {
+        if matches!(frame, NodeCommandReply::NodeJoined) {
+            let _ = self.0.send(true);
+        }
+        Ok(())
+    }
+}
 
 /// A node command's frames on its ordered reply stream (op 0x22).
 pub struct StreamFrames {
