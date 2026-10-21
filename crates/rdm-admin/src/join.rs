@@ -103,7 +103,13 @@ impl Deployed {
 struct Slot {
     deployed: Deployed,
     reported: watch::Sender<Option<MeshDigest>>,
+    admitted: Option<OnAdmitted>,
 }
+
+/// What a registration runs at the door once a report of its deployment is admitted, before the
+/// join is answered: a commanded join's next cycle begins and is published Pending there
+/// (node-mesh-join.md step 10), so nothing the birth says after its answer precedes it.
+pub type OnAdmitted = Arc<dyn Fn(MeshDigest) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// A deployment whose create ended before its birth reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,15 +206,24 @@ impl Joins {
     /// deployment still held took, or the one an ended create of the same deployment was handed; a
     /// held deployment (a restart's, a heard-again's) is handed nothing it did not hear itself.
     pub fn expect(&self, deployed: Deployed) -> watch::Receiver<Option<MeshDigest>> {
+        self.expect_then(deployed, None)
+    }
+
+    /// Register `deployed` as `expect` does, with what the door runs once a report of it is admitted
+    /// and before the join is answered (`OnAdmitted`).
+    pub fn expect_then(&self, deployed: Deployed, admitted: Option<OnAdmitted>) -> watch::Receiver<Option<MeshDigest>> {
         let mut slots = self.slots.lock().unwrap();
-        if let Some(s) = slots.get(&deployed.node_id) {
+        if let Some(s) = slots.get_mut(&deployed.node_id) {
             if s.deployed == deployed {
+                if admitted.is_some() {
+                    s.admitted = admitted;
+                }
                 return s.reported.subscribe();
             }
         }
         let heard = if deployed.held { None } else { self.admitted.lock().unwrap().iter().find(|a| a.deployed == deployed).map(|a| a.report.clone()) };
         let (tx, rx) = watch::channel(heard);
-        slots.insert(deployed.node_id.clone(), Slot { deployed, reported: tx });
+        slots.insert(deployed.node_id.clone(), Slot { deployed, reported: tx, admitted });
         rx
     }
 
@@ -257,10 +272,11 @@ impl Joins {
     }
 
     /// The node's own report, verified: what `WaitForBind` waits for.
-    pub fn report(&self, d: &MeshDigest) {
-        if let Some(s) = self.slots.lock().unwrap().get(&d.node.node_id) {
-            let _ = s.reported.send(Some(d.clone()));
-        }
+    pub fn report(&self, d: &MeshDigest) -> Option<OnAdmitted> {
+        let slots = self.slots.lock().unwrap();
+        let s = slots.get(&d.node.node_id)?;
+        let _ = s.reported.send(Some(d.clone()));
+        s.admitted.clone()
     }
 }
 
@@ -423,7 +439,9 @@ impl JoinDoor {
                 }
                 (self.install)(&d);
                 (self.known)().await;
-                self.joins.report(&d);
+                if let Some(admitted) = self.joins.report(&d) {
+                    admitted(d.clone()).await;
+                }
                 span.record("outcome", "installed");
                 tracing::info!(addr = %d.node.transport_addr, "the deployed birth reported where it bound: the address is installed for its key");
                 self.joined(&d.node.name, cert, config).await

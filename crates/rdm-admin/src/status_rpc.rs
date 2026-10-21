@@ -924,6 +924,11 @@ impl StatusAuthority {
     /// is held, as every applied state is.
     pub async fn begin_cycle(&self, node: &crate::model::Node, birth: &IncarnationId) {
         let _operation = self.operation_effects.write().await;
+        self.begin_cycle_held(node, birth).await;
+    }
+
+    /// `begin_cycle` under a hold of `operation_effects` its caller took.
+    async fn begin_cycle_held(&self, node: &crate::model::Node, birth: &IncarnationId) {
         // The cut of its last cycle is not its next cycle's: a started birth holds connections again,
         // and is on its mesh again.
         {
@@ -951,9 +956,17 @@ impl StatusAuthority {
     /// (node-start.md step 2), and it is published Pending once, as the Build path does on
     /// `NodeJoined`; it is published ready-for-traffic only when its hook has passed and it declares so.
     pub async fn commanded_join_admitted(&self, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
-        self.begin_cycle(node, birth).await;
+        self.joined_pending(node, birth).await
+    }
+
+    /// A start's join, commanded or inside a start (`NodeJoined`): the birth's next cycle begins and
+    /// it is published Pending under one hold of `operation_effects`, so a declaration of the birth is
+    /// committed before the begin or against the Pending, never between them.
+    pub async fn joined_pending(&self, node: &crate::model::Node, birth: &IncarnationId) -> StatusReply {
+        let _operation = self.operation_effects.write().await;
+        self.begin_cycle_held(node, birth).await;
         let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: birth.clone(), name: node.name.clone(), state: NodeState::Pending };
-        self.persist_then_commit(Effect::Node(row, NodeState::Pending, None)).await
+        self.commit_held(Effect::Node(row, NodeState::Pending, None)).await
     }
 
     /// The declared-state rows of every birth this admin holds that `book` says is superseded: the
@@ -1078,10 +1091,8 @@ impl StatusAuthority {
                 }
                 R::StopConnectionsDeleted { receipt } if !start => { closure = Some(receipt.clone()); None }
                 R::NodeJoined if start => {
-                    self.begin_cycle(node, &incarnation).await;
                     if let Some(book) = &self.book { book.joined(&op); }
-                    let row = crate::status_storage::NodeDeclaredRow { node_id: node.node_id.clone(), incarnation_id: incarnation.clone(), name: node.name.clone(), state: NodeState::Pending };
-                    let applied = self.persist_then_commit(Effect::Node(row, NodeState::Pending, None)).await;
+                    let applied = self.joined_pending(node, &incarnation).await;
                     if !matches!(applied, StatusReply::Applied | StatusReply::AlreadyApplied) { return A::Indeterminate { code: <Status as NodeProtocol>::classify_reply(&applied).code(), reason: format!("NodeJoined not recorded: {applied:?}") }; }
                     None
                 }
@@ -1299,9 +1310,15 @@ impl StatusAuthority {
     /// so the same declaration again is decided afresh. The commit decides again over what is
     /// held now, so two declarations of one natural key racing each other answer `Applied` once.
     async fn persist_then_commit(&self, effect: Effect) -> StatusReply {
-        let operation = match &effect { Effect::Node(row, _, Some(op)) => Some(operation_row(row, op)), _ => None };
-        let _operation = if operation.is_some() { Some(self.operation_effects.write().await) } else { None };
+        let operation = matches!(&effect, Effect::Node(_, _, Some(_)));
+        let _operation = if operation { Some(self.operation_effects.write().await) } else { None };
         let _state = if matches!(&effect, Effect::Node(_, _, None)) { Some(self.operation_effects.read().await) } else { None };
+        self.commit_held(effect).await
+    }
+
+    /// `persist_then_commit` under the hold of `operation_effects` its caller took.
+    async fn commit_held(&self, effect: Effect) -> StatusReply {
+        let operation = match &effect { Effect::Node(row, _, Some(op)) => Some(operation_row(row, op)), _ => None };
         if let Some(row) = &operation {
             if self.declared.lock().unwrap().operations.contains_key(&row.key()) {
                 return rdm_core::reply::already_applied();

@@ -150,27 +150,23 @@ async fn command_mesh_join(
         // Its report, when the door admits it, is where the birth's next cycle begins and it is
         // published Pending (node-mesh-join.md step 10): nothing is written before the command
         // reached it (node-start.md step 2).
-        let mut reported = match runner.stopped_birth_or_live("node.mesh.join", &node.name).await {
-            Ok((_, _, deployed)) => runner.joins.expect(deployed),
-            Err(why) => return format!("join-not-registered: {why}"),
+        // The door runs it before it answers the join, so the birth's hook and its ready follow it.
+        let admitted: crate::join::OnAdmitted = {
+            let (authority, node, incarnation) = (authority.clone(), node.clone(), incarnation.clone());
+            Arc::new(move |d: rdm_core::MeshDigest| {
+                let (authority, node, incarnation) = (authority.clone(), node.clone(), incarnation.clone());
+                Box::pin(async move {
+                    if d.node.node_id != node.node_id || d.node.incarnation != incarnation {
+                        return;
+                    }
+                    let outcome = authority.commanded_join_admitted(&node, &incarnation).await;
+                    tracing::info_span!("rdm.node_admin.status.update.via-mesh-join-admitted", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), outcome = outcome.name(), "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the commanded join was admitted: the birth's next cycle begins and it is published Pending before the join is answered"));
+                })
+            })
         };
-        {
-            let (authority, node, incarnation, floor) = (authority.clone(), node.clone(), incarnation.clone(), book.staleness_floor());
-            let admitted = async move {
-                loop {
-                    let hit = reported.borrow_and_update().as_ref().is_some_and(|d| d.node.node_id == node.node_id && d.node.incarnation == incarnation);
-                    if hit {
-                        let outcome = authority.commanded_join_admitted(&node, &incarnation).await;
-                        tracing::info_span!("rdm.node_admin.status.update.via-mesh-join-admitted", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation.as_str(), outcome = outcome.name(), "otel.kind" = "internal")
-                            .in_scope(|| tracing::info!("the commanded join was admitted: the birth's next cycle begins and it is published Pending"));
-                        return;
-                    }
-                    if reported.changed().await.is_err() {
-                        return;
-                    }
-                }
-            };
-            tokio::spawn(tracing::Instrument::instrument(async move { let _ = tokio::time::timeout(floor * 2 + std::time::Duration::from_secs(20), admitted).await; }, tracing::Span::current()));
+        if let Err(why) = runner.stopped_birth_or_live("node.mesh.join", &node.name).await.map(|(_, _, deployed)| runner.joins.expect_then(deployed, Some(admitted))) {
+            return format!("join-not-registered: {why}");
         }
         let req = StatusRequest::JoinMesh {
             node_id: node.node_id.clone(),
